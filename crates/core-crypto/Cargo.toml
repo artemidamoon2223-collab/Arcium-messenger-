@@ -1,0 +1,16 @@
+[package]
+name = "core-crypto"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+x25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+chacha20poly1305.workspace = true
+hmac.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+rand_core.workspace = true
+zeroize.workspace = true
+thiserror.workspace = true

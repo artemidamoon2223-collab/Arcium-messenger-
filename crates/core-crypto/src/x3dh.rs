@@ -21,6 +21,7 @@ pub struct PrekeyBundle {
     pub one_time_prekey_pk: Option<PublicKey>,
 }
 
+#[derive(Debug)]
 pub struct AliceSession {
     pub root_key: [u8; 32],
     pub ephemeral_pk: PublicKey,

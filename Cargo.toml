@@ -1,8 +1,10 @@
 [workspace]
 resolver = "2"
-members = [
+members members = [
     "crates/core-crypto",
     "crates/core-storage",
+    "crates/core-transport",
+    "crates/mobile-ffi",
 ]
 
 [workspace.package]

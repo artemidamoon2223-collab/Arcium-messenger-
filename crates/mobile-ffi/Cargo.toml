@@ -1,0 +1,21 @@
+[package]
+name = "mobile-ffi"
+version = "0.5.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+name = "arcium_core"
+
+[dependencies]
+uniffi = { version = "0.28", features = ["build"] }
+core-crypto = { path = "../core-crypto" }
+core-storage = { path = "../core-storage" }
+core-transport = { path = "../core-transport" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+log = "0.4"
+thiserror.workspace = true
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }

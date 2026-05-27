@@ -1,0 +1,23 @@
+[package]
+name = "core-transport"
+version = "0.3.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arti-client = { version = "0.21", features = [
+    "tokio",
+    "rustls",
+    "onion-service-client",
+    "onion-service-service",
+] }
+tor-rtcompat = { version = "0.21", features = ["tokio", "rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync"] }
+futures = "0.3"
+thiserror.workspace = true
+anyhow = "1"
+core-crypto = { path = "../core-crypto" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"

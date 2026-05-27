@@ -1,0 +1,18 @@
+[package]
+name = "arcium-psi"
+version = "1.0.0"
+description = "Private Set Intersection for Arcium"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "arcium_psi"
+
+[features]
+no-entrypoint = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "0.30"

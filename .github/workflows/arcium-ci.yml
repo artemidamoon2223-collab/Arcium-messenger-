@@ -56,6 +56,7 @@ jobs:
           if arcium build; then
             echo "build_success=true" >> "$GITHUB_OUTPUT"
             echo "=== arcium build SUCCEEDED ==="
+            sha256sum build/psi_intersect.arcis.ir || echo "IR file not found"
             find . -name "*.arcis.ir" | head -20
             ls -la build/ 2>/dev/null || true
           else

@@ -50,7 +50,17 @@ jobs:
           solana --version || true
       - name: arcium build
         working-directory: arcium-psi
-        run: arcium build
+        run: |
+          arcium build || true
+          echo "=== BUILD DIR CONTENTS ==="
+          find . -name "*.arcis.ir" -o -name "*.arcis" 2>/dev/null | head -30
+          echo "=== arcium-psi/build ==="
+          ls -la build/ 2>/dev/null || echo "build/ does not exist"
+          echo "=== encrypted-ixs/build ==="
+          ls -la encrypted-ixs/build/ 2>/dev/null || echo "encrypted-ixs/build/ does not exist"
+          echo "=== file sizes ==="
+          find . -name "*.arcis.ir" -exec wc -c {} \; 2>/dev/null || echo "no .arcis.ir found"
+          arcium build
         shell: bash
 
   # ── Job 4: Arcium test — full integration, requires Job 3 success ──

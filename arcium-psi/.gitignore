@@ -1,2 +1,6 @@
 target/
 .anchor/
+# arcis compiler outputs generated into workspace root (canonical copies live in encrypted-ixs/build/)
+build/circuits.*
+build/psi_intersect.arcis.ir
+build/psi_intersect.ts

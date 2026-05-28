@@ -1,6 +1,7 @@
 //! Core cryptographic primitives for Arcium.
 
 pub mod ratchet;
+pub mod rescue;
 pub mod x3dh;
 
 #[cfg(test)]

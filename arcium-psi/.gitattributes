@@ -1,0 +1,5 @@
+*.arcis binary
+*.arcis.ir binary
+*.arcis.so binary
+build/**/*.arcis binary
+build/**/*.arcis.ir binary

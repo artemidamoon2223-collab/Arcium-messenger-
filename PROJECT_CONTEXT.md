@@ -53,7 +53,19 @@ pub fn find_contacts(
 | v0.3 ✅ | core-transport | Tor transport skeleton (5 тестов) |
 | v0.4 ✅ | core-protocol | SessionManager (5 тестов) |
 | v0.5 ✅ | mobile-ffi | Identity + ArciumCore реальная логика (5 тестов) |
-| v1.0 🚧 | arcium-psi | RescueCipher + psi_intersect.arcis + OffChainCircuitSource (только дома, нужен Solana CLI + Anchor) |
+| v1.0 🚧 | arcium-psi | RescueCipher stub ✅, PsiQuery/PsiResult/OffChainCircuitSource типы ✅ — нужен Arcis circuit + Anchor handlers |
+| v1.1 🚧 | core-crypto | Hybrid KEM X25519+ML-KEM-768 готов ✅ (4 теста) — нужна интеграция в рукопожатие |
+
+## Тесты (итого: 42 passed + 1 ignored)
+
+| Крейт | Тестов | Что тестируется |
+|-------|--------|-----------------|
+| core-crypto | 19 | X3DH (5) + Double Ratchet (6) + RescueCipher (4) + Hybrid KEM (4) |
+| core-protocol | 5 | SessionManager: create/get/update/remove/isolation |
+| core-storage | 8 | EncryptedStore: put/get/not-found/wrong-key/in-memory/etc |
+| core-transport | 5 (+1 ignored) | TransportError variants; live-Tor test помечен #[ignore] |
+| mobile-ffi | 5 | Identity::generate, ArciumCore::new, save/load_identity, round-trip |
+| **Итого** | **42 (+1)** | |
 
 ## ⚠️ ЗАПРЕЩЕНО ДЛЯ АГЕНТА — PSI реализация
 

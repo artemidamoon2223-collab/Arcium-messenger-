@@ -1,0 +1,10 @@
+[package]
+name = "encrypted-ixs"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone crate — opt out of the root Cargo workspace.
+[workspace]
+
+[dependencies]
+arcis = "0.9.7"

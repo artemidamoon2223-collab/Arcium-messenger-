@@ -39,7 +39,14 @@ pub fn find_contacts(
 - .arcis файл хранится на IPFS/CDN
 - В Anchor: OffChainCircuitSource { url, hash: [u8; 32] }
 
-### Reference implementations (изучить перед v1.0):
+### v1.0 arcium-psi прогресс:
+- ✅ Типы Anchor (PsiQuery, PsiResult, OffChainCircuitSource)
+- ✅ Arcis PSI circuit (encrypted-ixs) — psi_intersect (BATCH_SIZE=10, u64 хэши)
+- ⏳ Anchor handlers (init query, submit result)
+- ⏳ Деплой circuit на Arcium testnet
+- ⏳ Интеграция с mobile-ffi через RescueCipher
+
+### Reference implementations (изучить перед деплоем):
 - arcium-hq/examples — Blackjack, Voting, Auction (официальные)
 - ANAVHEOBA/arcium_poker — ArcisRNG в MPC
 - 0xsupremedev/private-orderflow-dex — сравнение вслепую
@@ -53,7 +60,7 @@ pub fn find_contacts(
 | v0.3 ✅ | core-transport | Tor transport skeleton (5 тестов) |
 | v0.4 ✅ | core-protocol | SessionManager (5 тестов) |
 | v0.5 ✅ | mobile-ffi | Identity + ArciumCore реальная логика (5 тестов) |
-| v1.0 🚧 | arcium-psi | RescueCipher stub ✅, PsiQuery/PsiResult/OffChainCircuitSource типы ✅ — нужен Arcis circuit + Anchor handlers |
+| v1.0 🚧 | arcium-psi | RescueCipher stub ✅, PsiQuery/PsiResult/OffChainCircuitSource типы ✅, Arcis PSI circuit ✅ — нужны Anchor handlers + деплой |
 | v1.1 🚧 | core-crypto | Hybrid KEM X25519+ML-KEM-768 готов ✅ (4 теста) — нужна интеграция в рукопожатие |
 
 ## Тесты (итого: 42 passed + 1 ignored)

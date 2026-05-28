@@ -289,3 +289,56 @@ pub struct PsiResult {
     /// Arcium MPC node aggregate signature over (query_id || encrypted_matches).
     pub mpc_signature: [u8; 64],
 }
+
+#[cfg(test)]
+mod borsh_tests {
+    use super::*;
+    use anchor_lang::{AnchorDeserialize, AnchorSerialize};
+
+    #[test]
+    fn off_chain_circuit_source_round_trip() {
+        let source = OffChainCircuitSource {
+            url: "https://ipfs.io/ipfs/QmTest".to_string(),
+            hash: [1u8; 32],
+            version: 1,
+        };
+        let mut buf = Vec::new();
+        source.serialize(&mut buf).unwrap();
+        let back = OffChainCircuitSource::deserialize(&mut &buf[..]).unwrap();
+        assert_eq!(source.url, back.url);
+        assert_eq!(source.hash, back.hash);
+        assert_eq!(source.version, back.version);
+    }
+
+    #[test]
+    fn psi_query_round_trip() {
+        let query = PsiQuery {
+            client_pubkey: [2u8; 32],
+            encrypted_hashes: vec![10u8, 20u8, 30u8],
+            nonce: [3u8; 16],
+            circuit_hash: [4u8; 32],
+        };
+        let mut buf = Vec::new();
+        query.serialize(&mut buf).unwrap();
+        let back = PsiQuery::deserialize(&mut &buf[..]).unwrap();
+        assert_eq!(query.client_pubkey, back.client_pubkey);
+        assert_eq!(query.encrypted_hashes, back.encrypted_hashes);
+        assert_eq!(query.nonce, back.nonce);
+        assert_eq!(query.circuit_hash, back.circuit_hash);
+    }
+
+    #[test]
+    fn psi_result_round_trip() {
+        let result = PsiResult {
+            query_id: [5u8; 32],
+            encrypted_matches: vec![7u8, 8u8, 9u8],
+            mpc_signature: [6u8; 64],
+        };
+        let mut buf = Vec::new();
+        result.serialize(&mut buf).unwrap();
+        let back = PsiResult::deserialize(&mut &buf[..]).unwrap();
+        assert_eq!(result.query_id, back.query_id);
+        assert_eq!(result.encrypted_matches, back.encrypted_matches);
+        assert_eq!(result.mpc_signature, back.mpc_signature);
+    }
+}

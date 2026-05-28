@@ -45,6 +45,7 @@ pub fn find_contacts(
 - ✅ init_psi_intersect_comp_def (регистрация circuit с Arcium)
 - ✅ submit_psi_query (очередь MPC вычисления с ArgBuilder)
 - ✅ psi_intersect_callback (BLS-верифицированный ответ Arcium)
+- ✅ Borsh round-trip тесты для on-chain типов (OffChainCircuitSource, PsiQuery, PsiResult)
 - ⏳ TypeScript integration tests (нужен devnet)
 - ⏳ Deploy to Arcium testnet (нужен дома)
 

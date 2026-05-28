@@ -66,3 +66,39 @@ pub enum PsiError {
     #[msg("nonce already used")]
     NonceReused,
 }
+
+// ── v1.0 PSI types ────────────────────────────────────────────────────────────
+
+/// Stores an off-chain Arcis circuit reference (IPFS/CDN) instead of
+/// embedding the circuit on-chain. Saves ~100x in transaction fees.
+#[account]
+pub struct OffChainCircuitSource {
+    /// IPFS or CDN URL pointing to the compiled .arcis file.
+    pub url: String,
+    /// SHA-256 of the circuit content — verified before execution.
+    pub hash: [u8; 32],
+    pub version: u32,
+}
+
+/// Client-side PSI query: contact hashes encrypted with RescueCipher
+/// before submission to the Arcium MPC cluster.
+#[derive(AnchorSerialize, AnchorDeserialize, Debug, Clone)]
+pub struct PsiQuery {
+    /// Ephemeral client X25519 public key for RescueCipher key agreement.
+    pub client_pubkey: [u8; 32],
+    /// RescueCipher-encrypted SHA-256 contact hashes.
+    pub encrypted_hashes: Vec<u8>,
+    pub nonce: [u8; 16],
+    /// Hash of the Arcis circuit used — must match OffChainCircuitSource.hash.
+    pub circuit_hash: [u8; 32],
+}
+
+/// MPC result returned after PSI intersection on the Arcium cluster.
+#[derive(AnchorSerialize, AnchorDeserialize, Debug, Clone)]
+pub struct PsiResult {
+    pub query_id: [u8; 32],
+    /// RescueCipher-encrypted boolean match vector.
+    pub encrypted_matches: Vec<u8>,
+    /// Arcium MPC node aggregate signature over (query_id || encrypted_matches).
+    pub mpc_signature: [u8; 64],
+}

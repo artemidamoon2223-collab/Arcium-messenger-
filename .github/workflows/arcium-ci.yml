@@ -1,0 +1,70 @@
+name: Arcium CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:   # manual trigger from GitHub mobile (Actions tab)
+
+jobs:
+  # ── Job 1: Core Rust — verified, no Arcium toolchain needed ──
+  core-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Core crates tests (expected 22)
+        run: cargo test --workspace
+      - name: arcium-psi borsh tests (expected 3)
+        run: cargo test --manifest-path arcium-psi/programs/arcium-psi/Cargo.toml borsh_tests
+
+  # ── Job 2: TS crypto — offline, verified ──
+  ts-crypto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install deps
+        working-directory: arcium-psi/tests
+        run: npm install
+      - name: tsc + crypto tests
+        working-directory: arcium-psi/tests
+        run: |
+          npx tsc --noEmit
+          npx mocha --require ts-node/register 'src/crypto.test.ts'
+
+  # ── Job 3: Arcium build — may fail on toolchain version mismatch; that is useful signal ──
+  arcium-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arcium-hq/setup-arcium@v0.10.4
+        with:
+          runner-arch-os: x86_64_linux
+      - name: Diagnostic — toolchain versions
+        run: |
+          arcium --version || true
+          anchor --version || true
+          solana --version || true
+      - name: arcium build
+        working-directory: arcium-psi
+        run: arcium build
+        shell: bash
+
+  # ── Job 4: Arcium test — full integration, requires Job 3 success ──
+  arcium-test:
+    needs: arcium-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arcium-hq/setup-arcium@v0.10.4
+        with:
+          runner-arch-os: x86_64_linux
+      - name: arcium test (with open-files limit fix)
+        working-directory: arcium-psi
+        run: |
+          sudo prlimit --pid $$ --nofile=1048576:1048576
+          arcium test
+        shell: bash

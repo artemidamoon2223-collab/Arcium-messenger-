@@ -4,9 +4,6 @@ version = "1.0.0"
 description = "Private Set Intersection for Arcium"
 edition = "2021"
 
-# Standalone Anchor program — opt out of the root Cargo workspace.
-[workspace]
-
 [lib]
 crate-type = ["cdylib", "lib"]
 name = "arcium_psi"

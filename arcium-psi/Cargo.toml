@@ -1,0 +1,3 @@
+[workspace]
+members = ["programs/arcium-psi"]
+resolver = "2"

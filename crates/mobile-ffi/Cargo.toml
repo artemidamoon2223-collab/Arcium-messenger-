@@ -13,9 +13,14 @@ uniffi = { version = "0.28", features = ["build"] }
 core-crypto = { path = "../core-crypto" }
 core-storage = { path = "../core-storage" }
 core-transport = { path = "../core-transport" }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
-log = "0.4"
+ed25519-dalek.workspace = true
+x25519-dalek.workspace = true
+rand_core.workspace = true
 thiserror.workspace = true
+log = "0.4"
 
 [build-dependencies]
 uniffi = { version = "0.28", features = ["build"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -41,8 +41,60 @@ pub struct TorStream {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::error::Error;
+    use std::io;
+
+    // TransportError::Bootstrap —————————————————————————————————————————————
+
     #[test]
-    fn placeholder() {
-        assert_eq!(2 + 2, 4);
+    fn bootstrap_error_display() {
+        let e = TransportError::Bootstrap("no consensus".to_string());
+        assert_eq!(e.to_string(), "bootstrap failed: no consensus");
+    }
+
+    // TransportError::Connect ———————————————————————————————————————————————
+
+    #[test]
+    fn connect_error_display() {
+        let e = TransportError::Connect("refused".to_string());
+        assert_eq!(e.to_string(), "connection failed: refused");
+    }
+
+    // TransportError::Io ————————————————————————————————————————————————————
+
+    #[test]
+    fn io_error_display() {
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "file missing");
+        let e = TransportError::Io(io_err);
+        assert_eq!(e.to_string(), "io error: file missing");
+    }
+
+    #[test]
+    fn io_error_from_conversion() {
+        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "denied");
+        let e: TransportError = io_err.into();
+        assert!(matches!(e, TransportError::Io(_)));
+    }
+
+    #[test]
+    fn io_error_exposes_source() {
+        let io_err = io::Error::new(io::ErrorKind::BrokenPipe, "broken");
+        let e = TransportError::Io(io_err);
+        assert!(e.source().is_some(), "Io variant must expose its source via std::error::Error");
+    }
+
+    // TorTransport::new ——————————————————————————————————————————————————————
+    // Requires a live Tor network; run manually with: cargo test -- --ignored
+
+    #[tokio::test]
+    #[ignore]
+    async fn new_fails_gracefully_without_tor() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = TorTransport::new(dir.path()).await;
+        assert!(
+            matches!(result, Err(TransportError::Bootstrap(_))),
+            "expected Bootstrap error"
+        );
     }
 }

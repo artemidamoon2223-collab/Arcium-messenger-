@@ -6,7 +6,7 @@
 use hkdf::Hkdf;
 use ml_kem::{
     Ciphertext, Decapsulate, DecapsulationKey768, Encapsulate, EncapsulationKey768, Key,
-    KeyExport, MlKem768, Seed, TryKeyInit,
+    KeyExport, MlKem768, Seed,
 };
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;

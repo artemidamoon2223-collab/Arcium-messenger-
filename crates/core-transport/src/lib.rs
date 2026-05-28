@@ -13,13 +13,14 @@ pub enum TransportError {
     Io(#[from] std::io::Error),
 }
 
+#[allow(dead_code)]
 pub struct TorTransport {
     client: Arc<TorClient<PreferredRuntime>>,
     onion_address: String,
 }
 
 impl TorTransport {
-    pub async fn new(state_dir: &std::path::Path) -> Result<Self, TransportError> {
+    pub async fn new(_state_dir: &std::path::Path) -> Result<Self, TransportError> {
         let config = TorClientConfig::default();
         let client = TorClient::create_bootstrapped(config)
             .await
@@ -35,6 +36,7 @@ impl TorTransport {
     }
 }
 
+#[allow(dead_code)]
 pub struct TorStream {
     inner: arti_client::DataStream,
 }

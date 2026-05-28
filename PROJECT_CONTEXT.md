@@ -42,9 +42,11 @@ pub fn find_contacts(
 ### v1.0 arcium-psi прогресс:
 - ✅ Типы Anchor (PsiQuery, PsiResult, OffChainCircuitSource)
 - ✅ Arcis PSI circuit (encrypted-ixs) — psi_intersect (BATCH_SIZE=10, u64 хэши)
-- ⏳ Anchor handlers (init query, submit result)
-- ⏳ Деплой circuit на Arcium testnet
-- ⏳ Интеграция с mobile-ffi через RescueCipher
+- ✅ init_psi_intersect_comp_def (регистрация circuit с Arcium)
+- ✅ submit_psi_query (очередь MPC вычисления с ArgBuilder)
+- ✅ psi_intersect_callback (BLS-верифицированный ответ Arcium)
+- ⏳ TypeScript integration tests (нужен devnet)
+- ⏳ Deploy to Arcium testnet (нужен дома)
 
 ### Reference implementations (изучить перед деплоем):
 - arcium-hq/examples — Blackjack, Voting, Auction (официальные)

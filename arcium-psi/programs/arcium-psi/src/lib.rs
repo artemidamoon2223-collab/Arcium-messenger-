@@ -54,6 +54,16 @@ pub mod arcium_psi {
         server_data: SharedEncryptedStruct<10>,
         computation_offset: u64,
     ) -> Result<()> {
+        // Batch size is enforced statically by SharedEncryptedStruct<10> — no runtime check needed.
+        // Guard against a zeroed encryption key (indicates uninitialized client data).
+        require!(
+            client_data.encryption_key != [0u8; 32],
+            PsiError::UninitializedEncryptionKey
+        );
+        require!(
+            server_data.encryption_key != [0u8; 32],
+            PsiError::UninitializedEncryptionKey
+        );
         // Pack args in the exact order the Arcis circuit signature expects:
         // psi_intersect(client_data: Enc<Shared, ClientContacts>, server_data: Enc<Shared, ServerContacts>)
         // Each Enc<Shared, T> compiles to: X25519Pubkey + u128 nonce + N ciphertexts
@@ -240,6 +250,8 @@ impl UserState {
 pub enum PsiError {
     #[msg("nonce already used")]
     NonceReused,
+    #[msg("encryption key is all-zeros (uninitialized client or server data)")]
+    UninitializedEncryptionKey,
 }
 
 // ── v1.0 PSI types ────────────────────────────────────────────────────────────

@@ -12,8 +12,9 @@ describe('Client Crypto (local, no devnet)', () => {
     const b = hashPhoneWithTruncation('+1234567890');
     expect(a).to.equal(b);           // deterministic
     expect(typeof a).to.equal('bigint');
-    // No hardcoded value: Rust-side function does not yet exist (outcome B).
-    // When Rust implements phone hashing, verify against the computed value here.
+    // Cross-language canonical vector — must match Rust contact_hash::hash_contact("+1234567890").
+    // sha256("+1234567890")[0..8] as little-endian u64
+    expect(a).to.equal(5364562789390625858n);
   });
 
   it('X25519 ECDH is symmetric', () => {

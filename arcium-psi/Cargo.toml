@@ -1,3 +1,3 @@
 [workspace]
-members = ["programs/arcium-psi"]
+members = ["programs/arcium-psi", "encrypted-ixs"]
 resolver = "2"

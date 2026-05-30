@@ -1,5 +1,6 @@
 //! Core cryptographic primitives for Arcium.
 
+pub mod contact_hash;
 pub mod hybrid;
 pub mod ratchet;
 pub mod rescue;

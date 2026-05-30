@@ -1,0 +1,24 @@
+{
+  "name": "arcium-psi-tests",
+  "version": "0.1.0",
+  "scripts": {
+    "test": "mocha --require ts-node/register 'src/**/*.test.ts'",
+    "test:devnet": "SOLANA_RPC_URL=https://api.devnet.solana.com npm test"
+  },
+  "dependencies": {
+    "@arcium-hq/client": "^0.10.4",
+    "@coral-xyz/anchor": "^0.30.1",
+    "@noble/curves": "^1.4.0",
+    "@solana/web3.js": "^1.90.0",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.10.0",
+    "chai": "^4.3.10",
+    "mocha": "^10.2.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

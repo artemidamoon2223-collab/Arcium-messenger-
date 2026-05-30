@@ -1,0 +1,4 @@
+target/
+.anchor/
+build/
+encrypted-ixs/build/

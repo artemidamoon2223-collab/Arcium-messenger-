@@ -1,0 +1,2 @@
+-keep class com.arcium.** { *; }
+-keep class uniffi.arcium_core.** { *; }

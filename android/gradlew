@@ -1,0 +1,15 @@
+#!/bin/sh
+# Gradle wrapper script for Unix
+APP_NAME="Gradle"
+APP_BASE_NAME=$(basename "$0")
+APP_HOME=$(dirname "$0")
+APP_HOME=$(cd "$APP_HOME" && pwd)
+GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+WRAPPER_JAR="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+WRAPPER_PROPERTIES="$APP_HOME/gradle/wrapper/gradle-wrapper.properties"
+if [ ! -f "$WRAPPER_JAR" ]; then
+  echo "ERROR: gradle-wrapper.jar not found at $WRAPPER_JAR"
+  echo "Run 'gradle wrapper --gradle-version 8.9' to generate it."
+  exit 1
+fi
+exec java -jar "$WRAPPER_JAR" "$@"

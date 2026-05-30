@@ -165,10 +165,10 @@ export async function buildInitPsiCompDefIx(
   const mxeAccount    = getMXEAccAddress(PROGRAM_ID);
   const compDefAccount = getPsiCompDefAccount();
 
-  // Lookup table address comes from the MXE account's lut_last_slot field.
+  // Lookup table address comes from the MXE account's lutOffsetSlot field.
   const arciumMxe = await provider.connection.getAccountInfo(mxeAccount);
   // lut_offset lives at byte 8 (discriminator) + layout offset. For now derive with BN(0).
-  // Update lutOffset to mxeAccount.lutLastSlot once the account is on-chain.
+  // Update lutOffset to mxeAccount.lutOffsetSlot once the account is on-chain.
   const lutOffset = new BN(0);
   const addressLookupTable = getLookupTableAddress(PROGRAM_ID, lutOffset);
 

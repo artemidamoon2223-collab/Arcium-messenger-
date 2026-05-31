@@ -23,14 +23,10 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # ubuntu-latest already has Android SDK at $ANDROID_SDK_ROOT.
-      # We only need to install platform 35 (runner ships with 34 by default).
-      - name: Install Android platform 35
-        run: |
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+      # ubuntu-latest ships with Android SDK including platforms;android-34
+      # and build-tools;34.0.0. compileSdk=34 requires no extra installation.
+      - name: Accept Android SDK licenses
+        run: yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Make gradlew executable
         run: chmod +x android/gradlew

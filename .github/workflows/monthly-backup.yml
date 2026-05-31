@@ -1,0 +1,55 @@
+name: Monthly Backup to Releases
+
+on:
+  schedule:
+    # Запускается каждый месяц (первого числа в 00:00 UTC)
+    - cron: '0 0 1 * *'
+  
+  # Также можно запустить вручную через кнопку в интерфейсе
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Create ZIP archive
+        run: |
+          zip -r Arcium-messenger-backup-$(date +%Y-%m-%d).zip . -x ".git/*" ".github/*" "node_modules/*" ".env*"
+      
+      - name: Get backup filename
+        id: filename
+        run: |
+          FILENAME=$(ls Arcium-messenger-backup-*.zip | head -n1)
+          echo "backup_file=$FILENAME" >> $GITHUB_OUTPUT
+      
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: backup-${{ github.run_number }}-${{ github.run_id }}
+          release_name: Monthly Backup - ${{ steps.filename.outputs.backup_file }}
+          body: |
+            📦 Автоматический месячный бэкап проекта
+            
+            📅 Дата создания: ${{ steps.filename.outputs.backup_file }}
+            
+            Скачай ZIP-архив ниже и сохрани где нужно!
+          draft: false
+          prerelease: false
+      
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./${{ steps.filename.outputs.backup_file }}
+          asset_name: ${{ steps.filename.outputs.backup_file }}
+          asset_content_type: application/zip

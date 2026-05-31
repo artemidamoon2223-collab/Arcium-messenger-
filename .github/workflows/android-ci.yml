@@ -14,6 +14,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +40,15 @@ jobs:
       - name: Build debug APK
         id: build
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon 2>&1 | tee /tmp/build.log; exit ${PIPESTATUS[0]}
+        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/build.log; exit ${PIPESTATUS[0]}
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: /tmp/build.log
+          retention-days: 3
 
       - name: Post build error to PR
         if: failure() && github.event_name == 'pull_request'
@@ -53,7 +64,7 @@ jobs:
               .join('\n');
             const tail = lines.slice(-30).join('\n');
             const body = `## 🔴 Android CI — Build Failure\n\n**Errors:**\n\`\`\`\n${errors || '(none matched)'}\n\`\`\`\n\n**Last 30 lines:**\n\`\`\`\n${tail}\n\`\`\``;
-            github.rest.issues.createComment({
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,

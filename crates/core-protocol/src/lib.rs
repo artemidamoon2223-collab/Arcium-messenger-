@@ -10,6 +10,12 @@ pub struct SessionManager {
     sessions: HashMap<ContactId, RatchetState>,
 }
 
+impl Default for SessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionManager {
     pub fn new() -> Self {
         Self { sessions: HashMap::new() }

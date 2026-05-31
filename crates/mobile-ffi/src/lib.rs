@@ -4,6 +4,7 @@ use rand_core::OsRng;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use x25519_dalek::StaticSecret;
+use zeroize::Zeroizing;
 
 uniffi::setup_scaffolding!();
 
@@ -66,7 +67,7 @@ impl ArciumCore {
     }
 
     pub fn save_identity(&self, identity: Arc<Identity>) -> Result<(), CoreError> {
-        let mut bytes = Vec::with_capacity(64);
+        let mut bytes = Zeroizing::new(Vec::with_capacity(64));
         bytes.extend_from_slice(identity.signing_key.as_bytes());
         bytes.extend_from_slice(&identity.dh_key.to_bytes());
         self.store

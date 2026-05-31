@@ -35,10 +35,32 @@ jobs:
         run: chmod +x android/gradlew
 
       - name: Build debug APK
+        id: build
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleDebug --no-daemon 2>&1 | tee /tmp/build.log; exit ${PIPESTATUS[0]}
 
-      - name: Upload APK artifact
+      - name: Post build error to PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync('/tmp/build.log', 'utf8');
+            const lines = log.split('\n');
+            const errors = lines
+              .filter(l => /^e:|error:|FAILURE:|Caused by:|Unresolved|> Task|SDK location/.test(l))
+              .slice(0, 40)
+              .join('\n');
+            const tail = lines.slice(-30).join('\n');
+            const body = `## 🔴 Android CI — Build Failure\n\n**Errors:**\n\`\`\`\n${errors || '(none matched)'}\n\`\`\`\n\n**Last 30 lines:**\n\`\`\`\n${tail}\n\`\`\``;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+
+- name: Upload APK artifact
         uses: actions/upload-artifact@v4
         if: success()
         with:

@@ -28,6 +28,9 @@ jobs:
       - name: Accept Android SDK licenses
         run: yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
+      - name: Write local.properties
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 

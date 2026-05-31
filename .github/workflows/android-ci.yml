@@ -60,7 +60,7 @@ jobs:
               body
             });
 
-- name: Upload APK artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         if: success()
         with:

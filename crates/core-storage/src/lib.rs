@@ -84,8 +84,14 @@ impl EncryptedStore {
     }
 
     pub fn list_keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
-        let pattern = format!("{}%", prefix);
-        let mut stmt = self.conn.prepare("SELECT k FROM kv WHERE k LIKE ?1 ORDER BY k")?;
+        let escaped = prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("{}%", escaped);
+        let mut stmt = self.conn.prepare(
+            "SELECT k FROM kv WHERE k LIKE ?1 ESCAPE '\\' ORDER BY k",
+        )?;
         let keys: Result<Vec<String>, _> = stmt
             .query_map(params![pattern], |r| r.get::<_, String>(0))?
             .collect();
@@ -203,6 +209,24 @@ mod tests {
         let mut contacts = store.list_keys_with_prefix("contact:").unwrap();
         contacts.sort();
         assert_eq!(contacts, vec!["contact:alice", "contact:bob"]);
+    }
+
+    #[test]
+    fn list_keys_with_prefix_percent_is_literal() {
+        let store = EncryptedStore::open_in_memory(random_key()).unwrap();
+        store.put("a%b:foo", b"target").unwrap();
+        store.put("axb:bar", b"should not match").unwrap();
+        let keys = store.list_keys_with_prefix("a%b:").unwrap();
+        assert_eq!(keys, vec!["a%b:foo"], "% in prefix must be treated literally");
+    }
+
+    #[test]
+    fn list_keys_with_prefix_underscore_is_literal() {
+        let store = EncryptedStore::open_in_memory(random_key()).unwrap();
+        store.put("a_b:foo", b"target").unwrap();
+        store.put("axb:bar", b"should not match").unwrap();
+        let keys = store.list_keys_with_prefix("a_b:").unwrap();
+        assert_eq!(keys, vec!["a_b:foo"], "_ in prefix must be treated literally");
     }
 
     #[test]

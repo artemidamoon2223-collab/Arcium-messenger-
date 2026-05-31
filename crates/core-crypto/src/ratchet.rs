@@ -227,6 +227,21 @@ impl DoubleRatchet {
             }
         }
     }
+
+    /// Wipe all secret key material. Called by Drop; also exposed for testing.
+    fn zeroize_key_material(&mut self) {
+        self.rk.zeroize();
+        if let Some(ref mut k) = self.cks { k.zeroize(); }
+        if let Some(ref mut k) = self.ckr { k.zeroize(); }
+        for v in self.skipped.values_mut() { v.zeroize(); }
+        // dhs: StaticSecret — has its own ZeroizeOnDrop, no double-handling needed.
+    }
+}
+
+impl Drop for DoubleRatchet {
+    fn drop(&mut self) {
+        self.zeroize_key_material();
+    }
 }
 
 fn kdf_rk(rk: &RootKey, dh_out: &[u8]) -> (RootKey, ChainKey) {
@@ -286,4 +301,49 @@ fn concat_ad(ad: &[u8], header_bytes: &[u8]) -> Vec<u8> {
     v.extend_from_slice(ad);
     v.extend_from_slice(header_bytes);
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Compile-time check: DoubleRatchet must implement Drop (which calls zeroize_key_material).
+    // If Drop is accidentally removed this test will stop compiling.
+    const _: () = {
+        fn _requires_drop<T: Drop>() {}
+        fn _check() { _requires_drop::<DoubleRatchet>(); }
+    };
+
+    /// Calling zeroize_key_material() on a live instance zeros rk, cks, ckr.
+    /// We cannot inspect memory after drop (unsound), so we call the helper
+    /// directly on a live struct and assert the fields are cleared.
+    #[test]
+    fn zeroize_key_material_clears_secret_fields() {
+        let rk = [0xAB_u8; 32];
+        let mut dr = DoubleRatchet::init_bob(rk, StaticSecret::random_from_rng(OsRng));
+        // Bob starts with cks=None, ckr=None; rk is set from the provided seed.
+        assert_eq!(dr.rk, rk, "precondition: rk matches seed");
+
+        dr.zeroize_key_material();
+
+        assert_eq!(dr.rk, [0u8; 32], "rk must be zeroed");
+        assert!(dr.cks.is_none(), "cks was None; must remain None after wipe");
+        assert!(dr.ckr.is_none(), "ckr was None; must remain None after wipe");
+        assert!(dr.skipped.is_empty(), "skipped must be empty");
+    }
+
+    #[test]
+    fn zeroize_key_material_clears_chain_keys() {
+        // Alice has cks set immediately after init.
+        let rk = [0x11_u8; 32];
+        let their_pk = PublicKey::from(&StaticSecret::random_from_rng(OsRng));
+        let mut dr = DoubleRatchet::init_alice(rk, their_pk);
+        assert!(dr.cks.is_some(), "precondition: Alice has sending chain key");
+
+        dr.zeroize_key_material();
+
+        assert_eq!(dr.rk, [0u8; 32], "rk must be zeroed");
+        // cks is still Some (Option not cleared), but the key bytes inside are zeroed.
+        if let Some(k) = dr.cks { assert_eq!(k, [0u8; 32], "cks key bytes must be zeroed"); }
+    }
 }

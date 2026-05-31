@@ -4,6 +4,7 @@ use rand_core::OsRng;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use x25519_dalek::StaticSecret;
+use zeroize::Zeroizing;
 
 uniffi::setup_scaffolding!();
 
@@ -65,11 +66,15 @@ impl ArciumCore {
         Ok(Arc::new(Self { store: Mutex::new(store) }))
     }
 
-    pub fn save_identity(&self, identity: Arc<Identity>) {
-        let mut bytes = Vec::with_capacity(64);
+    pub fn save_identity(&self, identity: Arc<Identity>) -> Result<(), CoreError> {
+        let mut bytes = Zeroizing::new(Vec::with_capacity(64));
         bytes.extend_from_slice(identity.signing_key.as_bytes());
         bytes.extend_from_slice(&identity.dh_key.to_bytes());
-        self.store.lock().unwrap().put(IDENTITY_KEY, &bytes).ok();
+        self.store
+            .lock()
+            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?
+            .put(IDENTITY_KEY, &bytes)?;
+        Ok(())
     }
 
     pub fn load_identity(&self) -> Option<Arc<Identity>> {
@@ -119,7 +124,7 @@ mod tests {
         let core = ArciumCore::new(path, key32(0)).unwrap();
         let id = Identity::generate();
         let pk = id.public_key_bytes();
-        core.save_identity(id);
+        core.save_identity(id).unwrap();
 
         let loaded = core.load_identity().expect("identity must be present after save");
         assert_eq!(loaded.public_key_bytes(), pk);
@@ -132,7 +137,7 @@ mod tests {
 
         // Save with key 0x00…
         let core = ArciumCore::new(path.clone(), key32(0)).unwrap();
-        core.save_identity(Identity::generate());
+        core.save_identity(Identity::generate()).unwrap();
 
         // Open same file with key 0x01… → Decryption fails → None
         let core2 = ArciumCore::new(path, key32(1)).unwrap();
@@ -145,5 +150,35 @@ mod tests {
         let path = dir.path().join("db").to_str().unwrap().to_string();
         let result = ArciumCore::new(path, vec![0u8; 16]);
         assert!(matches!(result, Err(CoreError::InvalidKey { .. })));
+    }
+
+    #[test]
+    fn save_identity_returns_ok_on_success() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("db").to_str().unwrap().to_string();
+        let core = ArciumCore::new(path, key32(0)).unwrap();
+        let result = core.save_identity(Identity::generate());
+        assert!(result.is_ok(), "save_identity must return Ok on success");
+    }
+
+    #[test]
+    fn save_identity_returns_err_on_poisoned_mutex() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("db").to_str().unwrap().to_string();
+        let core = Arc::new(ArciumCore::new(path, key32(0)).unwrap());
+        // Poison the mutex by panicking while holding the lock in another thread.
+        let core2 = Arc::clone(&core);
+        let _ = std::thread::spawn(move || {
+            let _guard = core2.store.lock().unwrap();
+            panic!("poison");
+        })
+        .join();
+        // The mutex is now poisoned; save_identity must return Err, not panic.
+        let result = core.save_identity(Identity::generate());
+        assert!(
+            matches!(result, Err(CoreError::Storage { .. })),
+            "poisoned mutex must surface as CoreError::Storage, got {:?}",
+            result
+        );
     }
 }

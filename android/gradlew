@@ -1,0 +1,27 @@
+#!/bin/bash
+# Gradle wrapper for UN*X.
+# Generated for Gradle 8.9; uses bash to avoid printf '%q' issues with dash.
+
+set -euo pipefail
+
+APP_HOME=$(cd "$(dirname "$0")" && pwd)
+CLASSPATH="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+
+if [ -n "${JAVA_HOME:-}" ]; then
+    JAVACMD="$JAVA_HOME/bin/java"
+else
+    JAVACMD="java"
+fi
+
+if [ ! -f "$CLASSPATH" ]; then
+    echo "ERROR: $CLASSPATH not found."
+    echo "Run 'gradle wrapper --gradle-version 8.9' inside android/ to generate it."
+    exit 1
+fi
+
+exec "$JAVACMD" \
+    -Xmx64m -Xms64m \
+    "-Dorg.gradle.appname=$(basename "$0")" \
+    -classpath "$CLASSPATH" \
+    org.gradle.wrapper.GradleWrapperMain \
+    "$@"

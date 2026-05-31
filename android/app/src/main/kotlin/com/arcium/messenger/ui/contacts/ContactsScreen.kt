@@ -10,13 +10,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 @Composable
 fun ContactsScreen(
     onOpenChat: (sessionId: String) -> Unit,
     onOpenSettings: () -> Unit,
-    viewModel: ContactsViewModel = hiltViewModel(),
+    viewModel: ContactsViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
 

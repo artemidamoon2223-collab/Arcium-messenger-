@@ -6,12 +6,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 @Composable
 fun OnboardingScreen(
     onIdentityReady: () -> Unit,
-    viewModel: OnboardingViewModel = hiltViewModel(),
+    viewModel: OnboardingViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
 

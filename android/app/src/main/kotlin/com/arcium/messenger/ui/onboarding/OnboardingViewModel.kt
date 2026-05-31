@@ -3,11 +3,9 @@ package com.arcium.messenger.ui.onboarding
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.arcium.messenger.data.IdentityRepository
-import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import javax.inject.Inject
 
 data class OnboardingState(
     val isLoading: Boolean = false,
@@ -15,9 +13,8 @@ data class OnboardingState(
     val error: String? = null,
 )
 
-@HiltViewModel
-class OnboardingViewModel @Inject constructor(
-    private val identityRepo: IdentityRepository,
+class OnboardingViewModel(
+    private val identityRepo: IdentityRepository = IdentityRepository(),
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(OnboardingState())

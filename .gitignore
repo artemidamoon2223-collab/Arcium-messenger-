@@ -1,3 +1,4 @@
 /target/
 Cargo.lock
 .codegraph/
+android/.gradle/

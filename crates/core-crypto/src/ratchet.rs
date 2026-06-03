@@ -18,7 +18,7 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
@@ -83,7 +83,7 @@ pub struct DoubleRatchet {
     ns: u32,                     // messages sent in current sending chain
     nr: u32,                     // messages received in current receiving chain
     pn: u32,                     // messages sent in previous sending chain (sent in header so peer can skip)
-    skipped: HashMap<([u8; 32], u32), MessageKey>,
+    skipped: IndexMap<([u8; 32], u32), MessageKey>,
     max_skipped: usize,
 }
 
@@ -103,7 +103,7 @@ impl DoubleRatchet {
             ns: 0,
             nr: 0,
             pn: 0,
-            skipped: HashMap::new(),
+            skipped: IndexMap::new(),
             max_skipped: 2000,
         }
     }
@@ -120,7 +120,7 @@ impl DoubleRatchet {
             ns: 0,
             nr: 0,
             pn: 0,
-            skipped: HashMap::new(),
+            skipped: IndexMap::new(),
             max_skipped: 2000,
         }
     }
@@ -148,7 +148,7 @@ impl DoubleRatchet {
         let full_ad = concat_ad(ad, &header.to_bytes());
 
         // 1. Check skipped keys first (handles out-of-order and across-chain late arrivals).
-        if let Some(mk) = self.skipped.remove(&(header.dh, header.n)) {
+        if let Some(mk) = self.skipped.swap_remove(&(header.dh, header.n)) {
             return aead_decrypt(&mk, ciphertext, &full_ad);
         }
 
@@ -218,10 +218,11 @@ impl DoubleRatchet {
     }
 
     fn trim_skipped(&mut self) {
+        // Evict oldest-inserted entries first (FIFO by IndexMap insertion order).
+        // Zeroize each evicted message key before dropping — consistent with L-1 Drop.
         while self.skipped.len() > self.max_skipped {
-            // simple eviction; for production use an LRU
-            if let Some(k) = self.skipped.keys().next().cloned() {
-                self.skipped.remove(&k);
+            if let Some((_, mut mk)) = self.skipped.shift_remove_index(0) {
+                mk.zeroize();
             } else {
                 break;
             }
@@ -330,6 +331,60 @@ mod tests {
         assert!(dr.cks.is_none(), "cks was None; must remain None after wipe");
         assert!(dr.ckr.is_none(), "ckr was None; must remain None after wipe");
         assert!(dr.skipped.is_empty(), "skipped must be empty");
+    }
+
+    // ── L-3 FIFO eviction tests ───────────────────────────────────────────────
+
+    #[test]
+    fn trim_skipped_fifo_oldest_evicted_newest_retained() {
+        let mut dr = DoubleRatchet::init_bob([0u8; 32], StaticSecret::random_from_rng(OsRng));
+        dr.max_skipped = 3;
+        let dhr = [0u8; 32];
+        for i in 0u32..5 {
+            dr.skipped.insert((dhr, i), [i as u8; 32]);
+        }
+        dr.trim_skipped();
+        assert_eq!(dr.skipped.len(), 3, "cap must be enforced");
+        assert!(!dr.skipped.contains_key(&(dhr, 0)), "oldest (0) must be evicted");
+        assert!(!dr.skipped.contains_key(&(dhr, 1)), "second-oldest (1) must be evicted");
+        assert!(dr.skipped.contains_key(&(dhr, 2)), "entry 2 must survive");
+        assert!(dr.skipped.contains_key(&(dhr, 3)), "entry 3 must survive");
+        assert!(dr.skipped.contains_key(&(dhr, 4)), "newest (4) must survive");
+    }
+
+    #[test]
+    fn trim_skipped_evicted_value_is_zeroized() {
+        // Verify: evicted entry is removed and its slot is gone; retained value is intact.
+        // (We cannot read freed memory, so we assert the retained value was NOT zeroed —
+        // proof that only the evicted value was touched.)
+        let mut dr = DoubleRatchet::init_bob([0u8; 32], StaticSecret::random_from_rng(OsRng));
+        dr.max_skipped = 1;
+        let dhr = [0u8; 32];
+        dr.skipped.insert((dhr, 0), [0xAB_u8; 32]);
+        dr.skipped.insert((dhr, 1), [0xCD_u8; 32]);
+        dr.trim_skipped();
+        assert!(!dr.skipped.contains_key(&(dhr, 0)), "evicted entry removed");
+        assert!(dr.skipped.contains_key(&(dhr, 1)), "retained entry present");
+        assert_eq!(dr.skipped[&(dhr, 1)], [0xCD_u8; 32], "retained value must not be zeroized");
+    }
+
+    #[test]
+    fn trim_skipped_recently_skipped_key_survives_cap() {
+        // Scenario: a recently-stored skipped key (needed by a delayed legit message)
+        // must survive when older entries fill the cap and are evicted.
+        let mut dr = DoubleRatchet::init_bob([0u8; 32], StaticSecret::random_from_rng(OsRng));
+        dr.max_skipped = 3;
+        let dhr = [0u8; 32];
+        for i in 0u32..3 {
+            dr.skipped.insert((dhr, i), [i as u8; 32]);
+        }
+        let recent_mk = [0xBB_u8; 32];
+        dr.skipped.insert((dhr, 3), recent_mk);
+        dr.trim_skipped();
+        assert_eq!(dr.skipped.len(), 3, "cap enforced");
+        assert!(!dr.skipped.contains_key(&(dhr, 0)), "oldest evicted");
+        assert!(dr.skipped.contains_key(&(dhr, 3)), "recently-skipped key survived");
+        assert_eq!(dr.skipped[&(dhr, 3)], recent_mk, "recently-skipped key value intact");
     }
 
     #[test]

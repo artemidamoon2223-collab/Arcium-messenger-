@@ -1,8 +1,10 @@
 package com.arcium.messenger.network
 
+import com.arcium.messenger.BuildConfig
+
 class SolanaClient {
 
-    private val rpcUrl = "https://api.devnet.solana.com"
+    private val rpcUrl = BuildConfig.SOLANA_RPC_URL
 
     suspend fun sendTransaction(signedTx: ByteArray): Result<String> {
         // TODO: POST to $rpcUrl/sendTransaction (base64-encode signedTx)

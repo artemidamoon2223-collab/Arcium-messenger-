@@ -1,0 +1,10 @@
+{
+  "plugins": [
+    {
+      "name": "understand-anything",
+      "source": "Lum1104/Understand-Anything",
+      "enabled": true,
+      "description": "Builds interactive knowledge graph of the codebase via 5 AI agents"
+    }
+  ]
+}

@@ -2,3 +2,5 @@
 Cargo.lock
 .codegraph/
 android/.gradle/
+# understand-anything cache (graph itself is committed)
+.understand-anything/cache/

@@ -1,0 +1,62 @@
+name: Understand-Anything — Knowledge Graph
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build-knowledge-graph:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Understand-Anything
+        run: curl -fsSL https://raw.githubusercontent.com/Lum1104/Understand-Anything/main/install.sh | bash
+
+      - name: Run codebase analysis
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          understand-anything analyze \
+            --output .understand-anything/knowledge-graph.json \
+            --format json \
+            --skip node_modules,target,.git
+
+      - name: Commit knowledge graph (push to main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .understand-anything/knowledge-graph.json
+          if git diff --staged --quiet; then
+            echo "No changes to graph — skipping commit"
+          else
+            git commit -m "chore(graph): update knowledge graph [skip ci]"
+            git push origin main
+          fi
+
+      - name: Comment on PR with analysis summary
+        if: github.event_name == 'pull_request'
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          direct_prompt: |
+            Run: git diff origin/${{ github.base_ref }}...HEAD
+
+            Using the knowledge graph in .understand-anything/knowledge-graph.json,
+            briefly explain (3-5 bullets) what parts of the codebase this PR affects
+            and what downstream components might be impacted.
+            Post the result as a PR comment.

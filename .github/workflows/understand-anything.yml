@@ -1,11 +1,8 @@
 name: Understand-Anything — Knowledge Graph
 
 on:
-  push:
-    branches: [main]
   pull_request:
     types: [opened, synchronize]
-  workflow_dispatch:
 
 permissions:
   contents: write

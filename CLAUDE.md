@@ -143,6 +143,116 @@ Arcium-messenger-/
 
 ---
 
+## Ключевые API
+
+### core-crypto
+
+**X3DH** (`x3dh.rs`):
+```rust
+pub fn x3dh_initiate(id_sk: &StaticSecret, id_pk: PublicKey, bundle: &PrekeyBundle)
+    -> Result<AliceSession, X3dhError>
+// AliceSession { root_key: [u8;32], ad: Vec<u8>, ephemeral_pk: PublicKey }
+
+pub fn x3dh_respond(id_sk, id_pk, spk_sk, otpk_sk: Option<&StaticSecret>,
+    alice_id_pk, alice_eph_pk) -> BobSession
+// BobSession { root_key: [u8;32], ad: Vec<u8> }
+```
+
+**DoubleRatchet** (`ratchet.rs`):
+```rust
+DoubleRatchet::init_alice(root_key: RootKey, their_initial_dh: PublicKey) -> Self
+DoubleRatchet::init_bob(root_key: RootKey, our_initial_dh: StaticSecret) -> Self
+fn encrypt(&mut self, plaintext: &[u8], ad: &[u8]) -> Result<(Header, Vec<u8>), RatchetError>
+fn decrypt(&mut self, hdr: &Header, ct: &[u8], ad: &[u8]) -> Result<Vec<u8>, RatchetError>
+// pub const MAX_SKIP: u32 = 1000
+```
+
+**Hybrid KEM** (`hybrid.rs`) — X25519 + ML-KEM-768:
+```rust
+pub fn hybrid_keygen() -> (HybridPublicKey, HybridSecretKey)
+pub fn hybrid_encaps(pk: &HybridPublicKey) -> (Vec<u8>, [u8; 64])  // (ct, shared_secret)
+pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<[u8; 64], HybridError>
+```
+
+**Contact hash** (`contact_hash.rs`):
+```rust
+pub fn hash_contact(phone: &str) -> u64   // sha256(phone)[0..8] as u64 LE — КАНОНИЧЕСКИЙ
+```
+
+**RescueCipher STUB** (`rescue.rs`):
+```rust
+// ⚠️ STUB — chacha20poly1305 placeholder, только для PSI
+RescueCipher { key: [u8; 32] }            // конструктор из ключа
+pub fn psi_pack_contact(phone_hash: &[u8;32], cipher: &RescueCipher, nonce: &[u8;16]) -> Vec<u8>
+```
+
+### core-storage
+
+```rust
+EncryptedStore::open(path: P, master_key: [u8; 32]) -> Result<Self, StorageError>
+EncryptedStore::open_in_memory(master_key: [u8; 32]) -> Result<Self, StorageError>
+fn put(&self, key: &str, value: &[u8]) -> Result<(), StorageError>
+fn get(&self, key: &str) -> Result<Vec<u8>, StorageError>         // Err(NotFound) если нет
+fn delete(&self, key: &str) -> Result<(), StorageError>
+fn list_keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, StorageError>
+```
+
+### core-protocol
+
+```rust
+type ContactId = u64;  // == hash_contact() output
+SessionManager::new() -> Self
+fn new_session(&mut self, id: ContactId, state: DoubleRatchet)
+fn get_session(&mut self, id: ContactId) -> Option<&mut DoubleRatchet>
+fn remove_session(&mut self, id: ContactId)
+```
+
+### mobile-ffi (UniFFI cdylib → Kotlin)
+
+```rust
+// Identity
+Identity::generate() -> Arc<Identity>        // Ed25519 + X25519 keypair
+fn public_key_bytes(&self) -> Vec<u8>        // 32-byte Ed25519 verifying key
+
+// ArciumCore
+ArciumCore::new(storage_path: String, master_key: Vec<u8>) -> Result<Arc<Self>, CoreError>
+fn save_identity(&self, identity: Arc<Identity>) -> Result<(), CoreError>
+fn load_identity(&self) -> Option<Arc<Identity>>
+
+enum CoreError { Storage { msg: String }, InvalidKey { msg: String } }
+```
+
+---
+
+## Workflow разработки
+
+### Создать ветку и отправить PR
+```bash
+git checkout -b claude/<task-slug>
+# ... изменения ...
+cargo test --workspace          # должно быть 0 упавших
+git push -u origin claude/<task-slug>
+# → создать PR → squash merge в main
+```
+
+### Обновить UniFFI биндинги для Android
+```bash
+# Шаг 1: генерация .kt из Rust (работает в sandbox)
+cargo build -p mobile-ffi
+
+# Шаг 2: компиляция .so (нужен NDK — только локально / android-ci.yml)
+cargo ndk -t arm64-v8a build -p mobile-ffi --release
+# выход: target/aarch64-linux-android/release/libmobile_ffi.so
+```
+Kotlin-биндинги уже скомпилированы в `android/app/src/main/kotlin/.../ffi/ArciumCore.kt`.
+
+### Добавить тест
+- **Rust**: `#[cfg(test)] mod tests { ... }` в конце файла крейта
+- **TS**: `arcium-psi/tests/src/*.test.ts`; запуск: `npx mocha --require ts-node/register 'src/новый.test.ts'`
+- После добавления — обновить счётчик в разделе "Тесты" этого файла
+
+---
+
 ## GitHub — конфигурация и история PR
 
 ### Репозиторий

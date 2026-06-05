@@ -57,8 +57,8 @@ Little-Endian, первые 8 байт. TS-сторона уже следует 
 
 ## Версии (проверены, не менять без причины)
 - arcium-client = "0.10.4", arcium-anchor 0.10.4 требует anchor-lang "=1.0.2"
-- arcis = "0.9.7" (генерирует .arcis.ir)
-- @coral-xyz/anchor ^0.30, @arcium-hq/client ^0.10.4 (TS сторона)
+- arcis = "0.10.4" (генерирует .arcis.ir)
+- @coral-xyz/anchor ^0.30.1, @arcium-hq/client ^0.10.4 (TS сторона)
 - ml-kem = "0.3.2" (hybrid PQ, не 0.2)
 
 ---
@@ -99,6 +99,46 @@ v0.6 ✅ android         Kotlin + Compose skeleton (4 screens, UniFFI stub)
 v1.0 🚧 arcium-psi      Arcis circuit ✅ | Anchor handlers ✅ | deploy ⏳ (нужен toolchain)
 v1.1 🚧 post-quantum    Hybrid X25519+ML-KEM ✅
 TS tests 🚧             config ✅ | crypto 4/4 ✅ | setup ✅ | deploy/scenarios ⏳
+```
+
+---
+
+## Структура репозитория
+
+```
+Arcium-messenger-/
+├── Cargo.toml                        # workspace: 5 crates, resolver = "2"
+├── CLAUDE.md                         # этот файл
+├── PROJECT_CONTEXT.md                # архитектурные детали PSI (не для агента)
+├── crates/
+│   ├── core-crypto/src/
+│   │   ├── lib.rs                    # re-exports + 24 unit tests
+│   │   ├── x3dh.rs                   # X3DH key exchange
+│   │   ├── ratchet.rs                # Double Ratchet (FIFO skipped keys)
+│   │   ├── rescue.rs                 # RescueCipher — STUB только для PSI
+│   │   ├── hybrid.rs                 # X25519 + ML-KEM-768 PQ hybrid
+│   │   └── contact_hash.rs           # sha256(phone)[0..8] → u64 LE
+│   ├── core-storage/src/lib.rs       # EncryptedStore: SQLite + XChaCha20
+│   ├── core-protocol/src/lib.rs      # SessionManager
+│   ├── core-transport/src/lib.rs     # TorClient (arti)
+│   └── mobile-ffi/src/lib.rs         # UniFFI cdylib: Identity + ArciumCore
+├── arcium-psi/
+│   ├── programs/arcium-psi/src/lib.rs  # Anchor: init_user, submit_query, PSI handlers
+│   ├── encrypted-ixs/src/lib.rs        # Arcis circuit (arcis = "0.10.4")
+│   └── tests/src/
+│       ├── crypto.test.ts            # 4/4 ✅
+│       ├── setup.test.ts             # ✅
+│       ├── scenarios.test.ts         # ⏳ (нужен devnet)
+│       └── utils.ts                  # hash_contact: sha256(phone)[0..8] → bigint LE
+├── android/app/src/main/kotlin/com/arcium/messenger/
+│   ├── ui/{onboarding,chat,contacts,settings}/  # 4 Compose screens
+│   ├── ffi/ArciumCore.kt             # UniFFI bindings stub
+│   └── data/{Contact,Identity,Message}Repository.kt
+└── .github/workflows/
+    ├── arcium-ci.yml                 # core-rust → ts-crypto → arcium-build → arcium-test
+    ├── android-ci.yml                # assembleDebug (JDK 17 + Android SDK)
+    ├── security-review.yml           # Claude Code review на диффе PR
+    └── monthly-backup.yml            # → GitHub Releases
 ```
 
 ---

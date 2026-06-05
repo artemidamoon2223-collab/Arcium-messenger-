@@ -309,11 +309,11 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 
 ### Тесты (текущее состояние, `cargo test --workspace`)
 ```
-core-crypto    24/24 ✅
+core-crypto    27/27 ✅  (24 base + 3 ratchet FIFO/zeroize)
 core-protocol   5/5  ✅
 core-storage   10/10 ✅
 core-transport  5/5  ✅  (1 ignored — Tor без сети)
 mobile-ffi      7/7  ✅
 ─────────────────────
-Итого: 51/51, 0 упавших
+Итого: 54/54, 0 упавших
 ```

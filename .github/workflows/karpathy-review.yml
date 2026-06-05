@@ -1,0 +1,47 @@
+name: Karpathy Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  karpathy-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Karpathy Analysis
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          direct_prompt: |
+            Get the PR diff:
+              git diff origin/${{ github.base_ref }}...HEAD
+
+            Review every changed file against Andrej Karpathy's 4 principles
+            (https://github.com/forrestchang/andrej-karpathy-skills).
+
+            Score each principle: ✅ Pass | ⚠️ Warning | ❌ Fail — one sentence of evidence.
+
+            1. **Think Before Coding** — every choice traces to a real requirement;
+               no speculation, no silent assumptions.
+            2. **Simplicity First** — minimum code that solves the stated problem;
+               no speculative features, unnecessary abstractions, or impossible-case
+               error handling.
+            3. **Surgical Changes** — only the requested lines were touched;
+               no "while I'm here" formatting, refactoring, or adjacent cleanup.
+            4. **Goal-Driven** — the change is verifiable:
+               tests added/updated, `cargo test` / `tsc --noEmit` stays green.
+
+            Finish with a 1-2 sentence overall verdict.
+
+            Post the result as a comment on this PR.

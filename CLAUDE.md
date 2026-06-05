@@ -95,7 +95,74 @@ v0.2 ✅ core-storage    SQLite + XChaCha20
 v0.3 ✅ core-transport  Tor (arti)
 v0.4 ✅ core-protocol   SessionManager
 v0.5 ✅ mobile-ffi      Identity + ArciumCore (UniFFI)
+v0.6 ✅ android         Kotlin + Compose skeleton (4 screens, UniFFI stub)
 v1.0 🚧 arcium-psi      Arcis circuit ✅ | Anchor handlers ✅ | deploy ⏳ (нужен toolchain)
 v1.1 🚧 post-quantum    Hybrid X25519+ML-KEM ✅
 TS tests 🚧             config ✅ | crypto 4/4 ✅ | setup ✅ | deploy/scenarios ⏳
+```
+
+---
+
+## GitHub — конфигурация и история PR
+
+### Репозиторий
+- `artemidamoon2223-collab/Arcium-messenger-`
+- Основная ветка: `main`
+- Соглашение по веткам: `claude/<task-slug>`
+- Мёрж: squash в main
+
+### Secrets (Settings → Secrets and variables → Actions)
+- `ANTHROPIC_API_KEY` — ключ с console.anthropic.com для Claude Security Review
+  - ⚠️ Ключ периодически протухает — если `security-review` падает с "API key not set", нужно обновить секрет и перезапустить job
+
+### GitHub Actions (`.github/workflows/`)
+| Файл | Триггер | Что делает |
+|------|---------|-----------|
+| `arcium-ci.yml` | push / PR / manual | 4 jobs: core-rust → ts-crypto → arcium-build → arcium-test |
+| `android-ci.yml` | push/PR `android/**` | JDK 17 + Android SDK, `./gradlew assembleDebug` |
+| `security-review.yml` | PR opened/sync | Claude Code security review на диффе PR |
+| `monthly-backup.yml` | schedule | Бэкап в GitHub Releases |
+
+### Версии CI (НЕ менять без проверки)
+Берутся из `arcium-hq/setup-arcium@v0.10.4` defaults (README подтверждён):
+- Rust: `stable --profile minimal`
+- Node.js: `20` (job ts-crypto) / `24.10.0` (внутри arcium action)
+- Solana CLI (agave/Anza): `3.1.10`
+- Anchor CLI: `1.0.2`
+- arcium CLI: `0.10.4`
+
+### devcontainer (`.devcontainer/`)
+Смёржен в PR #10. Покрывает: Rust, Node 20, Solana, Anchor, arcium, TS deps.
+**Не покрывает:** Android SDK/NDK (собирается локально через android-ci).
+Проверка: открыть Codespace → дождаться setup.sh → `cargo test --workspace`.
+
+### История PR (все смёржены в main)
+| PR | Ветка | Что сделано |
+|----|-------|------------|
+| #1 | snapshot | Восстановлены 11 крипто-тестов, исправлен Cargo.toml |
+| #2 | snapshot | v1.0 Arcium PSI: circuit + Anchor handlers + CI pipeline |
+| #3 | android-skeleton | v0.6 Android skeleton (Kotlin + Compose) |
+| #4 | sec-fixes | M-2 (save_identity ошибки), L-2 (zeroize FFI), L-1 (Drop ratchet) |
+| #5 | sec-fixes | clippy + cargo audit в CI (PR открыт, статус проверить) |
+| #6 | snapshot | Claude Security Review workflow + .gitignore |
+| #7 | i2-contact-hash | I-2: документация hash_contact (ширина 64 бит, privacy model, M-3 caveat) |
+| #8 | i1-solana-url | I-1: Solana RPC URL → BuildConfig (AGP 8+, buildConfig = true) |
+| #9 | l3-fifo | L-3: trim_skipped FIFO (IndexMap) + zeroize при eviction |
+| #10 | devcontainer | .devcontainer для GitHub Codespaces |
+
+### Открытые задачи (НЕ начаты)
+- **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
+- **PR #5** (clippy + cargo audit): статус не ясен — проверить перед следующей сессией.
+- **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox).
+- **drop_bounds warning** в `ratchet.rs:313`: безвредно, убрать при следующем касании файла.
+
+### Тесты (текущее состояние, `cargo test --workspace`)
+```
+core-crypto    24/24 ✅
+core-protocol   5/5  ✅
+core-storage   10/10 ✅
+core-transport  5/5  ✅  (1 ignored — Tor без сети)
+mobile-ffi      7/7  ✅
+─────────────────────
+Итого: 51/51, 0 упавших
 ```

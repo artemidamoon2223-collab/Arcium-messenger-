@@ -15,4 +15,4 @@ rand_core.workspace = true
 zeroize.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
-ml-kem = { version = "0.3", features = ["getrandom"] }
+ml-kem = { version = "0.3.2", features = ["getrandom"] }

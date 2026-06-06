@@ -1,0 +1,41 @@
+name: Graphify — Knowledge Graph
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build-graph:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install graphify
+        run: pip install graphifyy --quiet
+
+      - name: Build knowledge graph
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: graphify . --output graphify-out/
+
+      - name: Comment PR with graph summary
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          direct_prompt: |
+            Run: git diff origin/${{ github.base_ref }}...HEAD
+
+            Using graphify-out/graph.json, briefly explain (3-5 bullets)
+            what modules this PR touches, what depends on them,
+            and whether anything in the crypto layer (x3dh, ratchet,
+            rescue, hybrid, contact_hash) is affected.
+            Post as a PR comment.

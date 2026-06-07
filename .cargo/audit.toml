@@ -1,0 +1,16 @@
+# cargo-audit configuration for Arcium Messenger.
+#
+# Advisories below are in transitive dependencies we do not control (arti/Tor stack).
+
+[advisories]
+ignore = [
+    # ring 0.16.20 via arti-client → x509-signature → tor-rtcompat.
+    # Panic in AES with overflow-checked builds only; release builds safe.
+    # Fix requires arti to upgrade ring to >=0.17.12. (RUSTSEC-2025-0009)
+    "RUSTSEC-2025-0009",
+
+    # rsa 0.9.x via arti-client → tor-llcrypto. Marvin timing attack.
+    # No fixed version available upstream. Our message crypto never calls rsa
+    # (we use XChaCha20-Poly1305 + X25519). (RUSTSEC-2023-0071)
+    "RUSTSEC-2023-0071",
+]

@@ -19,6 +19,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Karpathy Analysis
+        id: claude_run
         continue-on-error: true
         uses: anthropics/claude-code-action@beta
         with:
@@ -46,3 +47,15 @@ jobs:
             Finish with a 1-2 sentence overall verdict.
 
             Post the result as a comment on this PR.
+
+      - name: Fail if review did not run
+        if: always()
+        run: |
+          # karpathy-review is a real gate — this step fails the job if the review
+          # did not run successfully (e.g. missing/expired key); a swallowed error can no longer
+          # show a false green.
+          if [ "${{ steps.claude_run.outcome }}" != "success" ] || [ "${CLAUDE_SUCCESS:-}" = "false" ]; then
+            echo "::error::Karpathy review did not run successfully (step outcome=${{ steps.claude_run.outcome }}, CLAUDE_SUCCESS=${CLAUDE_SUCCESS:-unset}). Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
+            exit 1
+          fi
+          echo "Karpathy review ran successfully."

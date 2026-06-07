@@ -1,0 +1,357 @@
+{
+  "/home/user/Arcium-messenger-/.claude/settings.json": {
+    "mtime": 1780823334.6742365,
+    "ast_hash": "bfee062c3962c14264fd704e975a6b38",
+    "semantic_hash": "bfee062c3962c14264fd704e975a6b38"
+  },
+  "/home/user/Arcium-messenger-/.devcontainer/devcontainer.json": {
+    "mtime": 1780786612.214184,
+    "ast_hash": "9085b42b89705fc7ce6f4ca51b13ce62",
+    "semantic_hash": "9085b42b89705fc7ce6f4ca51b13ce62"
+  },
+  "/home/user/Arcium-messenger-/.devcontainer/setup.sh": {
+    "mtime": 1780786612.216651,
+    "ast_hash": "1d39d1a622e63bc9f428807e914eb1f6",
+    "semantic_hash": "1d39d1a622e63bc9f428807e914eb1f6"
+  },
+  "/home/user/Arcium-messenger-/android/app/build.gradle.kts": {
+    "mtime": 1780786612.216651,
+    "ast_hash": "ae67e7ee2baca2d4210062902174e235",
+    "semantic_hash": "ae67e7ee2baca2d4210062902174e235"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ArciumApp.kt": {
+    "mtime": 1780623026.4816048,
+    "ast_hash": "b7280ca4ddf0145ce4e445d2b8f8f3fa",
+    "semantic_hash": "b7280ca4ddf0145ce4e445d2b8f8f3fa"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/MainActivity.kt": {
+    "mtime": 1780623026.4826467,
+    "ast_hash": "9509af3fa7bcfb703d32a92bf8cb8bd2",
+    "semantic_hash": "9509af3fa7bcfb703d32a92bf8cb8bd2"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/data/ContactRepository.kt": {
+    "mtime": 1780623026.4826467,
+    "ast_hash": "48058e0c2f5d3716b12799a783624001",
+    "semantic_hash": "48058e0c2f5d3716b12799a783624001"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/data/IdentityRepository.kt": {
+    "mtime": 1780623026.4833393,
+    "ast_hash": "62823fed9063f716476155c46a18dbbe",
+    "semantic_hash": "62823fed9063f716476155c46a18dbbe"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/data/MessageRepository.kt": {
+    "mtime": 1780623026.4833393,
+    "ast_hash": "9c8da15074ea7c5c5fce995389a718e5",
+    "semantic_hash": "9c8da15074ea7c5c5fce995389a718e5"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt": {
+    "mtime": 1780623026.4833393,
+    "ast_hash": "b4be0bc7a0c9a0e80a9fd8d7c1580b34",
+    "semantic_hash": "b4be0bc7a0c9a0e80a9fd8d7c1580b34"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/network/BluetoothMeshManager.kt": {
+    "mtime": 1780623026.4833393,
+    "ast_hash": "7094ebdc89e273c1bc74fdb166c17de5",
+    "semantic_hash": "7094ebdc89e273c1bc74fdb166c17de5"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/network/SolanaClient.kt": {
+    "mtime": 1780786612.216651,
+    "ast_hash": "5392f290ba7838458917f7ce35ee4fc4",
+    "semantic_hash": "5392f290ba7838458917f7ce35ee4fc4"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/chat/ChatScreen.kt": {
+    "mtime": 1780623026.4854608,
+    "ast_hash": "9ec99afdecde160f0b83e3fa6a1605d0",
+    "semantic_hash": "9ec99afdecde160f0b83e3fa6a1605d0"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/chat/ChatViewModel.kt": {
+    "mtime": 1780623026.4860911,
+    "ast_hash": "4f4ee8626d3c45169bbceec8b1a81c17",
+    "semantic_hash": "4f4ee8626d3c45169bbceec8b1a81c17"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/contacts/ContactsScreen.kt": {
+    "mtime": 1780623026.4860911,
+    "ast_hash": "8d566613bf58809652b708dfffb7dc8a",
+    "semantic_hash": "8d566613bf58809652b708dfffb7dc8a"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/contacts/ContactsViewModel.kt": {
+    "mtime": 1780623026.4869897,
+    "ast_hash": "ca0a164878569954517d44a29ec16a38",
+    "semantic_hash": "ca0a164878569954517d44a29ec16a38"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/navigation/AppNavigation.kt": {
+    "mtime": 1780623026.4869897,
+    "ast_hash": "3e6c3597fa8af8ac135da50b16a291a7",
+    "semantic_hash": "3e6c3597fa8af8ac135da50b16a291a7"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/onboarding/OnboardingScreen.kt": {
+    "mtime": 1780623026.4869897,
+    "ast_hash": "754e117a1c0b8cd267cea0b6e88c325c",
+    "semantic_hash": "754e117a1c0b8cd267cea0b6e88c325c"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/onboarding/OnboardingViewModel.kt": {
+    "mtime": 1780623026.48813,
+    "ast_hash": "6aa8db4c09602a84612560d8b3243db7",
+    "semantic_hash": "6aa8db4c09602a84612560d8b3243db7"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/settings/SettingsScreen.kt": {
+    "mtime": 1780623026.48813,
+    "ast_hash": "04c21583aaf9a4f48165b493fac61dc6",
+    "semantic_hash": "04c21583aaf9a4f48165b493fac61dc6"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/settings/SettingsViewModel.kt": {
+    "mtime": 1780623026.488621,
+    "ast_hash": "9dbf7fd5d5812b8dd1ac498adfec8ffa",
+    "semantic_hash": "9dbf7fd5d5812b8dd1ac498adfec8ffa"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/theme/Color.kt": {
+    "mtime": 1780623026.488621,
+    "ast_hash": "51d35341c63c27bc26209d5c8dd2d2f1",
+    "semantic_hash": "51d35341c63c27bc26209d5c8dd2d2f1"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/theme/Theme.kt": {
+    "mtime": 1780623026.4893963,
+    "ast_hash": "0a71c6b759feabec86e24de74e2aa0fe",
+    "semantic_hash": "0a71c6b759feabec86e24de74e2aa0fe"
+  },
+  "/home/user/Arcium-messenger-/android/app/src/main/kotlin/com/arcium/messenger/ui/theme/Type.kt": {
+    "mtime": 1780623026.4893963,
+    "ast_hash": "e0a1d32813ce5da1f5b1c3575f883218",
+    "semantic_hash": "e0a1d32813ce5da1f5b1c3575f883218"
+  },
+  "/home/user/Arcium-messenger-/android/build.gradle.kts": {
+    "mtime": 1780623026.4900215,
+    "ast_hash": "0d7586f63bb33a6584f40641048a1572",
+    "semantic_hash": "0d7586f63bb33a6584f40641048a1572"
+  },
+  "/home/user/Arcium-messenger-/android/gradlew": {
+    "mtime": 1780623026.4933555,
+    "ast_hash": "73de0c5524ccdfe4ef70676009d65131",
+    "semantic_hash": "73de0c5524ccdfe4ef70676009d65131"
+  },
+  "/home/user/Arcium-messenger-/android/settings.gradle.kts": {
+    "mtime": 1780623026.4933555,
+    "ast_hash": "2066af4301f413a37e53330e90a975ac",
+    "semantic_hash": "2066af4301f413a37e53330e90a975ac"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/encrypted-ixs/src/lib.rs": {
+    "mtime": 1780623026.4956212,
+    "ast_hash": "710441c60f2f5191269881388fe1037d",
+    "semantic_hash": "710441c60f2f5191269881388fe1037d"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/programs/arcium-psi/src/lib.rs": {
+    "mtime": 1780623026.5029209,
+    "ast_hash": "31f56160d190da5534d3356f4aa18edf",
+    "semantic_hash": "31f56160d190da5534d3356f4aa18edf"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/tests/package.json": {
+    "mtime": 1780623026.509868,
+    "ast_hash": "4df9a785d9a6ca05dfa140c702431407",
+    "semantic_hash": "4df9a785d9a6ca05dfa140c702431407"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/tests/src/client.ts": {
+    "mtime": 1780623026.509868,
+    "ast_hash": "44d96b683593ee3199d24f3fe6529dde",
+    "semantic_hash": "44d96b683593ee3199d24f3fe6529dde"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/tests/src/crypto.test.ts": {
+    "mtime": 1780623026.5115905,
+    "ast_hash": "70d9fc214d2945f49a135795f4756e81",
+    "semantic_hash": "70d9fc214d2945f49a135795f4756e81"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/tests/src/program.ts": {
+    "mtime": 1780623026.5115905,
+    "ast_hash": "fc7076051d7200bd01669b992710d3f3",
+    "semantic_hash": "fc7076051d7200bd01669b992710d3f3"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/tests/src/scenarios.test.ts": {
+    "mtime": 1780823334.677776,
+    "ast_hash": "44ad0d5c3379a4e8a8b69e2ccda6808f",
+    "semantic_hash": "44ad0d5c3379a4e8a8b69e2ccda6808f"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/tests/src/setup.test.ts": {
+    "mtime": 1780623026.5115905,
+    "ast_hash": "23cef774d8cf235c24916d10b03414be",
+    "semantic_hash": "23cef774d8cf235c24916d10b03414be"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/tests/src/setup.ts": {
+    "mtime": 1780623026.5115905,
+    "ast_hash": "51abc769e5a85edc83e3095c5829fa50",
+    "semantic_hash": "51abc769e5a85edc83e3095c5829fa50"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/tests/src/utils.ts": {
+    "mtime": 1780623026.5115905,
+    "ast_hash": "d5f20763b0108ca93519ea74a36d90b8",
+    "semantic_hash": "d5f20763b0108ca93519ea74a36d90b8"
+  },
+  "/home/user/Arcium-messenger-/arcium-psi/tests/tsconfig.json": {
+    "mtime": 1780623026.5115905,
+    "ast_hash": "f7cca6bef1112e3d43f5727fd8c683d5",
+    "semantic_hash": "f7cca6bef1112e3d43f5727fd8c683d5"
+  },
+  "/home/user/Arcium-messenger-/crates/core-crypto/src/contact_hash.rs": {
+    "mtime": 1780786612.216651,
+    "ast_hash": "4ce6eca19cf34d1f1b7585541a9b8289",
+    "semantic_hash": "4ce6eca19cf34d1f1b7585541a9b8289"
+  },
+  "/home/user/Arcium-messenger-/crates/core-crypto/src/hybrid.rs": {
+    "mtime": 1780623026.5143561,
+    "ast_hash": "a255f5730479c0597b7aa1f074dba516",
+    "semantic_hash": "a255f5730479c0597b7aa1f074dba516"
+  },
+  "/home/user/Arcium-messenger-/crates/core-crypto/src/lib.rs": {
+    "mtime": 1780623026.5143561,
+    "ast_hash": "b517bb865199eede8abe41d11dabe41e",
+    "semantic_hash": "b517bb865199eede8abe41d11dabe41e"
+  },
+  "/home/user/Arcium-messenger-/crates/core-crypto/src/ratchet.rs": {
+    "mtime": 1780823334.677776,
+    "ast_hash": "fd8626278d51409a63ca52ff2e1a8b57",
+    "semantic_hash": "fd8626278d51409a63ca52ff2e1a8b57"
+  },
+  "/home/user/Arcium-messenger-/crates/core-crypto/src/rescue.rs": {
+    "mtime": 1780623026.5143561,
+    "ast_hash": "345949b5a09d69c506cbed37373ecc04",
+    "semantic_hash": "345949b5a09d69c506cbed37373ecc04"
+  },
+  "/home/user/Arcium-messenger-/crates/core-crypto/src/x3dh.rs": {
+    "mtime": 1780623026.5143561,
+    "ast_hash": "8e3e63d2bf57f61e5819a697463ed7ac",
+    "semantic_hash": "8e3e63d2bf57f61e5819a697463ed7ac"
+  },
+  "/home/user/Arcium-messenger-/crates/core-protocol/src/lib.rs": {
+    "mtime": 1780823334.677776,
+    "ast_hash": "27d0a179172508de6d5c637b126ee4da",
+    "semantic_hash": "27d0a179172508de6d5c637b126ee4da"
+  },
+  "/home/user/Arcium-messenger-/crates/core-storage/src/lib.rs": {
+    "mtime": 1780623026.5171115,
+    "ast_hash": "32db1d9f5bfe702546084bb1b62505b2",
+    "semantic_hash": "32db1d9f5bfe702546084bb1b62505b2"
+  },
+  "/home/user/Arcium-messenger-/crates/core-transport/src/lib.rs": {
+    "mtime": 1780623026.5184958,
+    "ast_hash": "d309481d6c2204c6469721fd45ef6f59",
+    "semantic_hash": "d309481d6c2204c6469721fd45ef6f59"
+  },
+  "/home/user/Arcium-messenger-/crates/mobile-ffi/build.rs": {
+    "mtime": 1780623026.5194638,
+    "ast_hash": "86b6cfa06d180eb395478a753b417dd4",
+    "semantic_hash": "86b6cfa06d180eb395478a753b417dd4"
+  },
+  "/home/user/Arcium-messenger-/crates/mobile-ffi/src/lib.rs": {
+    "mtime": 1780623026.5194638,
+    "ast_hash": "5a8dfdd1e9ac6a5e3eb84d76bf32c42a",
+    "semantic_hash": "5a8dfdd1e9ac6a5e3eb84d76bf32c42a"
+  },
+  "/home/user/Arcium-messenger-/.claude/CLAUDE.md": {
+    "mtime": 1780823334.669776,
+    "ast_hash": "db73b0edd7ffbc61ceac177130730865",
+    "semantic_hash": "db73b0edd7ffbc61ceac177130730865"
+  },
+  "/home/user/Arcium-messenger-/.claude/skills/graphify/SKILL.md": {
+    "mtime": 1780823334.6755335,
+    "ast_hash": "1acfc5e3ff91c92373909c5c11f55769",
+    "semantic_hash": "1acfc5e3ff91c92373909c5c11f55769"
+  },
+  "/home/user/Arcium-messenger-/.claude/skills/graphify/references/add-watch.md": {
+    "mtime": 1780823334.6755335,
+    "ast_hash": "0df0589623217ca38a12bdcabfb42f4c",
+    "semantic_hash": "0df0589623217ca38a12bdcabfb42f4c"
+  },
+  "/home/user/Arcium-messenger-/.claude/skills/graphify/references/exports.md": {
+    "mtime": 1780823334.6769912,
+    "ast_hash": "7fb1a81aca17a462db70684a324fcfb0",
+    "semantic_hash": "7fb1a81aca17a462db70684a324fcfb0"
+  },
+  "/home/user/Arcium-messenger-/.claude/skills/graphify/references/extraction-spec.md": {
+    "mtime": 1780823334.6769912,
+    "ast_hash": "24808b03abfeaf5f6435bb69c0125b2c",
+    "semantic_hash": "24808b03abfeaf5f6435bb69c0125b2c"
+  },
+  "/home/user/Arcium-messenger-/.claude/skills/graphify/references/github-and-merge.md": {
+    "mtime": 1780823334.6769912,
+    "ast_hash": "cde13df085e4c492aeb7ba298a996d0d",
+    "semantic_hash": "cde13df085e4c492aeb7ba298a996d0d"
+  },
+  "/home/user/Arcium-messenger-/.claude/skills/graphify/references/hooks.md": {
+    "mtime": 1780823334.6769912,
+    "ast_hash": "3f545db6ce646650bb9de588f5512a27",
+    "semantic_hash": "3f545db6ce646650bb9de588f5512a27"
+  },
+  "/home/user/Arcium-messenger-/.claude/skills/graphify/references/query.md": {
+    "mtime": 1780823334.6769912,
+    "ast_hash": "8b40ed8c9e9060fc215219a8fc964091",
+    "semantic_hash": "8b40ed8c9e9060fc215219a8fc964091"
+  },
+  "/home/user/Arcium-messenger-/.claude/skills/graphify/references/transcribe.md": {
+    "mtime": 1780823334.6769912,
+    "ast_hash": "70f6aa30d6211f3a2c7e9fc45479f50c",
+    "semantic_hash": "70f6aa30d6211f3a2c7e9fc45479f50c"
+  },
+  "/home/user/Arcium-messenger-/.claude/skills/graphify/references/update.md": {
+    "mtime": 1780823334.6769912,
+    "ast_hash": "735932eaa4f0c8fef9566c538ae3e5f8",
+    "semantic_hash": "735932eaa4f0c8fef9566c538ae3e5f8"
+  },
+  "/home/user/Arcium-messenger-/.github/workflows/android-ci.yml": {
+    "mtime": 1780623026.4760306,
+    "ast_hash": "cf7dcaf8b390f4f8c5f9a7890cd6a1f7",
+    "semantic_hash": "cf7dcaf8b390f4f8c5f9a7890cd6a1f7"
+  },
+  "/home/user/Arcium-messenger-/.github/workflows/arcium-ci.yml": {
+    "mtime": 1780823334.6769912,
+    "ast_hash": "de01be3c57640dfffa427f4ce9f1017e",
+    "semantic_hash": "de01be3c57640dfffa427f4ce9f1017e"
+  },
+  "/home/user/Arcium-messenger-/.github/workflows/graphify.yml": {
+    "mtime": 1780823334.6769912,
+    "ast_hash": "dab3c8e38f8ff899613b51d8c7fe67b3",
+    "semantic_hash": "dab3c8e38f8ff899613b51d8c7fe67b3"
+  },
+  "/home/user/Arcium-messenger-/.github/workflows/karpathy-review.yml": {
+    "mtime": 1780835082.5404882,
+    "ast_hash": "bed6524b6f65c6d6f344cb03006dd57b",
+    "semantic_hash": "bed6524b6f65c6d6f344cb03006dd57b"
+  },
+  "/home/user/Arcium-messenger-/.github/workflows/monthly-backup.yml": {
+    "mtime": 1780786612.216651,
+    "ast_hash": "813fe2c5887f1ffcc63d540f7a6e6d20",
+    "semantic_hash": "813fe2c5887f1ffcc63d540f7a6e6d20"
+  },
+  "/home/user/Arcium-messenger-/.github/workflows/security-review.yml": {
+    "mtime": 1780858413.9845767,
+    "ast_hash": "f4ec433f39c5924baa5d3cabc1159233",
+    "semantic_hash": "f4ec433f39c5924baa5d3cabc1159233"
+  },
+  "/home/user/Arcium-messenger-/.github/workflows/understand-anything.yml": {
+    "mtime": 1780823334.6769912,
+    "ast_hash": "011193cba4ce260f65d83f90475dcddd",
+    "semantic_hash": "011193cba4ce260f65d83f90475dcddd"
+  },
+  "/home/user/Arcium-messenger-/CLAUDE.md": {
+    "mtime": 1780858244.6485806,
+    "ast_hash": "c17d697d63fd6e1abc304f7f61d877cd",
+    "semantic_hash": "c17d697d63fd6e1abc304f7f61d877cd"
+  },
+  "/home/user/Arcium-messenger-/PROJECT_CONTEXT.md": {
+    "mtime": 1780623026.4767482,
+    "ast_hash": "fa4a7359b3e8dd8d34b781f8ffd97724",
+    "semantic_hash": "fa4a7359b3e8dd8d34b781f8ffd97724"
+  },
+  "/home/user/Arcium-messenger-/README.md": {
+    "mtime": 1780623026.4767482,
+    "ast_hash": "7fa5f14bac6fbb022b61a8ac530a29f9",
+    "semantic_hash": "7fa5f14bac6fbb022b61a8ac530a29f9"
+  },
+  "/home/user/Arcium-messenger-/android/README.md": {
+    "mtime": 1780623026.4789996,
+    "ast_hash": "1b4dbf8c24fcbe87130aeea8382ac75d",
+    "semantic_hash": "1b4dbf8c24fcbe87130aeea8382ac75d"
+  },
+  "/home/user/Arcium-messenger-/docs/HOME-DEPLOY.md": {
+    "mtime": 1780823334.677776,
+    "ast_hash": "cc72cd6c3eeae67f308ec35330a0326c",
+    "semantic_hash": "cc72cd6c3eeae67f308ec35330a0326c"
+  }
+}

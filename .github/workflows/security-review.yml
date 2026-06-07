@@ -21,9 +21,12 @@ jobs:
         id: security_run
         # security-review must stay a BLOCKING gate. If it fails due to an expired
         # ANTHROPIC_API_KEY, renew the key — do NOT re-add continue-on-error.
+        # run-every-commit: true — bypasses the action's cache-based skip (marker.json).
+        # Without it, runs 2+ on the same PR are silently skipped (exits 0, no results file).
         uses: anthropics/claude-code-security-review@main
         with:
           claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          run-every-commit: 'true'
 
       - name: Fail if review did not run
         if: always()
@@ -33,20 +36,15 @@ jobs:
           #   1. Action exited non-0 (step outcome != success).
           #   2. Action exited 0 but wrote no results file OR review_completed != true
           #      (invalid/expired API key can produce a false green without this check).
-          # Results file path is the action's declared output: claudecode/claudecode-results.json
           if [ "${{ steps.security_run.outcome }}" != "success" ]; then
             echo "::error::Security review did not run successfully (outcome=${{ steps.security_run.outcome }}). Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
             exit 1
           fi
-          echo "=== DEBUG workspace ==="
-          ls -la "${{ github.workspace }}/" | grep -E "claudecode|json|log" || echo "(no matching files)"
           RESULTS="${{ github.workspace }}/claudecode-results.json"
           if [ ! -f "$RESULTS" ]; then
             echo "::error::Results file missing — review did not actually run. Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
             exit 1
           fi
-          echo "=== DEBUG results file ==="
-          cat "$RESULTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print('review_completed:', d.get('analysis_summary',{}).get('review_completed'))" 2>/dev/null || cat "$RESULTS" | head -5
           COMPLETED=$(jq -r '.analysis_summary.review_completed // false' "$RESULTS")
           if [ "$COMPLETED" != "true" ]; then
             echo "::error::Security review completed=false — review did not execute. Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."

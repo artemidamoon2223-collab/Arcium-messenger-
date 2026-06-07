@@ -312,7 +312,7 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 | #2 | snapshot | v1.0 Arcium PSI: circuit + Anchor handlers + CI pipeline |
 | #3 | android-skeleton | v0.6 Android skeleton (Kotlin + Compose) |
 | #4 | sec-fixes | M-2 (save_identity ошибки), L-2 (zeroize FFI), L-1 (Drop ratchet) |
-| #5 | sec-fixes | clippy + cargo audit в CI (PR открыт, статус проверить) |
+| #5 | sec-fixes | clippy + cargo audit в CI ✅ смёржен |
 | #6 | snapshot | Claude Security Review workflow + .gitignore |
 | #7 | i2-contact-hash | I-2: документация hash_contact (ширина 64 бит, privacy model, M-3 caveat) |
 | #8 | i1-solana-url | I-1: Solana RPC URL → BuildConfig (AGP 8+, buildConfig = true) |
@@ -321,7 +321,6 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 
 ### Открытые задачи (НЕ начаты)
 - **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
-- **PR #5** (clippy + cargo audit): статус не ясен — проверить перед следующей сессией.
 - **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox).
 - **drop_bounds warning** в `ratchet.rs:313`: безвредно, убрать при следующем касании файла.
 

@@ -331,16 +331,16 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 | #19 | audit-annotations | `.cargo/audit.toml` — полные REVISIT аннотации для RUSTSEC-2025-0009 и RUSTSEC-2023-0071 |
 | #21 | security-gate-fix | Восстановлен security-review как BLOCKING gate (убран continue-on-error) |
 | #22 | karpathy-gate | karpathy-review — реальный blocking gate (id: claude_run + Fail step) |
+| #25 | security-gate-step | security-review gate step: fail-if-not-run + run-every-commit=true — закрыт false-green (silent skip по cache marker) |
 
 ### Открытые задачи
 - **PR #5** (clippy + cargo audit): **ещё открыт** (base устарел, нужен rebase на main перед merge).
-- **PR #15** (graphify skill): открыт, ожидает review — трогает только `.claude/` и `.github/workflows/graphify.yml`.
-- **ANTHROPIC_API_KEY**: нужен валидный ключ с биллингом на console.anthropic.com — оба gate (karpathy-review + security-review) блокируют PR без него.
-- **security-review ложный зелёный**: `claude-code-security-review@main` не падает при невалидном ключе (нет gate step как в karpathy-review). Нужен отдельный PR с gate step для security-review.
+- **ANTHROPIC_API_KEY**: нужен валидный ключ с биллингом на console.anthropic.com — оба gate блокируют PR без него. Проверить: `curl -s https://api.anthropic.com/v1/models -H "x-api-key: KEY" -H "anthropic-version: 2023-06-01"`.
 - **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
 - **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox). См. `docs/HOME-DEPLOY.md`.
 - **drop_bounds warning** в `ratchet.rs:313`: безвредно, убрать при следующем касании файла.
-- **Stale branches** (можно удалить через GitHub UI → Settings → Branches): `claude/prune-automation`, `claude/test-count-fix`, `claude/understand-anything`, `claude/claude-md-docs-ybVU7`, `claude/karpathy-gate`.
+- **Branch protection** (owner-only): Settings → Branches → main → Require status checks → добавить `karpathy-review` + `security-review`. Без этого мерж возможен даже при красных гейтах.
+- **Stale branches** (можно удалить через GitHub UI → Settings → Branches): `claude/prune-automation`, `claude/test-count-fix`, `claude/understand-anything`, `claude/claude-md-docs-ybVU7`, `claude/karpathy-gate`, `claude/security-gate-step`, `claude/claude-md-pr-history`, `claude/test-model-fix`, `claude/test-api-key`.
 - **RUSTSEC-2025-0009 (ring 0.16.x)**: REVISIT AT SECURITY AUDIT — отслеживай выход arti-client, использующего ring ≥ 0.17.12. Как только появится — обновить arti-client и убрать ignore из `.cargo/audit.toml`.
 - **RUSTSEC-2023-0071 (rsa 0.9.x)**: REVISIT AT SECURITY AUDIT — нет исправленной версии upstream. Следи за crates.io/crates/rsa.
 

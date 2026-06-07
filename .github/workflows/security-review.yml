@@ -18,8 +18,34 @@ jobs:
           fetch-depth: 0
 
       - name: Run Claude Security Review
+        id: security_run
         # security-review must stay a BLOCKING gate. If it fails due to an expired
         # ANTHROPIC_API_KEY, renew the key — do NOT re-add continue-on-error.
         uses: anthropics/claude-code-security-review@main
         with:
           claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Fail if review did not run
+        if: always()
+        run: |
+          # Gate: fail hard when the review did not actually execute.
+          # Catches two silent-failure modes:
+          #   1. Action exited non-0 (step outcome != success).
+          #   2. Action exited 0 but wrote no results file OR review_completed != true
+          #      (invalid/expired API key can produce a false green without this check).
+          # Results file path is the action's declared output: claudecode/claudecode-results.json
+          if [ "${{ steps.security_run.outcome }}" != "success" ]; then
+            echo "::error::Security review did not run successfully (outcome=${{ steps.security_run.outcome }}). Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
+            exit 1
+          fi
+          RESULTS="${{ github.workspace }}/claudecode/claudecode-results.json"
+          if [ ! -f "$RESULTS" ]; then
+            echo "::error::Results file missing — review did not actually run. Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
+            exit 1
+          fi
+          COMPLETED=$(jq -r '.analysis_summary.review_completed // false' "$RESULTS")
+          if [ "$COMPLETED" != "true" ]; then
+            echo "::error::Security review completed=false — review did not execute. Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
+            exit 1
+          fi
+          echo "Security review ran successfully (review_completed=true)."

@@ -38,7 +38,7 @@ jobs:
             echo "::error::Security review did not run successfully (outcome=${{ steps.security_run.outcome }}). Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
             exit 1
           fi
-          RESULTS="${{ github.workspace }}/claudecode/claudecode-results.json"
+          RESULTS="${{ github.workspace }}/claudecode-results.json"
           if [ ! -f "$RESULTS" ]; then
             echo "::error::Results file missing — review did not actually run. Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
             exit 1

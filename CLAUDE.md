@@ -333,6 +333,8 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 - **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox). См. `docs/HOME-DEPLOY.md`.
 - **drop_bounds warning** в `ratchet.rs:313`: безвредно, убрать при следующем касании файла.
 - **Stale branches** (можно удалить после merge): `claude/prune-automation`, `claude/test-count-fix`, `claude/understand-anything`, `claude/claude-md-docs-ybVU7`.
+- **RUSTSEC-2025-0009 (ring 0.16.x)**: REVISIT AT SECURITY AUDIT — отслеживай выход arti-client, использующего ring ≥ 0.17.12. Как только появится — обновить arti-client и убрать ignore из `.cargo/audit.toml`.
+- **RUSTSEC-2023-0071 (rsa 0.9.x)**: REVISIT AT SECURITY AUDIT — нет исправленной версии upstream. Следи за crates.io/crates/rsa.
 
 ### Тесты (текущее состояние, `cargo test --workspace`)
 ```

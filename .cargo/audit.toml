@@ -1,16 +1,25 @@
 # cargo-audit configuration for Arcium Messenger.
 #
 # Advisories below are in transitive dependencies we do not control (arti/Tor stack).
+# All ignores were reviewed on 2026-06-07. REVISIT AT NEXT SECURITY AUDIT.
 
 [advisories]
 ignore = [
-    # ring 0.16.20 via arti-client → x509-signature → tor-rtcompat.
-    # Panic in AES with overflow-checked builds only; release builds safe.
-    # Fix requires arti to upgrade ring to >=0.17.12. (RUSTSEC-2025-0009)
+    # RUSTSEC-2025-0009 — ring 0.16.x, AES panic under overflow-checked builds.
+    # Provenance: ring 0.16.20 via arti-client → x509-signature → tor-rtcompat.
+    # Impact: panic only when overflow-checks = true; our release profile has no such flag
+    #   (Cargo.toml [profile.release]: opt-level=3, lto=true — no overflow-checks).
+    # Fix: blocked on arti upgrading to ring >= 0.17.12. REVISIT AT SECURITY AUDIT.
+    # Tracked: https://rustsec.org/advisories/RUSTSEC-2025-0009
+    # Added: 2026-06-07
     "RUSTSEC-2025-0009",
 
-    # rsa 0.9.x via arti-client → tor-llcrypto. Marvin timing attack.
-    # No fixed version available upstream. Our message crypto never calls rsa
-    # (we use XChaCha20-Poly1305 + X25519). (RUSTSEC-2023-0071)
+    # RUSTSEC-2023-0071 — rsa 0.9.x, Marvin timing side-channel attack.
+    # Provenance: rsa 0.9.10 via arti-client → tor-llcrypto (Tor stack only).
+    # Impact: none — our message crypto uses XChaCha20-Poly1305 + X25519; rsa is
+    #   never called on the message path. Only reachable through Tor's TLS layer.
+    # Fix: no patched version available upstream as of 2026-06-07. REVISIT AT SECURITY AUDIT.
+    # Tracked: https://rustsec.org/advisories/RUSTSEC-2023-0071
+    # Added: 2026-06-07
     "RUSTSEC-2023-0071",
 ]

@@ -39,11 +39,15 @@ jobs:
             echo "::error::Security review did not run successfully (outcome=${{ steps.security_run.outcome }}). Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
             exit 1
           fi
+          echo "=== DEBUG workspace ==="
+          ls -la "${{ github.workspace }}/" | grep -E "claudecode|json|log" || echo "(no matching files)"
           RESULTS="${{ github.workspace }}/claudecode-results.json"
           if [ ! -f "$RESULTS" ]; then
             echo "::error::Results file missing — review did not actually run. Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
             exit 1
           fi
+          echo "=== DEBUG results file ==="
+          cat "$RESULTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print('review_completed:', d.get('analysis_summary',{}).get('review_completed'))" 2>/dev/null || cat "$RESULTS" | head -5
           COMPLETED=$(jq -r '.analysis_summary.review_completed // false' "$RESULTS")
           if [ "$COMPLETED" != "true" ]; then
             echo "::error::Security review completed=false — review did not execute. Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."

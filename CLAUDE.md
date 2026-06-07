@@ -338,7 +338,6 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 - **ANTHROPIC_API_KEY**: нужен валидный ключ с биллингом на console.anthropic.com — оба gate блокируют PR без него. Проверить: `curl -s https://api.anthropic.com/v1/models -H "x-api-key: KEY" -H "anthropic-version: 2023-06-01"`.
 - **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
 - **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox). См. `docs/HOME-DEPLOY.md`.
-- **drop_bounds warning** в `ratchet.rs:313`: безвредно, убрать при следующем касании файла.
 - **Branch protection** (owner-only): Settings → Branches → main → Require status checks → добавить `karpathy-review` + `security-review`. Без этого мерж возможен даже при красных гейтах.
 - **Stale branches** (можно удалить через GitHub UI → Settings → Branches): `claude/prune-automation`, `claude/test-count-fix`, `claude/understand-anything`, `claude/claude-md-docs-ybVU7`, `claude/karpathy-gate`, `claude/security-gate-step`, `claude/claude-md-pr-history`, `claude/test-model-fix`, `claude/test-api-key`.
 - **RUSTSEC-2025-0009 (ring 0.16.x)**: REVISIT AT SECURITY AUDIT — отслеживай выход arti-client, использующего ring ≥ 0.17.12. Как только появится — обновить arti-client и убрать ignore из `.cargo/audit.toml`.

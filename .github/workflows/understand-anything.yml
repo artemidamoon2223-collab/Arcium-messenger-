@@ -1,8 +1,7 @@
 name: Understand-Anything — Knowledge Graph
 
 on:
-  pull_request:
-    types: [opened, synchronize]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -20,12 +19,14 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Understand-Anything
-        run: curl -fsSL https://raw.githubusercontent.com/Lum1104/Understand-Anything/main/install.sh | bash
+        run: curl -fsSL https://raw.githubusercontent.com/Lum1104/Understand-Anything/main/install.sh | bash -s -- codex
 
       - name: Run codebase analysis
+        continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          export PATH="$HOME/.understand-anything/bin:$HOME/.understand-anything/repo/bin:$PATH"
           understand-anything analyze \
             --output .understand-anything/knowledge-graph.json \
             --format json \

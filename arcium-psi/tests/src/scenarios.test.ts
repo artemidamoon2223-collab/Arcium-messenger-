@@ -16,6 +16,7 @@ import {
 
 // ── Known constants ───────────────────────────────────────────────────────────
 const CONTACT_HASH_TEST_VECTOR = 5364562789390625858n;
+// TODO at devnet deploy: verify this matches sha256(psi_intersect.arcis.ir) from fresh `arcis build`
 const CIRCUIT_HASH = '1e1b485ae0a279683f2b39f7a3dd01570e8968b250234b6a7452e0aef9d5a767';
 const BATCH_SIZE = 10;
 const SERIALIZED_SIZE = 368;

@@ -194,9 +194,11 @@ impl DoubleRatchet {
     }
 
     /// Standard Signal DH ratchet step on receive:
+    ///
     ///   1. Derive new RECEIVING chain from DH(our current DHs, new their DHr).
     ///   2. Generate new local DH keypair.
     ///   3. Derive new SENDING chain from DH(new DHs, new their DHr).
+    ///
     /// This guarantees sender's CKs equals receiver's CKr at the matching point.
     fn dh_ratchet_step(&mut self, new_dhr: PublicKey) -> Result<(), RatchetError> {
         self.pn = self.ns;

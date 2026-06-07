@@ -334,7 +334,7 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 | #25 | security-gate-step | security-review gate step: fail-if-not-run + run-every-commit=true — закрыт false-green (silent skip по cache marker) |
 
 ### Открытые задачи
-- **PR #5** (clippy + cargo audit): **ещё открыт** (base устарел, нужен rebase на main перед merge).
+- **PR #5** (clippy + cargo audit): ✅ смёржен 2026-06-07 владельцем.
 - **ANTHROPIC_API_KEY**: нужен валидный ключ с биллингом на console.anthropic.com — оба gate блокируют PR без него. Проверить: `curl -s https://api.anthropic.com/v1/models -H "x-api-key: KEY" -H "anthropic-version: 2023-06-01"`.
 - **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
 - **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox). См. `docs/HOME-DEPLOY.md`.

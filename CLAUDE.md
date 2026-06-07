@@ -1,6 +1,7 @@
 # CLAUDE.md — Arcium Messenger
 
 Этот файл читается автоматически при каждой сессии. Следуй ему всегда.
+<!-- karpathy-model-fix test -->
 
 ---
 

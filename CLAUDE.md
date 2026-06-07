@@ -282,9 +282,11 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 - Мёрж: squash в main
 
 ### Secrets (Settings → Secrets and variables → Actions)
-- `ANTHROPIC_API_KEY` — ключ с console.anthropic.com для Claude Security Review
-  - ⚠️ Ключ периодически протухает — если `security-review` падает с "API key not set", нужно обновить секрет и перезапустить job
-  - ❌ НИКОГДА не добавляй `continue-on-error: true` в security-review шаг — это превращает BLOCKING gate в advisory. Вместо этого обнови ключ.
+- `ANTHROPIC_API_KEY` — ключ с console.anthropic.com для Claude Security Review **и karpathy-review**
+  - ⚠️ Ключ периодически протухает — если `karpathy-review` или `security-review` падает, нужно обновить секрет и перезапустить job
+  - ❌ НИКОГДА не добавляй `continue-on-error: true` в шаги AI-review — это превращает BLOCKING gate в advisory. Вместо этого обнови ключ.
+  - ⚠️ Требует биллинга на **console.anthropic.com** (отдельно от claude.ai подписки). Без карты ключи генерируются, но API их отклоняет.
+  - Проверь ключ перед вставкой: `curl -s https://api.anthropic.com/v1/models -H "x-api-key: KEY" -H "anthropic-version: 2023-06-01"` — должен вернуть `{"data":[`
 
 ### GitHub Actions (`.github/workflows/`)
 | Файл | Триггер | Что делает |
@@ -326,14 +328,19 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 | #12 | understand-anything | Understand-Anything knowledge graph CI workflow |
 | #13 | test-count-fix | Fix test count 51→54 in CLAUDE.md |
 | #14 | prune-automation | Удалены gdrive-sync, plugins.json; understand-anything → PR-only |
+| #19 | audit-annotations | `.cargo/audit.toml` — полные REVISIT аннотации для RUSTSEC-2025-0009 и RUSTSEC-2023-0071 |
+| #21 | security-gate-fix | Восстановлен security-review как BLOCKING gate (убран continue-on-error) |
+| #22 | karpathy-gate | karpathy-review — реальный blocking gate (id: claude_run + Fail step) |
 
 ### Открытые задачи
 - **PR #5** (clippy + cargo audit): **ещё открыт** (base устарел, нужен rebase на main перед merge).
 - **PR #15** (graphify skill): открыт, ожидает review — трогает только `.claude/` и `.github/workflows/graphify.yml`.
+- **ANTHROPIC_API_KEY**: нужен валидный ключ с биллингом на console.anthropic.com — оба gate (karpathy-review + security-review) блокируют PR без него.
+- **security-review ложный зелёный**: `claude-code-security-review@main` не падает при невалидном ключе (нет gate step как в karpathy-review). Нужен отдельный PR с gate step для security-review.
 - **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
 - **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox). См. `docs/HOME-DEPLOY.md`.
 - **drop_bounds warning** в `ratchet.rs:313`: безвредно, убрать при следующем касании файла.
-- **Stale branches** (можно удалить после merge): `claude/prune-automation`, `claude/test-count-fix`, `claude/understand-anything`, `claude/claude-md-docs-ybVU7`.
+- **Stale branches** (можно удалить через GitHub UI → Settings → Branches): `claude/prune-automation`, `claude/test-count-fix`, `claude/understand-anything`, `claude/claude-md-docs-ybVU7`, `claude/karpathy-gate`.
 - **RUSTSEC-2025-0009 (ring 0.16.x)**: REVISIT AT SECURITY AUDIT — отслеживай выход arti-client, использующего ring ≥ 0.17.12. Как только появится — обновить arti-client и убрать ignore из `.cargo/audit.toml`.
 - **RUSTSEC-2023-0071 (rsa 0.9.x)**: REVISIT AT SECURITY AUDIT — нет исправленной версии upstream. Следи за crates.io/crates/rsa.
 

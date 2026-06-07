@@ -284,6 +284,7 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 ### Secrets (Settings → Secrets and variables → Actions)
 - `ANTHROPIC_API_KEY` — ключ с console.anthropic.com для Claude Security Review
   - ⚠️ Ключ периодически протухает — если `security-review` падает с "API key not set", нужно обновить секрет и перезапустить job
+  - ❌ НИКОГДА не добавляй `continue-on-error: true` в security-review шаг — это превращает BLOCKING gate в advisory. Вместо этого обнови ключ.
 
 ### GitHub Actions (`.github/workflows/`)
 | Файл | Триггер | Что делает |

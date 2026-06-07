@@ -14,6 +14,7 @@ https://github.com/forrestchang/andrej-karpathy-skills
 - **Не падай молча** — если что-то не работает, объясни почему фактами.
 - **Короткие блоки кода** — разработчик на планшете. Дроби длинный код.
 - **Не притворяйся** — если шаг нельзя проверить (нет сети/toolchain), скажи прямо.
+- **Security analysis** — использовать ТОЛЬКО признанные классы угроз: timing/cache/power/EM side-channel, X3DH/replay/OPK protocol bugs, PSI/MPC correctness, on-chain access control, traffic analysis, FFI boundary, supply chain. ❌ НЕ добавлять псевдонаучные модели (phase/frequency/Fibonacci/Mishin/quasicrystal/PhaseSCA).
 
 Общение с разработчиком — на русском. Код и комментарии — на английском.
 
@@ -78,7 +79,7 @@ Little-Endian, первые 8 байт. TS-сторона уже следует 
 - arcium-client = "0.10.4", arcium-anchor 0.10.4 требует anchor-lang "=1.0.2"
 - arcis = "0.10.4" (генерирует .arcis.ir)
 - @coral-xyz/anchor ^0.30.1, @arcium-hq/client ^0.10.4 (TS сторона)
-- ml-kem = "0.3.2" (hybrid PQ, не 0.2)
+- ml-kem = "0.3" (hybrid PQ, не 0.2; Cargo.toml pin = "0.3", exact patch locked by Cargo.lock)
 
 ---
 
@@ -290,6 +291,8 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 | `arcium-ci.yml` | push / PR / manual | 4 jobs: core-rust → ts-crypto → arcium-build → arcium-test |
 | `android-ci.yml` | push/PR `android/**` | JDK 17 + Android SDK, `./gradlew assembleDebug` |
 | `security-review.yml` | PR opened/sync | Claude Code security review на диффе PR |
+| `karpathy-review.yml` | PR opened/sync | Karpathy 4-principle review: Think/Simplicity/Surgical/Goal-Driven |
+| `understand-anything.yml` | PR opened/sync | Builds knowledge graph, posts impact summary comment |
 | `monthly-backup.yml` | schedule | Бэкап в GitHub Releases |
 
 ### Версии CI (НЕ менять без проверки)
@@ -318,11 +321,18 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 | #8 | i1-solana-url | I-1: Solana RPC URL → BuildConfig (AGP 8+, buildConfig = true) |
 | #9 | l3-fifo | L-3: trim_skipped FIFO (IndexMap) + zeroize при eviction |
 | #10 | devcontainer | .devcontainer для GitHub Codespaces |
+| #11 | claude/add-graphify (squash) | CLAUDE.md docs + karpathy-review + CI workflows update |
+| #12 | understand-anything | Understand-Anything knowledge graph CI workflow |
+| #13 | test-count-fix | Fix test count 51→54 in CLAUDE.md |
+| #14 | prune-automation | Удалены gdrive-sync, plugins.json; understand-anything → PR-only |
 
-### Открытые задачи (НЕ начаты)
+### Открытые задачи
+- **PR #5** (clippy + cargo audit): **ещё открыт** (base устарел, нужен rebase на main перед merge).
+- **PR #15** (graphify skill): открыт, ожидает review — трогает только `.claude/` и `.github/workflows/graphify.yml`.
 - **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
-- **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox).
+- **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox). См. `docs/HOME-DEPLOY.md`.
 - **drop_bounds warning** в `ratchet.rs:313`: безвредно, убрать при следующем касании файла.
+- **Stale branches** (можно удалить после merge): `claude/prune-automation`, `claude/test-count-fix`, `claude/understand-anything`, `claude/claude-md-docs-ybVU7`.
 
 ### Тесты (текущее состояние, `cargo test --workspace`)
 ```

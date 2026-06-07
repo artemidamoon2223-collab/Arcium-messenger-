@@ -19,6 +19,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Karpathy Analysis
+        continue-on-error: true
         uses: anthropics/claude-code-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -312,6 +312,7 @@ mod tests {
 
     // Compile-time check: DoubleRatchet must implement Drop (which calls zeroize_key_material).
     // If Drop is accidentally removed this test will stop compiling.
+    #[allow(drop_bounds)]
     const _: () = {
         fn _requires_drop<T: Drop>() {}
         fn _check() { _requires_drop::<DoubleRatchet>(); }

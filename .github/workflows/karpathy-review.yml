@@ -25,6 +25,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          model: claude-haiku-4-5-20251001
           direct_prompt: |
             Get the PR diff:
               git diff origin/${{ github.base_ref }}...HEAD

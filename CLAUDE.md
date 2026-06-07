@@ -290,9 +290,9 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 |------|---------|-----------|
 | `arcium-ci.yml` | push / PR / manual | 4 jobs: core-rust → ts-crypto → arcium-build → arcium-test |
 | `android-ci.yml` | push/PR `android/**` | JDK 17 + Android SDK, `./gradlew assembleDebug` |
-| `security-review.yml` | PR opened/sync | Claude Code security review на диффе PR |
-| `karpathy-review.yml` | PR opened/sync | Karpathy 4-principle review: Think/Simplicity/Surgical/Goal-Driven |
-| `understand-anything.yml` | PR opened/sync | Builds knowledge graph, posts impact summary comment |
+| `security-review.yml` | PR opened/sync | Claude Code security review на диффе PR (continue-on-error, нужен ANTHROPIC_API_KEY) |
+| `karpathy-review.yml` | PR opened/sync | Karpathy 4-principle review (continue-on-error, нужен ANTHROPIC_API_KEY) |
+| `understand-anything.yml` | workflow_dispatch | Builds knowledge graph; posts impact summary comment (manual trigger only) |
 | `monthly-backup.yml` | schedule | Бэкап в GitHub Releases |
 
 ### Версии CI (НЕ менять без проверки)
@@ -325,14 +325,18 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 | #12 | understand-anything | Understand-Anything knowledge graph CI workflow |
 | #13 | test-count-fix | Fix test count 51→54 in CLAUDE.md |
 | #14 | prune-automation | Удалены gdrive-sync, plugins.json; understand-anything → PR-only |
+| #15 | claude/add-graphify | graphify knowledge-graph CI workflow + `.claude/skills/graphify/` |
+| #16 | claude/claude-md-docs | Агентский workflow раздел в CLAUDE.md |
+| #17 | claude/tidy-deploy-prep | CLAUDE.md guardrail + deploy checklist; fix CI: understand-anything install, karpathy-review continue-on-error |
+| #18 | config/ml-kem-pin | Pin ml-kem = 0.3.2; understand-anything → workflow_dispatch only |
+| #19 | claude/audit-annotations | .cargo/audit.toml: аннотации дат/provenance/REVISIT для RUSTSEC-2025-0009 и RUSTSEC-2023-0071; security-review continue-on-error |
 
 ### Открытые задачи
-- **PR #5** (clippy + cargo audit): **ещё открыт** (base устарел, нужен rebase на main перед merge).
-- **PR #15** (graphify skill): открыт, ожидает review — трогает только `.claude/` и `.github/workflows/graphify.yml`.
 - **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
 - **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox). См. `docs/HOME-DEPLOY.md`.
 - **drop_bounds warning** в `ratchet.rs:313`: безвредно, убрать при следующем касании файла.
-- **Stale branches** (можно удалить после merge): `claude/prune-automation`, `claude/test-count-fix`, `claude/understand-anything`, `claude/claude-md-docs-ybVU7`.
+- **ANTHROPIC_API_KEY**: периодически протухает — если karpathy-review/security-review падают с "API key not set", обнови секрет в Settings → Secrets → Actions. Оба workflow имеют `continue-on-error: true` как подстраховку.
+- **Stale branches** (можно удалить): `claude/prune-automation`, `claude/test-count-fix`, `claude/understand-anything`, `claude/claude-md-docs-ybVU7`, `claude/tidy-deploy-prep`, `claude/audit-annotations`.
 - **RUSTSEC-2025-0009 (ring 0.16.x)**: REVISIT AT SECURITY AUDIT — отслеживай выход arti-client, использующего ring ≥ 0.17.12. Как только появится — обновить arti-client и убрать ignore из `.cargo/audit.toml`.
 - **RUSTSEC-2023-0071 (rsa 0.9.x)**: REVISIT AT SECURITY AUDIT — нет исправленной версии upstream. Следи за crates.io/crates/rsa.
 

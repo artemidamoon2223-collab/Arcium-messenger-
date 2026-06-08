@@ -1,0 +1,99 @@
+name: Pi × Gemini Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  pi-gemini-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pi agent
+        run: npm install -g @earendil-works/pi-coding-agent
+
+      - name: Run Pi × Gemini Review
+        id: pi_run
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PI_TELEMETRY: '0'
+          PI_SKIP_VERSION_CHECK: '1'
+        run: |
+          # Build prompt + diff (cap at 500 lines to stay within token budget)
+          cat > /tmp/prompt.txt << 'PROMPT_EOF'
+          Review this PR diff for Arcium Messenger — an anonymous E2E messenger with 4 security layers: Tor (arti), X3DH + Double Ratchet, XChaCha20-Poly1305 SQLite, Arcium MPC/PSI.
+
+          Apply Karpathy 4 principles:
+          1. Think Before Coding — is this change based on real facts, not guesses?
+          2. Simplicity First — is the minimal code solving the task?
+          3. Surgical Changes — does the diff touch ONLY what was requested?
+          4. Goal-Driven — is there a verifiable test/check?
+
+          Security focus: crypto correctness, key zeroization, timing attacks, PSI/MPC boundary.
+          CRITICAL rules (from CLAUDE.md): never use XChaCha20 for PSI, never use RescueCipher for messages.
+
+          Format: markdown, max 400 words. Lead with verdict (✅ / ⚠️ / ❌).
+
+          == PR DIFF ==
+          PROMPT_EOF
+
+          git diff origin/${{ github.base_ref }}...HEAD | head -500 >> /tmp/prompt.txt
+
+          pi \
+            --provider google \
+            --model gemini-2.5-flash \
+            --tools read,grep,find \
+            --no-session \
+            --no-extensions \
+            --no-skills \
+            -p "$(cat /tmp/prompt.txt)" > /tmp/pi-review.md 2>&1
+
+      - name: Fail if review did not run
+        if: always()
+        run: |
+          if [ "${{ steps.pi_run.outcome }}" != "success" ]; then
+            echo "::error::Pi Gemini review failed (outcome=${{ steps.pi_run.outcome }}). Add GEMINI_API_KEY to Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          if [ ! -s /tmp/pi-review.md ]; then
+            echo "::error::Pi review produced empty output. Check GEMINI_API_KEY."
+            exit 1
+          fi
+          echo "Pi × Gemini review completed."
+
+      - name: Post review comment
+        if: steps.pi_run.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const review = fs.readFileSync('/tmp/pi-review.md', 'utf8').trim();
+            if (!review) { core.warning('Empty review — skipping'); return; }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '## Pi × Gemini 2.5 Flash Review',
+                '',
+                review,
+                '',
+                '---',
+                '_Powered by [pi agent](https://pi.dev) + Gemini 2.5 Flash_'
+              ].join('\n')
+            });

@@ -1,0 +1,14 @@
+{
+  "defaultProvider": "google",
+  "defaultModel": "gemini-2.5-flash",
+  "quietStartup": true,
+  "enableInstallTelemetry": false,
+  "warnings": {
+    "anthropicExtraUsage": false
+  },
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  }
+}

@@ -337,7 +337,7 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 - **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
 - **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox). См. `docs/HOME-DEPLOY.md`.
 - **Branch protection** (owner-only): Settings → Branches → main → Require status checks → добавить `karpathy-review` + `security-review`. Без этого мерж возможен даже при красных гейтах.
-- **Stale branches** (можно удалить через GitHub UI → Settings → Branches): `claude/prune-automation`, `claude/test-count-fix`, `claude/claude-md-docs-ybVU7`, `claude/karpathy-gate`, `claude/security-gate-step`, `claude/claude-md-pr-history`, `claude/test-model-fix`, `claude/test-api-key`, `claude/openlore-setup`.
+- **Stale branches** (можно удалить через GitHub UI → Settings → Branches): `claude/prune-automation`, `claude/test-count-fix`, `claude/claude-md-docs-ybVU7`, `claude/karpathy-gate`, `claude/security-gate-step`, `claude/claude-md-pr-history`, `claude/test-model-fix`, `claude/test-api-key`.
 - **RUSTSEC-2025-0009 (ring 0.16.x)**: REVISIT AT SECURITY AUDIT — отслеживай выход arti-client, использующего ring ≥ 0.17.12. Как только появится — обновить arti-client и убрать ignore из `.cargo/audit.toml`.
 - **RUSTSEC-2023-0071 (rsa 0.9.x)**: REVISIT AT SECURITY AUDIT — нет исправленной версии upstream. Следи за crates.io/crates/rsa.
 

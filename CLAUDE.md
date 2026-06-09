@@ -345,13 +345,13 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 
 ### Тесты (текущее состояние, `cargo test --workspace`)
 ```
-core-crypto    27/27 ✅  (24 base + 3 ratchet FIFO/zeroize)
+core-crypto    28/28 ✅  (24 base + 3 ratchet FIFO/zeroize + 1 hybrid Drop)
 core-protocol   5/5  ✅
 core-storage   10/10 ✅
 core-transport  5/5  ✅  (1 ignored — Tor без сети)
 mobile-ffi      7/7  ✅
 ─────────────────────
-Итого: 54/54, 0 упавших
+Итого: 55/55, 0 упавших
 ```
 
 ## graphify

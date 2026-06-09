@@ -11,6 +11,7 @@ use ml_kem::{
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Debug)]
 pub struct HybridError;
@@ -33,6 +34,13 @@ pub struct HybridPublicKey {
 pub struct HybridSecretKey {
     pub x25519: [u8; 32],
     pub ml_kem: Vec<u8>,
+}
+
+impl Drop for HybridSecretKey {
+    fn drop(&mut self) {
+        self.x25519.zeroize();
+        self.ml_kem.zeroize();
+    }
 }
 
 const X25519_LEN: usize = 32;
@@ -110,10 +118,10 @@ pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<[u8; 64], Hybrid
 }
 
 fn combine_secrets(x25519_ss: &[u8], ml_kem_ss: &[u8]) -> [u8; 64] {
-    let mut ikm = [0u8; 64];
+    let mut ikm = Zeroizing::new([0u8; 64]);
     ikm[..32].copy_from_slice(x25519_ss);
     ikm[32..].copy_from_slice(ml_kem_ss);
-    let hk = Hkdf::<Sha256>::new(None, &ikm);
+    let hk = Hkdf::<Sha256>::new(None, ikm.as_ref());
     let mut out = [0u8; 64];
     hk.expand(b"HybridKEM/v1", &mut out).expect("hkdf expand");
     out
@@ -161,5 +169,11 @@ mod tests {
         // but the shared secret must be different from the correct one
         let shared_wrong = hybrid_decaps(&sk2, &ct).unwrap();
         assert_ne!(shared_correct, shared_wrong, "wrong key must yield different shared secret");
+    }
+
+    #[test]
+    fn drop_zeroizes_hybrid_secret_key() {
+        let (_, sk) = hybrid_keygen();
+        drop(sk); // Drop impl must run without panic
     }
 }

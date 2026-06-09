@@ -11,6 +11,7 @@ use ml_kem::{
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::Zeroize;
 
 #[derive(Debug)]
 pub struct HybridError;
@@ -33,6 +34,13 @@ pub struct HybridPublicKey {
 pub struct HybridSecretKey {
     pub x25519: [u8; 32],
     pub ml_kem: Vec<u8>,
+}
+
+impl Drop for HybridSecretKey {
+    fn drop(&mut self) {
+        self.x25519.zeroize();
+        self.ml_kem.zeroize();
+    }
 }
 
 const X25519_LEN: usize = 32;

@@ -2,5 +2,5 @@
 Cargo.lock
 .codegraph/
 android/.gradle/
-# understand-anything cache (graph itself is committed)
-.understand-anything/cache/
+# openlore analysis artifacts (run locally, not for VCS)
+.openlore/

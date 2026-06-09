@@ -1,0 +1,60 @@
+{
+  "name": "arcium-verify",
+  "description": "Standard verification cycle for Arcium Messenger: Rust tests + TS check + cargo audit in parallel, gate, then optional merge approval.",
+  "version": 1,
+  "args": {
+    "merge": {
+      "description": "Ask for human merge approval after green gate?",
+      "default": "false"
+    }
+  },
+  "concurrency": 3,
+  "agentScope": "user",
+  "budget": { "maxUSD": 0.50 },
+  "phases": [
+    {
+      "id": "rust-tests",
+      "type": "agent",
+      "agent": "executor-code",
+      "task": "Run `cargo test --workspace` in /home/user/Arcium-messenger-. Report: total passed, total failed, any FAILED lines. Output a single JSON: {\"passed\": N, \"failed\": N, \"output\": \"...\"}",
+      "output": "json"
+    },
+    {
+      "id": "ts-check",
+      "type": "agent",
+      "agent": "executor-code",
+      "task": "Run `cd /home/user/Arcium-messenger-/arcium-psi/tests && npx tsc --noEmit 2>&1`. Report errors count and list. Output JSON: {\"errors\": N, \"output\": \"...\"}",
+      "output": "json"
+    },
+    {
+      "id": "cargo-audit",
+      "type": "agent",
+      "agent": "executor-code",
+      "task": "Run `cd /home/user/Arcium-messenger- && cargo audit 2>&1`. Report vulnerabilities found (excluding suppressed ones in .cargo/audit.toml). Output JSON: {\"vulnerabilities\": N, \"output\": \"...\"}",
+      "output": "json"
+    },
+    {
+      "id": "gate",
+      "type": "gate",
+      "agent": "reviewer",
+      "dependsOn": ["rust-tests", "ts-check", "cargo-audit"],
+      "task": "Review the verification results below.\n\nRust tests: {steps.rust-tests.output}\nTS check: {steps.ts-check.output}\nCargo audit: {steps.cargo-audit.output}\n\nRules:\n- If rust-tests.failed > 0 → BLOCK\n- If ts-check.errors > 0 → BLOCK\n- If cargo-audit.vulnerabilities > 0 (not suppressed) → BLOCK\n- Otherwise → PASS\n\nEnd with exactly 'VERDICT: PASS' or 'VERDICT: BLOCK: <reason>'."
+    },
+    {
+      "id": "merge-approval",
+      "type": "approval",
+      "when": "{args.merge} == true",
+      "dependsOn": ["gate"],
+      "task": "All checks passed. Approve to proceed with merge, or reject to abort.\n\nResults summary:\n- Rust: {steps.rust-tests.json.passed} tests passed\n- TS: {steps.ts-check.json.errors} errors\n- Audit: {steps.cargo-audit.json.vulnerabilities} vulnerabilities"
+    },
+    {
+      "id": "summary",
+      "type": "reduce",
+      "from": ["gate"],
+      "dependsOn": ["gate"],
+      "agent": "doc-writer",
+      "task": "Write a one-paragraph verification summary for Arcium Messenger:\n\nRust tests: {steps.rust-tests.output}\nTS check: {steps.ts-check.output}\nCargo audit: {steps.cargo-audit.output}\nGate verdict: {steps.gate.output}\n\nFormat: markdown, 3-5 lines, lead with ✅ or ❌.",
+      "final": true
+    }
+  ]
+}

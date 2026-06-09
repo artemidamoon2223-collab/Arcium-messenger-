@@ -11,7 +11,7 @@ use ml_kem::{
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Debug)]
 pub struct HybridError;
@@ -118,13 +118,12 @@ pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<[u8; 64], Hybrid
 }
 
 fn combine_secrets(x25519_ss: &[u8], ml_kem_ss: &[u8]) -> [u8; 64] {
-    let mut ikm = [0u8; 64];
+    let mut ikm = Zeroizing::new([0u8; 64]);
     ikm[..32].copy_from_slice(x25519_ss);
     ikm[32..].copy_from_slice(ml_kem_ss);
-    let hk = Hkdf::<Sha256>::new(None, &ikm);
+    let hk = Hkdf::<Sha256>::new(None, ikm.as_ref());
     let mut out = [0u8; 64];
     hk.expand(b"HybridKEM/v1", &mut out).expect("hkdf expand");
-    ikm.zeroize();
     out
 }
 

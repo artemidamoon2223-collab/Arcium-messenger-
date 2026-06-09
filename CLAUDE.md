@@ -295,7 +295,6 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 | `android-ci.yml` | push/PR `android/**` | JDK 17 + Android SDK, `./gradlew assembleDebug` |
 | `security-review.yml` | PR opened/sync | Claude Code security review на диффе PR |
 | `karpathy-review.yml` | PR opened/sync | Karpathy 4-principle review: Think/Simplicity/Surgical/Goal-Driven |
-| `understand-anything.yml` | PR opened/sync | Builds knowledge graph, posts impact summary comment |
 | `monthly-backup.yml` | schedule | Бэкап в GitHub Releases |
 
 ### Версии CI (НЕ менять без проверки)
@@ -325,9 +324,8 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 | #9 | l3-fifo | L-3: trim_skipped FIFO (IndexMap) + zeroize при eviction |
 | #10 | devcontainer | .devcontainer для GitHub Codespaces |
 | #11 | claude/add-graphify (squash) | CLAUDE.md docs + karpathy-review + CI workflows update |
-| #12 | understand-anything | Understand-Anything knowledge graph CI workflow |
 | #13 | test-count-fix | Fix test count 51→54 in CLAUDE.md |
-| #14 | prune-automation | Удалены gdrive-sync, plugins.json; understand-anything → PR-only |
+| #14 | prune-automation | Удалены gdrive-sync, plugins.json |
 | #19 | audit-annotations | `.cargo/audit.toml` — полные REVISIT аннотации для RUSTSEC-2025-0009 и RUSTSEC-2023-0071 |
 | #21 | security-gate-fix | Восстановлен security-review как BLOCKING gate (убран continue-on-error) |
 | #22 | karpathy-gate | karpathy-review — реальный blocking gate (id: claude_run + Fail step) |
@@ -339,7 +337,7 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 - **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
 - **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox). См. `docs/HOME-DEPLOY.md`.
 - **Branch protection** (owner-only): Settings → Branches → main → Require status checks → добавить `karpathy-review` + `security-review`. Без этого мерж возможен даже при красных гейтах.
-- **Stale branches** (можно удалить через GitHub UI → Settings → Branches): `claude/prune-automation`, `claude/test-count-fix`, `claude/understand-anything`, `claude/claude-md-docs-ybVU7`, `claude/karpathy-gate`, `claude/security-gate-step`, `claude/claude-md-pr-history`, `claude/test-model-fix`, `claude/test-api-key`.
+- **Stale branches** (можно удалить через GitHub UI → Settings → Branches): `claude/prune-automation`, `claude/test-count-fix`, `claude/claude-md-docs-ybVU7`, `claude/karpathy-gate`, `claude/security-gate-step`, `claude/claude-md-pr-history`, `claude/test-model-fix`, `claude/test-api-key`.
 - **RUSTSEC-2025-0009 (ring 0.16.x)**: REVISIT AT SECURITY AUDIT — отслеживай выход arti-client, использующего ring ≥ 0.17.12. Как только появится — обновить arti-client и убрать ignore из `.cargo/audit.toml`.
 - **RUSTSEC-2023-0071 (rsa 0.9.x)**: REVISIT AT SECURITY AUDIT — нет исправленной версии upstream. Следи за crates.io/crates/rsa.
 

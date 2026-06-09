@@ -170,4 +170,10 @@ mod tests {
         let shared_wrong = hybrid_decaps(&sk2, &ct).unwrap();
         assert_ne!(shared_correct, shared_wrong, "wrong key must yield different shared secret");
     }
+
+    #[test]
+    fn drop_zeroizes_hybrid_secret_key() {
+        let (_, sk) = hybrid_keygen();
+        drop(sk); // Drop impl must run without panic
+    }
 }

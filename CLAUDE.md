@@ -363,3 +363,19 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## openlore
+
+Persistent architectural memory. Installed globally (`npm i -g openlore`, v2.0.14). Config: `.openlore/config.json` (gitignored). Specs: `openspec/specs/` (committed when generated).
+
+Rules:
+- Before starting a task: `openlore orient --task "<что делаешь>"` — BM25-поиск по 342 функциям, показывает файлы и точки вставки. Работает без API-ключа.
+- After adding specs via `generate`: `openlore check_spec_drift` — проверяет что код соответствует спекам.
+- To generate full OpenSpec specs (needs `ANTHROPIC_API_KEY` locally): `openlore generate -y`
+- To refresh static analysis after code changes: `openlore analyze`
+
+| Ситуация | Команда |
+|----------|---------|
+| Не знаю какой файл/функция отвечает за задачу | `openlore orient --task "..."` |
+| Нужна топология вызовов | `openlore analyze` → `.openlore/analysis/ARCHITECTURE.md` |
+| Проверить соответствие кода спекам | `openlore check_spec_drift` (после generate) |

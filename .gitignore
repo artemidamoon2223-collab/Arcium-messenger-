@@ -4,3 +4,6 @@ Cargo.lock
 android/.gradle/
 # understand-anything cache (graph itself is committed)
 .understand-anything/cache/
+
+# openlore analysis artifacts
+.openlore/

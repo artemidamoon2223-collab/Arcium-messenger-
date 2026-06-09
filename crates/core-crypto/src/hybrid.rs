@@ -124,6 +124,7 @@ fn combine_secrets(x25519_ss: &[u8], ml_kem_ss: &[u8]) -> [u8; 64] {
     let hk = Hkdf::<Sha256>::new(None, &ikm);
     let mut out = [0u8; 64];
     hk.expand(b"HybridKEM/v1", &mut out).expect("hkdf expand");
+    ikm.zeroize();
     out
 }
 

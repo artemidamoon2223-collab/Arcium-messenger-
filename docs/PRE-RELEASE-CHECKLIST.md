@@ -1,6 +1,7 @@
 # Pre-Release / NO-GO Checklist — Arcium Messenger
 
-Derived from `docs/SECURITY-REVIEW-2026-06-deep.md` (deep review, 2026-06).
+Derived from `docs/SECURITY-REVIEW-2026-06-deep.md` (deep review, 2026-06 — lands in
+PR #28; merge #28 before or together with this file so the reference resolves).
 This is a **tracking document, not a sign-off** — nothing here is marked "done".
 Items are ordered by **dependency**, not by calendar. No deadlines.
 

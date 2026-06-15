@@ -7,3 +7,11 @@
 
 New entries should be recorded as observations only after human review
 and explicit approval.
+
+## Recorded facts
+
+- `research/src-qiwi/` exists as an isolated research area in this
+  repository.
+- Messenger code was not modified by its creation.
+
+This fact does not constitute a status transition for any prediction.

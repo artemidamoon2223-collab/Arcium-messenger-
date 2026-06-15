@@ -14,3 +14,8 @@ Read order:
 This directory is an isolated research memory area inside the Arcium
 Messenger repository. It does not describe or affect the messenger
 application, and the messenger application does not depend on it.
+
+## Current state
+
+- `research/src-qiwi/` exists as an isolated research area.
+- Messenger code was not modified.

@@ -16,3 +16,17 @@ the archived npm registry snapshot.
 - `archive/external/npm-pi-shipshape-2026-06-15.md`
 
 **Status:** recorded
+
+### Observation-002
+
+**Observation:** The npm snapshot query time recorded in
+`archive/external/npm-pi-shipshape-2026-06-15.md` and the first commit
+creating `research/src-qiwi/` (`e277868`) are separated by
+approximately 3h18m based on the timestamps recorded in those sources.
+
+**Source:**
+- `archive/external/npm-pi-shipshape-2026-06-15.md`
+- `archive/conversations/origins-batch-001.md`
+- `archive/conversations/repository-evolution-batch-001.md`
+
+**Status:** recorded

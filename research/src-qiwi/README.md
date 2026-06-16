@@ -9,15 +9,22 @@ predictions, open cases, and handoff notes — as durable repository
 artifacts instead of relying on chat history that does not survive
 `/clear`.
 
-This directory was introduced by this commit. It contains no messenger
-runtime code and is not referenced by any Rust, Android, Gradle, or
-Cargo build configuration.
+## What this is not
+
+- Not messenger application code.
+- Not a new agent, service, or runtime component.
+- Not a package or dependency.
+
+## Long-term purpose
+
+[SOURCE NOT FOUND] — the long-term purpose of SRC/QIWI beyond the
+above is a working interpretation, not a settled fact.
 
 ## Files
 
-- `AGENT_STATE.md` — current phase and status of the research agent.
+- `HANDOVER.md` — entry point for a fresh agent; agent state and read order.
+- `OBJECT_OF_STUDY.md` — what this area tracks and status vocabulary.
 - `OBSERVATIONS.md` — log of sourced observations.
 - `predictions.md` — open claims and their move conditions.
 - `cases.md` — recorded mismatches / cases.
-- `HANDOVER.md` — how a future agent should pick up this work.
-- `REMAINING_HANDOFF_RISKS.md` — known gaps and open risks.
+- `archive/` — source material (session transcripts, external snapshots, git history).

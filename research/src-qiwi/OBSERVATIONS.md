@@ -114,3 +114,22 @@ terms `INDETERMINATE`, `[SOURCE NOT FOUND]`, `OBSERVATIONS`,
 - `archive/external/npm-pi-shipshape-2026-06-15.md`
 
 **Status:** recorded
+
+### Observation-007
+
+**Observation:** A local snapshot of
+`/root/.claude/projects/-home-user-Arcium-messenger-/` found only one
+accessible Claude session JSONL file for this repository path,
+`dd02cdb5-8330-56b1-bb95-dd58d85d1a86.jsonl`, and found no locally
+accessible prior session JSONL predating the first SRC/QIWI commit
+`e277868`.
+
+**Caveat:** This does not rule out non-local, cloud, external, deleted,
+or inaccessible prior sessions.
+
+**Source:**
+- `archive/external/claude-session-directory-snapshot-2026-06-16.md`
+- Observation-004
+- git log commit `e277868`
+
+**Status:** recorded

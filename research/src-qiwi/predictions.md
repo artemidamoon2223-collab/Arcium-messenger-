@@ -20,25 +20,31 @@ A status change requires a sourced observation, not argument alone.
 artifacts predate session dd02cdb5 and are not present in the local
 environment.
 
-**Status:** `unknown`
+**Status:** `weakened`
 
-**Supporting observations:** None from Observation-001–005.
+**Supporting observations:** None from Observation-001–007.
 
 **Weakening observations:**
 - Observation-004: Session dd02cdb5 is the active session throughout
   the gap interval; no prior session UUID or prior JSONL is recorded
   locally. Note: MCP logs are non-persistent — absence in local cache
   does not constitute evidence of non-existence.
+- Observation-007: A durable local snapshot confirmed that only one
+  session JSONL exists for this repository path
+  (`dd02cdb5-8330-56b1-bb95-dd58d85d1a86.jsonl`); no prior session
+  JSONL predating `e277868` was found locally. Caveat: does not rule
+  out non-local, cloud, external, deleted, or inaccessible prior
+  sessions.
 
 **Move conditions:**
 - → `supported`: A prior session transcript or repository artifact
   predating 2026-06-15T03:36:04 UTC is found containing SRC/QIWI
   vocabulary, backed by a durable source.
-- → `weakened`: Observation-004's absence evidence is confirmed via a
-  durable artifact (not non-persistent MCP logs alone).
+- → `weakened`: ✓ Met by Observation-007 — local absence confirmed
+  via committed durable artifact.
 - → `falsified`: Confirmed absence of any prior session through
-  durable evidence establishing that dd02cdb5 was the first session
-  in this repository context.
+  durable evidence extending beyond local storage (e.g., Anthropic
+  infrastructure records).
 
 ---
 

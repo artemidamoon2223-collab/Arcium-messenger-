@@ -56,18 +56,33 @@ available to the agent during that interval.
 
 **Status:** `supported weak`
 
+**Evidence basis note:** Support derives from elimination of alternative
+explanations (Obs-003, Obs-006) and timing consistency (Obs-002,
+Obs-004), not from direct observation of the synthesis mechanism.
+The specific in-session source(s), the origin path of Excerpt 2, and
+whether a prior conversational process existed remain unknown. No
+sourced observation directly identifies the mechanism responsible for
+the observed vocabulary and structure, which is why this prediction
+does not meet the conditions for `supported`. No durable observation
+currently contradicts it, which is why it has not moved to `weakened`.
+See `archive/investigations/excerpt2-evidence-ceiling-2026-06-16.md`
+for the full record of exhausted local source categories.
+
 **Supporting observations:**
 - Observation-003: Zero SRC/QIWI vocabulary found in
   pi-shipshape@0.1.15, eliminating it as a vocabulary source and
   leaving in-session synthesis as the remaining uneliminated
   mechanism.
+- Observation-006: Zero SRC/QIWI vocabulary confirmed across all 9
+  published pi-shipshape versions (0.1.7–0.1.15), extending the
+  elimination to the complete version space.
 - Observation-004: Session dd02cdb5 was active throughout the full
   gap interval (~3h18m), consistent with the time required for
   in-session synthesis.
 - Observation-002: The ~3h18m gap between npm query and first commit
   is consistent with a single continuous session.
 
-**Weakening observations:** None from Observation-001–005.
+**Weakening observations:** None from Observation-001–007.
 
 **Move conditions:**
 - → `supported`: The specific in-session source(s) used to produce

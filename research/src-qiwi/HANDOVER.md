@@ -24,12 +24,29 @@ This directory is an isolated research memory area inside the Arcium
 Messenger repository. It does not describe or affect the messenger
 application, and the messenger application does not depend on it.
 
-## Current state
+## Lean workflow rules
 
-- `research/src-qiwi/` exists as an isolated research area.
-- Messenger code was not modified.
+- **New observation threshold:** Create an observation only when a
+  previously unaccessed source produces a measurable fact. Re-reading
+  an existing source does not qualify.
 
-This does not constitute a status transition for any prediction.
+- **Prediction update threshold:** Update a prediction only when a new
+  observation satisfies that prediction's recorded move condition.
+  Analytical argument alone is not sufficient.
+
+- **Investigation stopping condition:** Stop when no unaccessed source
+  category remains, or when the required source category is identified
+  and confirmed inaccessible locally. Document the ceiling explicitly;
+  do not re-investigate exhausted categories.
+
+### Current ceilings
+
+- **Prediction-D:** terminal — `falsified`. No further action.
+- **Prediction-A:** `weakened` — cannot move further locally without
+  non-local or cloud session evidence (Anthropic infrastructure).
+- **Prediction-C:** frozen at `supported weak` — resume only if
+  gap-era transcript content (2026-06-15T00:18–03:36 UTC) or
+  equivalent source becomes available.
 
 ## Handoff risks
 

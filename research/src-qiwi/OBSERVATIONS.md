@@ -100,3 +100,17 @@ The query parameters and results are not preserved in the local log.
   tool call)
 
 **Status:** recorded
+
+### Observation-006
+
+**Observation:** A complete audit of all published pi-shipshape versions
+found that versions 0.1.0–0.1.6 were not published, and versions
+0.1.7–0.1.15 contained zero matches for the SRC/QIWI-specific vocabulary
+terms `INDETERMINATE`, `[SOURCE NOT FOUND]`, `OBSERVATIONS`,
+`predictions`, `cases.md`, `weakened`, and `falsified`.
+
+**Source:**
+- `archive/external/pi-shipshape-full-version-vocabulary-audit-2026-06-16.md`
+- `archive/external/npm-pi-shipshape-2026-06-15.md`
+
+**Status:** recorded

@@ -79,7 +79,7 @@ available to the agent during that interval.
 **Claim:** pi-shipshape@0.1.15 served as the direct template or
 primary vocabulary source for SRC/QIWI structure.
 
-**Status:** `weakened`
+**Status:** `falsified`
 
 **Supporting observations:**
 - Observation-001: pi-shipshape@0.1.15 was the package referenced in
@@ -92,9 +92,15 @@ primary vocabulary source for SRC/QIWI structure.
   (spec-driven, Captain/QM/Crew/Bosun roles) structurally distinct
   from SRC/QIWI's observation-tracking framework.
 
+**Falsifying observations:**
+- Observation-006: Zero SRC/QIWI vocabulary across the complete
+  published version space (0.1.7–0.1.15); versions 0.1.0–0.1.6
+  confirmed unpublished. Satisfies the recorded falsification move
+  condition.
+
 **Move conditions:**
 - → `falsified`: Zero SRC/QIWI vocabulary confirmed across all
   pi-shipshape versions (0.1.0–0.1.15) via durable sourced
-  observations.
+  observations. ✓ Met by Observation-006.
 - → `supported`: SRC/QIWI vocabulary found in a pi-shipshape version
   via a durable sourced observation.

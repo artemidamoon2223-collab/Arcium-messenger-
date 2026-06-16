@@ -55,3 +55,48 @@ SRC/QIWI status/log/case vocabulary.
   shasum `71a11c7ed7de5224d0f0322a7874044f7200da65`.
 
 **Status:** recorded
+
+### Observation-004
+
+**Observation:** During the interval between the npm pi-shipshape query
+(~00:18 UTC, 2026-06-15) and the first `research/src-qiwi/` commit
+(03:36:04 UTC, 2026-06-15), the Claude session `dd02cdb5` was active.
+Multiple GitHub MCP connection logs exist for this session, showing at
+least 8 reconnection events between approximately 00:18 UTC and 03:35
+UTC — each representing an agent turn with GitHub MCP available. No
+tool calls other than the one documented in Observation-005 are recorded
+in the gap-era logs.
+
+**Source:**
+- Local MCP logs at `/root/.cache/claude-cli-nodejs/-home-user-Arcium-messenger-/mcp-logs-github/`
+  (8 gap-era files: `2026-06-15T00-18-30-709Z.jsonl`,
+  `2026-06-15T01-41-19-799Z.jsonl`, `2026-06-15T01-50-14-691Z.jsonl`,
+  `2026-06-15T02-49-45-471Z.jsonl`, `2026-06-15T02-59-08-889Z.jsonl`,
+  `2026-06-15T03-28-40-450Z.jsonl`, `2026-06-15T03-35-10-582Z.jsonl`,
+  and `2026-06-15T02-27-06-088Z.jsonl`). These are local filesystem
+  artifacts, not committed repository files — they may not persist
+  across container restarts.
+- `archive/external/npm-pi-shipshape-2026-06-15.md` (gap start anchor:
+  npm query at ~00:18 UTC)
+- git commit `e277868` (gap end anchor: first `research/src-qiwi/`
+  commit at 2026-06-15T03:36:04 UTC)
+
+**Status:** recorded
+
+### Observation-005
+
+**Observation:** During the gap interval, one GitHub MCP tool call
+occurred: `search_repositories` was called at approximately
+2026-06-15T02:27:46 UTC and completed successfully in 501ms. The local
+MCP log records the tool name, call time, and completion status only.
+The query parameters and results are not preserved in the local log.
+
+**Source:**
+- Local MCP log `/root/.cache/claude-cli-nodejs/-home-user-Arcium-messenger-/mcp-logs-github/2026-06-15T02-27-06-088Z.jsonl`
+  (local filesystem artifact, not a committed repository file — may not
+  persist across container restarts)
+- git commit `e277868` (contextual anchor: first `research/src-qiwi/`
+  commit at 2026-06-15T03:36:04 UTC, approximately 1h08m after this
+  tool call)
+
+**Status:** recorded

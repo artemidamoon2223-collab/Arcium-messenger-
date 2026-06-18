@@ -39,6 +39,13 @@ application, and the messenger application does not depend on it.
   and confirmed inaccessible locally. Document the ceiling explicitly;
   do not re-investigate exhausted categories.
 
+- **Governance Provenance:** Some state changes come from an owner
+  decision (`owner → decision, dated`), not from evidence or
+  deduction. A governance question has no move condition and is
+  closed only by an owner decision — it must never be treated as a
+  research question. The unresolved state before that decision is
+  stable, not a gap.
+
 ### Current ceilings
 
 - **Prediction-D:** terminal — `falsified`. No further action.

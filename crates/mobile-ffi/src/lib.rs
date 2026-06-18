@@ -1,9 +1,11 @@
+use core_crypto::ratchet::{DoubleRatchet, Header, RatchetError};
+use core_protocol::SessionManager;
 use core_storage::{EncryptedStore, StorageError};
 use ed25519_dalek::SigningKey;
 use rand_core::OsRng;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use x25519_dalek::StaticSecret;
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
 uniffi::setup_scaffolding!();
@@ -14,12 +16,59 @@ pub enum CoreError {
     Storage { msg: String },
     #[error("invalid master key: {msg}")]
     InvalidKey { msg: String },
+    #[error("session error: {msg}")]
+    Session { msg: String },
 }
 
 impl From<StorageError> for CoreError {
     fn from(e: StorageError) -> Self {
         CoreError::Storage { msg: e.to_string() }
     }
+}
+
+impl From<RatchetError> for CoreError {
+    fn from(e: RatchetError) -> Self {
+        CoreError::Session { msg: e.to_string() }
+    }
+}
+
+// ── Ratchet FFI records ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HeaderFfi {
+    pub dh: Vec<u8>,
+    pub pn: u32,
+    pub n: u32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct EncryptedMessage {
+    pub header: HeaderFfi,
+    pub ciphertext: Vec<u8>,
+}
+
+impl From<Header> for HeaderFfi {
+    fn from(h: Header) -> Self {
+        HeaderFfi { dh: h.dh.to_vec(), pn: h.pn, n: h.n }
+    }
+}
+
+impl TryFrom<HeaderFfi> for Header {
+    type Error = CoreError;
+
+    fn try_from(h: HeaderFfi) -> Result<Self, CoreError> {
+        let dh: [u8; 32] = h.dh.try_into().map_err(|_| CoreError::InvalidKey {
+            msg: "header.dh must be exactly 32 bytes".into(),
+        })?;
+        Ok(Header { dh, pn: h.pn, n: h.n })
+    }
+}
+
+/// Re-export of the canonical contact-hash function so Kotlin callers can
+/// derive a `SessionManager` contact id without reimplementing the hash.
+#[uniffi::export]
+pub fn hash_contact(phone: String) -> u64 {
+    core_crypto::contact_hash::hash_contact(&phone)
 }
 
 // ── Identity ──────────────────────────────────────────────────────────────────
@@ -53,6 +102,7 @@ const IDENTITY_KEY: &str = "identity/v1";
 #[derive(uniffi::Object)]
 pub struct ArciumCore {
     store: Mutex<EncryptedStore>,
+    sessions: Mutex<SessionManager>,
 }
 
 #[uniffi::export]
@@ -63,7 +113,10 @@ impl ArciumCore {
             msg: "expected exactly 32 bytes".into(),
         })?;
         let store = EncryptedStore::open(&storage_path, key)?;
-        Ok(Arc::new(Self { store: Mutex::new(store) }))
+        Ok(Arc::new(Self {
+            store: Mutex::new(store),
+            sessions: Mutex::new(SessionManager::new()),
+        }))
     }
 
     pub fn save_identity(&self, identity: Arc<Identity>) -> Result<(), CoreError> {
@@ -91,6 +144,89 @@ impl ArciumCore {
             signing_key: SigningKey::from_bytes(&sk_bytes),
             dh_key: StaticSecret::from(dh_bytes),
         }))
+    }
+
+    /// Create an in-memory Alice-side ratchet session for `contact_id`.
+    /// `root_key` and `their_initial_dh` are caller-supplied 32-byte values
+    /// (normally produced by an X3DH handshake, out of scope for this package).
+    pub fn create_session_alice(
+        &self,
+        contact_id: u64,
+        root_key: Vec<u8>,
+        their_initial_dh: Vec<u8>,
+    ) -> Result<(), CoreError> {
+        let rk: [u8; 32] = root_key.try_into().map_err(|_| CoreError::InvalidKey {
+            msg: "root_key must be exactly 32 bytes".into(),
+        })?;
+        let dh_bytes: [u8; 32] = their_initial_dh.try_into().map_err(|_| CoreError::InvalidKey {
+            msg: "their_initial_dh must be exactly 32 bytes".into(),
+        })?;
+        let ratchet = DoubleRatchet::init_alice(rk, PublicKey::from(dh_bytes));
+        self.sessions
+            .lock()
+            .map_err(|_| CoreError::Session { msg: "mutex poisoned".into() })?
+            .new_session(contact_id, ratchet);
+        Ok(())
+    }
+
+    /// Create an in-memory Bob-side ratchet session for `contact_id`.
+    /// `root_key` and `our_initial_dh` are caller-supplied (see above).
+    pub fn create_session_bob(
+        &self,
+        contact_id: u64,
+        root_key: Vec<u8>,
+        our_initial_dh: Vec<u8>,
+    ) -> Result<(), CoreError> {
+        let rk: [u8; 32] = root_key.try_into().map_err(|_| CoreError::InvalidKey {
+            msg: "root_key must be exactly 32 bytes".into(),
+        })?;
+        let dh_bytes: [u8; 32] = our_initial_dh.try_into().map_err(|_| CoreError::InvalidKey {
+            msg: "our_initial_dh must be exactly 32 bytes".into(),
+        })?;
+        let ratchet = DoubleRatchet::init_bob(rk, StaticSecret::from(dh_bytes));
+        self.sessions
+            .lock()
+            .map_err(|_| CoreError::Session { msg: "mutex poisoned".into() })?
+            .new_session(contact_id, ratchet);
+        Ok(())
+    }
+
+    /// Encrypt `plaintext` through the existing ratchet session for `contact_id`.
+    pub fn encrypt_message(
+        &self,
+        contact_id: u64,
+        plaintext: Vec<u8>,
+        ad: Vec<u8>,
+    ) -> Result<EncryptedMessage, CoreError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| CoreError::Session { msg: "mutex poisoned".into() })?;
+        let ratchet = sessions
+            .get_session(contact_id)
+            .ok_or_else(|| CoreError::Session { msg: "no session for contact".into() })?;
+        let (header, ciphertext) = ratchet.encrypt(&plaintext, &ad)?;
+        Ok(EncryptedMessage { header: header.into(), ciphertext })
+    }
+
+    /// Decrypt `ciphertext` through the existing ratchet session for `contact_id`.
+    pub fn decrypt_message(
+        &self,
+        contact_id: u64,
+        header: HeaderFfi,
+        ciphertext: Vec<u8>,
+        ad: Vec<u8>,
+    ) -> Result<Vec<u8>, CoreError> {
+        let hdr: Header = header.try_into()?;
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| CoreError::Session { msg: "mutex poisoned".into() })?;
+        let ratchet = sessions
+            .get_session(contact_id)
+            .ok_or_else(|| CoreError::Session { msg: "no session for contact".into() })?;
+        let plaintext = ratchet.decrypt(&hdr, &ciphertext, &ad)?;
+        Ok(plaintext)
     }
 }
 
@@ -180,5 +316,98 @@ mod tests {
             "poisoned mutex must surface as CoreError::Storage, got {:?}",
             result
         );
+    }
+
+    // ── Ratchet FFI surface ─────────────────────────────────────────────────
+
+    fn open_core(dir: &tempfile::TempDir, name: &str, key_byte: u8) -> Arc<ArciumCore> {
+        let path = dir.path().join(name).to_str().unwrap().to_string();
+        ArciumCore::new(path, key32(key_byte)).unwrap()
+    }
+
+    #[test]
+    fn ffi_roundtrip_alice_to_bob() {
+        let dir = tempdir().unwrap();
+        let alice = open_core(&dir, "alice.db", 0);
+        let bob = open_core(&dir, "bob.db", 1);
+
+        let root_key = vec![0x42u8; 32];
+        let bob_dh_sk = StaticSecret::random_from_rng(OsRng);
+        let bob_dh_pk = PublicKey::from(&bob_dh_sk);
+
+        alice
+            .create_session_alice(1, root_key.clone(), bob_dh_pk.as_bytes().to_vec())
+            .unwrap();
+        bob.create_session_bob(1, root_key, bob_dh_sk.to_bytes().to_vec()).unwrap();
+
+        let ad = b"test-ad".to_vec();
+        let msg = b"hello bob".to_vec();
+        let enc = alice.encrypt_message(1, msg.clone(), ad.clone()).unwrap();
+        let pt = bob.decrypt_message(1, enc.header, enc.ciphertext, ad).unwrap();
+
+        assert_eq!(pt, msg);
+    }
+
+    #[test]
+    fn encrypt_without_session_returns_error() {
+        let dir = tempdir().unwrap();
+        let core = open_core(&dir, "db", 0);
+
+        let result = core.encrypt_message(999, b"hi".to_vec(), b"ad".to_vec());
+        assert!(
+            matches!(result, Err(CoreError::Session { .. })),
+            "expected CoreError::Session, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn create_session_rejects_short_root_key() {
+        let dir = tempdir().unwrap();
+        let core = open_core(&dir, "db", 0);
+
+        let short_key = vec![0u8; 31];
+        let dh = vec![0u8; 32];
+        let result = core.create_session_alice(1, short_key, dh);
+        assert!(
+            matches!(result, Err(CoreError::InvalidKey { .. })),
+            "expected CoreError::InvalidKey, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn ffi_out_of_order_delivery() {
+        let dir = tempdir().unwrap();
+        let alice = open_core(&dir, "alice.db", 0);
+        let bob = open_core(&dir, "bob.db", 1);
+
+        let root_key = vec![0x11u8; 32];
+        let bob_dh_sk = StaticSecret::random_from_rng(OsRng);
+        let bob_dh_pk = PublicKey::from(&bob_dh_sk);
+
+        alice
+            .create_session_alice(2, root_key.clone(), bob_dh_pk.as_bytes().to_vec())
+            .unwrap();
+        bob.create_session_bob(2, root_key, bob_dh_sk.to_bytes().to_vec()).unwrap();
+
+        let ad = b"ooo-test".to_vec();
+        let m0 = alice.encrypt_message(2, b"msg-0".to_vec(), ad.clone()).unwrap();
+        let m1 = alice.encrypt_message(2, b"msg-1".to_vec(), ad.clone()).unwrap();
+        let m2 = alice.encrypt_message(2, b"msg-2".to_vec(), ad.clone()).unwrap();
+
+        let pt2 = bob.decrypt_message(2, m2.header, m2.ciphertext, ad.clone()).unwrap();
+        let pt1 = bob.decrypt_message(2, m1.header, m1.ciphertext, ad.clone()).unwrap();
+        let pt0 = bob.decrypt_message(2, m0.header, m0.ciphertext, ad).unwrap();
+
+        assert_eq!(pt2, b"msg-2");
+        assert_eq!(pt1, b"msg-1");
+        assert_eq!(pt0, b"msg-0");
+    }
+
+    #[test]
+    fn hash_contact_matches_core_crypto() {
+        let phone = "+15551234567".to_string();
+        assert_eq!(hash_contact(phone.clone()), core_crypto::contact_hash::hash_contact(&phone));
     }
 }

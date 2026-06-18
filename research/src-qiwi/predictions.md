@@ -56,16 +56,7 @@ available to the agent during that interval.
 
 **Status:** `supported weak`
 
-**Evidence basis note:** Support derives from elimination of alternative
-explanations (Obs-003, Obs-006) and timing consistency (Obs-002,
-Obs-004), not from direct observation of the synthesis mechanism.
-The specific in-session source(s), the origin path of Excerpt 2, and
-whether a prior conversational process existed remain unknown. No
-sourced observation directly identifies the mechanism responsible for
-the observed vocabulary and structure, which is why this prediction
-does not meet the conditions for `supported`. No durable observation
-currently contradicts it, which is why it has not moved to `weakened`.
-See `archive/investigations/excerpt2-evidence-ceiling-2026-06-16.md`
+**See:** `archive/investigations/excerpt2-evidence-ceiling-2026-06-16.md`
 for the full record of exhausted local source categories.
 
 **Supporting observations:**

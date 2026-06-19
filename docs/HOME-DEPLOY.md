@@ -81,9 +81,20 @@ npx mocha --require ts-node/register 'src/**/*.test.ts'
 ```bash
 # Build .so for Android
 cargo ndk -t arm64-v8a build -p mobile-ffi --release
-# Output: target/aarch64-linux-android/release/libmobile_ffi.so
+# Output: target/aarch64-linux-android/release/libarcium_core.so
+# (the crate-type/[lib] name in crates/mobile-ffi/Cargo.toml is "arcium_core",
+#  not the package name "mobile-ffi" — System.loadLibrary("arcium_core") expects this)
 # Copy to android/app/src/main/jniLibs/arm64-v8a/
 ```
+
+> **Current native binding status:** this step is not yet wired up.
+> `crates/mobile-ffi/build.rs` only declares a `cargo:rerun-if-changed` hook — it does not
+> invoke `uniffi-bindgen` to generate Kotlin bindings. The Kotlin-generated file
+> `uniffi/arcium_core/arcium_core.kt` does not exist yet; `android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt`
+> is a hand-written stub that mocks the future generated API and never calls
+> `System.loadLibrary`. Until `uniffi-bindgen generate` is added to the build and the
+> generated bindings replace the stub, `cargo ndk ... && cp libarcium_core.so jniLibs/`
+> alone will not make the FFI callable from Kotlin.
 
 ## Post-deploy verification
 

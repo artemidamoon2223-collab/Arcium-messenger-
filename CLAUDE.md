@@ -48,6 +48,59 @@ https://github.com/forrestchang/andrej-karpathy-skills
 
 ---
 
+## Граница проектов: Arcium Messenger и SRC/QIWI
+
+В репозитории живут два независимых проекта. Они не связаны друг с другом.
+
+### Arcium Messenger
+Продуктовый проект: Rust-крейты, Android-код, CI, Anchor-программа, FFI, конфигурация сборки.
+
+### SRC/QIWI
+Исследовательский/агентский проект. Живёт **только** в `research/src-qiwi/`.
+Содержит: наблюдения, предсказания, кейсы, архивные источники, материалы провенанса, handover-документы.
+
+### Правила
+
+**Область записи для SRC/QIWI задач:** только `research/src-qiwi/**`
+
+**❌ Не трогать при SRC/QIWI работе:**
+- `crates/**`, `android/**`, `arcium-psi/**`
+- `Cargo.toml`, `Cargo.lock`
+- Gradle-файлы, product build files
+- `.github/workflows/**` (если задача явно не касается CI)
+- Любой мессенджер-код, продуктовые зависимости
+
+**❌ Запрещено:**
+- Устанавливать пакеты
+- Добавлять агентов в мессенджер-рантайм
+- Связывать SRC/QIWI с мессенджером (в любую сторону)
+- Делать мессенджер-код зависимым от SRC/QIWI
+- Делать SRC/QIWI зависимым от мессенджер-кода
+
+**✅ Разрешено для SRC/QIWI задач:**
+```
+research/src-qiwi/README.md
+research/src-qiwi/HANDOVER.md
+research/src-qiwi/OBJECT_OF_STUDY.md
+research/src-qiwi/OBSERVATIONS.md
+research/src-qiwi/predictions.md
+research/src-qiwi/cases.md
+research/src-qiwi/archive/**
+```
+
+**Чеклист перед каждым SRC/QIWI коммитом:**
+```
+☐ Изменены только research/src-qiwi/**  →  да
+☐ Мессенджер-код не тронут             →  да
+☐ Build/dependency файлы не тронуты    →  да
+☐ Пакеты не установлены                →  да
+☐ Runtime-интеграция не добавлена      →  да
+```
+
+Если задача SRC/QIWI требует трогать мессенджер-код — **стоп**, запросить явное одобрение человека.
+
+---
+
 ## КРИТИЧЕСКИЕ архитектурные правила
 
 ### Криптография — два РАЗНЫХ слоя, не путать:

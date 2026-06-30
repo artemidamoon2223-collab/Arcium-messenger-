@@ -6,6 +6,7 @@ members = [
     "crates/core-storage",
     "crates/core-transport",
     "crates/mobile-ffi",
+    "crates/security-events",
 ]
 
 [workspace.package]

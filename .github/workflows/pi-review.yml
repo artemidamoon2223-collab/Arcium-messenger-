@@ -23,7 +23,7 @@ jobs:
           node-version: '20'
 
       - name: Install pi agent
-        run: npm install -g @earendil-works/pi-coding-agent
+        run: npm install -g @earendil-works/pi-coding-agent@0.79.4
 
       - name: Run Pi × Claude Review
         id: pi_run

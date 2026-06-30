@@ -18,8 +18,7 @@ jobs:
       - name: Build native artifact baseline
         shell: bash
         run: |
-          set -Eeuo pipefail
-          trap 'rc=$?; printf "STAGE_3A_FAILURE_EXIT=%s\n" "${rc}" >&2; printf "STAGE_3A_FAILURE_LINE=%s\n" "${LINENO}" >&2; printf "STAGE_3A_FAILURE_COMMAND=%q\n" "${BASH_COMMAND}" >&2; exit "${rc}"' ERR
+          set -euo pipefail
 
           TARGET="x86_64-linux-android"
           ABI="x86_64"
@@ -119,32 +118,47 @@ jobs:
           rm -rf "${HOST_TARGET_DIR}" "${ANDROID_TARGET_DIR}" "${OUT}"
           mkdir -p "${OUT}/lib/${ABI}" "${OUT}/kotlin"
 
-          printf '%s\n' 'STAGE_3A_CHECKPOINT=HOST_BUILD_START'
           CARGO_TARGET_DIR="${HOST_TARGET_DIR}" \
             cargo build --locked -p mobile-ffi --release
-          printf '%s\n' 'STAGE_3A_CHECKPOINT=HOST_BUILD_COMPLETED'
 
           HOST_LIB="${HOST_TARGET_DIR}/release/libarcium_core.so"
-          printf 'STAGE_3A_HOST_LIBRARY_PATH=%s\n' "${HOST_LIB}"
-          printf '%s\n' 'STAGE_3A_CHECKPOINT=HOST_LIBRARY_CHECK_START'
-          test -s "${HOST_LIB}"
-          printf '%s\n' 'STAGE_3A_CHECKPOINT=HOST_LIBRARY_CHECK_COMPLETED'
+          if [[ ! -s "${HOST_LIB}" ]]; then
+            printf 'STAGE_3A_EXPLICIT_FAILURE=HOST_LIBRARY_MISSING_OR_EMPTY\n' >&2
+            printf 'STAGE_3A_HOST_LIBRARY_PATH=%s\n' "${HOST_LIB}" >&2
+            exit 70
+          fi
 
-          printf '%s\n' 'STAGE_3A_CHECKPOINT=BINDGEN_GENERATE_START'
-          "${BINDGEN}" \
+          printf 'STAGE_3A_HOST_LIBRARY_CHECK=PASS path=%s\n' "${HOST_LIB}"
+
+          printf '%s\n' 'STAGE_3A_BINDGEN_GENERATE=START'
+
+          if ! "${BINDGEN}" \
             generate \
             --library "${HOST_LIB}" \
             --language kotlin \
-            --out-dir "${OUT}/kotlin"
-          printf '%s\n' 'STAGE_3A_CHECKPOINT=BINDGEN_GENERATE_COMPLETED'
+            --out-dir "${OUT}/kotlin"; then
+            printf '%s\n' 'STAGE_3A_EXPLICIT_FAILURE=UNIFFI_BINDGEN_GENERATE_FAILED' >&2
+            exit 71
+          fi
+
+          printf '%s\n' 'STAGE_3A_BINDGEN_GENERATE=PASS'
           printf '%s\n' 'STAGE_3A_GENERATED_KOTLIN_FILES_BEGIN'
           find "${OUT}/kotlin" -type f -name '*.kt' -print | LC_ALL=C sort
           printf '%s\n' 'STAGE_3A_GENERATED_KOTLIN_FILES_END'
-          printf '%s\n' 'STAGE_3A_CHECKPOINT=EXPECTED_KOTLIN_FILE_LOOKUP_START'
+
           KOTLIN_FILE="$(find "${OUT}/kotlin" -type f -name 'arcium_core.kt' -print -quit)"
-          printf 'STAGE_3A_EXPECTED_KOTLIN_FILE=%s\n' "${KOTLIN_FILE}"
-          test -n "${KOTLIN_FILE}"
-          test -s "${KOTLIN_FILE}"
+
+          if [[ -z "${KOTLIN_FILE}" ]]; then
+            printf '%s\n' 'STAGE_3A_EXPLICIT_FAILURE=EXPECTED_ARCIUM_CORE_KT_NOT_FOUND' >&2
+            exit 72
+          fi
+
+          if [[ ! -s "${KOTLIN_FILE}" ]]; then
+            printf 'STAGE_3A_EXPLICIT_FAILURE=EXPECTED_ARCIUM_CORE_KT_EMPTY path=%s\n' "${KOTLIN_FILE}" >&2
+            exit 73
+          fi
+
+          printf 'STAGE_3A_EXPECTED_KOTLIN_FILE=PASS path=%s\n' "${KOTLIN_FILE}"
 
           export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
           export CC_x86_64_linux_android="${TOOLCHAIN}/bin/x86_64-linux-android26-clang"

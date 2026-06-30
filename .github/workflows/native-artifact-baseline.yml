@@ -1,0 +1,150 @@
+name: Native Artifact Baseline
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build native artifact baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET="x86_64-linux-android"
+          ABI="x86_64"
+          API="26"
+          NDK_PACKAGE="ndk;27.2.12479018"
+
+          test -f crates/mobile-ffi/Cargo.toml
+          test -f crates/mobile-ffi/src/lib.rs
+          grep -Fq 'name = "arcium_core"' crates/mobile-ffi/Cargo.toml
+          grep -Fq 'crate-type = ["cdylib", "staticlib"]' crates/mobile-ffi/Cargo.toml
+          grep -Eq 'minSdk[[:space:]]*=[[:space:]]*26' android/app/build.gradle.kts
+
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not set}}"
+          SDKMANAGER="${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "${SDKMANAGER}"
+
+          set +e
+          yes | "${SDKMANAGER}" --licenses >/dev/null
+          sdk_rc="${PIPESTATUS[1]}"
+          set -e
+          test "${sdk_rc}" -eq 0
+
+          "${SDKMANAGER}" "${NDK_PACKAGE}"
+
+          ANDROID_NDK_ROOT="${SDK_ROOT}/ndk/27.2.12479018"
+          TOOLCHAIN="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
+          test -x "${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
+          test -x "${TOOLCHAIN}/bin/llvm-ar"
+          test -x "${TOOLCHAIN}/bin/llvm-ranlib"
+          test -x "${TOOLCHAIN}/bin/llvm-readelf"
+
+          rustup target add "${TARGET}"
+
+          cargo generate-lockfile
+          test -s Cargo.lock
+
+          UNIFFI_VERSION="$(
+            awk '
+              $0 == "name = \"uniffi\"" { found=1; next }
+              found && /^version = / {
+                gsub(/"/, "", $3)
+                print $3
+                exit
+              }
+            ' Cargo.lock
+          )"
+          test -n "${UNIFFI_VERSION}"
+
+          cargo install \
+            --locked \
+            --root "${RUNNER_TEMP}/uniffi-tools" \
+            uniffi_bindgen \
+            --version "${UNIFFI_VERSION}"
+
+          BINDGEN="${RUNNER_TEMP}/uniffi-tools/bin/uniffi-bindgen"
+          test -x "${BINDGEN}"
+
+          HOST_TARGET_DIR="${RUNNER_TEMP}/arcium-host-target"
+          ANDROID_TARGET_DIR="${RUNNER_TEMP}/arcium-android-target"
+          OUT="${RUNNER_TEMP}/arcium-native-artifacts-x86_64"
+
+          rm -rf "${HOST_TARGET_DIR}" "${ANDROID_TARGET_DIR}" "${OUT}"
+          mkdir -p "${OUT}/lib/${ABI}" "${OUT}/kotlin"
+
+          CARGO_TARGET_DIR="${HOST_TARGET_DIR}" \
+            cargo build --locked -p mobile-ffi --release
+
+          HOST_LIB="${HOST_TARGET_DIR}/release/libarcium_core.so"
+          test -s "${HOST_LIB}"
+
+          "${BINDGEN}" \
+            generate \
+            --library "${HOST_LIB}" \
+            --language kotlin \
+            --out-dir "${OUT}/kotlin"
+
+          KOTLIN_FILE="$(find "${OUT}/kotlin" -type f -name 'arcium_core.kt' -print -quit)"
+          test -n "${KOTLIN_FILE}"
+          test -s "${KOTLIN_FILE}"
+
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
+          export CC_x86_64_linux_android="${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
+          export CXX_x86_64_linux_android="${TOOLCHAIN}/bin/x86_64-linux-android26-clang++"
+          export AR_x86_64_linux_android="${TOOLCHAIN}/bin/llvm-ar"
+          export RANLIB_x86_64_linux_android="${TOOLCHAIN}/bin/llvm-ranlib"
+
+          CARGO_TARGET_DIR="${ANDROID_TARGET_DIR}" \
+            cargo build --locked -p mobile-ffi --release --target "${TARGET}"
+
+          ANDROID_LIB="${ANDROID_TARGET_DIR}/${TARGET}/release/libarcium_core.so"
+          test -s "${ANDROID_LIB}"
+
+          cp "${ANDROID_LIB}" "${OUT}/lib/${ABI}/libarcium_core.so"
+
+          "${TOOLCHAIN}/bin/llvm-readelf" -h "${OUT}/lib/${ABI}/libarcium_core.so" > "${OUT}/ELF_HEADER.txt"
+          grep -Eq 'Machine:.*(X86-64|Advanced Micro Devices)' "${OUT}/ELF_HEADER.txt"
+
+          {
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "crate=mobile-ffi"
+            echo "native_library=libarcium_core.so"
+            echo "target=${TARGET}"
+            echo "abi=${ABI}"
+            echo "android_api=${API}"
+            echo "ndk_package=${NDK_PACKAGE}"
+            echo "uniffi_version=${UNIFFI_VERSION}"
+            echo "runner_lockfile_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
+            echo "runner_lockfile_ephemeral=true"
+            echo "rustc=$(rustc --version)"
+            echo "cargo=$(cargo --version)"
+            echo "generated_kotlin_path=${KOTLIN_FILE#${OUT}/}"
+            echo "kotlin_package=$(grep -m1 '^package ' "${KOTLIN_FILE}" || true)"
+          } > "${OUT}/METADATA.txt"
+
+          (
+            cd "${OUT}"
+            sha256sum "lib/${ABI}/libarcium_core.so" \
+              "${KOTLIN_FILE#${OUT}/}" \
+              METADATA.txt \
+              ELF_HEADER.txt > SHA256SUMS
+          )
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: arcium-native-artifacts-x86_64
+          path: ${{ runner.temp }}/arcium-native-artifacts-x86_64
+          if-no-files-found: error
+          retention-days: 7

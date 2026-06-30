@@ -18,7 +18,8 @@ jobs:
       - name: Build native artifact baseline
         shell: bash
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
+          trap 'rc=$?; printf "STAGE_3A_FAILURE_EXIT=%s\n" "${rc}" >&2; printf "STAGE_3A_FAILURE_LINE=%s\n" "${LINENO}" >&2; printf "STAGE_3A_FAILURE_COMMAND=%q\n" "${BASH_COMMAND}" >&2; exit "${rc}"' ERR
 
           TARGET="x86_64-linux-android"
           ABI="x86_64"
@@ -118,19 +119,30 @@ jobs:
           rm -rf "${HOST_TARGET_DIR}" "${ANDROID_TARGET_DIR}" "${OUT}"
           mkdir -p "${OUT}/lib/${ABI}" "${OUT}/kotlin"
 
+          printf '%s\n' 'STAGE_3A_CHECKPOINT=HOST_BUILD_START'
           CARGO_TARGET_DIR="${HOST_TARGET_DIR}" \
             cargo build --locked -p mobile-ffi --release
+          printf '%s\n' 'STAGE_3A_CHECKPOINT=HOST_BUILD_COMPLETED'
 
           HOST_LIB="${HOST_TARGET_DIR}/release/libarcium_core.so"
+          printf 'STAGE_3A_HOST_LIBRARY_PATH=%s\n' "${HOST_LIB}"
+          printf '%s\n' 'STAGE_3A_CHECKPOINT=HOST_LIBRARY_CHECK_START'
           test -s "${HOST_LIB}"
+          printf '%s\n' 'STAGE_3A_CHECKPOINT=HOST_LIBRARY_CHECK_COMPLETED'
 
+          printf '%s\n' 'STAGE_3A_CHECKPOINT=BINDGEN_GENERATE_START'
           "${BINDGEN}" \
             generate \
             --library "${HOST_LIB}" \
             --language kotlin \
             --out-dir "${OUT}/kotlin"
-
+          printf '%s\n' 'STAGE_3A_CHECKPOINT=BINDGEN_GENERATE_COMPLETED'
+          printf '%s\n' 'STAGE_3A_GENERATED_KOTLIN_FILES_BEGIN'
+          find "${OUT}/kotlin" -type f -name '*.kt' -print | LC_ALL=C sort
+          printf '%s\n' 'STAGE_3A_GENERATED_KOTLIN_FILES_END'
+          printf '%s\n' 'STAGE_3A_CHECKPOINT=EXPECTED_KOTLIN_FILE_LOOKUP_START'
           KOTLIN_FILE="$(find "${OUT}/kotlin" -type f -name 'arcium_core.kt' -print -quit)"
+          printf 'STAGE_3A_EXPECTED_KOTLIN_FILE=%s\n' "${KOTLIN_FILE}"
           test -n "${KOTLIN_FILE}"
           test -s "${KOTLIN_FILE}"
 

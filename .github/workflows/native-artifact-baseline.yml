@@ -67,13 +67,46 @@ jobs:
           )"
           test -n "${UNIFFI_VERSION}"
 
-          cargo install \
-            --locked \
-            --root "${RUNNER_TEMP}/uniffi-tools" \
-            uniffi \
-            --version "${UNIFFI_VERSION}" \
-            --features cli \
-            --bin uniffi-bindgen
+          HELPER_DIR="${RUNNER_TEMP}/uniffi-bindgen-helper"
+          HELPER_TARGET_DIR="${RUNNER_TEMP}/uniffi-bindgen-helper-target"
+
+          rm -rf \
+            "${HELPER_DIR}" \
+            "${HELPER_TARGET_DIR}" \
+            "${RUNNER_TEMP}/uniffi-tools"
+
+          mkdir -p "${HELPER_DIR}/src"
+
+          cat > "${HELPER_DIR}/Cargo.toml" <<EOF
+          [package]
+          name = "arcium-uniffi-bindgen-helper"
+          version = "0.1.0"
+          edition = "2021"
+          publish = false
+
+          [[bin]]
+          name = "uniffi-bindgen"
+          path = "src/main.rs"
+
+          [dependencies]
+          uniffi = { version = "=${UNIFFI_VERSION}", features = ["cli"] }
+          EOF
+
+          cat > "${HELPER_DIR}/src/main.rs" <<'EOF'
+          fn main() {
+              uniffi::uniffi_bindgen_main();
+          }
+          EOF
+
+          cargo generate-lockfile --manifest-path "${HELPER_DIR}/Cargo.toml"
+          test -s "${HELPER_DIR}/Cargo.lock"
+
+          CARGO_TARGET_DIR="${HELPER_TARGET_DIR}" \
+            cargo install \
+              --locked \
+              --path "${HELPER_DIR}" \
+              --root "${RUNNER_TEMP}/uniffi-tools" \
+              --bin uniffi-bindgen
 
           BINDGEN="${RUNNER_TEMP}/uniffi-tools/bin/uniffi-bindgen"
           test -x "${BINDGEN}"
@@ -129,6 +162,8 @@ jobs:
             echo "uniffi_version=${UNIFFI_VERSION}"
             echo "runner_lockfile_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
             echo "runner_lockfile_ephemeral=true"
+            echo "bindgen_helper_ephemeral=true"
+            echo "bindgen_helper_lockfile_sha256=$(sha256sum "${HELPER_DIR}/Cargo.lock" | awk '{print $1}')"
             echo "rustc=$(rustc --version)"
             echo "cargo=$(cargo --version)"
             echo "generated_kotlin_path=${KOTLIN_FILE#${OUT}/}"

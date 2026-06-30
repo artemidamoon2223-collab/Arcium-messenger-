@@ -70,8 +70,10 @@ jobs:
           cargo install \
             --locked \
             --root "${RUNNER_TEMP}/uniffi-tools" \
-            uniffi_bindgen \
-            --version "${UNIFFI_VERSION}"
+            uniffi \
+            --version "${UNIFFI_VERSION}" \
+            --features cli \
+            --bin uniffi-bindgen
 
           BINDGEN="${RUNNER_TEMP}/uniffi-tools/bin/uniffi-bindgen"
           test -x "${BINDGEN}"

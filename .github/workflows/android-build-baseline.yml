@@ -22,12 +22,15 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Prepare Android SDK components
+      - name: Verify required Android SDK components
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not set}}"
+          SDKMANAGER="${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "${SDKMANAGER}"
+          test -d "${SDK_ROOT}/platforms/android-34"
+          test -d "${SDK_ROOT}/build-tools/34.0.0"
 
       - name: Assemble debug APK
         working-directory: android

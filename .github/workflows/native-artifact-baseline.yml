@@ -49,6 +49,7 @@ jobs:
           test -x "${TOOLCHAIN}/bin/llvm-ar"
           test -x "${TOOLCHAIN}/bin/llvm-ranlib"
           test -x "${TOOLCHAIN}/bin/llvm-readelf"
+          test -x "${TOOLCHAIN}/bin/llvm-nm"
 
           rustup target add "${TARGET}"
 
@@ -119,7 +120,8 @@ jobs:
           mkdir -p "${OUT}/lib/${ABI}" "${OUT}/kotlin"
 
           CARGO_TARGET_DIR="${HOST_TARGET_DIR}" \
-            cargo build --locked -p mobile-ffi --release
+            cargo --config 'profile.release.strip=false' \
+            build --locked -p mobile-ffi --release
 
           HOST_LIB="${HOST_TARGET_DIR}/release/libarcium_core.so"
           if [[ ! -s "${HOST_LIB}" ]]; then
@@ -129,6 +131,18 @@ jobs:
           fi
 
           printf 'STAGE_3A_HOST_LIBRARY_CHECK=PASS path=%s\n' "${HOST_LIB}"
+
+          HOST_METADATA_SYMBOLS="${OUT}/HOST_UNIFFI_METADATA_SYMBOLS.txt"
+
+          if ! "${TOOLCHAIN}/bin/llvm-nm" --defined-only "${HOST_LIB}" \
+            | grep -F 'UNIFFI_META' > "${HOST_METADATA_SYMBOLS}"; then
+            printf '%s\n' 'STAGE_3A_EXPLICIT_FAILURE=HOST_UNIFFI_METADATA_SYMBOLS_NOT_FOUND' >&2
+            exit 74
+          fi
+
+          test -s "${HOST_METADATA_SYMBOLS}"
+          printf 'STAGE_3A_HOST_UNIFFI_METADATA_SYMBOLS=PASS path=%s\n' \
+            "${HOST_METADATA_SYMBOLS}"
 
           printf '%s\n' 'STAGE_3A_BINDGEN_GENERATE=START'
 
@@ -201,7 +215,8 @@ jobs:
             sha256sum "lib/${ABI}/libarcium_core.so" \
               "${KOTLIN_FILE#${OUT}/}" \
               METADATA.txt \
-              ELF_HEADER.txt > SHA256SUMS
+              ELF_HEADER.txt \
+              HOST_UNIFFI_METADATA_SYMBOLS.txt > SHA256SUMS
           )
 
       - name: Upload native artifacts

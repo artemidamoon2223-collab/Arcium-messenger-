@@ -144,7 +144,38 @@ impl DoubleRatchet {
         Ok((header, ct))
     }
 
-    pub fn decrypt(&mut self, header: &Header, ciphertext: &[u8], ad: &[u8]) -> Result<Vec<u8>, RatchetError> {
+    /// Decrypt with commit-on-success semantics.
+    ///
+    /// `decrypt_inner` mutates ratchet state (skipped keys, DH ratchet step, chain
+    /// advance) *before* the final AEAD authentication result is known. A forged or
+    /// unknown-DH message that fails authentication must not desync the session, so
+    /// we snapshot all mutable state up front and roll it back on any error. State is
+    /// only kept when authentication succeeds.
+    pub fn decrypt(
+        &mut self,
+        header: &Header,
+        ciphertext: &[u8],
+        ad: &[u8],
+    ) -> Result<Vec<u8>, RatchetError> {
+        let snapshot = self.snapshot();
+        match self.decrypt_inner(header, ciphertext, ad) {
+            // `snapshot` falls out of scope here and its `Drop` impl zeroizes the
+            // unused rollback copy — including on panic/unwind, not just this
+            // ordinary return.
+            Ok(pt) => Ok(pt),
+            Err(e) => {
+                self.restore(snapshot);
+                Err(e)
+            }
+        }
+    }
+
+    fn decrypt_inner(
+        &mut self,
+        header: &Header,
+        ciphertext: &[u8],
+        ad: &[u8],
+    ) -> Result<Vec<u8>, RatchetError> {
         let full_ad = concat_ad(ad, &header.to_bytes());
 
         // 1. Check skipped keys first (handles out-of-order and across-chain late arrivals).
@@ -173,6 +204,45 @@ impl DoubleRatchet {
         self.nr += 1;
 
         aead_decrypt(&mk, ciphertext, &full_ad)
+    }
+
+    /// Capture all mutable state so a failed `decrypt_inner` can be rolled back.
+    fn snapshot(&self) -> RatchetSnapshot {
+        RatchetSnapshot {
+            dhs: Some(self.dhs.clone()),
+            dhr: self.dhr,
+            rk: self.rk,
+            cks: self.cks,
+            ckr: self.ckr,
+            ns: self.ns,
+            nr: self.nr,
+            pn: self.pn,
+            skipped: Some(self.skipped.clone()),
+        }
+    }
+
+    /// Restore a snapshot, wiping the discarded (mutated) secret material first.
+    ///
+    /// `snap`'s non-`Copy` secret fields (`dhs`, `skipped`) are taken out via
+    /// `Option::take`, which is a field-level mutation through `&mut` rather than a
+    /// partial move of `snap` itself — so it stays legal even though `RatchetSnapshot`
+    /// implements `Drop`. `snap` is then dropped normally at the end of this function,
+    /// and its `Drop` impl zeroizes whatever it still owns (the stale `Copy` field
+    /// values `rk`/`cks`/`ckr`, which were only copied — not moved — into `self`).
+    fn restore(&mut self, mut snap: RatchetSnapshot) {
+        self.zeroize_key_material(); // zero the abandoned rk/cks/ckr/skipped copies
+        self.dhs = snap.dhs.take().expect("snapshot dhs is always populated");
+        self.dhr = snap.dhr;
+        self.rk = snap.rk;
+        self.cks = snap.cks;
+        self.ckr = snap.ckr;
+        self.ns = snap.ns;
+        self.nr = snap.nr;
+        self.pn = snap.pn;
+        self.skipped = snap
+            .skipped
+            .take()
+            .expect("snapshot skipped is always populated");
     }
 
     fn skip_message_keys(&mut self, until: u32) -> Result<(), RatchetError> {
@@ -244,6 +314,50 @@ impl DoubleRatchet {
 impl Drop for DoubleRatchet {
     fn drop(&mut self) {
         self.zeroize_key_material();
+    }
+}
+
+/// Rollback copy of `DoubleRatchet` mutable state, used for commit-on-success
+/// decryption. Holds secret key material.
+///
+/// The non-`Copy` secret-bearing fields (`dhs`, `skipped`) are wrapped in `Option`
+/// so `restore()` can extract them with `Option::take` (a field mutation, not a
+/// partial move of `self`) while this type still implements `Drop`. That `Drop`
+/// impl is what makes zeroization automatic on every ordinary exit path (the
+/// success path of `decrypt`, where the snapshot is simply never used again) *and*
+/// on unwind: if `decrypt_inner` panics, Rust runs live stack destructors during
+/// unwinding by default, so this snapshot's `Drop::drop` still fires and the copied
+/// secrets are wiped rather than leaked as unreachable-but-unzeroed stack/heap
+/// memory. (This relies on the crate not being built with `panic = "abort"`; that is
+/// a workspace-level `Cargo.toml` profile setting, out of scope for this patch.)
+struct RatchetSnapshot {
+    dhs: Option<StaticSecret>,
+    dhr: Option<PublicKey>,
+    rk: RootKey,
+    cks: Option<ChainKey>,
+    ckr: Option<ChainKey>,
+    ns: u32,
+    nr: u32,
+    pn: u32,
+    skipped: Option<IndexMap<([u8; 32], u32), MessageKey>>,
+}
+
+impl Drop for RatchetSnapshot {
+    fn drop(&mut self) {
+        self.rk.zeroize();
+        if let Some(ref mut k) = self.cks {
+            k.zeroize();
+        }
+        if let Some(ref mut k) = self.ckr {
+            k.zeroize();
+        }
+        if let Some(ref mut m) = self.skipped {
+            for v in m.values_mut() {
+                v.zeroize();
+            }
+        }
+        // dhs, if still present (not taken by restore()), zeroizes itself on drop
+        // via StaticSecret's own ZeroizeOnDrop when this Option<StaticSecret> drops.
     }
 }
 
@@ -388,6 +502,119 @@ mod tests {
         assert!(!dr.skipped.contains_key(&(dhr, 0)), "oldest evicted");
         assert!(dr.skipped.contains_key(&(dhr, 3)), "recently-skipped key survived");
         assert_eq!(dr.skipped[&(dhr, 3)], recent_mk, "recently-skipped key value intact");
+    }
+
+    /// Establish a matched Alice/Bob ratchet pair sharing one root key.
+    fn established_pair() -> (DoubleRatchet, DoubleRatchet) {
+        let root = [7u8; 32];
+        let bob_spk = StaticSecret::random_from_rng(OsRng);
+        let bob_pk = PublicKey::from(&bob_spk);
+        let alice = DoubleRatchet::init_alice(root, bob_pk);
+        let bob = DoubleRatchet::init_bob(root, bob_spk);
+        (alice, bob)
+    }
+
+    /// F-1 regression: a forged / unknown-DH message that fails AEAD authentication
+    /// must not mutate ratchet state. Without commit-on-success the failed decrypt
+    /// performs a DH ratchet step, desyncing the session so the next genuine message
+    /// can no longer be decrypted.
+    #[test]
+    fn forged_unknown_dh_message_does_not_mutate_state() {
+        let (mut alice, mut bob) = established_pair();
+        let ad = b"assoc";
+
+        // Alice sends a genuine message; Bob has not received it yet.
+        let (hdr1, ct1) = alice.encrypt(b"hello", ad).unwrap();
+
+        // Forge a message: unknown DH public key + garbage ciphertext.
+        let attacker_dh = *PublicKey::from(&StaticSecret::random_from_rng(OsRng)).as_bytes();
+        let forged_hdr = Header {
+            dh: attacker_dh,
+            pn: 0,
+            n: 0,
+        };
+        let forged_ct = vec![0u8; NONCE_SIZE + 16];
+
+        // Fingerprint Bob's pre-attack state.
+        let before_dhr = bob.dhr;
+        let before_rk = bob.rk;
+        let before_cks = bob.cks;
+        let before_ckr = bob.ckr;
+        let before_ns = bob.ns;
+        let before_nr = bob.nr;
+        let before_pn = bob.pn;
+        let before_skipped = bob.skipped.len();
+        let before_dhs = *PublicKey::from(&bob.dhs).as_bytes();
+
+        // Forged message must fail authentication.
+        assert!(bob.decrypt(&forged_hdr, &forged_ct, ad).is_err());
+
+        // State must be untouched by the failed decrypt.
+        assert_eq!(bob.dhr, before_dhr, "dhr must not change on failed decrypt");
+        assert_eq!(bob.rk, before_rk, "root key must not change");
+        assert_eq!(bob.cks, before_cks, "sending chain key must not change");
+        assert_eq!(bob.ckr, before_ckr, "receiving chain key must not change");
+        assert_eq!(bob.ns, before_ns, "send counter must not change");
+        assert_eq!(bob.nr, before_nr, "receive counter must not change");
+        assert_eq!(bob.pn, before_pn, "previous-chain counter must not change");
+        assert_eq!(bob.skipped.len(), before_skipped, "skipped keys must not change");
+        assert_eq!(*PublicKey::from(&bob.dhs).as_bytes(), before_dhs, "dhs must not change");
+
+        // The genuine message still decrypts — proof the session was not desynced.
+        let pt = bob.decrypt(&hdr1, &ct1, ad).unwrap();
+        assert_eq!(pt, b"hello");
+
+        // Bidirectional check: the forged attempt left the session fully usable in
+        // the *other* direction too — Bob can reply and Alice can decrypt it.
+        let (hdr2, ct2) = bob.encrypt(b"hi alice", ad).unwrap();
+        let pt2 = alice.decrypt(&hdr2, &ct2, ad).unwrap();
+        assert_eq!(pt2, b"hi alice");
+    }
+
+    /// F-1 regression: the early skipped-key lookup (`skipped.swap_remove`) mutates
+    /// `self.skipped` before the AEAD result is known. A forged ciphertext reusing a
+    /// legitimately stored skipped key's `(dh, n)` coordinates must fail
+    /// authentication without consuming that stored key, and the real delayed
+    /// message must still decrypt afterward.
+    #[test]
+    fn forged_ciphertext_reusing_skipped_key_header_does_not_consume_key() {
+        let (mut alice, mut bob) = established_pair();
+        let ad = b"assoc";
+
+        // Alice sends three messages on the same sending chain; Bob receives only
+        // the third, which forces him to store keys for message 0 and 1 as skipped.
+        let (hdr0, ct0) = alice.encrypt(b"zero", ad).unwrap();
+        let (_hdr1, _ct1) = alice.encrypt(b"one", ad).unwrap();
+        let (hdr2, ct2) = alice.encrypt(b"two", ad).unwrap();
+
+        let pt2 = bob.decrypt(&hdr2, &ct2, ad).unwrap();
+        assert_eq!(pt2, b"two");
+        assert!(
+            bob.skipped.contains_key(&(hdr0.dh, hdr0.n)),
+            "message 0's key must have been stored as skipped"
+        );
+        let before_skipped_len = bob.skipped.len();
+
+        // Attacker knows the header is public (dh, n are sent in cleartext) but not
+        // the derived message key, so a forged ciphertext at hdr0's coordinates must
+        // fail authentication.
+        let forged_ct = vec![0u8; ct0.len()];
+        assert!(bob.decrypt(&hdr0, &forged_ct, ad).is_err());
+
+        // The stored skipped key must survive the failed forged attempt.
+        assert_eq!(
+            bob.skipped.len(),
+            before_skipped_len,
+            "forged decrypt must not consume the stored skipped key"
+        );
+        assert!(
+            bob.skipped.contains_key(&(hdr0.dh, hdr0.n)),
+            "skipped key for message 0 must still be present after the forged attempt"
+        );
+
+        // The genuine delayed message must still decrypt using the untouched key.
+        let pt0 = bob.decrypt(&hdr0, &ct0, ad).unwrap();
+        assert_eq!(pt0, b"zero");
     }
 
     #[test]

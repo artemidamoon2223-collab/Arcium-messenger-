@@ -23,7 +23,8 @@ jobs:
           node-version: '20'
 
       - name: Install pi agent
-        run: npm install -g @earendil-works/pi-coding-agent
+        # Pinned to exact published version (was unversioned; resolved from npm on 2026-07-02).
+        run: npm install -g @earendil-works/pi-coding-agent@0.80.3
 
       - name: Run Pi × Claude Review
         id: pi_run

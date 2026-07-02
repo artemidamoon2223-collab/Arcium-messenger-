@@ -23,7 +23,8 @@ jobs:
         # ANTHROPIC_API_KEY, renew the key — do NOT re-add continue-on-error.
         # run-every-commit: true — bypasses the action's cache-based skip (marker.json).
         # Without it, runs 2+ on the same PR are silently skipped (exits 0, no results file).
-        uses: anthropics/claude-code-security-review@main
+        # Pinned to immutable commit SHA (was @main; resolved from upstream refs/heads/main on 2026-07-02).
+        uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
         with:
           claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           run-every-commit: 'true'

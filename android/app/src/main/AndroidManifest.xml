@@ -12,6 +12,7 @@
 
     <application
         android:name=".ArciumApp"
+        android:allowBackup="false"
         android:label="Arcium Messenger"
         android:theme="@style/Theme.ArciumMessenger"
         android:supportsRtl="true">

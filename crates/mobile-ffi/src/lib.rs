@@ -78,7 +78,13 @@ impl ArciumCore {
     }
 
     pub fn load_identity(&self) -> Option<Arc<Identity>> {
-        let bytes = match self.store.lock().unwrap().get(IDENTITY_KEY) {
+        // A poisoned mutex must not panic across the FFI boundary; treat the
+        // store as unavailable, consistent with save_identity's error path.
+        let store = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return None,
+        };
+        let bytes = match store.get(IDENTITY_KEY) {
             Ok(b) => b,
             Err(_) => return None, // NotFound or wrong-key Decryption → None
         };
@@ -179,6 +185,26 @@ mod tests {
             matches!(result, Err(CoreError::Storage { .. })),
             "poisoned mutex must surface as CoreError::Storage, got {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn load_identity_returns_none_on_poisoned_mutex() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("db").to_str().unwrap().to_string();
+        let core = Arc::new(ArciumCore::new(path, key32(0)).unwrap());
+        core.save_identity(Identity::generate()).unwrap();
+        // Poison the mutex by panicking while holding the lock in another thread.
+        let core2 = Arc::clone(&core);
+        let _ = std::thread::spawn(move || {
+            let _guard = core2.store.lock().unwrap();
+            panic!("poison");
+        })
+        .join();
+        // The mutex is now poisoned; load_identity must return None, not panic.
+        assert!(
+            core.load_identity().is_none(),
+            "poisoned mutex must yield None, not a panic across FFI"
         );
     }
 }

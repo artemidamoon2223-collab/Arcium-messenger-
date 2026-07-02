@@ -85,7 +85,7 @@ impl ArciumCore {
             Err(_) => return None,
         };
         let bytes = match store.get(IDENTITY_KEY) {
-            Ok(b) => b,
+            Ok(b) => Zeroizing::new(b),
             Err(_) => return None, // NotFound or wrong-key Decryption → None
         };
         if bytes.len() != 64 {

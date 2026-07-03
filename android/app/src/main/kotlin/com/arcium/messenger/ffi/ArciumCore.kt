@@ -1,51 +1,31 @@
 package com.arcium.messenger.ffi
 
 /**
- * Temporary manual Kotlin interface mocking future UniFFI-generated bindings.
+ * Thin wrapper around the real UniFFI-generated bindings for the `mobile-ffi`
+ * Rust crate (native library `arcium_core`).
  *
- * UniFFI will generate `uniffi/arcium_core/arcium_core.kt` from `mobile-ffi`.
- * Replace stubs with generated calls, e.g.:
- *   uniffi.arcium_core.Identity.generate().publicKeyBytes()
+ * x86_64 Android development/emulator builds only — arm64-v8a is not built or
+ * packaged by this bridge.
  *
- * CRITICAL: all crypto (X3DH, Double Ratchet, RescueCipher) and Tor (arti)
- * stay in Rust. Kotlin only calls through FFI — never reimplements crypto.
+ * This wrapper intentionally exposes only the FFI smoke boundary
+ * (`checkBridge()`). Identity, ratchet, storage, and transport are not wired
+ * into the Android app through this class yet.
  */
+private object ArciumNativeLibrary {
+    init {
+        System.loadLibrary("arcium_core")
+    }
+}
+
 class ArciumCoreWrapper {
 
-    init {
-        // TODO: System.loadLibrary("arcium_core") once .so is in jniLibs/
-    }
-
-    fun generateIdentity(): ByteArray {
-        // TODO: uniffi.arcium_core.Identity.generate().publicKeyBytes()
-        return ByteArray(32)
-    }
-
-    fun x3dhInit(peerPublicKey: ByteArray): ByteArray {
-        // TODO: wire to Rust X3DH in core-crypto
-        return ByteArray(32)
-    }
-
-    fun ratchetEncrypt(plaintext: ByteArray, sessionId: String): ByteArray {
-        // TODO: wire to Rust RatchetSession in core-crypto
-        return plaintext
-    }
-
-    fun ratchetDecrypt(ciphertext: ByteArray, sessionId: String): ByteArray {
-        // TODO: wire to Rust RatchetSession in core-crypto
-        return ciphertext
-    }
-
-    fun submitPsiQuery(phoneHashes: List<Long>): BooleanArray {
-        // TODO: RescueCipher + Arcium MPC PSI (NOT XChaCha20 — incompatible with MPC)
-        return BooleanArray(phoneHashes.size) { false }
-    }
-
-    fun startTorTransport() {
-        // TODO: wire to core-transport (Rust arti) via UniFFI — no Tor in Kotlin
-    }
-
-    fun openEncryptedDb(storagePath: String, masterKey: ByteArray) {
-        // TODO: uniffi.arcium_core.ArciumCore(storagePath, masterKey)
+    /**
+     * Calls the real Rust `bridge_version()` export through the generated
+     * UniFFI Kotlin bindings. Returns a fixed, non-secret marker string on
+     * success; throws if the native call is unavailable or fails.
+     */
+    fun checkBridge(): String {
+        ArciumNativeLibrary // touch the object to trigger System.loadLibrary once
+        return uniffi.arcium_core.bridgeVersion()
     }
 }

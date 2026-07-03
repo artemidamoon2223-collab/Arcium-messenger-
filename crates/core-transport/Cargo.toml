@@ -5,9 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-arti-client = { version = "0.21", features = [
+# default-features = false drops arti-client's default "native-tls" feature,
+# which pulls async-native-tls -> native-tls -> openssl-sys and breaks Android
+# cross-compilation (no OpenSSL sysroot for *-linux-android). TLS is provided
+# by the explicit "rustls" feature instead. "tokio" and "compression" are
+# re-added explicitly to keep everything else the defaults provided.
+arti-client = { version = "0.21", default-features = false, features = [
     "tokio",
     "rustls",
+    "compression",
     "onion-service-client",
     "onion-service-service",
 ] }

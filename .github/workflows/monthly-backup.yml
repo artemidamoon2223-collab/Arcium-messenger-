@@ -8,6 +8,13 @@ on:
   # Также можно запустить вручную через кнопку в интерфейсе
   workflow_dispatch:
 
+# Least-privilege GITHUB_TOKEN. This workflow creates a Release and uploads an
+# asset, so it needs contents: write — but nothing more. Without an explicit
+# block it would inherit the repository default (possibly read-write across all
+# scopes: packages, actions, deployments, etc.).
+permissions:
+  contents: write
+
 jobs:
   backup:
     runs-on: ubuntu-latest

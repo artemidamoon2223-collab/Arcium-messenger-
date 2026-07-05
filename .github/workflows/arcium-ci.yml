@@ -5,6 +5,14 @@ on:
   pull_request:
   workflow_dispatch:   # manual trigger from GitHub mobile (Actions tab)
 
+# Least-privilege GITHUB_TOKEN: this workflow only builds, tests, lints, and
+# audits — it never writes to repo contents. Without an explicit block the token
+# inherits the repository default (possibly read-write-all), which any
+# compromised step (cargo install, npm install, third-party action) would then
+# hold. All four jobs are read-only.
+permissions:
+  contents: read
+
 jobs:
   # ── Job 1: Core Rust — root workspace only, no Arcium toolchain needed ──
   # arcium-psi borsh tests are NOT here: arcium-macros reads build/psi_intersect.arcis

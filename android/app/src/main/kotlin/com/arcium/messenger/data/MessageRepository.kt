@@ -14,8 +14,10 @@ data class Message(
 class MessageRepository(private val core: ArciumCoreWrapper = ArciumCoreWrapper()) {
 
     suspend fun send(sessionId: String, plaintext: ByteArray): Result<Unit> {
-        // TODO: core.ratchetEncrypt(plaintext, sessionId), transmit via core.startTorTransport()
-        return Result.success(Unit)
+        // Honesty fix: no ratchet/transport path exists yet, so no outbound
+        // message operation actually happens. Do not report success for a no-op.
+        // TODO: wire to Rust ratchet + transport once those are bridged.
+        return Result.failure(NotImplementedError("Message delivery is not connected yet."))
     }
 
     suspend fun receive(sessionId: String, ciphertext: ByteArray): Result<Message> {

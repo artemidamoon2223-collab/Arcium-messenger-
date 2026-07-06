@@ -28,11 +28,17 @@ class ChatViewModel(
         _state.value = _state.value.copy(messages = messageRepo.getHistory(sessionId))
     }
 
-    fun sendMessage(text: String) {
+    /**
+     * [onSent] is invoked only when [messageRepo.send] reports a real success —
+     * never unconditionally. This keeps UI state (e.g. clearing the input field)
+     * honest about whether an outbound message operation actually happened.
+     */
+    fun sendMessage(text: String, onSent: () -> Unit = {}) {
         viewModelScope.launch {
             _state.value = _state.value.copy(isSending = true, error = null)
             val result = messageRepo.send(sessionId, text.toByteArray())
             _state.value = _state.value.copy(isSending = false)
+            result.onSuccess { onSent() }
             result.onFailure { _state.value = _state.value.copy(error = it.message) }
         }
     }

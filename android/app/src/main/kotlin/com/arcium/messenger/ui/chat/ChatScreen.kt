@@ -13,6 +13,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.arcium.messenger.BuildConfig
+import com.arcium.messenger.ffi.CheckRustBridgeButton
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,7 +52,7 @@ fun ChatScreen(
                 )
                 Spacer(Modifier.width(8.dp))
                 IconButton(
-                    onClick = { viewModel.sendMessage(input); input = "" },
+                    onClick = { viewModel.sendMessage(input) { input = "" } },
                     enabled = input.isNotBlank() && !state.isSending,
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
@@ -58,16 +60,24 @@ fun ChatScreen(
             }
         },
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            reverseLayout = true,
-        ) {
-            if (state.messages.isEmpty()) {
-                item { Text("No messages yet.", modifier = Modifier.padding(16.dp)) }
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            state.error?.let {
+                Text(it, modifier = Modifier.padding(8.dp))
             }
-            items(state.messages) { msg ->
-                // TODO: render bubbles with isMine alignment
-                ListItem(headlineContent = { Text(msg.ciphertext.decodeToString()) })
+            if (BuildConfig.DEBUG) {
+                CheckRustBridgeButton()
+            }
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().weight(1f),
+                reverseLayout = true,
+            ) {
+                if (state.messages.isEmpty()) {
+                    item { Text("No messages yet.", modifier = Modifier.padding(16.dp)) }
+                }
+                items(state.messages) { msg ->
+                    // TODO: render bubbles with isMine alignment
+                    ListItem(headlineContent = { Text(msg.ciphertext.decodeToString()) })
+                }
             }
         }
     }

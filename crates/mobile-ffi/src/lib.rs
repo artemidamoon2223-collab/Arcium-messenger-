@@ -22,6 +22,14 @@ impl From<StorageError> for CoreError {
     }
 }
 
+/// Deterministic, non-secret marker proving the Kotlin<->Rust FFI bridge is
+/// wired and callable. Carries no key, message, or session data — safe to
+/// surface directly in a debug-only UI control.
+#[uniffi::export]
+pub fn bridge_version() -> String {
+    "arcium-mobile-ffi-bridge-v1".to_string()
+}
+
 // ── Identity ──────────────────────────────────────────────────────────────────
 
 #[derive(uniffi::Object)]
@@ -109,6 +117,14 @@ mod tests {
 
     fn key32(byte: u8) -> Vec<u8> {
         vec![byte; 32]
+    }
+
+    #[test]
+    fn bridge_version_is_deterministic_and_non_empty() {
+        let v1 = bridge_version();
+        let v2 = bridge_version();
+        assert_eq!(v1, v2, "bridge_version must be deterministic");
+        assert!(!v1.is_empty(), "bridge_version must not be empty");
     }
 
     #[test]

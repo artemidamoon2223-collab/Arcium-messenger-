@@ -1,0 +1,194 @@
+name: Android Native Bridge (x86_64)
+
+on:
+  push:
+    paths:
+      - 'crates/mobile-ffi/**'
+      - 'crates/core-storage/**'
+      - 'crates/core-crypto/**'
+      - 'crates/core-transport/**'
+      - 'Cargo.toml'
+      - 'android/app/build.gradle.kts'
+      - 'android/app/src/main/kotlin/com/arcium/messenger/ffi/**'
+      - 'android/app/src/main/kotlin/com/arcium/messenger/ui/chat/**'
+      - 'android/app/src/main/kotlin/com/arcium/messenger/data/MessageRepository.kt'
+      - '.github/workflows/android-native-bridge.yml'
+  pull_request:
+    paths:
+      - 'crates/mobile-ffi/**'
+      - 'crates/core-storage/**'
+      - 'crates/core-crypto/**'
+      - 'crates/core-transport/**'
+      - 'Cargo.toml'
+      - 'android/app/build.gradle.kts'
+      - 'android/app/src/main/kotlin/com/arcium/messenger/ffi/**'
+      - 'android/app/src/main/kotlin/com/arcium/messenger/ui/chat/**'
+      - 'android/app/src/main/kotlin/com/arcium/messenger/data/MessageRepository.kt'
+      - '.github/workflows/android-native-bridge.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Rust x86_64 library and generate UniFFI Kotlin bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET="x86_64-linux-android"
+          ABI="x86_64"
+          NDK_PACKAGE="ndk;27.2.12479018"
+
+          test -f crates/mobile-ffi/Cargo.toml
+          test -f crates/mobile-ffi/src/lib.rs
+          grep -Fq 'name = "arcium_core"' crates/mobile-ffi/Cargo.toml
+          grep -Fq 'crate-type = ["cdylib", "staticlib"]' crates/mobile-ffi/Cargo.toml
+
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not set}}"
+          SDKMANAGER="${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "${SDKMANAGER}"
+
+          set +e
+          yes | "${SDKMANAGER}" --licenses >/dev/null
+          sdk_rc="${PIPESTATUS[1]}"
+          set -e
+          test "${sdk_rc}" -eq 0
+
+          "${SDKMANAGER}" "${NDK_PACKAGE}"
+
+          ANDROID_NDK_ROOT="${SDK_ROOT}/ndk/27.2.12479018"
+          TOOLCHAIN="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
+          test -x "${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
+          test -x "${TOOLCHAIN}/bin/llvm-ar"
+          test -x "${TOOLCHAIN}/bin/llvm-ranlib"
+
+          rustup target add "${TARGET}"
+
+          cargo generate-lockfile
+          test -s Cargo.lock
+
+          UNIFFI_VERSION="$(
+            awk '
+              $0 == "name = \"uniffi\"" { found=1; next }
+              found && /^version = / {
+                gsub(/"/, "", $3)
+                print $3
+                exit
+              }
+            ' Cargo.lock
+          )"
+          test -n "${UNIFFI_VERSION}"
+
+          HELPER_DIR="${RUNNER_TEMP}/uniffi-bindgen-helper"
+          HELPER_TARGET_DIR="${RUNNER_TEMP}/uniffi-bindgen-helper-target"
+
+          rm -rf "${HELPER_DIR}" "${HELPER_TARGET_DIR}" "${RUNNER_TEMP}/uniffi-tools"
+          mkdir -p "${HELPER_DIR}/src"
+
+          cat > "${HELPER_DIR}/Cargo.toml" <<EOF
+          [package]
+          name = "arcium-uniffi-bindgen-helper"
+          version = "0.1.0"
+          edition = "2021"
+          publish = false
+
+          [[bin]]
+          name = "uniffi-bindgen"
+          path = "src/main.rs"
+
+          [dependencies]
+          uniffi = { version = "=${UNIFFI_VERSION}", features = ["cli"] }
+          EOF
+
+          cat > "${HELPER_DIR}/src/main.rs" <<'EOF'
+          fn main() {
+              uniffi::uniffi_bindgen_main();
+          }
+          EOF
+
+          cargo generate-lockfile --manifest-path "${HELPER_DIR}/Cargo.toml"
+          test -s "${HELPER_DIR}/Cargo.lock"
+
+          CARGO_TARGET_DIR="${HELPER_TARGET_DIR}" \
+            cargo install \
+              --locked \
+              --path "${HELPER_DIR}" \
+              --root "${RUNNER_TEMP}/uniffi-tools" \
+              --bin uniffi-bindgen
+
+          BINDGEN="${RUNNER_TEMP}/uniffi-tools/bin/uniffi-bindgen"
+          test -x "${BINDGEN}"
+
+          HOST_TARGET_DIR="${RUNNER_TEMP}/arcium-host-target"
+          ANDROID_TARGET_DIR="${RUNNER_TEMP}/arcium-android-target"
+          KOTLIN_OUT="android/app/build/generated/rustBridge/kotlin"
+          JNILIBS_OUT="android/app/build/generated/rustBridge/jniLibs/${ABI}"
+
+          rm -rf "${HOST_TARGET_DIR}" "${ANDROID_TARGET_DIR}" \
+            "android/app/build/generated/rustBridge"
+          mkdir -p "${KOTLIN_OUT}" "${JNILIBS_OUT}"
+
+          # Host build (unstripped) — only used to extract UniFFI metadata for
+          # bindgen. [profile.release] strip=true (root Cargo.toml) would
+          # otherwise remove the UNIFFI_META symbols bindgen needs.
+          CARGO_TARGET_DIR="${HOST_TARGET_DIR}" \
+            cargo --config 'profile.release.strip=false' \
+            build --locked -p mobile-ffi --release
+
+          HOST_LIB="${HOST_TARGET_DIR}/release/libarcium_core.so"
+          test -s "${HOST_LIB}"
+
+          "${BINDGEN}" generate \
+            --library "${HOST_LIB}" \
+            --language kotlin \
+            --out-dir "${KOTLIN_OUT}"
+
+          KOTLIN_FILE="$(find "${KOTLIN_OUT}" -type f -name 'arcium_core.kt' -print -quit)"
+          test -n "${KOTLIN_FILE}"
+          test -s "${KOTLIN_FILE}"
+
+          # Android cross-compiled library — this is what actually ships.
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
+          export CC_x86_64_linux_android="${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
+          export CXX_x86_64_linux_android="${TOOLCHAIN}/bin/x86_64-linux-android26-clang++"
+          export AR_x86_64_linux_android="${TOOLCHAIN}/bin/llvm-ar"
+          export RANLIB_x86_64_linux_android="${TOOLCHAIN}/bin/llvm-ranlib"
+
+          CARGO_TARGET_DIR="${ANDROID_TARGET_DIR}" \
+            cargo build --locked -p mobile-ffi --release --target "${TARGET}"
+
+          ANDROID_LIB="${ANDROID_TARGET_DIR}/${TARGET}/release/libarcium_core.so"
+          test -s "${ANDROID_LIB}"
+
+          cp "${ANDROID_LIB}" "${JNILIBS_OUT}/libarcium_core.so"
+
+          echo "GENERATED_KOTLIN_FILE=${KOTLIN_FILE}"
+          echo "GENERATED_SO_FILE=${JNILIBS_OUT}/libarcium_core.so"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Accept Android SDK licenses
+        run: yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+      - name: Write local.properties
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Assemble debug APK with native bridge
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace

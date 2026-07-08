@@ -17,8 +17,10 @@ class ArciumCoreWrapper {
     }
 
     fun generateIdentity(): ByteArray {
-        // TODO: uniffi.arcium_core.Identity.generate().publicKeyBytes()
-        return ByteArray(32)
+        // Real FFI call through the generated UniFFI bindings. The native library
+        // is loaded lazily by JNA on this first generated FFI call; any
+        // UnsatisfiedLinkError propagates — there is no fallback to a stub.
+        return uniffi.arcium_core.Identity.generate().publicKeyBytes()
     }
 
     fun x3dhInit(peerPublicKey: ByteArray): ByteArray {

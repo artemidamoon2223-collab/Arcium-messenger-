@@ -1,0 +1,119 @@
+name: "UniFFI Android Bridge"
+description: >
+  Build the x86_64 mobile-ffi native library and generate its UniFFI Kotlin
+  bindings, placing both under android/app/build/generated/rustBridge so Gradle
+  compiles the generated Kotlin and packages libarcium_core.so. Single source of
+  truth for the bridge-generation lifecycle shared by every Android compile path
+  (ordinary Android CI, the native-bridge workflow, and the build baseline).
+  Nothing produced here is committed.
+
+runs:
+  using: "composite"
+  steps:
+    - name: Build x86_64 native lib and generate UniFFI Kotlin into Gradle build dir
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # ── Single-sourced constants (defined once here, referenced below) ──
+        # NDK version is used both to install the package and to locate the
+        # toolchain; keep it in ONE variable so the two uses cannot drift.
+        TARGET="x86_64-linux-android"
+        ABI="x86_64"
+        NDK_VERSION="27.2.12479018"
+        NDK_PACKAGE="ndk;${NDK_VERSION}"
+
+        test -f crates/mobile-ffi/Cargo.toml
+        grep -Fq 'name = "arcium_core"' crates/mobile-ffi/Cargo.toml
+        grep -Fq 'crate-type = ["cdylib", "staticlib"]' crates/mobile-ffi/Cargo.toml
+
+        SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not set}}"
+        SDKMANAGER="${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+        test -x "${SDKMANAGER}"
+        set +e
+        yes | "${SDKMANAGER}" --licenses >/dev/null
+        sdk_rc="${PIPESTATUS[1]}"
+        set -e
+        test "${sdk_rc}" -eq 0
+        "${SDKMANAGER}" "${NDK_PACKAGE}"
+
+        ANDROID_NDK_ROOT="${SDK_ROOT}/ndk/${NDK_VERSION}"
+        TOOLCHAIN="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
+        test -x "${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
+        test -x "${TOOLCHAIN}/bin/llvm-ar"
+        test -x "${TOOLCHAIN}/bin/llvm-nm"
+
+        rustup target add "${TARGET}"
+        cargo generate-lockfile
+        test -s Cargo.lock
+
+        # uniffi version is single-sourced from the workspace lockfile — never
+        # hardcoded — so the bindgen CLI always matches the compiled crate.
+        UNIFFI_VERSION="$(
+          awk '
+            $0 == "name = \"uniffi\"" { found=1; next }
+            found && /^version = / { gsub(/"/, "", $3); print $3; exit }
+          ' Cargo.lock
+        )"
+        test -n "${UNIFFI_VERSION}"
+
+        # Ephemeral uniffi-bindgen matching the locked uniffi version.
+        HELPER_DIR="${RUNNER_TEMP}/uniffi-bindgen-helper"
+        rm -rf "${HELPER_DIR}" "${RUNNER_TEMP}/uniffi-tools"
+        mkdir -p "${HELPER_DIR}/src"
+        cat > "${HELPER_DIR}/Cargo.toml" <<EOF
+        [package]
+        name = "arcium-uniffi-bindgen-helper"
+        version = "0.1.0"
+        edition = "2021"
+        publish = false
+
+        [[bin]]
+        name = "uniffi-bindgen"
+        path = "src/main.rs"
+
+        [dependencies]
+        uniffi = { version = "=${UNIFFI_VERSION}", features = ["cli"] }
+        EOF
+        printf 'fn main() { uniffi::uniffi_bindgen_main(); }\n' > "${HELPER_DIR}/src/main.rs"
+        cargo generate-lockfile --manifest-path "${HELPER_DIR}/Cargo.toml"
+        CARGO_TARGET_DIR="${RUNNER_TEMP}/uniffi-bindgen-target" \
+          cargo install --locked --path "${HELPER_DIR}" \
+            --root "${RUNNER_TEMP}/uniffi-tools" --bin uniffi-bindgen
+        BINDGEN="${RUNNER_TEMP}/uniffi-tools/bin/uniffi-bindgen"
+        test -x "${BINDGEN}"
+
+        # Gradle build-output directories the app sourceSets point at (never committed).
+        KOTLIN_OUT="android/app/build/generated/rustBridge/kotlin"
+        JNILIBS_OUT="android/app/build/generated/rustBridge/jniLibs/${ABI}"
+        rm -rf "android/app/build/generated/rustBridge"
+        mkdir -p "${KOTLIN_OUT}" "${JNILIBS_OUT}"
+
+        # Host build (unstripped) so UNIFFI_META survives for bindgen. The root
+        # release profile sets strip=true, which would otherwise remove it.
+        HOST_TARGET_DIR="${RUNNER_TEMP}/arcium-host-target"
+        CARGO_TARGET_DIR="${HOST_TARGET_DIR}" \
+          cargo --config 'profile.release.strip=false' \
+          build --locked -p mobile-ffi --release
+        HOST_LIB="${HOST_TARGET_DIR}/release/libarcium_core.so"
+        test -s "${HOST_LIB}"
+
+        "${BINDGEN}" generate --library "${HOST_LIB}" --language kotlin --out-dir "${KOTLIN_OUT}"
+        KOTLIN_FILE="$(find "${KOTLIN_OUT}" -type f -name 'arcium_core.kt' -print -quit)"
+        test -n "${KOTLIN_FILE}"
+        test -s "${KOTLIN_FILE}"
+
+        # Android x86_64 cross-build → place .so into the jniLibs build dir.
+        export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
+        export CC_x86_64_linux_android="${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
+        export CXX_x86_64_linux_android="${TOOLCHAIN}/bin/x86_64-linux-android26-clang++"
+        export AR_x86_64_linux_android="${TOOLCHAIN}/bin/llvm-ar"
+        export RANLIB_x86_64_linux_android="${TOOLCHAIN}/bin/llvm-ranlib"
+        ANDROID_TARGET_DIR="${RUNNER_TEMP}/arcium-android-target"
+        CARGO_TARGET_DIR="${ANDROID_TARGET_DIR}" \
+          cargo build --locked -p mobile-ffi --release --target "${TARGET}"
+        ANDROID_LIB="${ANDROID_TARGET_DIR}/${TARGET}/release/libarcium_core.so"
+        test -s "${ANDROID_LIB}"
+        cp "${ANDROID_LIB}" "${JNILIBS_OUT}/libarcium_core.so"
+
+        echo "BRIDGE_INPUTS_READY kotlin=${KOTLIN_FILE} so=${JNILIBS_OUT}/libarcium_core.so"

@@ -32,6 +32,12 @@ jobs:
           test -d "${SDK_ROOT}/platforms/android-34"
           test -d "${SDK_ROOT}/build-tools/34.0.0"
 
+      # Generate UniFFI Kotlin + native bridge inputs before the Android compile
+      # path, via the same shared action used by android-ci and the native bridge
+      # workflow, so this manual build path cannot become a stale no-bindings trap.
+      - name: Generate UniFFI Kotlin + native bridge inputs
+        uses: ./.github/actions/uniffi-android-bridge
+
       - name: Assemble debug APK
         working-directory: android
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace

@@ -34,6 +34,12 @@ jobs:
       - name: Write local.properties
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
 
+      # Generate UniFFI Kotlin + native bridge inputs into the Gradle build dir
+      # BEFORE compiling production Kotlin, so any future production reference to
+      # uniffi.arcium_core.* resolves. Shared source of truth (no duplicated logic).
+      - name: Generate UniFFI Kotlin + native bridge inputs
+        uses: ./.github/actions/uniffi-android-bridge
+
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 

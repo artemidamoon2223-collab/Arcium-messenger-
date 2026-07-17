@@ -1,16 +1,18 @@
 name: "UniFFI Android Bridge"
 description: >
-  Build the x86_64 mobile-ffi native library and generate its UniFFI Kotlin
-  bindings, placing both under android/app/build/generated/rustBridge so Gradle
-  compiles the generated Kotlin and packages libarcium_core.so. Single source of
-  truth for the bridge-generation lifecycle shared by every Android compile path
+  Build the mobile-ffi native library for both x86_64 (emulator) and
+  arm64-v8a (real device / Apple Silicon host parity) and generate its
+  UniFFI Kotlin bindings, placing both under
+  android/app/build/generated/rustBridge so Gradle compiles the generated
+  Kotlin and packages both libarcium_core.so ABIs. Single source of truth
+  for the bridge-generation lifecycle shared by every Android compile path
   (ordinary Android CI, the native-bridge workflow, and the build baseline).
   Nothing produced here is committed.
 
 runs:
   using: "composite"
   steps:
-    - name: Build x86_64 native lib and generate UniFFI Kotlin into Gradle build dir
+    - name: Build native libs (x86_64 + arm64-v8a) and generate UniFFI Kotlin into Gradle build dir
       shell: bash
       run: |
         set -euo pipefail
@@ -18,10 +20,14 @@ runs:
         # ── Single-sourced constants (defined once here, referenced below) ──
         # NDK version is used both to install the package and to locate the
         # toolchain; keep it in ONE variable so the two uses cannot drift.
-        TARGET="x86_64-linux-android"
-        ABI="x86_64"
+        # ABI_TARGETS is the single source of truth for which Android ABIs
+        # this action cross-compiles; each entry is "rust-target:abi:ndk-clang".
         NDK_VERSION="27.2.12479018"
         NDK_PACKAGE="ndk;${NDK_VERSION}"
+        ABI_TARGETS=(
+          "x86_64-linux-android:x86_64:x86_64-linux-android26-clang"
+          "aarch64-linux-android:arm64-v8a:aarch64-linux-android26-clang"
+        )
 
         test -f crates/mobile-ffi/Cargo.toml
         grep -Fq 'name = "arcium_core"' crates/mobile-ffi/Cargo.toml
@@ -39,11 +45,17 @@ runs:
 
         ANDROID_NDK_ROOT="${SDK_ROOT}/ndk/${NDK_VERSION}"
         TOOLCHAIN="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
-        test -x "${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
         test -x "${TOOLCHAIN}/bin/llvm-ar"
         test -x "${TOOLCHAIN}/bin/llvm-nm"
+        for entry in "${ABI_TARGETS[@]}"; do
+          clang="${entry##*:}"
+          test -x "${TOOLCHAIN}/bin/${clang}"
+        done
 
-        rustup target add "${TARGET}"
+        for entry in "${ABI_TARGETS[@]}"; do
+          rust_target="${entry%%:*}"
+          rustup target add "${rust_target}"
+        done
         cargo generate-lockfile
         test -s Cargo.lock
 
@@ -85,9 +97,13 @@ runs:
 
         # Gradle build-output directories the app sourceSets point at (never committed).
         KOTLIN_OUT="android/app/build/generated/rustBridge/kotlin"
-        JNILIBS_OUT="android/app/build/generated/rustBridge/jniLibs/${ABI}"
+        JNILIBS_BASE="android/app/build/generated/rustBridge/jniLibs"
         rm -rf "android/app/build/generated/rustBridge"
-        mkdir -p "${KOTLIN_OUT}" "${JNILIBS_OUT}"
+        mkdir -p "${KOTLIN_OUT}"
+        for entry in "${ABI_TARGETS[@]}"; do
+          abi="$(cut -d: -f2 <<<"${entry}")"
+          mkdir -p "${JNILIBS_BASE}/${abi}"
+        done
 
         # Host build (unstripped) so UNIFFI_META survives for bindgen. The root
         # release profile sets strip=true, which would otherwise remove it.
@@ -103,17 +119,31 @@ runs:
         test -n "${KOTLIN_FILE}"
         test -s "${KOTLIN_FILE}"
 
-        # Android x86_64 cross-build → place .so into the jniLibs build dir.
-        export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
-        export CC_x86_64_linux_android="${TOOLCHAIN}/bin/x86_64-linux-android26-clang"
-        export CXX_x86_64_linux_android="${TOOLCHAIN}/bin/x86_64-linux-android26-clang++"
-        export AR_x86_64_linux_android="${TOOLCHAIN}/bin/llvm-ar"
-        export RANLIB_x86_64_linux_android="${TOOLCHAIN}/bin/llvm-ranlib"
+        # Android cross-build, one pass per ABI in ABI_TARGETS → place each
+        # .so into its own jniLibs/<abi> build dir. Env var names for Cargo's
+        # target-specific linker config use underscores in place of hyphens
+        # in the Rust target triple (e.g. aarch64-linux-android →
+        # CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER).
         ANDROID_TARGET_DIR="${RUNNER_TEMP}/arcium-android-target"
-        CARGO_TARGET_DIR="${ANDROID_TARGET_DIR}" \
-          cargo build --locked -p mobile-ffi --release --target "${TARGET}"
-        ANDROID_LIB="${ANDROID_TARGET_DIR}/${TARGET}/release/libarcium_core.so"
-        test -s "${ANDROID_LIB}"
-        cp "${ANDROID_LIB}" "${JNILIBS_OUT}/libarcium_core.so"
+        SO_PATHS=()
+        for entry in "${ABI_TARGETS[@]}"; do
+          rust_target="$(cut -d: -f1 <<<"${entry}")"
+          abi="$(cut -d: -f2 <<<"${entry}")"
+          clang="$(cut -d: -f3 <<<"${entry}")"
+          env_infix="$(tr '[:lower:]-' '[:upper:]_' <<<"${rust_target}")"
 
-        echo "BRIDGE_INPUTS_READY kotlin=${KOTLIN_FILE} so=${JNILIBS_OUT}/libarcium_core.so"
+          export "CARGO_TARGET_${env_infix}_LINKER=${TOOLCHAIN}/bin/${clang}"
+          export "CC_${rust_target//-/_}=${TOOLCHAIN}/bin/${clang}"
+          export "CXX_${rust_target//-/_}=${TOOLCHAIN}/bin/${clang}++"
+          export "AR_${rust_target//-/_}=${TOOLCHAIN}/bin/llvm-ar"
+          export "RANLIB_${rust_target//-/_}=${TOOLCHAIN}/bin/llvm-ranlib"
+
+          CARGO_TARGET_DIR="${ANDROID_TARGET_DIR}" \
+            cargo build --locked -p mobile-ffi --release --target "${rust_target}"
+          ANDROID_LIB="${ANDROID_TARGET_DIR}/${rust_target}/release/libarcium_core.so"
+          test -s "${ANDROID_LIB}"
+          cp "${ANDROID_LIB}" "${JNILIBS_BASE}/${abi}/libarcium_core.so"
+          SO_PATHS+=("${JNILIBS_BASE}/${abi}/libarcium_core.so")
+        done
+
+        echo "BRIDGE_INPUTS_READY kotlin=${KOTLIN_FILE} so=${SO_PATHS[*]}"

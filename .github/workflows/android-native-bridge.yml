@@ -1,4 +1,4 @@
-name: Android Native Bridge (x86_64)
+name: Android Native Bridge (x86_64 + arm64-v8a)
 
 on:
   push:
@@ -43,6 +43,7 @@ jobs:
           set -euo pipefail
           test -f android/app/build/generated/rustBridge/kotlin/uniffi/arcium_core/arcium_core.kt
           test -s android/app/build/generated/rustBridge/jniLibs/x86_64/libarcium_core.so
+          test -s android/app/build/generated/rustBridge/jniLibs/arm64-v8a/libarcium_core.so
           echo "BRIDGE_INPUTS_ASSERT=PASS"
 
       - name: Make gradlew executable
@@ -52,17 +53,24 @@ jobs:
         working-directory: android
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Verify libarcium_core.so is packaged into the debug APK
+      - name: Verify libarcium_core.so is packaged into the debug APK for both ABIs
         shell: bash
         run: |
           set -euo pipefail
           APK="$(find android/app/build/outputs/apk/debug -name '*.apk' -print -quit)"
           test -n "${APK}"
           echo "APK=${APK}"
-          if unzip -l "${APK}" | grep -E 'lib/x86_64/libarcium_core\.so'; then
-            echo "APK_CONTAINS_NATIVE_LIB=PASS"
-          else
-            echo "APK_CONTAINS_NATIVE_LIB=FAIL — libarcium_core.so not packaged" >&2
-            unzip -l "${APK}" | grep -E 'lib/' || true
+          APK_LIBS="$(unzip -l "${APK}" | grep -E 'lib/' || true)"
+          FAIL=0
+          for abi in x86_64 arm64-v8a; do
+            if grep -qE "lib/${abi}/libarcium_core\.so" <<<"${APK_LIBS}"; then
+              echo "APK_CONTAINS_NATIVE_LIB[${abi}]=PASS"
+            else
+              echo "APK_CONTAINS_NATIVE_LIB[${abi}]=FAIL — libarcium_core.so not packaged for ${abi}" >&2
+              FAIL=1
+            fi
+          done
+          if [ "${FAIL}" -ne 0 ]; then
+            echo "${APK_LIBS}"
             exit 80
           fi

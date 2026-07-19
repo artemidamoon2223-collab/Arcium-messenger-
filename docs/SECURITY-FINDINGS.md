@@ -51,7 +51,7 @@ recovered from anywhere in the repo is flagged as such rather than guessed.
 | **F-3** | MED | PSI zero-padding produces false-positive matches on padding slots | **NOT-FIXED** | Client still pads with `push(0n)` — `arcium-psi/tests/src/client.ts:25`. Circuit still does bare `client.hashes[i] == server.hashes[j]` with no count field / per-side sentinel — `arcium-psi/encrypted-ixs/src/lib.rs:59`. |
 | **F-4** | MED | `submit_psi_query`: server dataset supplied+encrypted by the caller, no on-chain anchoring | **NOT-FIXED** | `arcium-psi/programs/arcium-psi/src/lib.rs:55` — `server_data: SharedEncryptedStruct<10>` is still an instruction arg; only validation is non-zero keys (`:61-65`). No account/PDA/commitment binds it. (Full impact is `NEEDS-HOME`, but the code state is unambiguously unfixed.) |
 | **F-5** | MED | Unpinned GitHub Actions + package installs in workflows holding `ANTHROPIC_API_KEY` | **PARTIAL** | **Fixed:** `pi-review.yml:27` pinned `@earendil-works/pi-coding-agent@0.80.3`; `security-review.yml:27` SHA-pinned `claude-code-security-review@0c6a49f…`; least-privilege `permissions:` added to `arcium-ci.yml` + `monthly-backup.yml` (`5d84087`), `allowBackup=false` (`1ae5f72`). **Remaining:** `anthropics/claude-code-action@beta` (`karpathy-review.yml:24`, `graphify.yml:29`); unversioned `pip install graphifyy` (`graphify.yml:21`); archived `actions/create-release@v1` + `actions/upload-release-asset@v1` and stale `actions/checkout@v3` (`monthly-backup.yml:24,39,55`). |
-| **F-6** | MED | `hybrid_encaps` panics on malformed peer public key (future FFI DoS) | **NOT-FIXED** | `crates/core-crypto/src/hybrid.rs:85-86` still `.expect("valid encapsulation key bytes")` / `.expect("valid key")`; `:74` still returns `(Vec<u8>, [u8;64])`, not a `Result`. (`hybrid_decaps` at `:99` is the correct model.) |
+| **F-6** | MED | `hybrid_encaps` panics on malformed peer public key (future FFI DoS) | **FIXED** | commit `3dcd9c81` (PR #52). `crates/core-crypto/src/hybrid.rs`: `hybrid_encaps` now returns `Result<(Vec<u8>, [u8;64]), HybridError>`, with both former `.expect()` calls on peer-controlled input replaced by `.map_err(|_| HybridError)?` (mirroring `hybrid_decaps`, exactly as the review recommended). Tests `encaps_rejects_wrong_length_ml_kem_key`, `encaps_rejects_empty_ml_kem_key`, `encaps_rejects_right_length_but_invalid_ml_kem_key` — all **pass**, proving malformed peer input now returns `Err`, not a panic (verified 2026-07-19). |
 | **F-7** | LOW | Hybrid KEM combiner doesn't bind ciphertexts/public keys into the KDF | **NOT-FIXED** | `hybrid.rs` `combine_secrets` HKDF input is only `x25519_ss ‖ ml_kem_ss`, `info="HybridKEM/v1"` — `ml_ct` / `eph_pk` / recipient keys not bound. |
 | **F-8** | LOW | Transient secret copies not zeroized | **PARTIAL** | **Fixed:** decrypted identity blob in `load_identity` now `Zeroizing` (`d68ab02`, `mobile-ffi/src/lib.rs:210`). **Remaining:** `x3dh::derive_root` `ikm` is a plain `Vec` (handshake master secret, dropped un-wiped); `hybrid_keygen`/`hybrid_decaps` `seed_bytes` stack copies (`hybrid.rs:54`, `:109`); `ArciumCore::new` does not wipe the caller's `master_key`. |
 | **F-9** | LOW | `load_identity` panics on poisoned mutex; masks wrong-key decryption as "no identity" | **PARTIAL** | **Fixed:** poisoned mutex → `None` instead of panic (`1ae5f72`, `mobile-ffi/src/lib.rs:205-208`), test `load_identity_returns_none_on_poisoned_mutex`. **Remaining:** signature is still `-> Option<Arc<Identity>>` (`:202`); wrong-key `Decryption` is still collapsed into `None` (`:211`), so it's indistinguishable from `NotFound`. |
@@ -81,14 +81,16 @@ should be tracked alongside it.
 
 ## Prioritized remaining work (from the review's §6, minus what's since fixed)
 
-F-1 is done. The next code-affecting items the review flagged as pre-freeze / pre-deploy:
+F-1 and F-6 are done. The next code-affecting items the review flagged as pre-freeze /
+pre-deploy:
 
 1. **F-3** PSI padding convention — must precede `CIRCUIT_HASH` freeze + devnet deploy.
 2. **F-2 (+F-13)** X3DH identity/signing-key binding + domain-separated SPK signature —
    must precede bundle-server format freeze.
 3. **F-5** finish pinning the remaining third-party actions/installs (mechanical).
-4. **F-6 + F-9** error-instead-of-panic in `hybrid_encaps`; give `load_identity` a
-   `Result` so wrong-key is distinguishable — both sit on the FFI boundary.
+4. **F-9** give `load_identity` a `Result` so wrong-key is distinguishable from "no
+   identity" — sits on the FFI boundary. (**F-6**, previously grouped here, is now
+   FIXED — see the table above.)
 5. Then: **F-8** zeroization sweep of the remaining transients, **F-10** storage
    metadata, **F-4** server-set anchoring (with MXE deploy), **F-11/F-12** CI + stub
    fail-closed, **F-14/F-15/F-16** at devnet integration.

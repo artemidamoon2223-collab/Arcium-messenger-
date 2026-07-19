@@ -51,9 +51,9 @@ pub fn hybrid_keygen() -> (HybridPublicKey, HybridSecretKey) {
     let x25519_pk = PublicKey::from(&x25519_sk);
 
     // ML-KEM: generate random 64-byte seed via rand_core 0.6 OsRng
-    let mut seed_bytes = [0u8; 64];
-    OsRng.fill_bytes(&mut seed_bytes);
-    let seed: Seed = seed_bytes.as_ref().try_into().expect("64 bytes");
+    let mut seed_bytes = Zeroizing::new([0u8; 64]);
+    OsRng.fill_bytes(&mut seed_bytes[..]);
+    let seed: Seed = seed_bytes[..].try_into().expect("64 bytes");
     let dk = DecapsulationKey768::from_seed(seed);
     let ek = dk.encapsulation_key();
 
@@ -110,8 +110,9 @@ pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<[u8; 64], Hybrid
     let x25519_ss = StaticSecret::from(sk.x25519).diffie_hellman(&PublicKey::from(eph_pk_bytes));
 
     // ML-KEM decapsulation
-    let seed_bytes: [u8; 64] = sk.ml_kem.as_slice().try_into().map_err(|_| HybridError)?;
-    let seed: Seed = seed_bytes.as_ref().try_into().map_err(|_| HybridError)?;
+    let seed_bytes: Zeroizing<[u8; 64]> =
+        Zeroizing::new(sk.ml_kem.as_slice().try_into().map_err(|_| HybridError)?);
+    let seed: Seed = seed_bytes[..].try_into().map_err(|_| HybridError)?;
     let dk = DecapsulationKey768::from_seed(seed);
     let ml_ct: Ciphertext<MlKem768> = ct[X25519_LEN..]
         .try_into()

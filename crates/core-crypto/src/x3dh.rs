@@ -6,6 +6,7 @@ use rand_core::OsRng;
 use sha2::Sha256;
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::Zeroizing;
 
 #[derive(Debug, Error)]
 pub enum X3dhError {
@@ -106,7 +107,9 @@ pub fn x3dh_respond(
 }
 
 fn derive_root<T: AsRef<[u8]>>(dh1: &[u8], dh2: &[u8], dh3: &[u8], dh4: Option<T>) -> [u8; 32] {
-    let mut ikm = Vec::with_capacity(32 * 5);
+    // ikm concatenates every DH output — the handshake's master secret material —
+    // so it must not outlive its use unzeroized (F-8).
+    let mut ikm = Zeroizing::new(Vec::with_capacity(32 * 5));
     ikm.extend_from_slice(&[0xFFu8; 32]);
     ikm.extend_from_slice(dh1);
     ikm.extend_from_slice(dh2);

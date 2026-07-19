@@ -178,7 +178,11 @@ pub struct ArciumCore {
 impl ArciumCore {
     #[uniffi::constructor]
     pub fn new(storage_path: String, master_key: Vec<u8>) -> Result<Arc<Self>, CoreError> {
-        let key: [u8; 32] = master_key.try_into().map_err(|_| CoreError::InvalidKey {
+        // Wrap immediately so the caller-supplied master key is zeroized on
+        // every exit path (F-8) — the Kotlin side already zeros its own copy
+        // (PR #48's MasterKeyProvider), this covers what the Rust side holds.
+        let master_key = Zeroizing::new(master_key);
+        let key: [u8; 32] = master_key.as_slice().try_into().map_err(|_| CoreError::InvalidKey {
             msg: "expected exactly 32 bytes".into(),
         })?;
         let store = EncryptedStore::open(&storage_path, key)?;

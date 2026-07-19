@@ -381,7 +381,12 @@ impl ArciumCore {
         let plaintext = session.ratchet.decrypt(&header, ciphertext, &session.ad)?;
         Ok(plaintext)
     }
+}
 
+// Plain (non-exported) impl block: helpers here are NOT visible to UniFFI,
+// unlike methods inside the `#[uniffi::export] impl ArciumCore` block above,
+// where export applies to every method regardless of Rust-level visibility.
+impl ArciumCore {
     fn require_identity(&self) -> Result<Arc<Identity>, CoreError> {
         self.load_identity()
             .ok_or_else(|| CoreError::InvalidKey { msg: "no identity saved — call save_identity first".into() })

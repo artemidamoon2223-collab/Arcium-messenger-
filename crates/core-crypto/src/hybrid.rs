@@ -90,8 +90,18 @@ pub fn hybrid_encaps(pk: &HybridPublicKey) -> Result<(Vec<u8>, [u8; 64]), Hybrid
     let ek = EncapsulationKey768::new(&ek_key).map_err(|_| HybridError)?;
     let (ml_ct, ml_ss) = ek.encapsulate();
 
-    // Combine: HKDF-SHA256(x25519_ss || ml_kem_ss) → 64 bytes
-    let shared = combine_secrets(x25519_ss.as_bytes(), ml_ss.as_slice());
+    // Combine: HKDF-SHA256(x25519_ss || ml_kem_ss || eph_pk || ml_ct ||
+    // recipient_x25519_pk || recipient_ml_kem_pk) → 64 bytes (F-7: bind the
+    // full transcript — ciphertexts and public keys — not just the raw
+    // shared secrets, so the derived key is committed to this exact exchange).
+    let shared = combine_secrets(
+        x25519_ss.as_bytes(),
+        ml_ss.as_slice(),
+        eph_pk.as_bytes(),
+        ml_ct.as_slice(),
+        &pk.x25519,
+        pk.ml_kem.as_slice(),
+    );
 
     let mut ct = Vec::with_capacity(X25519_LEN + ml_ct.len());
     ct.extend_from_slice(&eph_pk.to_bytes());
@@ -106,27 +116,67 @@ pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<[u8; 64], Hybrid
     }
 
     // X25519 decapsulation
+    let our_x25519_sk = StaticSecret::from(sk.x25519);
     let eph_pk_bytes: [u8; 32] = ct[..X25519_LEN].try_into().map_err(|_| HybridError)?;
-    let x25519_ss = StaticSecret::from(sk.x25519).diffie_hellman(&PublicKey::from(eph_pk_bytes));
+    let x25519_ss = our_x25519_sk.diffie_hellman(&PublicKey::from(eph_pk_bytes));
+    // Our own X25519 public key, re-derived from the secret — this is the
+    // "recipient public key" the sender bound into its transcript (F-7).
+    let our_x25519_pk = PublicKey::from(&our_x25519_sk);
 
     // ML-KEM decapsulation
     let seed_bytes: Zeroizing<[u8; 64]> =
         Zeroizing::new(sk.ml_kem.as_slice().try_into().map_err(|_| HybridError)?);
     let seed: Seed = seed_bytes[..].try_into().map_err(|_| HybridError)?;
     let dk = DecapsulationKey768::from_seed(seed);
+    // Our own ML-KEM encapsulation key, re-derived from the decapsulation
+    // key — same call `hybrid_keygen` uses, so it reproduces the identical
+    // bytes the sender encapsulated to.
+    let our_ml_kem_pk = dk.encapsulation_key();
     let ml_ct: Ciphertext<MlKem768> = ct[X25519_LEN..]
         .try_into()
         .map_err(|_| HybridError)?;
     let ml_ss = dk.decapsulate(&ml_ct);
 
-    Ok(combine_secrets(x25519_ss.as_bytes(), ml_ss.as_slice()))
+    Ok(combine_secrets(
+        x25519_ss.as_bytes(),
+        ml_ss.as_slice(),
+        &eph_pk_bytes,
+        &ct[X25519_LEN..],
+        our_x25519_pk.as_bytes(),
+        our_ml_kem_pk.to_bytes().as_slice(),
+    ))
 }
 
-fn combine_secrets(x25519_ss: &[u8], ml_kem_ss: &[u8]) -> [u8; 64] {
-    let mut ikm = Zeroizing::new([0u8; 64]);
-    ikm[..32].copy_from_slice(x25519_ss);
-    ikm[32..].copy_from_slice(ml_kem_ss);
-    let hk = Hkdf::<Sha256>::new(None, ikm.as_ref());
+/// F-7: binds the full exchange transcript into the KDF, not just the raw
+/// shared secrets — the ephemeral X25519 public key, the ML-KEM ciphertext,
+/// and the recipient's public keys. Without this, ML-KEM's lack of
+/// ciphertext binding (it is not a committing KEM) could allow
+/// re-encapsulation/mix-and-match games in composed protocols; with it, the
+/// derived key is committed to this exact exchange (mirrors X-Wing /
+/// draft-ietf-tls-hybrid-design).
+fn combine_secrets(
+    x25519_ss: &[u8],
+    ml_kem_ss: &[u8],
+    eph_pk: &[u8],
+    ml_ct: &[u8],
+    recipient_x25519_pk: &[u8],
+    recipient_ml_kem_pk: &[u8],
+) -> [u8; 64] {
+    let mut ikm = Zeroizing::new(Vec::with_capacity(
+        x25519_ss.len()
+            + ml_kem_ss.len()
+            + eph_pk.len()
+            + ml_ct.len()
+            + recipient_x25519_pk.len()
+            + recipient_ml_kem_pk.len(),
+    ));
+    ikm.extend_from_slice(x25519_ss);
+    ikm.extend_from_slice(ml_kem_ss);
+    ikm.extend_from_slice(eph_pk);
+    ikm.extend_from_slice(ml_ct);
+    ikm.extend_from_slice(recipient_x25519_pk);
+    ikm.extend_from_slice(recipient_ml_kem_pk);
+    let hk = Hkdf::<Sha256>::new(None, &ikm);
     let mut out = [0u8; 64];
     hk.expand(b"HybridKEM/v1", &mut out).expect("hkdf expand");
     out
@@ -151,6 +201,67 @@ mod tests {
         let (ct, shared_send) = hybrid_encaps(&pk).unwrap();
         let shared_recv = hybrid_decaps(&sk, &ct).unwrap();
         assert_eq!(shared_send, shared_recv);
+    }
+
+    // ── F-7 regression: the KDF is bound to the exchange transcript ──
+
+    #[test]
+    fn combine_secrets_binds_ephemeral_public_key() {
+        // Same raw shared secrets, different eph_pk — output must differ.
+        let x25519_ss = [1u8; 32];
+        let ml_kem_ss = [2u8; 32];
+        let ml_ct = [3u8; 16];
+        let recipient_x25519_pk = [4u8; 32];
+        let recipient_ml_kem_pk = [5u8; 8];
+
+        let out_a = combine_secrets(&x25519_ss, &ml_kem_ss, &[6u8; 32], &ml_ct, &recipient_x25519_pk, &recipient_ml_kem_pk);
+        let out_b = combine_secrets(&x25519_ss, &ml_kem_ss, &[7u8; 32], &ml_ct, &recipient_x25519_pk, &recipient_ml_kem_pk);
+        assert_ne!(out_a, out_b, "differing eph_pk must change the derived key");
+    }
+
+    #[test]
+    fn combine_secrets_binds_ml_kem_ciphertext() {
+        let x25519_ss = [1u8; 32];
+        let ml_kem_ss = [2u8; 32];
+        let eph_pk = [3u8; 32];
+        let recipient_x25519_pk = [4u8; 32];
+        let recipient_ml_kem_pk = [5u8; 8];
+
+        let out_a = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &[8u8; 16], &recipient_x25519_pk, &recipient_ml_kem_pk);
+        let out_b = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &[9u8; 16], &recipient_x25519_pk, &recipient_ml_kem_pk);
+        assert_ne!(out_a, out_b, "differing ml_ct must change the derived key");
+    }
+
+    #[test]
+    fn combine_secrets_binds_recipient_public_keys() {
+        let x25519_ss = [1u8; 32];
+        let ml_kem_ss = [2u8; 32];
+        let eph_pk = [3u8; 32];
+        let ml_ct = [4u8; 16];
+        let recipient_ml_kem_pk = [5u8; 8];
+
+        let out_a = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &ml_ct, &[10u8; 32], &recipient_ml_kem_pk);
+        let out_b = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &ml_ct, &[11u8; 32], &recipient_ml_kem_pk);
+        assert_ne!(out_a, out_b, "differing recipient public key must change the derived key");
+    }
+
+    #[test]
+    fn real_encaps_binds_recipient_identity_not_just_shared_secrets() {
+        // Two independent recipients: even in the (astronomically unlikely)
+        // case the two encapsulations produced identical raw shared secrets,
+        // the transcript binding (recipient public keys differ) must still
+        // make the derived keys diverge. Direct proof that pk1/pk2's own
+        // bytes are part of what's bound, not just their DH/KEM outputs.
+        let (pk1, _) = hybrid_keygen();
+        let (pk2, _) = hybrid_keygen();
+        assert_ne!(pk1.x25519, pk2.x25519, "sanity: independently generated keys differ");
+        let x25519_ss = [42u8; 32];
+        let ml_kem_ss = [43u8; 32];
+        let eph_pk = [44u8; 32];
+        let ml_ct = [45u8; 16];
+        let out1 = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &ml_ct, &pk1.x25519, &pk1.ml_kem);
+        let out2 = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &ml_ct, &pk2.x25519, &pk2.ml_kem);
+        assert_ne!(out1, out2, "same raw secrets but different recipient identity must diverge");
     }
 
     #[test]

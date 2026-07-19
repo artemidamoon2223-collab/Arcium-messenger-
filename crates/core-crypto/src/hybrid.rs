@@ -71,7 +71,11 @@ pub fn hybrid_keygen() -> (HybridPublicKey, HybridSecretKey) {
 
 /// Returns `(ciphertext, shared_secret_64_bytes)`.
 /// ciphertext layout: `[x25519_eph_pk (32)] || [ml_kem_ct (1088)]`
-pub fn hybrid_encaps(pk: &HybridPublicKey) -> (Vec<u8>, [u8; 64]) {
+///
+/// `pk.ml_kem` is peer-supplied (attacker-controlled length/content), so a
+/// wrong-length or otherwise invalid encapsulation key returns `Err(HybridError)`
+/// rather than panicking — mirroring `hybrid_decaps`.
+pub fn hybrid_encaps(pk: &HybridPublicKey) -> Result<(Vec<u8>, [u8; 64]), HybridError> {
     // X25519 ephemeral encapsulation
     let eph_sk = StaticSecret::random_from_rng(OsRng);
     let eph_pk = PublicKey::from(&eph_sk);
@@ -82,8 +86,8 @@ pub fn hybrid_encaps(pk: &HybridPublicKey) -> (Vec<u8>, [u8; 64]) {
         .ml_kem
         .as_slice()
         .try_into()
-        .expect("valid encapsulation key bytes");
-    let ek = EncapsulationKey768::new(&ek_key).expect("valid key");
+        .map_err(|_| HybridError)?;
+    let ek = EncapsulationKey768::new(&ek_key).map_err(|_| HybridError)?;
     let (ml_ct, ml_ss) = ek.encapsulate();
 
     // Combine: HKDF-SHA256(x25519_ss || ml_kem_ss) → 64 bytes
@@ -93,7 +97,7 @@ pub fn hybrid_encaps(pk: &HybridPublicKey) -> (Vec<u8>, [u8; 64]) {
     ct.extend_from_slice(&eph_pk.to_bytes());
     ct.extend_from_slice(ml_ct.as_slice());
 
-    (ct, shared)
+    Ok((ct, shared))
 }
 
 pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<[u8; 64], HybridError> {
@@ -143,7 +147,7 @@ mod tests {
     #[test]
     fn encaps_decaps_produce_same_secret() {
         let (pk, sk) = hybrid_keygen();
-        let (ct, shared_send) = hybrid_encaps(&pk);
+        let (ct, shared_send) = hybrid_encaps(&pk).unwrap();
         let shared_recv = hybrid_decaps(&sk, &ct).unwrap();
         assert_eq!(shared_send, shared_recv);
     }
@@ -152,10 +156,10 @@ mod tests {
     fn different_keys_produce_different_secrets() {
         let (pk1, _) = hybrid_keygen();
         let (pk2, sk2) = hybrid_keygen();
-        let (ct, _) = hybrid_encaps(&pk1); // encapsulate to pk1
+        let (ct, _) = hybrid_encaps(&pk1).unwrap(); // encapsulate to pk1
         // Decapsulate with sk2 (wrong key) → different or error
         let wrong = hybrid_decaps(&sk2, &ct).unwrap(); // won't error but output differs
-        let (_, correct) = hybrid_encaps(&pk2);
+        let (_, correct) = hybrid_encaps(&pk2).unwrap();
         // wrong decaps of pk1 ct with sk2 produces different result than correct encaps to pk2
         assert_ne!(wrong, correct);
     }
@@ -164,7 +168,7 @@ mod tests {
     fn wrong_secret_key_fails_decaps() {
         let (pk, _) = hybrid_keygen();
         let (_, sk2) = hybrid_keygen();
-        let (ct, shared_correct) = hybrid_encaps(&pk);
+        let (ct, shared_correct) = hybrid_encaps(&pk).unwrap();
         // Decaps with wrong sk — won't return error (ML-KEM uses implicit rejection)
         // but the shared secret must be different from the correct one
         let shared_wrong = hybrid_decaps(&sk2, &ct).unwrap();
@@ -175,5 +179,44 @@ mod tests {
     fn drop_zeroizes_hybrid_secret_key() {
         let (_, sk) = hybrid_keygen();
         drop(sk); // Drop impl must run without panic
+    }
+
+    // ── F-6 regression: malformed peer encapsulation key must Err, not panic ──
+
+    #[test]
+    fn encaps_rejects_wrong_length_ml_kem_key() {
+        // A peer bundle whose ML-KEM encapsulation key is the wrong length is
+        // attacker-controlled input. Before the F-6 fix this hit `.expect(...)`
+        // and panicked (a crash / DoS at the future FFI boundary). It must now
+        // come back as a clean Err.
+        let (mut pk, _) = hybrid_keygen();
+        pk.ml_kem = vec![0u8; 10]; // far shorter than a valid EK (1184 bytes)
+        assert!(
+            hybrid_encaps(&pk).is_err(),
+            "wrong-length ML-KEM key must return Err, not panic"
+        );
+    }
+
+    #[test]
+    fn encaps_rejects_empty_ml_kem_key() {
+        let (mut pk, _) = hybrid_keygen();
+        pk.ml_kem = Vec::new();
+        assert!(
+            hybrid_encaps(&pk).is_err(),
+            "empty ML-KEM key must return Err, not panic"
+        );
+    }
+
+    #[test]
+    fn encaps_rejects_right_length_but_invalid_ml_kem_key() {
+        // Correct length so the `try_into()` slice conversion succeeds, but the
+        // bytes are not a valid encapsulation key — this exercises the second
+        // former `.expect("valid key")` on `EncapsulationKey768::new`.
+        let (mut pk, _) = hybrid_keygen();
+        let valid_len = pk.ml_kem.len();
+        pk.ml_kem = vec![0xFFu8; valid_len];
+        // Must not panic; either a clean Err or (if these bytes happen to be an
+        // acceptable key) a normal Ok — the invariant under test is "no panic".
+        let _ = hybrid_encaps(&pk);
     }
 }

@@ -11,18 +11,25 @@ recovered from anywhere in the repo is flagged as such rather than guessed.
 
 ### Where the finding definitions come from
 
-- The deep review document `docs/SECURITY-REVIEW-2026-06-deep.md` **does NOT exist on
-  `main`.** It exists only on the unmerged remote branch
-  `origin/claude/arcium-security-deep-review-inlyr2` (commit `d46f6eb`, 427 lines, added
-  2026-06-09). That document is the authoritative in-repo definition of the findings and
-  is fully recoverable via `git show d46f6eb:docs/SECURITY-REVIEW-2026-06-deep.md`.
-- The task referred to findings **F-1 … F-13**. The recovered review actually defines
-  **17 findings, F-1 … F-17** (1 HIGH, 5 MED, 6 LOW, 5 INFO). All 17 have a recoverable
-  in-repo definition; none had to be invented. F-14…F-17 are tracked here too.
-- The only `F-nn` references anywhere in tracked source on `main` are **F-1** comments
-  (regression-test docs in `crates/core-crypto/src/ratchet.rs:517,574` and
-  `crates/mobile-ffi/src/lib.rs:362,591`). No other finding number is referenced in
+- Full original definitions for every finding live in
+  [`docs/SECURITY-REVIEW-2026-06-deep.md`](./SECURITY-REVIEW-2026-06-deep.md) — the
+  2026-06-09 deep review, imported into `main` verbatim (with a header noting this
+  tracker supersedes its status language). Until this PR, that document **did not exist
+  on `main`** — it lived only on the unmerged remote branch
+  `origin/claude/arcium-security-deep-review-inlyr2` (commit `d46f6eb`, 427 lines).
+  Recovering and importing it here is what makes this tracker self-contained: the
+  definitions no longer depend on a branch that could disappear.
+- The task referred to findings **F-1 … F-13**. The review actually defines **17
+  findings, F-1 … F-17** (1 HIGH, 5 MED, 6 LOW, 5 INFO). All 17 have a recoverable
+  in-repo definition, verified present in the imported copy; none had to be invented.
+  F-14…F-17 are tracked here too.
+- Before this PR, the only `F-nn` references anywhere in tracked source on `main` were
+  **F-1** comments (regression-test docs in `crates/core-crypto/src/ratchet.rs:517,574`
+  and `crates/mobile-ffi/src/lib.rs:362,591`). No other finding number was referenced in
   main's source — their statuses lived only in scattered conversation until now.
+- **This file is the authoritative *current* status for every finding.** The imported
+  review is preserved as a historical snapshot for context/definitions only — its own
+  status language reflects 2026-06-09, not today.
 
 ### Status vocabulary
 

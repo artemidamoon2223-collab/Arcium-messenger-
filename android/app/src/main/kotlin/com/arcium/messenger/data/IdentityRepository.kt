@@ -1,16 +1,17 @@
 package com.arcium.messenger.data
 
+import com.arcium.messenger.ArciumApp
 import com.arcium.messenger.ffi.ArciumCoreWrapper
 
-class IdentityRepository(private val core: ArciumCoreWrapper = ArciumCoreWrapper()) {
+class IdentityRepository(private val core: ArciumCoreWrapper = ArciumApp.core) {
 
-    fun generateAndSave(): ByteArray {
-        // TODO: core.generateIdentity(), then core.openEncryptedDb() + persist
-        return core.generateIdentity()
-    }
+    /**
+     * Generates a new identity, persists it into the encrypted store, and
+     * returns the 32-byte public key. Errors (DB not open, storage failure)
+     * propagate to the caller — there is no silent skip.
+     */
+    fun generateAndSave(): ByteArray = core.generateAndSaveIdentity()
 
-    fun loadPublicKey(): ByteArray? {
-        // TODO: open encrypted db, load IDENTITY_KEY entry
-        return null
-    }
+    /** Returns the stored identity's public key, or null if none is saved. */
+    fun loadPublicKey(): ByteArray? = core.loadIdentityPublicKey()
 }

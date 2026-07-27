@@ -51,9 +51,9 @@ pub fn hybrid_keygen() -> (HybridPublicKey, HybridSecretKey) {
     let x25519_pk = PublicKey::from(&x25519_sk);
 
     // ML-KEM: generate random 64-byte seed via rand_core 0.6 OsRng
-    let mut seed_bytes = [0u8; 64];
-    OsRng.fill_bytes(&mut seed_bytes);
-    let seed: Seed = seed_bytes.as_ref().try_into().expect("64 bytes");
+    let mut seed_bytes = Zeroizing::new([0u8; 64]);
+    OsRng.fill_bytes(&mut seed_bytes[..]);
+    let seed: Seed = seed_bytes[..].try_into().expect("64 bytes");
     let dk = DecapsulationKey768::from_seed(seed);
     let ek = dk.encapsulation_key();
 
@@ -71,7 +71,11 @@ pub fn hybrid_keygen() -> (HybridPublicKey, HybridSecretKey) {
 
 /// Returns `(ciphertext, shared_secret_64_bytes)`.
 /// ciphertext layout: `[x25519_eph_pk (32)] || [ml_kem_ct (1088)]`
-pub fn hybrid_encaps(pk: &HybridPublicKey) -> (Vec<u8>, [u8; 64]) {
+///
+/// `pk.ml_kem` is peer-supplied (attacker-controlled length/content), so a
+/// wrong-length or otherwise invalid encapsulation key returns `Err(HybridError)`
+/// rather than panicking — mirroring `hybrid_decaps`.
+pub fn hybrid_encaps(pk: &HybridPublicKey) -> Result<(Vec<u8>, [u8; 64]), HybridError> {
     // X25519 ephemeral encapsulation
     let eph_sk = StaticSecret::random_from_rng(OsRng);
     let eph_pk = PublicKey::from(&eph_sk);
@@ -82,18 +86,28 @@ pub fn hybrid_encaps(pk: &HybridPublicKey) -> (Vec<u8>, [u8; 64]) {
         .ml_kem
         .as_slice()
         .try_into()
-        .expect("valid encapsulation key bytes");
-    let ek = EncapsulationKey768::new(&ek_key).expect("valid key");
+        .map_err(|_| HybridError)?;
+    let ek = EncapsulationKey768::new(&ek_key).map_err(|_| HybridError)?;
     let (ml_ct, ml_ss) = ek.encapsulate();
 
-    // Combine: HKDF-SHA256(x25519_ss || ml_kem_ss) → 64 bytes
-    let shared = combine_secrets(x25519_ss.as_bytes(), ml_ss.as_slice());
+    // Combine: HKDF-SHA256(x25519_ss || ml_kem_ss || eph_pk || ml_ct ||
+    // recipient_x25519_pk || recipient_ml_kem_pk) → 64 bytes (F-7: bind the
+    // full transcript — ciphertexts and public keys — not just the raw
+    // shared secrets, so the derived key is committed to this exact exchange).
+    let shared = combine_secrets(
+        x25519_ss.as_bytes(),
+        ml_ss.as_slice(),
+        eph_pk.as_bytes(),
+        ml_ct.as_slice(),
+        &pk.x25519,
+        pk.ml_kem.as_slice(),
+    );
 
     let mut ct = Vec::with_capacity(X25519_LEN + ml_ct.len());
     ct.extend_from_slice(&eph_pk.to_bytes());
     ct.extend_from_slice(ml_ct.as_slice());
 
-    (ct, shared)
+    Ok((ct, shared))
 }
 
 pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<[u8; 64], HybridError> {
@@ -102,26 +116,67 @@ pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<[u8; 64], Hybrid
     }
 
     // X25519 decapsulation
+    let our_x25519_sk = StaticSecret::from(sk.x25519);
     let eph_pk_bytes: [u8; 32] = ct[..X25519_LEN].try_into().map_err(|_| HybridError)?;
-    let x25519_ss = StaticSecret::from(sk.x25519).diffie_hellman(&PublicKey::from(eph_pk_bytes));
+    let x25519_ss = our_x25519_sk.diffie_hellman(&PublicKey::from(eph_pk_bytes));
+    // Our own X25519 public key, re-derived from the secret — this is the
+    // "recipient public key" the sender bound into its transcript (F-7).
+    let our_x25519_pk = PublicKey::from(&our_x25519_sk);
 
     // ML-KEM decapsulation
-    let seed_bytes: [u8; 64] = sk.ml_kem.as_slice().try_into().map_err(|_| HybridError)?;
-    let seed: Seed = seed_bytes.as_ref().try_into().map_err(|_| HybridError)?;
+    let seed_bytes: Zeroizing<[u8; 64]> =
+        Zeroizing::new(sk.ml_kem.as_slice().try_into().map_err(|_| HybridError)?);
+    let seed: Seed = seed_bytes[..].try_into().map_err(|_| HybridError)?;
     let dk = DecapsulationKey768::from_seed(seed);
+    // Our own ML-KEM encapsulation key, re-derived from the decapsulation
+    // key — same call `hybrid_keygen` uses, so it reproduces the identical
+    // bytes the sender encapsulated to.
+    let our_ml_kem_pk = dk.encapsulation_key();
     let ml_ct: Ciphertext<MlKem768> = ct[X25519_LEN..]
         .try_into()
         .map_err(|_| HybridError)?;
     let ml_ss = dk.decapsulate(&ml_ct);
 
-    Ok(combine_secrets(x25519_ss.as_bytes(), ml_ss.as_slice()))
+    Ok(combine_secrets(
+        x25519_ss.as_bytes(),
+        ml_ss.as_slice(),
+        &eph_pk_bytes,
+        &ct[X25519_LEN..],
+        our_x25519_pk.as_bytes(),
+        our_ml_kem_pk.to_bytes().as_slice(),
+    ))
 }
 
-fn combine_secrets(x25519_ss: &[u8], ml_kem_ss: &[u8]) -> [u8; 64] {
-    let mut ikm = Zeroizing::new([0u8; 64]);
-    ikm[..32].copy_from_slice(x25519_ss);
-    ikm[32..].copy_from_slice(ml_kem_ss);
-    let hk = Hkdf::<Sha256>::new(None, ikm.as_ref());
+/// F-7: binds the full exchange transcript into the KDF, not just the raw
+/// shared secrets — the ephemeral X25519 public key, the ML-KEM ciphertext,
+/// and the recipient's public keys. Without this, ML-KEM's lack of
+/// ciphertext binding (it is not a committing KEM) could allow
+/// re-encapsulation/mix-and-match games in composed protocols; with it, the
+/// derived key is committed to this exact exchange (mirrors X-Wing /
+/// draft-ietf-tls-hybrid-design).
+fn combine_secrets(
+    x25519_ss: &[u8],
+    ml_kem_ss: &[u8],
+    eph_pk: &[u8],
+    ml_ct: &[u8],
+    recipient_x25519_pk: &[u8],
+    recipient_ml_kem_pk: &[u8],
+) -> [u8; 64] {
+    let mut ikm = Zeroizing::new(Vec::with_capacity(
+        x25519_ss.len()
+            + ml_kem_ss.len()
+            + eph_pk.len()
+            + ml_ct.len()
+            + recipient_x25519_pk.len()
+            + recipient_ml_kem_pk.len(),
+    ));
+    ikm.extend_from_slice(x25519_ss);
+    ikm.extend_from_slice(ml_kem_ss);
+    ikm.extend_from_slice(eph_pk);
+    ikm.extend_from_slice(ml_ct);
+    ikm.extend_from_slice(recipient_x25519_pk);
+    ikm.extend_from_slice(recipient_ml_kem_pk);
+    let hk = Hkdf::<Sha256>::new(None, &ikm);
     let mut out = [0u8; 64];
     hk.expand(b"HybridKEM/v1", &mut out).expect("hkdf expand");
     out
@@ -143,19 +198,80 @@ mod tests {
     #[test]
     fn encaps_decaps_produce_same_secret() {
         let (pk, sk) = hybrid_keygen();
-        let (ct, shared_send) = hybrid_encaps(&pk);
+        let (ct, shared_send) = hybrid_encaps(&pk).unwrap();
         let shared_recv = hybrid_decaps(&sk, &ct).unwrap();
         assert_eq!(shared_send, shared_recv);
+    }
+
+    // ── F-7 regression: the KDF is bound to the exchange transcript ──
+
+    #[test]
+    fn combine_secrets_binds_ephemeral_public_key() {
+        // Same raw shared secrets, different eph_pk — output must differ.
+        let x25519_ss = [1u8; 32];
+        let ml_kem_ss = [2u8; 32];
+        let ml_ct = [3u8; 16];
+        let recipient_x25519_pk = [4u8; 32];
+        let recipient_ml_kem_pk = [5u8; 8];
+
+        let out_a = combine_secrets(&x25519_ss, &ml_kem_ss, &[6u8; 32], &ml_ct, &recipient_x25519_pk, &recipient_ml_kem_pk);
+        let out_b = combine_secrets(&x25519_ss, &ml_kem_ss, &[7u8; 32], &ml_ct, &recipient_x25519_pk, &recipient_ml_kem_pk);
+        assert_ne!(out_a, out_b, "differing eph_pk must change the derived key");
+    }
+
+    #[test]
+    fn combine_secrets_binds_ml_kem_ciphertext() {
+        let x25519_ss = [1u8; 32];
+        let ml_kem_ss = [2u8; 32];
+        let eph_pk = [3u8; 32];
+        let recipient_x25519_pk = [4u8; 32];
+        let recipient_ml_kem_pk = [5u8; 8];
+
+        let out_a = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &[8u8; 16], &recipient_x25519_pk, &recipient_ml_kem_pk);
+        let out_b = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &[9u8; 16], &recipient_x25519_pk, &recipient_ml_kem_pk);
+        assert_ne!(out_a, out_b, "differing ml_ct must change the derived key");
+    }
+
+    #[test]
+    fn combine_secrets_binds_recipient_public_keys() {
+        let x25519_ss = [1u8; 32];
+        let ml_kem_ss = [2u8; 32];
+        let eph_pk = [3u8; 32];
+        let ml_ct = [4u8; 16];
+        let recipient_ml_kem_pk = [5u8; 8];
+
+        let out_a = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &ml_ct, &[10u8; 32], &recipient_ml_kem_pk);
+        let out_b = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &ml_ct, &[11u8; 32], &recipient_ml_kem_pk);
+        assert_ne!(out_a, out_b, "differing recipient public key must change the derived key");
+    }
+
+    #[test]
+    fn real_encaps_binds_recipient_identity_not_just_shared_secrets() {
+        // Two independent recipients: even in the (astronomically unlikely)
+        // case the two encapsulations produced identical raw shared secrets,
+        // the transcript binding (recipient public keys differ) must still
+        // make the derived keys diverge. Direct proof that pk1/pk2's own
+        // bytes are part of what's bound, not just their DH/KEM outputs.
+        let (pk1, _) = hybrid_keygen();
+        let (pk2, _) = hybrid_keygen();
+        assert_ne!(pk1.x25519, pk2.x25519, "sanity: independently generated keys differ");
+        let x25519_ss = [42u8; 32];
+        let ml_kem_ss = [43u8; 32];
+        let eph_pk = [44u8; 32];
+        let ml_ct = [45u8; 16];
+        let out1 = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &ml_ct, &pk1.x25519, &pk1.ml_kem);
+        let out2 = combine_secrets(&x25519_ss, &ml_kem_ss, &eph_pk, &ml_ct, &pk2.x25519, &pk2.ml_kem);
+        assert_ne!(out1, out2, "same raw secrets but different recipient identity must diverge");
     }
 
     #[test]
     fn different_keys_produce_different_secrets() {
         let (pk1, _) = hybrid_keygen();
         let (pk2, sk2) = hybrid_keygen();
-        let (ct, _) = hybrid_encaps(&pk1); // encapsulate to pk1
+        let (ct, _) = hybrid_encaps(&pk1).unwrap(); // encapsulate to pk1
         // Decapsulate with sk2 (wrong key) → different or error
         let wrong = hybrid_decaps(&sk2, &ct).unwrap(); // won't error but output differs
-        let (_, correct) = hybrid_encaps(&pk2);
+        let (_, correct) = hybrid_encaps(&pk2).unwrap();
         // wrong decaps of pk1 ct with sk2 produces different result than correct encaps to pk2
         assert_ne!(wrong, correct);
     }
@@ -164,7 +280,7 @@ mod tests {
     fn wrong_secret_key_fails_decaps() {
         let (pk, _) = hybrid_keygen();
         let (_, sk2) = hybrid_keygen();
-        let (ct, shared_correct) = hybrid_encaps(&pk);
+        let (ct, shared_correct) = hybrid_encaps(&pk).unwrap();
         // Decaps with wrong sk — won't return error (ML-KEM uses implicit rejection)
         // but the shared secret must be different from the correct one
         let shared_wrong = hybrid_decaps(&sk2, &ct).unwrap();
@@ -175,5 +291,44 @@ mod tests {
     fn drop_zeroizes_hybrid_secret_key() {
         let (_, sk) = hybrid_keygen();
         drop(sk); // Drop impl must run without panic
+    }
+
+    // ── F-6 regression: malformed peer encapsulation key must Err, not panic ──
+
+    #[test]
+    fn encaps_rejects_wrong_length_ml_kem_key() {
+        // A peer bundle whose ML-KEM encapsulation key is the wrong length is
+        // attacker-controlled input. Before the F-6 fix this hit `.expect(...)`
+        // and panicked (a crash / DoS at the future FFI boundary). It must now
+        // come back as a clean Err.
+        let (mut pk, _) = hybrid_keygen();
+        pk.ml_kem = vec![0u8; 10]; // far shorter than a valid EK (1184 bytes)
+        assert!(
+            hybrid_encaps(&pk).is_err(),
+            "wrong-length ML-KEM key must return Err, not panic"
+        );
+    }
+
+    #[test]
+    fn encaps_rejects_empty_ml_kem_key() {
+        let (mut pk, _) = hybrid_keygen();
+        pk.ml_kem = Vec::new();
+        assert!(
+            hybrid_encaps(&pk).is_err(),
+            "empty ML-KEM key must return Err, not panic"
+        );
+    }
+
+    #[test]
+    fn encaps_rejects_right_length_but_invalid_ml_kem_key() {
+        // Correct length so the `try_into()` slice conversion succeeds, but the
+        // bytes are not a valid encapsulation key — this exercises the second
+        // former `.expect("valid key")` on `EncapsulationKey768::new`.
+        let (mut pk, _) = hybrid_keygen();
+        let valid_len = pk.ml_kem.len();
+        pk.ml_kem = vec![0xFFu8; valid_len];
+        // Must not panic; either a clean Err or (if these bytes happen to be an
+        // acceptable key) a normal Ok — the invariant under test is "no panic".
+        let _ = hybrid_encaps(&pk);
     }
 }

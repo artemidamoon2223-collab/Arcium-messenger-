@@ -11,6 +11,7 @@ name = "arcium_core"
 [dependencies]
 uniffi = { version = "0.28", features = ["build"] }
 core-crypto = { path = "../core-crypto" }
+core-protocol = { path = "../core-protocol" }
 core-storage = { path = "../core-storage" }
 core-transport = { path = "../core-transport" }
 ed25519-dalek.workspace = true

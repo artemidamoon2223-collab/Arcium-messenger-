@@ -15,6 +15,7 @@ https://github.com/forrestchang/andrej-karpathy-skills
 - **Короткие блоки кода** — разработчик на планшете. Дроби длинный код.
 - **Не притворяйся** — если шаг нельзя проверить (нет сети/toolchain), скажи прямо.
 - **Security analysis** — использовать ТОЛЬКО признанные классы угроз: timing/cache/power/EM side-channel, X3DH/replay/OPK protocol bugs, PSI/MPC correctness, on-chain access control, traffic analysis, FFI boundary, supply chain. ❌ НЕ добавлять псевдонаучные модели (phase/frequency/Fibonacci/Mishin/quasicrystal/PhaseSCA).
+- **Не инвентаризируй состояние репозитория** — в этом файле не место сигнатурам, счётчикам, деревьям каталогов, статусным таблицам, спискам веток и истории PR. Такие копии расходятся с репозиторием по построению. Читай исходники и GitHub.
 
 Общение с разработчиком — на русском. Код и комментарии — на английском.
 
@@ -108,67 +109,6 @@ npx mocha --require ts-node/register 'src/crypto.test.ts'
 
 ---
 
-## Статус модулей
-```
-v0.1 ✅ core-crypto     X3DH + Ratchet + RescueCipher(stub) + Hybrid KEM
-v0.2 ✅ core-storage    SQLite + XChaCha20
-v0.3 ✅ core-transport  Tor (arti)
-v0.4 ✅ core-protocol   SessionManager
-v0.5 ✅ mobile-ffi      Identity + ArciumCore (UniFFI)
-v0.6 ✅ android         Kotlin + Compose skeleton (4 screens, UniFFI stub)
-v1.0 🚧 arcium-psi      Arcis circuit ✅ | Anchor handlers ✅ | deploy ⏳ (нужен toolchain)
-v1.1 🚧 post-quantum    Hybrid X25519+ML-KEM ✅
-TS tests 🚧             config ✅ | crypto 4/4 ✅ | setup ✅ | deploy/scenarios ⏳
-```
-
----
-
-## Структура репозитория
-
-```
-Arcium-messenger-/
-├── Cargo.toml                        # workspace: 5 crates, resolver = "2"
-├── CLAUDE.md                         # этот файл
-├── PROJECT_CONTEXT.md                # архитектурные детали PSI (не для агента)
-├── crates/
-│   ├── core-crypto/src/
-│   │   ├── lib.rs                    # re-exports + 24 unit tests
-│   │   ├── x3dh.rs                   # X3DH key exchange
-│   │   ├── ratchet.rs                # Double Ratchet (FIFO skipped keys)
-│   │   ├── rescue.rs                 # RescueCipher — STUB только для PSI
-│   │   ├── hybrid.rs                 # X25519 + ML-KEM-768 PQ hybrid
-│   │   └── contact_hash.rs           # sha256(phone)[0..8] → u64 LE
-│   ├── core-storage/src/lib.rs       # EncryptedStore: SQLite + XChaCha20
-│   ├── core-protocol/src/lib.rs      # SessionManager
-│   ├── core-transport/src/lib.rs     # TorClient (arti)
-│   └── mobile-ffi/src/lib.rs         # UniFFI cdylib: Identity + ArciumCore
-├── arcium-psi/
-│   ├── programs/arcium-psi/src/lib.rs  # Anchor: init_user, submit_query, PSI handlers
-│   ├── encrypted-ixs/src/lib.rs        # Arcis circuit (arcis = "0.10.4")
-│   └── tests/src/
-│       ├── crypto.test.ts            # 4/4 ✅
-│       ├── setup.test.ts             # ✅
-│       ├── scenarios.test.ts         # ⏳ (нужен devnet)
-│       └── utils.ts                  # hash_contact: sha256(phone)[0..8] → bigint LE
-├── android/app/src/main/kotlin/com/arcium/messenger/
-│   ├── ui/{onboarding,chat,contacts,settings}/  # 4 Compose screens
-│   ├── ffi/ArciumCore.kt             # UniFFI bindings stub
-│   └── data/{Contact,Identity,Message}Repository.kt
-└── .github/workflows/
-    ├── arcium-ci.yml                 # core-rust → ts-crypto → arcium-build → arcium-test
-    ├── android-ci.yml                # assembleDebug (JDK 17 + Android SDK)
-    ├── security-review.yml           # Claude Code review на диффе PR
-    └── monthly-backup.yml            # → GitHub Releases
-```
-
----
-
-## Ключевые API
-
-Сигнатуры здесь не дублируются: копии уезжают по построению — этот раздел уже деградировал до документирования функций, которые в таком виде не компилируются.
-
----
-
 ## Workflow разработки
 
 ### Создать ветку и отправить PR
@@ -194,11 +134,10 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 ### Добавить тест
 - **Rust**: `#[cfg(test)] mod tests { ... }` в конце файла крейта
 - **TS**: `arcium-psi/tests/src/*.test.ts`; запуск: `npx mocha --require ts-node/register 'src/новый.test.ts'`
-- После добавления — обновить счётчик в разделе "Тесты" этого файла
 
 ---
 
-## GitHub — конфигурация и история PR
+## GitHub — конфигурация
 
 ### Репозиторий
 - `artemidamoon2223-collab/Arcium-messenger-`
@@ -213,48 +152,13 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
   - ⚠️ Требует биллинга на **console.anthropic.com** (отдельно от claude.ai подписки). Без карты ключи генерируются, но API их отклоняет.
   - Проверь ключ перед вставкой: `curl -s https://api.anthropic.com/v1/models -H "x-api-key: KEY" -H "anthropic-version: 2023-06-01"` — должен вернуть `{"data":[`
 
-### GitHub Actions (`.github/workflows/`)
-| Файл | Триггер | Что делает |
-|------|---------|-----------|
-| `arcium-ci.yml` | push / PR / manual | 4 jobs: core-rust → ts-crypto → arcium-build → arcium-test |
-| `android-ci.yml` | push/PR `android/**` | JDK 17 + Android SDK, `./gradlew assembleDebug` |
-| `security-review.yml` | PR opened/sync | Claude Code security review на диффе PR |
-| `karpathy-review.yml` | PR opened/sync | Karpathy 4-principle review: Think/Simplicity/Surgical/Goal-Driven |
-| `monthly-backup.yml` | schedule | Бэкап в GitHub Releases |
-
 ### Версии CI (НЕ менять без проверки)
-Берутся из `arcium-hq/setup-arcium@v0.10.4` defaults (README подтверждён):
-- Rust: `stable --profile minimal`
-- Node.js: `20` (job ts-crypto) / `24.10.0` (внутри arcium action)
-- Solana CLI (agave/Anza): `3.1.10`
-- Anchor CLI: `1.0.2`
-- arcium CLI: `0.10.4`
+Берутся из defaults экшена `arcium-hq/setup-arcium@v0.10.4` — не бампай их вслепую, сверяйся с его README.
 
 ### devcontainer (`.devcontainer/`)
 Смёржен в PR #10. Покрывает: Rust, Node 20, Solana, Anchor, arcium, TS deps.
 **Не покрывает:** Android SDK/NDK (собирается локально через android-ci).
 Проверка: открыть Codespace → дождаться setup.sh → `cargo test --workspace`.
-
-### История PR (все смёржены в main)
-| PR | Ветка | Что сделано |
-|----|-------|------------|
-| #1 | snapshot | Восстановлены 11 крипто-тестов, исправлен Cargo.toml |
-| #2 | snapshot | v1.0 Arcium PSI: circuit + Anchor handlers + CI pipeline |
-| #3 | android-skeleton | v0.6 Android skeleton (Kotlin + Compose) |
-| #4 | sec-fixes | M-2 (save_identity ошибки), L-2 (zeroize FFI), L-1 (Drop ratchet) |
-| #5 | sec-fixes | clippy + cargo audit в CI ✅ смёржен |
-| #6 | snapshot | Claude Security Review workflow + .gitignore |
-| #7 | i2-contact-hash | I-2: документация hash_contact (ширина 64 бит, privacy model, M-3 caveat) |
-| #8 | i1-solana-url | I-1: Solana RPC URL → BuildConfig (AGP 8+, buildConfig = true) |
-| #9 | l3-fifo | L-3: trim_skipped FIFO (IndexMap) + zeroize при eviction |
-| #10 | devcontainer | .devcontainer для GitHub Codespaces |
-| #11 | claude/add-graphify (squash) | CLAUDE.md docs + karpathy-review + CI workflows update |
-| #13 | test-count-fix | Fix test count 51→54 in CLAUDE.md |
-| #14 | prune-automation | Удалены gdrive-sync, plugins.json |
-| #19 | audit-annotations | `.cargo/audit.toml` — полные REVISIT аннотации для RUSTSEC-2025-0009 и RUSTSEC-2023-0071 |
-| #21 | security-gate-fix | Восстановлен security-review как BLOCKING gate (убран continue-on-error) |
-| #22 | karpathy-gate | karpathy-review — реальный blocking gate (id: claude_run + Fail step) |
-| #25 | security-gate-step | security-review gate step: fail-if-not-run + run-every-commit=true — закрыт false-green (silent skip по cache marker) |
 
 ### Открытые задачи
 - **PR #5** (clippy + cargo audit): ✅ смёржен 2026-06-07 владельцем.
@@ -262,17 +166,6 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 - **M-3** (NO-GO, отложен): RescueCipher stub в Rust остаётся — настоящий Rescue только в TS `@arcium-hq/client`. Нет Rust-крейта от Arcium без Solana стека.
 - **devnet deploy**: нужен Anchor CLI + Solana CLI + открытая сеть (не sandbox). См. `docs/HOME-DEPLOY.md`.
 - **Branch protection** (owner-only): Settings → Branches → main → Require status checks → добавить `karpathy-review` + `security-review`. Без этого мерж возможен даже при красных гейтах.
-- **Stale branches** (можно удалить через GitHub UI → Settings → Branches): `claude/prune-automation`, `claude/test-count-fix`, `claude/claude-md-docs-ybVU7`, `claude/karpathy-gate`, `claude/security-gate-step`, `claude/claude-md-pr-history`, `claude/test-model-fix`, `claude/test-api-key`.
+- **Stale branches**: периодически просматривай GitHub UI → Settings → Branches и удаляй смёрженные/заброшенные ветки.
 - **RUSTSEC-2025-0009 (ring 0.16.x)**: REVISIT AT SECURITY AUDIT — отслеживай выход arti-client, использующего ring ≥ 0.17.12. Как только появится — обновить arti-client и убрать ignore из `.cargo/audit.toml`.
 - **RUSTSEC-2023-0071 (rsa 0.9.x)**: REVISIT AT SECURITY AUDIT — нет исправленной версии upstream. Следи за crates.io/crates/rsa.
-
-### Тесты (текущее состояние, `cargo test --workspace`)
-```
-core-crypto    28/28 ✅  (24 base + 3 ratchet FIFO/zeroize + 1 hybrid Drop)
-core-protocol   5/5  ✅
-core-storage   10/10 ✅
-core-transport  5/5  ✅  (1 ignored — Tor без сети)
-mobile-ffi      7/7  ✅
-─────────────────────
-Итого: 55/55, 0 упавших
-```

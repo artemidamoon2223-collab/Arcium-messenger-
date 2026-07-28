@@ -62,7 +62,66 @@ recovered from anywhere in the repo is flagged as such rather than guessed.
 | **F-14** | INFO | On-chain placeholders + result-delivery gap (pre-deploy) | **NOT-FIXED (pre-deploy)** · behavior `NEEDS-HOME` | `arcium-psi/programs/arcium-psi/src/lib.rs:5` — placeholder `declare_id!("PSiArc1um111…")`. Callback still `msg!`-logs the client key without writing the match vector to an account/event. Access-control review (`init_user` PDA, `has_one = owner`, monotonic nonce) confirmed sound statically; MXE authority is `NEEDS-HOME`. |
 | **F-15** | INFO | Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir` | **NOT-FIXED (design)** · `NEEDS-HOME` | `android/.../network/SolanaClient.kt:7` uses `BuildConfig.SOLANA_RPC_URL` directly (clearnet). `crates/core-transport/src/lib.rs:23-24` — `new(_state_dir)` ignores the arg and uses `TorClientConfig::default()`. Design decision, deferred to FFI wiring. |
 | **F-16** | INFO | TS client: raw ECDH output used directly as `RescueCipher` key | **CANNOT-VERIFY-FROM-CODE** · `NEEDS-HOME` | `arcium-psi/tests/src/client.ts:16` returns raw `x25519.getSharedSecret`; `:28` `new RescueCipher(sharedSecret)` with no explicit KDF. Whether this is safe depends on `@arcium-hq/client`'s internal derivation — not determinable from repo source. Code unchanged since review. |
-| **F-17** | INFO | `CLAUDE.md` carries derived-from-source content that drifts and is loaded as authoritative every session | **NOT-FIXED** | The defect is not that specific counts are stale — it's that `CLAUDE.md` holds content *derived from* the repo (workflow tables, repo-structure trees, API signature listings) with nothing that re-derives it when the source changes, and this file is read into every session as ground truth. Concrete case, already in this repo's history: before PR #60, `CLAUDE.md`'s "Ключевые API" section documented `hybrid_encaps` as returning a plain tuple; `crates/core-crypto/src/hybrid.rs` had by then returned `Result<(Vec<u8>, [u8; 64]), HybridError>` since F-6 (PR #52). A session loading that section would write code against a signature roughly 8 PRs out of date, with no signal that it had drifted short of reading the source directly — sharper than a workflow-count mismatch, since it teaches a wrong API rather than an outdated inventory. PR #60 resolved that one instance by deleting the section rather than re-deriving it; the same class of content (repo-structure map, workflow table) is still present elsewhere in the file. **Closure condition, checkable by inspection and independent of any specific number:** `CLAUDE.md` contains no inventories of repository state — no file/workflow counts, no directory trees, no listings of function signatures or APIs. A single version constraint recorded as a warning is not an inventory. |
+| **F-17** | INFO | `CLAUDE.md` carries derived-from-source content that drifts and is loaded as authoritative every session | **FIXED** | **Closed by inspection at `main` @ `1a7b1904`** — `CLAUDE.md` (blob `4a860dd3`, 171 lines) read in full against the closure condition below: no file/workflow counts, no directory trees, no listings of function signatures or APIs, and — applying the condition's general term rather than only its three named examples — no status tables, branch lists, or PR history either. The file additionally now carries a standing rule against re-introducing such content («Правила работы» → «Не инвентаризируй состояние репозитория»), so the state is asserted as a rule and not only as an absence. The edits landed in PRs #60, #62, #64, #65, #66, all merged before this tracker update per the fix-first rule; this row's PR changes no code and does not touch `CLAUDE.md`. Verification basis, how independent the check was, the four borderline cases weighed, and the scope limit of this closure: see [F-17 closure record](#f-17-closure-record) below. **Original defect and closure condition, retained verbatim:** The defect is not that specific counts are stale — it's that `CLAUDE.md` holds content *derived from* the repo (workflow tables, repo-structure trees, API signature listings) with nothing that re-derives it when the source changes, and this file is read into every session as ground truth. Concrete case, already in this repo's history: before PR #60, `CLAUDE.md`'s "Ключевые API" section documented `hybrid_encaps` as returning a plain tuple; `crates/core-crypto/src/hybrid.rs` had by then returned `Result<(Vec<u8>, [u8; 64]), HybridError>` since F-6 (PR #52). A session loading that section would write code against a signature roughly 8 PRs out of date, with no signal that it had drifted short of reading the source directly — sharper than a workflow-count mismatch, since it teaches a wrong API rather than an outdated inventory. PR #60 resolved that one instance by deleting the section rather than re-deriving it; the same class of content (repo-structure map, workflow table) is still present elsewhere in the file. **Closure condition, checkable by inspection and independent of any specific number:** `CLAUDE.md` contains no inventories of repository state — no file/workflow counts, no directory trees, no listings of function signatures or APIs. A single version constraint recorded as a warning is not an inventory. |
+
+### F-17 closure record
+
+**What was checked.** `CLAUDE.md` at `main` @ `1a7b1904` (blob `4a860dd3`, 171 lines) was
+read in full against the closure condition quoted in the F-17 row, applying that
+condition's general term — "inventories of repository state" — with its three named
+categories treated as examples rather than an exhaustive checklist. That is the reading
+recorded in PR #66, and it is what the condition's own carve-out requires: a single
+version constraint would never have matched "file/workflow counts", "directory trees",
+or "listings of function signatures or APIs" in the first place, so under a narrow
+three-category reading the carve-out would exclude nothing.
+
+**How independent the check was.** The checking pass was given the condition text and its
+reading, was barred from opening the diffs of the PRs that edited `CLAUDE.md` (#60, #62,
+#64, #65, #66), and did not reconstruct the removed content by any other route — the
+verdict was reached from the file's current text alone. Its independence was partial, not
+total: the same session had, earlier in the same run, read the post-merge `CLAUDE.md` and
+the body of PR #66, and it disclosed this before starting. A genuinely cold pass — a
+session handed only `CLAUDE.md` and the condition — would be stronger evidence than what
+backs this row. Recorded rather than smoothed over, so a later reader can weigh the
+evidence and not just the verdict.
+
+**Borderline cases weighed and found not to be inventories.** Written down so a later pass
+can see they were considered rather than missed:
+
+- *The «Версии» block (four dependency pins).* Against: derived from the manifests, and it
+  drifts whenever a version is bumped. For: each line is a constraint recorded with its
+  reason ("требует anchor-lang =1.0.2", "не 0.2", "не менять без причины") — the
+  compatibility decision is not re-derivable from the manifest, which records what is
+  pinned but never why it may not move. The carve-out covers exactly this shape; its
+  singular ("a single version constraint") reads as a description of the form of one
+  entry, not a quota of one per file.
+- *«Сейчас STUB на chacha20poly1305» for `crates/core-crypto/src/rescue.rs`.* Against: a
+  statement about current source that goes stale the moment the stub is replaced. For: it
+  is written as a prohibition with its rationale ("НЕ заменяй … пока circuit не
+  задеплоен"; arcium-client would pull the whole Solana/Anchor stack into the Android
+  `.so`) — a NO-GO decision, the same shape the carve-out protects, not a listing.
+- *Single pointer facts — "TS-сторона уже следует этому (tests/src/utils.ts)" and
+  "Kotlin-биндинги уже скомпилированы в …/ffi/ArciumCore.kt".* Against: one-off assertions
+  about the current state of named files, and they will drift silently. For: a lone fact
+  attached to a canonical rule is neither a count, a tree, nor a signature listing, and
+  the carve-out concedes that not every recorded fact is an inventory. These sit closest
+  to the line of anything left in the file.
+- *The «Открытые задачи» block.* Against: status-shaped, it drifts as items close, and
+  "PR #5 … ✅ смёржен 2026-06-07" is repository history rather than an open task — the
+  strongest single argument for a stricter verdict. For: the block enumerates what is
+  absent and owed (no billed API key, no devnet deploy, branch protection not enabled),
+  which is not derived from source at all and cannot be re-derived by reading it; each
+  entry is a warning or a REVISIT condition, not a count, tree, or signature listing.
+
+**Scope of this closure — read this before citing it.** The closure condition is narrower
+than the defect described in the F-17 row. FIXED here means the class of content the
+condition names is gone from `CLAUDE.md`. It does not mean `CLAUDE.md` is structurally
+protected against drift. Single derived facts remain in the file — the pointers and the
+version pins listed above — and they do not violate the condition. The standing rule added
+to «Правила работы» is a rule, not a mechanism: nothing re-derives or re-checks the file
+when the source changes. If what is wanted is drift-immunity rather than
+inventory-removal, that is a different problem, it is not covered by closing F-17, and it
+would need its own finding.
 
 ---
 
@@ -98,5 +157,6 @@ as pre-freeze / pre-deploy:
 ---
 
 *This tracker is a documentation artifact only. It changes no code. Statuses are a
-point-in-time snapshot at `main` @ `492c5d1f` on 2026-07-19 and should be re-verified
-against source whenever a finding is claimed fixed.*
+point-in-time snapshot at `main` @ `492c5d1f` on 2026-07-19 — except **F-17**, re-verified
+at `main` @ `1a7b1904` on 2026-07-28 — and should be re-verified against source whenever a
+finding is claimed fixed.*

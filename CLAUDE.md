@@ -156,7 +156,7 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 Берутся из defaults экшена `arcium-hq/setup-arcium@v0.10.4` — не бампай их вслепую, сверяйся с его README.
 
 ### devcontainer (`.devcontainer/`)
-Смёржен в PR #10. Покрывает: Rust, Node 20, Solana, Anchor, arcium, TS deps.
+Смёржен в PR #10.
 **Не покрывает:** Android SDK/NDK (собирается локально через android-ci).
 Проверка: открыть Codespace → дождаться setup.sh → `cargo test --workspace`.
 

@@ -117,7 +117,7 @@ git checkout -b claude/<task-slug>
 # ... изменения ...
 cargo test --workspace          # должно быть 0 упавших
 git push -u origin claude/<task-slug>
-# → создать PR → squash merge в main
+# → создать PR и остановиться: мёрдж — только по отдельному указанию владельца
 ```
 
 ### Обновить UniFFI биндинги для Android
@@ -127,7 +127,7 @@ cargo build -p mobile-ffi
 
 # Шаг 2: компиляция .so (нужен NDK — только локально / android-ci.yml)
 cargo ndk -t arm64-v8a build -p mobile-ffi --release
-# выход: target/aarch64-linux-android/release/libmobile_ffi.so
+# выход: target/aarch64-linux-android/release/libarcium_core.so
 ```
 Kotlin-биндинги уже скомпилированы в `android/app/src/main/kotlin/.../ffi/ArciumCore.kt`.
 
@@ -143,7 +143,7 @@ Kotlin-биндинги уже скомпилированы в `android/app/src/
 - `artemidamoon2223-collab/Arcium-messenger-`
 - Основная ветка: `main`
 - Соглашение по веткам: `claude/<task-slug>`
-- Мёрж: squash в main
+- Мёрж: обычный merge commit (НЕ squash), по отдельному указанию владельца
 
 ### Secrets (Settings → Secrets and variables → Actions)
 - `ANTHROPIC_API_KEY` — ключ с console.anthropic.com для Claude Security Review **и karpathy-review**

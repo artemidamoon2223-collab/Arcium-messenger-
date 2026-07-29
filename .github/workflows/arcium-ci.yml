@@ -67,7 +67,8 @@ jobs:
         id: arcium_build
         working-directory: arcium-psi
         run: |
-          if arcium build; then
+          set -o pipefail
+          if arcium build 2>&1 | tee /tmp/arcium_build.log; then
             echo "build_success=true" >> "$GITHUB_OUTPUT"
             echo "=== arcium build SUCCEEDED ==="
             sha256sum build/psi_intersect.arcis.ir || echo "IR file not found"
@@ -75,8 +76,20 @@ jobs:
             ls -la build/ 2>/dev/null || true
           else
             echo "build_success=false" >> "$GITHUB_OUTPUT"
+            first_error="$(grep -m1 -iE '^error' /tmp/arcium_build.log || echo 'no line matching ^error found in output')"
             echo "=== arcium build FAILED — see output above for details ==="
-            echo "Hint: check toolchain version mismatch or circuit API changes"
+            echo "Hint: the first error above is the actual cause — do not assume a toolchain or circuit problem."
+            echo "::error::arcium build failed: ${first_error}"
+            {
+              echo "### arcium build FAILED"
+              echo ""
+              echo "This job does not fail the workflow run (see F-11, docs/SECURITY-FINDINGS.md)."
+              echo ""
+              echo "First error line:"
+              echo '```'
+              echo "${first_error}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
         shell: bash
       - name: arcium-psi borsh tests (requires arcium artifacts)
@@ -95,6 +108,23 @@ jobs:
       - name: arcium test (with open-files limit fix)
         working-directory: arcium-psi
         run: |
+          set -o pipefail
           sudo prlimit --pid $$ --nofile=1048576:1048576
-          arcium test || echo "arcium test did not pass — integration environment or circuit issue"
+          if arcium test 2>&1 | tee /tmp/arcium_test.log; then
+            echo "arcium test passed"
+          else
+            first_error="$(grep -m1 -iE '^error' /tmp/arcium_test.log || echo 'no line matching ^error found in output')"
+            echo "arcium test did not pass — the real cause is the first error above. This job masks the failure: a green check here does NOT mean the tests ran."
+            echo "::error::arcium test did not pass: ${first_error}"
+            {
+              echo "### arcium test did NOT pass"
+              echo ""
+              echo "**A green check on this job does NOT mean the tests ran.** This job intentionally does not fail the workflow (see F-11, docs/SECURITY-FINDINGS.md)."
+              echo ""
+              echo "First error line:"
+              echo '```'
+              echo "${first_error}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
         shell: bash

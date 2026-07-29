@@ -74,6 +74,16 @@ Little-Endian, первые 8 байт. TS-сторона уже следует 
 - НЕ заменяй на настоящий Rescue пока circuit не задеплоен на Arcium testnet
 - Причина: arcium-client тянет весь Solana/Anchor стек → раздувает Android .so
 
+### arcium-psi — отдельный cargo-воркспейс:
+- `arcium-psi/Cargo.toml` объявляет свой `[workspace]` — корневой Cargo.toml его НЕ включает
+- `arcium build`/`arcium test` в CI запускаются с `working-directory: arcium-psi` → cargo резолвит workspace root там, а не в корне
+- profile-настройки для arcium-psi (`overflow-checks` и подобное) — только в `arcium-psi/Cargo.toml`
+- ❌ НЕ трогай ради этого корневой `[profile.release]` — он собирает `crates/**`, включая Android `.so` из mobile-ffi, и на `arcium build` не влияет
+
+### lutOffset перед деплоем на devnet (arcium-psi/tests/src/program.ts:172):
+- Сейчас заглушка: `const lutOffset = new BN(0)`
+- Перед реальным devnet-деплоем заменить на чтение `mxeAccount.lutOffsetSlot` — поле называется `lutOffsetSlot`, не `lutLastSlot`
+
 ---
 
 ## Версии (проверены, не менять без причины)
@@ -81,6 +91,7 @@ Little-Endian, первые 8 байт. TS-сторона уже следует 
 - arcis = "0.10.4" (генерирует .arcis.ir)
 - @coral-xyz/anchor ^0.30.1, @arcium-hq/client ^0.10.4 (TS сторона)
 - ml-kem = "0.3" (hybrid PQ, не 0.2; Cargo.toml pin = "0.3", exact patch locked by Cargo.lock)
+- net.java.dev.jna:jna:5.12.0@aar (android/app/build.gradle.kts, версия из требования UniFFI 0.28.0 docs) — ❌ НЕ добавляй ручной `System.loadLibrary("arcium_core")`: UniFFI-биндинги грузят .so лениво через JNA при первом FFI-вызове
 
 ---
 

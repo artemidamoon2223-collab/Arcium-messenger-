@@ -32,15 +32,30 @@ fun AppNavigation() {
     // before this composable ever runs), Routes.ONBOARDING — and therefore
     // its "Generate Identity Keys" button — must never be reachable, since
     // generateAndSaveIdentity() silently overwrites any existing identity.
-    val existingPublicKey = remember { IdentityRepository().loadPublicKey() }
-    val startDestination = if (existingPublicKey != null) Routes.IDENTITY_EXISTS else Routes.ONBOARDING
+    val hasStoredIdentity = remember { IdentityRepository().loadPublicKey() != null }
+    val startDestination = if (hasStoredIdentity) Routes.IDENTITY_EXISTS else Routes.ONBOARDING
     NavHost(navController = navController, startDestination = startDestination) {
         composable(Routes.ONBOARDING) {
-            OnboardingScreen(onIdentityReady = { navController.navigate(Routes.CONTACTS) })
+            OnboardingScreen(
+                onIdentityReady = {
+                    navController.navigate(Routes.IDENTITY_EXISTS) {
+                        popUpTo(Routes.ONBOARDING) { inclusive = true }
+                    }
+                },
+            )
         }
         composable(Routes.IDENTITY_EXISTS) {
+            // Read back from the encrypted store every time this destination is
+            // composed, so the key shown is the persisted one — on cold start and
+            // immediately after generation alike. Null here means the store holds
+            // no identity although this destination was reached: a real failure,
+            // surfaced loudly instead of being painted as an empty key.
+            val publicKey = remember {
+                IdentityRepository().loadPublicKey()
+                    ?: error("IDENTITY_EXISTS reached but no identity is stored")
+            }
             ExistingIdentityScreen(
-                publicKey = existingPublicKey ?: ByteArray(0),
+                publicKey = publicKey,
                 onContinue = {
                     navController.navigate(Routes.CONTACTS) {
                         popUpTo(Routes.IDENTITY_EXISTS) { inclusive = true }

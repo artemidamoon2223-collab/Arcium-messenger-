@@ -32,17 +32,28 @@ object MasterKeyProvider {
     private const val GCM_TAG_BITS = 128
     private const val MASTER_KEY_BYTES = 32
 
+    /**
+     * Returns the 32-byte master key, creating and persisting a wrapped copy on
+     * first use. On success the caller receives the live plaintext key and owns
+     * it: zero the returned array once it has been handed on. On every failure
+     * path nothing is returned and this object scrubs its own copy before the
+     * throwable propagates.
+     */
     fun getOrCreateMasterKey(context: Context): ByteArray {
         val blobFile = File(context.filesDir, BLOB_FILE_NAME)
         val wrapKey = getOrCreateWrapKey()
         if (blobFile.exists()) {
             return unwrap(blobFile.readBytes(), wrapKey)
         }
-        val masterKey = ByteArray(MASTER_KEY_BYTES).also { SecureRandom().nextBytes(it) }
-        // Write via temp file + rename so a crash mid-write cannot leave a
-        // truncated blob that would permanently lock the database out.
-        val tmp = File(context.filesDir, "$BLOB_FILE_NAME.tmp")
+        // The array is allocated outside the cleanup boundary because the JVM
+        // zero-initializes it; the boundary starts at the first point where it
+        // can hold secret bytes, which is nextBytes() below.
+        val masterKey = ByteArray(MASTER_KEY_BYTES)
         try {
+            SecureRandom().nextBytes(masterKey)
+            // Write via temp file + rename so a crash mid-write cannot leave a
+            // truncated blob that would permanently lock the database out.
+            val tmp = File(context.filesDir, "$BLOB_FILE_NAME.tmp")
             tmp.writeBytes(wrap(masterKey, wrapKey))
             check(tmp.renameTo(blobFile)) { "failed to persist wrapped master key" }
         } catch (t: Throwable) {

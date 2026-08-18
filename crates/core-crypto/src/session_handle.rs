@@ -17,8 +17,14 @@
 //! - it would also put a phone-derived number — reversible by enumeration, as
 //!   `contact_hash` documents — in the local session table.
 //!
-//! The domain separator below guarantees the two derivations cannot collide by
-//! construction even if they were ever fed the same bytes.
+//! The domain separator below keeps this a derivation domain of its own: the two
+//! functions consume different inputs and answer different questions, so neither
+//! can be mistaken for the other or silently substituted for it.
+//!
+//! That is a statement about the inputs, not about the outputs. Both derivations
+//! truncate to 64 bits, so two unrelated values can still coincide by ordinary
+//! chance — see the collision note on [`local_session_handle`]. Domain separation
+//! does not, and cannot, make truncated outputs distinct.
 
 use sha2::{Digest, Sha256};
 
@@ -79,9 +85,11 @@ mod tests {
         assert_ne!(local_session_handle(&key(0)), local_session_handle(&flipped));
     }
 
-    /// The domain separator must actually be mixed in: a bare SHA-256 of the key
-    /// must not produce the same handle. This is what keeps the messaging
-    /// derivation from ever coinciding with an undomained hash of the same bytes.
+    /// The domain separator must actually be mixed in: for this key, a bare
+    /// SHA-256 gives a different handle. That demonstrates the separator reaches
+    /// the digest — it is not evidence that the two derivations can never agree
+    /// on some other input, which 64-bit truncation does not permit anyone to
+    /// claim.
     #[test]
     fn domain_separator_is_applied() {
         let pk = key(9);

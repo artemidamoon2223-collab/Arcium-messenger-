@@ -652,4 +652,70 @@ mod tests {
             Err(CoreError::NoSession { session_id: 1 })
         ));
     }
+
+    /// `session_id` is a purely local lookup handle, not part of the protocol.
+    /// The two peers here deliberately pick *different* ids for the same
+    /// cryptographic session — Alice 42, Bob 77 — and still exchange messages
+    /// in both directions.
+    ///
+    /// The other round-trip tests all happen to use one id on both sides, so
+    /// they cannot distinguish "the id is local" from "the id must match".
+    /// This one can: if the id were bound into the handshake, the header, or
+    /// the associated data, the mismatch would surface as an authentication
+    /// failure rather than exact plaintext recovery.
+    #[test]
+    fn asymmetric_session_ids_still_round_trip_both_directions() {
+        let alice_session_id: u64 = 42;
+        let bob_session_id: u64 = 77;
+        assert_ne!(alice_session_id, bob_session_id, "the point of this test is that they differ");
+
+        let bob = fresh_core(80);
+        bob.save_identity(Identity::generate()).unwrap();
+        bob.establish_prekeys().unwrap();
+        let bob_bundle = bob.export_prekey_bundle().unwrap();
+
+        let alice = fresh_core(90);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        let handshake = alice
+            .establish_session_initiator(alice_session_id, bob_bundle)
+            .unwrap();
+        bob.establish_session_responder(
+            bob_session_id,
+            handshake[..32].to_vec(),
+            handshake[32..].to_vec(),
+        )
+        .unwrap();
+
+        // Alice must send first: Bob's sending chain key isn't derived until
+        // his receiving DH ratchet step runs on the first inbound message.
+        let outbound = b"from alice under id 42".to_vec();
+        let message = alice
+            .encrypt_message(alice_session_id, outbound.clone())
+            .unwrap();
+        assert_eq!(
+            bob.decrypt_message(bob_session_id, message).unwrap(),
+            outbound,
+            "Bob must recover Alice's plaintext exactly while looking the session up under a different id",
+        );
+
+        let reply = b"from bob under id 77".to_vec();
+        let reply_message = bob.encrypt_message(bob_session_id, reply.clone()).unwrap();
+        assert_eq!(
+            alice.decrypt_message(alice_session_id, reply_message).unwrap(),
+            reply,
+            "Alice must recover Bob's reply exactly under her own unrelated id",
+        );
+
+        // Each side's id is meaningless to the other: the peer's id resolves to
+        // nothing locally, which is what "local handle" means in practice.
+        assert!(matches!(
+            alice.encrypt_message(bob_session_id, b"x".to_vec()),
+            Err(CoreError::NoSession { session_id }) if session_id == bob_session_id
+        ));
+        assert!(matches!(
+            bob.encrypt_message(alice_session_id, b"x".to_vec()),
+            Err(CoreError::NoSession { session_id }) if session_id == alice_session_id
+        ));
+    }
 }

@@ -17,6 +17,11 @@ android {
         val solanaRpcUrl = project.findProperty("SOLANA_RPC_URL") as String?
             ?: "https://api.devnet.solana.com"
         buildConfigField("String", "SOLANA_RPC_URL", "\"$solanaRpcUrl\"")
+        // Runs the instrumentation tests in src/androidTest on a device or
+        // emulator. Those are the only place the JNA bridge and the packaged
+        // libarcium_core.so are actually executed; local JVM tests in src/test
+        // never load native code.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -73,8 +78,16 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.12.0@aar")
 
     // Local JVM unit tests only (src/test). These cover pure Kotlin logic that
-    // must hold before any FFI call happens — session-handle bookkeeping and the
-    // identity-binding checks. Nothing here runs on a device: no instrumentation
-    // runner is configured, and anything reaching JNA cannot be tested this way.
+    // must hold before any FFI call happens — the identity-binding checks.
+    // Nothing here runs on a device and nothing here loads native code; anything
+    // reaching JNA belongs in src/androidTest instead.
     testImplementation(libs.junit)
+
+    // Instrumentation tests only (src/androidTest): the AndroidJUnitRunner and
+    // the JUnit4 Android bridge. Deliberately nothing else — no Espresso, no
+    // Compose UI testing, no mocking framework. This suite exercises the real
+    // FFI chain, so a mock would defeat its purpose.
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }

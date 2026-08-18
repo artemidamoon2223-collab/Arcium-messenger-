@@ -60,10 +60,13 @@ fun ContactsScreen(
                         headlineContent = { Text(contact.name) },
                         supportingContent = { Text(contact.phone) },
                         modifier = Modifier.clickable {
-                            // Display label only. The session handle is derived
-                            // from contact.publicKey by MessageRepository, and is
-                            // never routed through the UI or derived from a phone
-                            // number — that hash belongs to PSI.
+                            // Display label only — no key and no session handle
+                            // travels this route. Nothing here reaches
+                            // MessageRepository yet: that layer needs the peer's
+                            // X25519 DH identity key, and Contact.publicKey is not
+                            // yet documented to be that key rather than the
+                            // Ed25519 signing key, so wiring it would be a guess.
+                            // Contact discovery has to settle which it holds first.
                             onOpenChat(contact.name)
                         },
                     )

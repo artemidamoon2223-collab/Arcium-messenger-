@@ -43,6 +43,32 @@ impl From<RatchetError> for CoreError {
     }
 }
 
+// ── Local session handles ─────────────────────────────────────────────────────
+
+/// Derives the caller's own lookup handle for the session with the peer whose
+/// 32-byte X25519 identity public key is `peer_identity_pk`, so the platform
+/// layer never has to reimplement a hash to obtain the `u64` this API's session
+/// methods take.
+///
+/// The handle is local: it is transmitted nowhere, and the peer may pick a
+/// different one for the same session. It is also a truncation, so it is not
+/// collision-free — hold on to the full public key and refuse to rebind a handle
+/// that already belongs to a different key, because `establish_session_*` will
+/// otherwise overwrite the existing session.
+///
+/// This is deliberately **not** `hash_contact`, which hashes a phone number for
+/// PSI and is pinned to the deployed circuit; see `core_crypto::session_handle`.
+#[uniffi::export]
+pub fn local_session_handle(peer_identity_pk: Vec<u8>) -> Result<u64, CoreError> {
+    let pk: [u8; 32] = peer_identity_pk.as_slice().try_into().map_err(|_| CoreError::InvalidKey {
+        msg: format!(
+            "expected a 32-byte peer identity public key, got {}",
+            peer_identity_pk.len()
+        ),
+    })?;
+    Ok(core_crypto::session_handle::local_session_handle(&pk))
+}
+
 // ── Identity ──────────────────────────────────────────────────────────────────
 
 #[derive(uniffi::Object)]
@@ -717,5 +743,67 @@ mod tests {
             bob.encrypt_message(alice_session_id, b"x".to_vec()),
             Err(CoreError::NoSession { session_id }) if session_id == alice_session_id
         ));
+    }
+
+    // ── local_session_handle ─────────────────────────────────────────────────
+
+    #[test]
+    fn local_session_handle_is_deterministic_and_key_dependent() {
+        assert_eq!(
+            local_session_handle(key32(3)).unwrap(),
+            local_session_handle(key32(3)).unwrap()
+        );
+        assert_ne!(
+            local_session_handle(key32(3)).unwrap(),
+            local_session_handle(key32(4)).unwrap()
+        );
+    }
+
+    #[test]
+    fn local_session_handle_rejects_wrong_length() {
+        for len in [0usize, 31, 33, 64] {
+            assert!(
+                matches!(
+                    local_session_handle(vec![1u8; len]),
+                    Err(CoreError::InvalidKey { .. })
+                ),
+                "a {len}-byte key must be rejected, not silently truncated or padded"
+            );
+        }
+    }
+
+    /// A handle derived for a real peer must actually address that peer's session
+    /// end to end: establish under it, then encrypt/decrypt through it.
+    #[test]
+    fn derived_handle_addresses_a_real_session() {
+        let bob = fresh_core(120);
+        bob.save_identity(Identity::generate()).unwrap();
+        bob.establish_prekeys().unwrap();
+        let bob_bundle = bob.export_prekey_bundle().unwrap();
+        // The bundle leads with Bob's X25519 identity public key (D3 layout).
+        let bob_identity_pk = bob_bundle[0..32].to_vec();
+
+        let alice = fresh_core(130);
+        let alice_identity = Identity::generate();
+        let alice_identity_dh_pk = alice_identity.dh_public_key_bytes();
+        alice.save_identity(alice_identity).unwrap();
+
+        // Each side derives a handle for the *other* peer; the two differ, which
+        // is fine — handles are local and need not agree (see PR #75).
+        let alice_handle = local_session_handle(bob_identity_pk).unwrap();
+        let bob_handle = local_session_handle(alice_identity_dh_pk).unwrap();
+        assert_ne!(alice_handle, bob_handle);
+
+        let handshake = alice.establish_session_initiator(alice_handle, bob_bundle).unwrap();
+        bob.establish_session_responder(
+            bob_handle,
+            handshake[..32].to_vec(),
+            handshake[32..].to_vec(),
+        )
+        .unwrap();
+
+        let plaintext = b"addressed by derived handle".to_vec();
+        let message = alice.encrypt_message(alice_handle, plaintext.clone()).unwrap();
+        assert_eq!(bob.decrypt_message(bob_handle, message).unwrap(), plaintext);
     }
 }

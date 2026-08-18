@@ -153,6 +153,23 @@ class ArciumCoreWrapper {
     }
 
     /**
+     * Derives this device's own lookup handle for the session with the peer
+     * whose 32-byte X25519 identity public key is [peerIdentityPk].
+     *
+     * Pure: it needs no open store, so unlike the methods above it does not
+     * require [openEncryptedDb]. A wrong-length key raises CoreException rather
+     * than being truncated or padded into a plausible-looking handle.
+     *
+     * The result is a truncation and therefore not collision-free — the caller
+     * must keep the full public key and refuse to rebind a handle that already
+     * belongs to a different key, because the Rust side would otherwise
+     * overwrite the existing session. See MessagingSessionRegistry.
+     */
+    fun localSessionHandle(peerIdentityPk: ByteArray): ULong {
+        return uniffi.arcium_core.localSessionHandle(peerIdentityPk)
+    }
+
+    /**
      * Not connected yet, and no UniFFI export exists for it: PSI stays
      * RescueCipher + Arcium MPC in Rust. Throws rather than returning an
      * all-false result, which is indistinguishable from "no contacts matched".

@@ -16,7 +16,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ContactsScreen(
-    onOpenChat: (sessionId: String) -> Unit,
+    onOpenChat: (peerLabel: String) -> Unit,
     onOpenSettings: () -> Unit,
     viewModel: ContactsViewModel = viewModel(),
 ) {
@@ -60,8 +60,11 @@ fun ContactsScreen(
                         headlineContent = { Text(contact.name) },
                         supportingContent = { Text(contact.phone) },
                         modifier = Modifier.clickable {
-                            // TODO: derive sessionId from contact.publicKey
-                            onOpenChat(contact.phone)
+                            // Display label only. The session handle is derived
+                            // from contact.publicKey by MessageRepository, and is
+                            // never routed through the UI or derived from a phone
+                            // number — that hash belongs to PSI.
+                            onOpenChat(contact.name)
                         },
                     )
                     HorizontalDivider()

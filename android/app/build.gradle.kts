@@ -71,4 +71,10 @@ dependencies {
     // Version/coordinate from official UniFFI 0.28.0 docs (kotlin/gradle.md): "JNA 5.12.0
     // or greater is required" with example net.java.dev.jna:jna:5.12.0@aar.
     implementation("net.java.dev.jna:jna:5.12.0@aar")
+
+    // Local JVM unit tests only (src/test). These cover pure Kotlin logic that
+    // must hold before any FFI call happens — session-handle bookkeeping and the
+    // identity-binding checks. Nothing here runs on a device: no instrumentation
+    // runner is configured, and anything reaching JNA cannot be tested this way.
+    testImplementation(libs.junit)
 }

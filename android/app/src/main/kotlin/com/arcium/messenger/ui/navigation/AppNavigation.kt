@@ -18,10 +18,11 @@ object Routes {
     const val ONBOARDING = "onboarding"
     const val IDENTITY_EXISTS = "identity_exists"
     const val CONTACTS = "contacts"
-    const val CHAT = "chat/{sessionId}"
+    const val CHAT = "chat/{peerLabel}"
     const val SETTINGS = "settings"
 
-    fun chat(sessionId: String) = "chat/$sessionId"
+    /** [peerLabel] is a display label only — never a session handle or a key. */
+    fun chat(peerLabel: String) = "chat/$peerLabel"
 }
 
 @Composable
@@ -65,16 +66,16 @@ fun AppNavigation() {
         }
         composable(Routes.CONTACTS) {
             ContactsScreen(
-                onOpenChat = { sessionId -> navController.navigate(Routes.chat(sessionId)) },
+                onOpenChat = { peerLabel -> navController.navigate(Routes.chat(peerLabel)) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
             )
         }
         composable(
             route = Routes.CHAT,
-            arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
+            arguments = listOf(navArgument("peerLabel") { type = NavType.StringType }),
         ) { backStack ->
-            val sessionId = backStack.arguments?.getString("sessionId") ?: ""
-            ChatScreen(sessionId = sessionId, onBack = { navController.popBackStack() })
+            val peerLabel = backStack.arguments?.getString("peerLabel") ?: ""
+            ChatScreen(peerLabel = peerLabel, onBack = { navController.popBackStack() })
         }
         composable(Routes.SETTINGS) {
             SettingsScreen(onBack = { navController.popBackStack() })

@@ -1,12 +1,9 @@
 package com.arcium.messenger.ui.chat
 
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import com.arcium.messenger.data.Message
-import com.arcium.messenger.data.MessageRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
 
 data class ChatState(
     val messages: List<Message> = emptyList(),
@@ -14,26 +11,37 @@ data class ChatState(
     val error: String? = null,
 )
 
-class ChatViewModel(
-    private val messageRepo: MessageRepository = MessageRepository(),
-) : ViewModel() {
+/**
+ * Chat screen state.
+ *
+ * This screen cannot yet send or show messages, and says so rather than looking
+ * like it worked. Two pieces are missing below it, both outside this layer:
+ *
+ * - **Transport.** `mobile-ffi` exports none, so a ciphertext produced by
+ *   MessageRepository has no way to reach the peer. Encryption without delivery
+ *   is not a sent message.
+ * - **A peer identity.** Sessions are addressed by the peer's 32-byte identity
+ *   public key, and contact discovery (PSI) does not yet yield one. The route
+ *   argument reaching this screen is a display label, not a key and not a
+ *   session handle.
+ *
+ * History is likewise absent rather than empty: messages are not persisted
+ * anywhere, since the encrypted store exposes no key-value surface over FFI.
+ * Showing an empty list as though it were the full history would be the same
+ * false success this rewrite removed from MessageRepository.
+ */
+class ChatViewModel : ViewModel() {
 
     private val _state = MutableStateFlow(ChatState())
     val state: StateFlow<ChatState> = _state
 
-    private var sessionId: String = ""
-
-    fun init(sessionId: String) {
-        this.sessionId = sessionId
-        _state.value = _state.value.copy(messages = messageRepo.getHistory(sessionId))
-    }
-
     fun sendMessage(text: String) {
-        viewModelScope.launch {
-            _state.value = _state.value.copy(isSending = true, error = null)
-            val result = messageRepo.send(sessionId, text.toByteArray())
-            _state.value = _state.value.copy(isSending = false)
-            result.onFailure { _state.value = _state.value.copy(error = it.message) }
-        }
+        if (text.isBlank()) return
+        _state.value = _state.value.copy(
+            isSending = false,
+            error = "Not sent. Message transport is not wired yet: the Rust core can " +
+                "encrypt for an established session, but nothing can deliver the " +
+                "ciphertext to the peer, and this chat has no peer identity key.",
+        )
     }
 }

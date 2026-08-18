@@ -14,22 +14,25 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.lifecycle.viewmodel.compose.viewModel
 
+/**
+ * [peerLabel] is a display label only. It is not a session handle and not a
+ * peer identity key: sessions are addressed by the peer's 32-byte public key,
+ * which contact discovery does not yet provide.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
-    sessionId: String,
+    peerLabel: String,
     onBack: () -> Unit,
     viewModel: ChatViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     var input by remember { mutableStateOf("") }
 
-    LaunchedEffect(sessionId) { viewModel.init(sessionId) }
-
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(sessionId) },
+                title = { Text(peerLabel) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -62,12 +65,35 @@ fun ChatScreen(
             modifier = Modifier.fillMaxSize().padding(padding),
             reverseLayout = true,
         ) {
+            // Surfaced, not swallowed: a send that failed must not look to the
+            // user exactly like a send that succeeded.
+            state.error?.let { message ->
+                item {
+                    Text(
+                        message,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
+            }
             if (state.messages.isEmpty()) {
-                item { Text("No messages yet.", modifier = Modifier.padding(16.dp)) }
+                item {
+                    Text(
+                        "No message history. Messages are not stored on this device yet.",
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
             }
             items(state.messages) { msg ->
-                // TODO: render bubbles with isMine alignment
-                ListItem(headlineContent = { Text(msg.ciphertext.decodeToString()) })
+                // A Message holds ciphertext. Decoding those bytes as text would
+                // paint an encrypted payload as if it had been read; showing the
+                // size is the most this screen can honestly say until decryption
+                // is wired to a peer identity. TODO: bubbles with isMine alignment.
+                ListItem(
+                    headlineContent = {
+                        Text("Encrypted message (${msg.ciphertext.size} bytes), not decrypted")
+                    },
+                )
             }
         }
     }

@@ -43,6 +43,14 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
+      # assembleDebug neither compiles nor runs src/test, so without this step
+      # the local JVM unit tests would be inert: broken test code would not even
+      # fail the build. Runs before the APK so a logic regression is reported
+      # before the longer packaging step.
+      - name: Run JVM unit tests
+        working-directory: android
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
       - name: Build debug APK
         id: build
         working-directory: android

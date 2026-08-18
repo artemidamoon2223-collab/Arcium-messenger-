@@ -63,9 +63,10 @@ class ArciumCoreWrapper {
     // ── Messaging: X3DH handshake + Double Ratchet ───────────────────────────
     //
     // Each method below forwards straight to the generated bindings. The typed
-    // CoreException (Storage / InvalidKey / Handshake / NoSession / Crypto)
-    // propagates unchanged: it is never caught, never flattened into a Boolean
-    // or null, never rewritten into a generic Exception.
+    // CoreException (Storage / InvalidKey / Handshake / NoSession /
+    // SessionAlreadyExists / SessionIdCollision / Crypto) propagates unchanged:
+    // it is never caught, never flattened into a Boolean or null, never
+    // rewritten into a generic Exception.
     //
     // `sessionId` is a local lookup handle into the Rust SessionManager, not a
     // protocol field — it is absent from the prekey bundle, the handshake, the
@@ -98,7 +99,9 @@ class ArciumCoreWrapper {
     /**
      * Opens a session as the X3DH initiator ("Alice") against [peerBundle] —
      * the peer's [exportPrekeyBundle] output — and registers it in Rust under
-     * the local handle [sessionId].
+     * the local handle [sessionId]. An occupied handle is refused, never
+     * overwritten: CoreException.SessionAlreadyExists for the same peer,
+     * CoreException.SessionIdCollision for a different one.
      *
      * Returns the bytes the peer needs to finish the handshake through
      * [establishSessionResponder]. Delivering them is a transport concern and
@@ -115,8 +118,9 @@ class ArciumCoreWrapper {
      * it under the local handle [sessionId].
      *
      * Requires [establishPrekeys] to have run here first; CoreException
-     * propagates otherwise. Initiator and responder are separate,
-     * non-interchangeable roles — neither call substitutes for the other.
+     * propagates otherwise. An occupied handle is refused here too. Initiator
+     * and responder are separate, non-interchangeable roles — neither call
+     * substitutes for the other.
      */
     fun establishSessionResponder(
         sessionId: ULong,
@@ -160,10 +164,11 @@ class ArciumCoreWrapper {
      * require [openEncryptedDb]. A wrong-length key raises CoreException rather
      * than being truncated or padded into a plausible-looking handle.
      *
-     * The result is a truncation and therefore not collision-free — the caller
-     * must keep the full public key and refuse to rebind a handle that already
-     * belongs to a different key, because the Rust side would otherwise
-     * overwrite the existing session. See MessagingSessionRegistry.
+     * The result is a truncation and therefore not collision-free, but the
+     * caller does not have to police that: Rust stores the peer's full public
+     * key with the session and never overwrites an occupied handle. A clash
+     * surfaces as CoreException.SessionIdCollision, and re-establishing a live
+     * session as CoreException.SessionAlreadyExists.
      */
     fun localSessionHandle(peerIdentityPk: ByteArray): ULong {
         return uniffi.arcium_core.localSessionHandle(peerIdentityPk)

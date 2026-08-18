@@ -49,17 +49,25 @@ data class Message(
  *
  * Rust does not take the peer identity from the argument: it reads it out of the
  * prekey bundle for an initiator, and out of the handshake for a responder. If
- * this class claimed a handle for the caller's `peerIdentityPk` while Rust built
- * the session from different bytes, the registry would record a session with B
- * that is cryptographically a session with A. Both entry points therefore require
- * the caller's key to equal the identity carried in those bytes, and fail before
- * anything is claimed or created.
+ * the two disagree, the caller believes it is talking to B while the session is
+ * cryptographically with A. Both entry points therefore require the caller's key
+ * to equal the identity carried in those bytes, and fail before any session is
+ * created.
  *
  * The phone hash is never used: it is the PSI matching token, pinned to the
  * deployed Arcium circuit, so reusing it would tie message routing to the circuit
  * version and put a value reversible by enumeration into the session table.
- * Handles are derived, never invented, and every one is claimed through
- * [MessagingSessionRegistry] so a truncation collision fails loudly.
+ *
+ * ## Ownership lives in Rust
+ *
+ * This class keeps no session bookkeeping of its own. The Rust `SessionManager`
+ * is the single authority on which sessions exist and who owns them: it stores
+ * the peer's full public key beside the ratchet and refuses to place a second
+ * session on an occupied handle, surfacing `CoreException.SessionAlreadyExists`
+ * or `CoreException.SessionIdCollision`. A Kotlin mirror of that state used to
+ * exist and was removed, because it could record an owner before the FFI call
+ * that would have created the session succeeded — and then keep that record when
+ * the call failed.
  *
  * ## No transport
  *
@@ -76,7 +84,6 @@ data class Message(
  */
 class MessageRepository(
     private val core: ArciumCoreWrapper = ArciumApp.core,
-    private val sessions: MessagingSessionRegistry = ArciumApp.sessions,
 ) {
 
     /**
@@ -96,12 +103,13 @@ class MessageRepository(
     fun ownPrekeyBundle(): ByteArray = core.exportPrekeyBundle()
 
     /**
-     * Local handle for [peerIdentityPk], derived and claimed. Throws
-     * IllegalStateException if a different peer already holds that handle.
+     * Local handle for [peerIdentityPk]: a pure derivation with no bookkeeping.
+     * Calling it records nothing and reserves nothing, so a handle only ever
+     * becomes owned when Rust actually creates the session.
      */
     fun handleFor(peerIdentityPk: ByteArray): ULong {
         requirePublicKey(peerIdentityPk)
-        return sessions.claim(core.localSessionHandle(peerIdentityPk), peerIdentityPk)
+        return core.localSessionHandle(peerIdentityPk)
     }
 
     /**
@@ -109,14 +117,14 @@ class MessageRepository(
      * peer's [peerPrekeyBundle].
      *
      * [peerIdentityPk] must equal the bundle's own identity (its first 32 bytes,
-     * the X25519 DH key), or this throws IllegalStateException having claimed no
-     * handle and created no session.
+     * the X25519 DH key), or this throws IllegalStateException having created no
+     * session.
      *
      * Returns `identity_pk(32) || ephemeral_pk(32)` — the bytes the peer needs
      * for [acceptSessionAsResponder]. **Returning them is not sending them.**
      */
     fun startSessionAsInitiator(peerIdentityPk: ByteArray, peerPrekeyBundle: ByteArray): ByteArray {
-        // Before anything is claimed or created: the bundle's own identity is what
+        // Before anything is created: the bundle's own identity is what
         // Rust will run X3DH against, so it — not the argument — decides who this
         // session is with. Disagreement means the caller is about to file a session
         // with A under B's handle, and there is no safe way to guess which side is
@@ -131,9 +139,9 @@ class MessageRepository(
      * produced. Requires [publishOwnPrekeys] to have run here first.
      *
      * [peerIdentityPk] must equal the handshake's leading 32 bytes, or this
-     * throws IllegalStateException having claimed no handle and created no
-     * session — otherwise a session established with one peer could be filed
-     * under another peer's handle.
+     * throws IllegalStateException having created no session — otherwise a
+     * session established with one peer could be recorded under another peer's
+     * handle.
      *
      * Initiator and responder are distinct X3DH roles; neither call substitutes
      * for the other.
@@ -181,7 +189,7 @@ class MessageRepository(
     /**
      * Requires [peerPrekeyBundle] to be a well-formed bundle whose identity — its
      * first 32 bytes, the X25519 DH key Rust runs X3DH against — is exactly
-     * [peerIdentityPk]. Throws before any handle is claimed or session created.
+     * [peerIdentityPk]. Throws before any session is created.
      */
     private fun requireBundleIdentityMatches(peerIdentityPk: ByteArray, peerPrekeyBundle: ByteArray) {
         requirePublicKey(peerIdentityPk)
@@ -201,9 +209,9 @@ class MessageRepository(
 
     /**
      * Requires [initiatorHandshake] to be exactly 64 bytes whose leading identity
-     * is exactly [peerIdentityPk]. Throws before any handle is claimed or session
-     * created, so a session established with one peer can never be filed under
-     * another peer's identity.
+     * is exactly [peerIdentityPk]. Throws before any session is created, so a
+     * session established with one peer can never be recorded under another
+     * peer's identity.
      */
     private fun requireHandshakeIdentityMatches(peerIdentityPk: ByteArray, initiatorHandshake: ByteArray) {
         requirePublicKey(peerIdentityPk)

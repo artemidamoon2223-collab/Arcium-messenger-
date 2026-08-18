@@ -1,7 +1,6 @@
 package com.arcium.messenger.data
 
 import com.arcium.messenger.ffi.ArciumCoreWrapper
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,8 +21,12 @@ import org.junit.Test
  * framework standing in for the wrapper, and neither is set up here. That gap is
  * real: these tests prove bad input is refused, not that good input is accepted.
  *
- * The repository is built with its own wrapper and registry rather than the
- * process-wide ones, since `ArciumApp` never runs in a unit test.
+ * The repository is built with its own wrapper rather than the process-wide
+ * one, since `ArciumApp` never runs in a unit test.
+ *
+ * Session ownership itself is not asserted here any more: it lives in the Rust
+ * `SessionManager`, and the tests that prove a rejected or failed establishment
+ * leaves nothing behind are in `crates/mobile-ffi`.
  */
 class MessageRepositoryIdentityBindingTest {
 
@@ -39,41 +42,36 @@ class MessageRepositoryIdentityBindingTest {
     private fun handshake(identity: ByteArray): ByteArray =
         ByteArray(64) { 7 }.also { identity.copyInto(it, 0) }
 
-    private fun repo(registry: MessagingSessionRegistry) =
-        MessageRepository(ArciumCoreWrapper(), registry)
+    private fun repo() = MessageRepository(ArciumCoreWrapper())
 
     @Test
     fun `initiator rejects a bundle whose identity is not the named peer`() {
-        val registry = MessagingSessionRegistry()
         val alice = key(1)
         val bob = key(2)
 
         val error = assertThrows(IllegalStateException::class.java) {
-            repo(registry).startSessionAsInitiator(peerIdentityPk = bob, peerPrekeyBundle = bundle(alice))
+            repo().startSessionAsInitiator(peerIdentityPk = bob, peerPrekeyBundle = bundle(alice))
         }
 
         assertTrue(
             "message should explain the mismatch, got: ${error.message}",
             error.message!!.contains("peer identity mismatch"),
         )
-        assertEquals("no handle may be claimed for a rejected session", 0, registry.size())
     }
 
     @Test
     fun `responder rejects a handshake whose identity is not the named peer`() {
-        val registry = MessagingSessionRegistry()
         val alice = key(1)
         val bob = key(2)
 
         val error = assertThrows(IllegalStateException::class.java) {
-            repo(registry).acceptSessionAsResponder(peerIdentityPk = bob, initiatorHandshake = handshake(alice))
+            repo().acceptSessionAsResponder(peerIdentityPk = bob, initiatorHandshake = handshake(alice))
         }
 
         assertTrue(
             "message should explain the mismatch, got: ${error.message}",
             error.message!!.contains("peer identity mismatch"),
         )
-        assertEquals("no handle may be claimed for a rejected session", 0, registry.size())
     }
 
     /**
@@ -82,19 +80,16 @@ class MessageRepositoryIdentityBindingTest {
      */
     @Test
     fun `initiator rejects an identity differing in a single byte`() {
-        val registry = MessagingSessionRegistry()
         val named = key(1)
         val carried = key(1).also { it[31] = 2 }
 
         assertThrows(IllegalStateException::class.java) {
-            repo(registry).startSessionAsInitiator(named, bundle(carried))
+            repo().startSessionAsInitiator(named, bundle(carried))
         }
-        assertEquals(0, registry.size())
     }
 
     @Test
     fun `initiator rejects a bundle of unrecognised length before comparing identity`() {
-        val registry = MessagingSessionRegistry()
         val alice = key(1)
 
         for (size in listOf(0, 32, 160, 162, 192, 194)) {
@@ -102,14 +97,12 @@ class MessageRepositoryIdentityBindingTest {
             assertThrows(
                 "a $size-byte bundle must be refused",
                 IllegalStateException::class.java,
-            ) { repo(registry).startSessionAsInitiator(alice, malformed) }
+            ) { repo().startSessionAsInitiator(alice, malformed) }
         }
-        assertEquals(0, registry.size())
     }
 
     @Test
     fun `responder rejects a handshake that is not exactly 64 bytes`() {
-        val registry = MessagingSessionRegistry()
         val alice = key(1)
 
         for (size in listOf(0, 32, 63, 65, 128)) {
@@ -117,9 +110,8 @@ class MessageRepositoryIdentityBindingTest {
             assertThrows(
                 "a $size-byte handshake must be refused",
                 IllegalStateException::class.java,
-            ) { repo(registry).acceptSessionAsResponder(alice, malformed) }
+            ) { repo().acceptSessionAsResponder(alice, malformed) }
         }
-        assertEquals(0, registry.size())
     }
 
     /**
@@ -128,42 +120,36 @@ class MessageRepositoryIdentityBindingTest {
      */
     @Test
     fun `a wrong-but-same-length key is refused rather than accepted on size alone`() {
-        val registry = MessagingSessionRegistry()
         val dhIdentity = key(1)
         val someOther32ByteKey = key(0x5A)
 
         assertThrows(IllegalStateException::class.java) {
-            repo(registry).startSessionAsInitiator(someOther32ByteKey, bundle(dhIdentity))
+            repo().startSessionAsInitiator(someOther32ByteKey, bundle(dhIdentity))
         }
-        assertEquals(0, registry.size())
     }
 
     @Test
     fun `a peer key of the wrong size is refused`() {
-        val registry = MessagingSessionRegistry()
         val alice = key(1)
 
         for (size in listOf(0, 31, 33, 64)) {
             assertThrows(
                 "a $size-byte peer key must be refused",
                 IllegalStateException::class.java,
-            ) { repo(registry).startSessionAsInitiator(ByteArray(size), bundle(alice)) }
+            ) { repo().startSessionAsInitiator(ByteArray(size), bundle(alice)) }
         }
-        assertEquals(0, registry.size())
     }
 
     @Test
     fun `a bundle with a one-time prekey is accepted structurally and still identity-checked`() {
-        val registry = MessagingSessionRegistry()
         val alice = key(1)
         val bob = key(2)
 
         // 193-byte form must pass the length check and fail on identity, proving
         // the length gate does not reject the with-OTP layout.
         val error = assertThrows(IllegalStateException::class.java) {
-            repo(registry).startSessionAsInitiator(bob, bundle(alice, withOneTimePrekey = true))
+            repo().startSessionAsInitiator(bob, bundle(alice, withOneTimePrekey = true))
         }
         assertTrue(error.message!!.contains("peer identity mismatch"))
-        assertEquals(0, registry.size())
     }
 }

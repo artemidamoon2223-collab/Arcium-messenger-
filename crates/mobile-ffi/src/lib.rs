@@ -1,6 +1,6 @@
 use core_crypto::ratchet::{DoubleRatchet, Header, RatchetError, HEADER_SIZE};
 use core_crypto::x3dh::{x3dh_initiate, x3dh_respond, PrekeyBundle, X3dhError};
-use core_protocol::{Session, SessionManager};
+use core_protocol::{Session, SessionError, SessionManager};
 use core_storage::{EncryptedStore, StorageError};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::OsRng;
@@ -21,6 +21,15 @@ pub enum CoreError {
     Handshake { msg: String },
     #[error("no session for id {session_id}")]
     NoSession { session_id: u64 },
+    /// A session for this id and this same peer already exists. Establishing
+    /// again would discard the live Double Ratchet, so it is refused rather
+    /// than silently resetting it.
+    #[error("session {session_id} already established with this peer")]
+    SessionAlreadyExists { session_id: u64 },
+    /// This id already belongs to a *different* peer — a 64-bit handle
+    /// collision. Overwriting would hand one contact's ratchet to another.
+    #[error("session id {session_id} is already held by a different peer")]
+    SessionIdCollision { session_id: u64 },
     #[error("ratchet error: {msg}")]
     Crypto { msg: String },
 }
@@ -43,6 +52,22 @@ impl From<RatchetError> for CoreError {
     }
 }
 
+impl From<SessionError> for CoreError {
+    /// Kept as two distinct variants rather than one generic failure: "you
+    /// already have this session" and "this id belongs to someone else" call
+    /// for different handling by the platform layer.
+    fn from(e: SessionError) -> Self {
+        match e {
+            SessionError::AlreadyEstablished { contact_id } => {
+                CoreError::SessionAlreadyExists { session_id: contact_id }
+            }
+            SessionError::HandleCollision { contact_id } => {
+                CoreError::SessionIdCollision { session_id: contact_id }
+            }
+        }
+    }
+}
+
 // ── Local session handles ─────────────────────────────────────────────────────
 
 /// Derives the caller's own lookup handle for the session with the peer whose
@@ -52,9 +77,10 @@ impl From<RatchetError> for CoreError {
 ///
 /// The handle is local: it is transmitted nowhere, and the peer may pick a
 /// different one for the same session. It is also a truncation, so it is not
-/// collision-free — hold on to the full public key and refuse to rebind a handle
-/// that already belongs to a different key, because `establish_session_*` will
-/// otherwise overwrite the existing session.
+/// collision-free — but the caller does not have to police that: an occupied
+/// handle is never overwritten. `establish_session_*` fails with
+/// `SessionIdCollision` when a different peer already holds it, and with
+/// `SessionAlreadyExists` when the same peer does.
 ///
 /// This is deliberately **not** `hash_contact`, which hashes a phone number for
 /// PSI and is pinned to the deployed circuit; see `core_crypto::session_handle`.
@@ -318,11 +344,18 @@ impl ArciumCore {
         let alice_session = x3dh_initiate(&identity.dh_key, our_identity_pk, &bundle)?;
 
         let ratchet = DoubleRatchet::init_alice(alice_session.root_key, alice_session.their_signed_prekey_pk);
-        let session = Session { ratchet, ad: alice_session.ad.clone() };
+        // The peer recorded as owner is the identity taken from the bundle —
+        // the same key X3DH just ran against — so ownership cannot disagree
+        // with the cryptography.
+        let session = Session {
+            ratchet,
+            ad: alice_session.ad.clone(),
+            peer_identity_pk: bundle.identity_pk.to_bytes(),
+        };
         self.sessions
             .lock()
             .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?
-            .new_session(session_id, session);
+            .try_new_session(session_id, session)?;
 
         let mut out = Vec::with_capacity(64);
         out.extend_from_slice(our_identity_pk.as_bytes());
@@ -362,11 +395,17 @@ impl ArciumCore {
         );
 
         let ratchet = DoubleRatchet::init_bob(bob_session.root_key, signed_sk);
-        let session = Session { ratchet, ad: bob_session.ad.clone() };
+        // Owner is the initiator identity this handshake was actually answered
+        // for, not anything the caller asserted separately.
+        let session = Session {
+            ratchet,
+            ad: bob_session.ad.clone(),
+            peer_identity_pk: alice_id_pk.to_bytes(),
+        };
         self.sessions
             .lock()
             .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?
-            .new_session(session_id, session);
+            .try_new_session(session_id, session)?;
         Ok(())
     }
 
@@ -805,5 +844,221 @@ mod tests {
         let plaintext = b"addressed by derived handle".to_vec();
         let message = alice.encrypt_message(alice_handle, plaintext.clone()).unwrap();
         assert_eq!(bob.decrypt_message(bob_handle, message).unwrap(), plaintext);
+    }
+
+    // ── Session ownership: no silent replacement ─────────────────────────────
+
+    /// Builds a peer that is ready to be established against, returning its core
+    /// and its exported prekey bundle.
+    fn peer_with_prekeys(byte: u8) -> (Arc<ArciumCore>, Vec<u8>) {
+        let core = fresh_core(byte);
+        core.save_identity(Identity::generate()).unwrap();
+        core.establish_prekeys().unwrap();
+        let bundle = core.export_prekey_bundle().unwrap();
+        (core, bundle)
+    }
+
+    /// Re-establishing the same peer under a live handle must be refused, and —
+    /// the part that matters — the existing ratchet must survive intact. Before
+    /// this guard the second call replaced the session outright, discarding
+    /// message keys and desynchronising both devices without any error.
+    #[test]
+    fn duplicate_establishment_is_refused_and_the_live_ratchet_keeps_working() {
+        let (bob, bob_bundle) = peer_with_prekeys(140);
+
+        let alice = fresh_core(141);
+        alice.save_identity(Identity::generate()).unwrap();
+        let handle: u64 = 42;
+
+        let handshake = alice
+            .establish_session_initiator(handle, bob_bundle.clone())
+            .unwrap();
+        bob.establish_session_responder(handle, handshake[..32].to_vec(), handshake[32..].to_vec())
+            .unwrap();
+
+        // Move the ratchet forward so a reset would be observable.
+        let first = b"first message, advances the ratchet".to_vec();
+        let ct = alice.encrypt_message(handle, first.clone()).unwrap();
+        assert_eq!(bob.decrypt_message(handle, ct).unwrap(), first);
+
+        // Second establishment for the same peer under the same handle.
+        let err = alice
+            .establish_session_initiator(handle, bob_bundle)
+            .expect_err("re-establishing a live session must fail");
+        assert!(
+            matches!(err, CoreError::SessionAlreadyExists { session_id } if session_id == handle),
+            "expected SessionAlreadyExists, got {err:?}"
+        );
+
+        // The original session must still be the one in place and still usable.
+        let second = b"sent after the rejected duplicate".to_vec();
+        let ct2 = alice.encrypt_message(handle, second.clone()).unwrap();
+        assert_eq!(
+            bob.decrypt_message(handle, ct2).unwrap(),
+            second,
+            "the surviving session must still decrypt on the peer — a silent reset would break this"
+        );
+    }
+
+    /// Two different peers deliberately given the same local id. Real SHA-256
+    /// collisions are not searched for; supplying the id directly is how the
+    /// insertion semantics are exercised.
+    #[test]
+    fn same_handle_for_a_different_peer_is_refused_and_the_first_peer_is_untouched() {
+        let (bob, bob_bundle) = peer_with_prekeys(150);
+        let (_carol, carol_bundle) = peer_with_prekeys(151);
+
+        let alice = fresh_core(152);
+        alice.save_identity(Identity::generate()).unwrap();
+        let handle: u64 = 77;
+
+        let handshake = alice.establish_session_initiator(handle, bob_bundle).unwrap();
+        bob.establish_session_responder(handle, handshake[..32].to_vec(), handshake[32..].to_vec())
+            .unwrap();
+
+        let err = alice
+            .establish_session_initiator(handle, carol_bundle)
+            .expect_err("a different peer must not take an occupied handle");
+        assert!(
+            matches!(err, CoreError::SessionIdCollision { session_id } if session_id == handle),
+            "expected SessionIdCollision, got {err:?}"
+        );
+
+        // Bob's session must be exactly the one still installed.
+        let msg = b"bob still owns this handle".to_vec();
+        let ct = alice.encrypt_message(handle, msg.clone()).unwrap();
+        assert_eq!(bob.decrypt_message(handle, ct).unwrap(), msg);
+    }
+
+    /// A handshake that fails must leave no ownership behind: the id stays free,
+    /// which `encrypt_message` reports as NoSession rather than as a session
+    /// belonging to someone.
+    #[test]
+    fn failed_initiator_leaves_no_session() {
+        let (_bob, mut bundle) = peer_with_prekeys(160);
+        // Corrupt the signed-prekey signature (bytes 96..160) so the bundle is
+        // structurally valid and carries a real identity, but X3DH rejects it.
+        bundle[96] ^= 0xFF;
+
+        let alice = fresh_core(161);
+        alice.save_identity(Identity::generate()).unwrap();
+        let handle: u64 = 88;
+
+        let err = alice
+            .establish_session_initiator(handle, bundle)
+            .expect_err("a bad signature must fail the handshake");
+        assert!(
+            matches!(err, CoreError::Handshake { .. }),
+            "expected Handshake error, got {err:?}"
+        );
+
+        assert!(
+            matches!(
+                alice.encrypt_message(handle, b"x".to_vec()),
+                Err(CoreError::NoSession { session_id }) if session_id == handle
+            ),
+            "a failed handshake must not leave an owned session behind"
+        );
+    }
+
+    /// Same invariant on the responder side: failing before insertion (here,
+    /// because prekeys were never established) leaves the id unowned.
+    #[test]
+    fn failed_responder_leaves_no_session() {
+        let (_alice_peer, alice_bundle) = peer_with_prekeys(170);
+        let alice_identity_pk = alice_bundle[0..32].to_vec();
+
+        // Bob has an identity but never called establish_prekeys, so the
+        // responder path fails when it reads the missing prekey record.
+        let bob = fresh_core(171);
+        bob.save_identity(Identity::generate()).unwrap();
+        let handle: u64 = 99;
+
+        let err = bob
+            .establish_session_responder(handle, alice_identity_pk, vec![9u8; 32])
+            .expect_err("responder without prekeys must fail");
+        assert!(
+            matches!(err, CoreError::Storage { .. }),
+            "expected Storage error from the missing prekey record, got {err:?}"
+        );
+
+        assert!(
+            matches!(
+                bob.encrypt_message(handle, b"x".to_vec()),
+                Err(CoreError::NoSession { session_id }) if session_id == handle
+            ),
+            "a failed responder handshake must not leave an owned session behind"
+        );
+    }
+
+    /// Encrypting or decrypting on an unused id must not create ownership as a
+    /// side effect — a later genuine handshake on that id has to succeed.
+    #[test]
+    fn encrypt_or_decrypt_before_handshake_creates_no_ownership() {
+        let (bob, bob_bundle) = peer_with_prekeys(180);
+        let alice = fresh_core(181);
+        alice.save_identity(Identity::generate()).unwrap();
+        let handle: u64 = 123;
+
+        assert!(matches!(
+            alice.encrypt_message(handle, b"x".to_vec()),
+            Err(CoreError::NoSession { session_id }) if session_id == handle
+        ));
+        assert!(matches!(
+            alice.decrypt_message(handle, vec![0u8; HEADER_SIZE + 16]),
+            Err(CoreError::NoSession { session_id }) if session_id == handle
+        ));
+
+        // The id must still be free, so a real handshake now works.
+        let handshake = alice
+            .establish_session_initiator(handle, bob_bundle)
+            .expect("the id must not have been claimed by the failed calls");
+        bob.establish_session_responder(handle, handshake[..32].to_vec(), handshake[32..].to_vec())
+            .unwrap();
+
+        let msg = b"works after the earlier failures".to_vec();
+        let ct = alice.encrypt_message(handle, msg.clone()).unwrap();
+        assert_eq!(bob.decrypt_message(handle, ct).unwrap(), msg);
+    }
+
+    /// Two threads racing to establish the same handle on one core: the check
+    /// and the insertion happen under a single mutex, so exactly one wins and
+    /// the other is refused rather than overwriting.
+    #[test]
+    fn concurrent_duplicate_establishment_admits_exactly_one() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let (_bob, bob_bundle) = peer_with_prekeys(190);
+        let alice = fresh_core(191);
+        alice.save_identity(Identity::generate()).unwrap();
+        let handle: u64 = 4242;
+
+        let (tx, rx) = mpsc::channel();
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let core = Arc::clone(&alice);
+            let bundle = bob_bundle.clone();
+            let tx = tx.clone();
+            handles.push(thread::spawn(move || {
+                tx.send(core.establish_session_initiator(handle, bundle)).unwrap();
+            }));
+        }
+        drop(tx);
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let results: Vec<_> = rx.iter().collect();
+        assert_eq!(results.len(), 2);
+        let successes = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(successes, 1, "exactly one establishment may win the race");
+        assert!(
+            results.iter().any(|r| matches!(
+                r,
+                Err(CoreError::SessionAlreadyExists { session_id }) if *session_id == handle
+            )),
+            "the loser must be refused as a duplicate, not silently overwrite: {results:?}"
+        );
     }
 }

@@ -47,10 +47,11 @@ const DOMAIN: &[u8] = b"arcium/local-session-handle/v1";
 /// - **Not a security boundary.** It authenticates nothing and grants nothing.
 ///   The 32-byte public key remains the identity anchor; this is only a map key.
 /// - **Not collision-free.** Truncating to 64 bits leaves a birthday bound near
-///   2^32 distinct peers. `SessionManager::new_session` is an UPSERT with no
-///   guard, so a collision would silently rebind one peer's ratchet to another's.
-///   Callers **must** keep the full public key alongside the handle and reject a
-///   handle already bound to a different key rather than overwrite it.
+///   2^32 distinct peers, so two distinct peers can land on one handle. That is
+///   refused rather than resolved: `SessionManager::try_new_session` stores the
+///   peer's full public key beside the session and rejects any attempt to place
+///   a different peer on an occupied handle. Callers get a typed error and the
+///   existing session is left untouched.
 pub fn local_session_handle(peer_identity_pk: &[u8; 32]) -> u64 {
     let mut hasher = Sha256::new();
     hasher.update(DOMAIN);

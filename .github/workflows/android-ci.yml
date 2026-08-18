@@ -56,6 +56,22 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/build.log; exit ${PIPESTATUS[0]}
 
+      # Compiles and packages src/androidTest. This is a compile/package gate
+      # only — it does NOT execute the instrumentation tests, which needs a
+      # device or emulator. What it does catch is the instrumentation source
+      # drifting away from the generated UniFFI API, which would otherwise stay
+      # invisible until someone plugged in a phone.
+      - name: Assemble instrumentation test APK
+        working-directory: android
+        run: ./gradlew assembleDebugAndroidTest --no-daemon --stacktrace
+
+      - name: Verify the instrumentation test APK was produced
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          test -s "$APK"
+          echo "instrumentation test APK: $APK ($(stat -c%s "$APK") bytes)"
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
@@ -91,4 +107,14 @@ jobs:
         with:
           name: arcium-messenger-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+
+      # The second half of what a device run needs. Both this and the app APK
+      # must be installed to execute TwoPeerMessagingInstrumentationTest; CI
+      # itself never runs them.
+      - name: Upload instrumentation test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: arcium-messenger-androidtest
+          path: android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           retention-days: 7

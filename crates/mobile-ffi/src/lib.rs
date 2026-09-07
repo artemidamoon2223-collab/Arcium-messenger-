@@ -1,9 +1,13 @@
 use core_crypto::ratchet::{DoubleRatchet, Header, RatchetError, HEADER_SIZE};
-use core_crypto::x3dh::{x3dh_initiate, x3dh_respond, PrekeyBundle, X3dhError};
+use core_crypto::spk_id::{spk_id, SPK_ID_LEN};
+use core_crypto::x3dh::{
+    signed_prekey_object_v1, x3dh_initiate, x3dh_respond, PrekeyBundle, X3dhError, CIPHER_SUITE,
+    PROTOCOL_VERSION,
+};
 use core_protocol::{Session, SessionError, SessionManager};
 use core_storage::{EncryptedStore, StorageError};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -32,6 +36,40 @@ pub enum CoreError {
     SessionIdCollision { session_id: u64 },
     #[error("ratchet error: {msg}")]
     Crypto { msg: String },
+    /// The bytes are not a well-formed `PREKEY_BUNDLE_V1`: wrong length, a
+    /// non-zero reserved byte, unknown flag bits, or a non-canonical
+    /// representation of "no one-time prekey".
+    #[error("invalid prekey bundle: {msg}")]
+    InvalidPrekeyBundle { msg: String },
+    /// The bytes are not a well-formed `INITIATOR_HANDSHAKE_V1`.
+    #[error("invalid handshake: {msg}")]
+    InvalidHandshake { msg: String },
+    /// The peer is speaking a protocol version or cipher suite this build does
+    /// not implement. Distinct from a malformed structure: the bytes parsed far
+    /// enough to name what they are.
+    #[error("unsupported protocol version {version} / cipher suite {suite}")]
+    UnsupportedProtocolVersion { version: u8, suite: u8 },
+    /// The signed-prekey signature did not verify over
+    /// `SIGNED_PREKEY_OBJECT_V1`. The bundle is not authentic — its parts do not
+    /// belong together — so it must not be used, and refetching will not help.
+    #[error("signed prekey signature is not valid for this bundle")]
+    BadSignedPrekeySignature,
+    /// The named one-time prekey is not the currently usable one: it was either
+    /// already consumed (a replay, or an honest retry of a completed handshake)
+    /// or never existed here. Both mean the same thing to the caller — fetch a
+    /// fresh bundle — and this build keeps no history that could tell them apart.
+    #[error("one-time prekey {opk_id} is not available")]
+    OneTimePrekeyUnavailable { opk_id: u64 },
+    /// A one-time prekey is currently published, but the handshake declined to
+    /// use one. Refusing is what prevents a silent downgrade: the one-time
+    /// prekey fields are outside the signature, so an attacker who strips them
+    /// from a bundle in flight would otherwise get a weaker X3DH accepted.
+    #[error("this handshake must use the currently published one-time prekey")]
+    OneTimePrekeyRequired,
+    /// The handshake names a signed prekey that is no longer current. The peer's
+    /// bundle predates a rotation; fetching a fresh one resolves it.
+    #[error("signed prekey is stale")]
+    StaleSignedPrekey,
 }
 
 impl From<StorageError> for CoreError {
@@ -128,93 +166,322 @@ impl Identity {
 // ── ArciumCore ────────────────────────────────────────────────────────────────
 
 const IDENTITY_KEY: &str = "identity/v1";
-const PREKEYS_KEY: &str = "prekeys/v1";
+// v2 is a strict cutover: `ARCIUM_X3DH_FORMAT_V1` changes the record's length and
+// contents, and a v1 record cannot be reinterpreted as one. Moving the key rather
+// than versioning inside the old one means a legacy record simply stops being
+// found, so `export_prekey_bundle` reports "no prekeys" and the caller re-runs
+// `establish_prekeys` — instead of a second parser that a downgrade could aim at.
+const PREKEYS_KEY: &str = "prekeys/v2";
 
-/// Wire layout of a persisted prekey record:
-///   signed_prekey_sk(32) || signature(64) || has_otp(1) || [otp_sk(32)]
-/// The signature is computed once, at `establish_prekeys` time, over the
-/// signed-prekey's public bytes with the identity's signing key, and
-/// persisted alongside the secret — so `export_prekey_bundle` never needs to
-/// re-sign anything; it only reads what's already there (D3).
-fn pack_prekeys(signed_sk: &StaticSecret, signature: &Signature, otp_sk: Option<&StaticSecret>) -> Zeroizing<Vec<u8>> {
-    let mut out = Zeroizing::new(Vec::with_capacity(32 + 64 + 1 + 32));
-    out.extend_from_slice(&signed_sk.to_bytes());
-    out.extend_from_slice(&signature.to_bytes());
-    match otp_sk {
-        Some(sk) => {
-            out.push(1);
-            out.extend_from_slice(&sk.to_bytes());
+// ── ARCIUM_X3DH_FORMAT_V1 ─────────────────────────────────────────────────────
+//
+// Three fixed-width structures. Fixed width is deliberate: the pre-v1 formats had
+// two valid lengths each and branched on a flag while parsing, which is the shape
+// that lets a length check and a field offset disagree. Here every structure has
+// exactly one length, "absent" is encoded as an all-zero region that is *checked*,
+// and the flag only says how to interpret bytes that are always present.
+//
+// Every multi-byte integer is big-endian.
+
+/// `PREKEY_BUNDLE_V1`, exactly 204 bytes.
+///
+/// ```text
+///   0   1  protocol_version = 0x01
+///   1   1  cipher_suite     = 0x01
+///   2   1  flags            bit0 = has_otp, bits 1..7 = 0
+///   3   1  reserved         = 0x00
+///   4  32  identity_dh_pk         ┐
+///  36  32  signing_pk             ├ covered by spk_signature
+///  68  32  signed_prekey_pk       ┘
+/// 100  64  spk_signature
+/// 164   8  opk_id (u64 big-endian)   ┐ zero when has_otp = 0
+/// 172  32  opk_pk                    ┘
+/// ```
+pub const PREKEY_BUNDLE_V1_LEN: usize = 204;
+/// `INITIATOR_HANDSHAKE_V1`, exactly 84 bytes.
+///
+/// ```text
+///   0   1  protocol_version = 0x01
+///   1   1  cipher_suite     = 0x01
+///   2   1  flags            bit0 = used_otp, bits 1..7 = 0
+///   3   1  reserved         = 0x00
+///   4  32  initiator_identity_dh_pk
+///  36  32  initiator_ephemeral_pk
+///  68   8  spk_id
+///  76   8  opk_id (u64 big-endian)   zero when used_otp = 0
+/// ```
+pub const INITIATOR_HANDSHAKE_V1_LEN: usize = 84;
+/// `PERSISTED_PREKEY_RECORD_V2`, exactly 138 bytes. Never transmitted.
+///
+/// ```text
+///   0   1  record_version = 0x01
+///   1  32  signed_prekey_sk
+///  33  64  spk_signature
+///  97   1  flags   bit0 = opk_present, bits 1..7 = 0
+///  98   8  opk_id (u64 big-endian)   ┐ zero when opk_present = 0
+/// 106  32  opk_sk                    ┘
+/// ```
+const PREKEY_RECORD_V2_LEN: usize = 138;
+const RECORD_VERSION: u8 = 0x01;
+
+/// Bit 0 of a `flags` byte: "a one-time prekey is present / was used".
+const FLAG_OTP: u8 = 0b0000_0001;
+
+/// Rejects any flag bit this version does not define. Unknown bits are refused
+/// rather than masked off so a future version cannot be silently downgraded into
+/// this one by a peer that sets them.
+fn check_flags(flags: u8, what: &str) -> Result<bool, CoreError> {
+    if flags & !FLAG_OTP != 0 {
+        return Err(match what {
+            "bundle" => CoreError::InvalidPrekeyBundle {
+                msg: format!("unknown flag bits set: {flags:#04x}"),
+            },
+            _ => CoreError::InvalidHandshake {
+                msg: format!("unknown flag bits set: {flags:#04x}"),
+            },
+        });
+    }
+    Ok(flags & FLAG_OTP != 0)
+}
+
+/// Checks the version/suite header shared by both wire structures.
+fn check_version_and_suite(version: u8, suite: u8) -> Result<(), CoreError> {
+    if version != PROTOCOL_VERSION || suite != CIPHER_SUITE {
+        return Err(CoreError::UnsupportedProtocolVersion { version, suite });
+    }
+    Ok(())
+}
+
+/// A freshly generated one-time prekey and its opaque identifier.
+///
+/// The identifier is random rather than a counter on purpose: a bundle is public,
+/// so a monotonic value would publish how many sessions this device has accepted.
+fn new_one_time_prekey() -> (u64, StaticSecret) {
+    let mut id = [0u8; 8];
+    OsRng.fill_bytes(&mut id);
+    (u64::from_be_bytes(id), StaticSecret::random_from_rng(OsRng))
+}
+
+/// Parsed `PERSISTED_PREKEY_RECORD_V2`.
+struct PrekeyRecordV2 {
+    signed_prekey_sk: StaticSecret,
+    signature: Signature,
+    /// The currently published one-time prekey, if any.
+    opk: Option<(u64, StaticSecret)>,
+}
+
+impl PrekeyRecordV2 {
+    /// This record's signed-prekey public key.
+    fn signed_prekey_pk(&self) -> PublicKey {
+        PublicKey::from(&self.signed_prekey_sk)
+    }
+}
+
+fn pack_prekeys(record: &PrekeyRecordV2) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(vec![0u8; PREKEY_RECORD_V2_LEN]);
+    out[0] = RECORD_VERSION;
+    out[1..33].copy_from_slice(&record.signed_prekey_sk.to_bytes());
+    out[33..97].copy_from_slice(&record.signature.to_bytes());
+    if let Some((id, sk)) = &record.opk {
+        out[97] = FLAG_OTP;
+        out[98..106].copy_from_slice(&id.to_be_bytes());
+        out[106..138].copy_from_slice(&sk.to_bytes());
+    }
+    // When absent, bytes 98..138 stay zero from the initial fill.
+    out
+}
+
+fn unpack_prekeys(bytes: &[u8]) -> Result<PrekeyRecordV2, CoreError> {
+    let corrupt = |msg: String| CoreError::Storage { msg };
+    if bytes.len() != PREKEY_RECORD_V2_LEN {
+        return Err(corrupt(format!(
+            "corrupt prekey record: {} bytes, expected {PREKEY_RECORD_V2_LEN}",
+            bytes.len()
+        )));
+    }
+    if bytes[0] != RECORD_VERSION {
+        return Err(corrupt(format!(
+            "unknown prekey record version {:#04x}",
+            bytes[0]
+        )));
+    }
+    let signed_sk_bytes: [u8; 32] = bytes[1..33].try_into().expect("checked length");
+    let sig_bytes: [u8; 64] = bytes[33..97].try_into().expect("checked length");
+    let flags = bytes[97];
+    if flags & !FLAG_OTP != 0 {
+        return Err(corrupt(format!(
+            "corrupt prekey record: unknown flag bits {flags:#04x}"
+        )));
+    }
+    let opk = if flags & FLAG_OTP != 0 {
+        let id = u64::from_be_bytes(bytes[98..106].try_into().expect("checked length"));
+        let sk_bytes: [u8; 32] = bytes[106..138].try_into().expect("checked length");
+        Some((id, StaticSecret::from(sk_bytes)))
+    } else {
+        if bytes[98..138].iter().any(|b| *b != 0) {
+            return Err(corrupt(
+                "corrupt prekey record: one-time prekey absent but its bytes are not zero".into(),
+            ));
         }
-        None => out.push(0),
+        None
+    };
+    Ok(PrekeyRecordV2 {
+        signed_prekey_sk: StaticSecret::from(signed_sk_bytes),
+        signature: Signature::from_bytes(&sig_bytes),
+        opk,
+    })
+}
+
+fn bytes_to_pubkey(b: &[u8]) -> Result<PublicKey, CoreError> {
+    let arr: [u8; 32] = b.try_into().map_err(|_| CoreError::Handshake {
+        msg: "expected a 32-byte public key".into(),
+    })?;
+    Ok(PublicKey::from(arr))
+}
+
+/// Serializes a `PREKEY_BUNDLE_V1`.
+fn pack_prekey_bundle(
+    identity_dh_pk: &PublicKey,
+    signing_pk: &VerifyingKey,
+    signed_prekey_pk: &PublicKey,
+    signature: &Signature,
+    opk: Option<(u64, PublicKey)>,
+) -> Vec<u8> {
+    let mut out = vec![0u8; PREKEY_BUNDLE_V1_LEN];
+    out[0] = PROTOCOL_VERSION;
+    out[1] = CIPHER_SUITE;
+    out[3] = 0x00; // reserved
+    out[4..36].copy_from_slice(identity_dh_pk.as_bytes());
+    out[36..68].copy_from_slice(&signing_pk.to_bytes());
+    out[68..100].copy_from_slice(signed_prekey_pk.as_bytes());
+    out[100..164].copy_from_slice(&signature.to_bytes());
+    if let Some((id, pk)) = opk {
+        out[2] = FLAG_OTP;
+        out[164..172].copy_from_slice(&id.to_be_bytes());
+        out[172..204].copy_from_slice(pk.as_bytes());
     }
     out
 }
 
-fn unpack_prekeys(bytes: &[u8]) -> Result<(StaticSecret, Signature, Option<StaticSecret>), CoreError> {
-    if bytes.len() != 97 && bytes.len() != 129 {
-        return Err(CoreError::Storage {
-            msg: format!("corrupt prekey record: {} bytes", bytes.len()),
-        });
-    }
-    let signed_sk_bytes: [u8; 32] = bytes[0..32].try_into().expect("checked length");
-    let signed_sk = StaticSecret::from(signed_sk_bytes);
-    let sig_bytes: [u8; 64] = bytes[32..96].try_into().expect("checked length");
-    let signature = Signature::from_bytes(&sig_bytes);
-    let has_otp = bytes[96] == 1;
-    let otp_sk = if has_otp {
-        if bytes.len() != 129 {
-            return Err(CoreError::Storage {
-                msg: "corrupt prekey record: otp flag set but record too short".into(),
-            });
-        }
-        let otp_bytes: [u8; 32] = bytes[97..129].try_into().expect("checked length");
-        Some(StaticSecret::from(otp_bytes))
-    } else {
-        None
-    };
-    Ok((signed_sk, signature, otp_sk))
-}
-
-/// Wire layout of an exported prekey bundle (D3):
-///   identity_pk(32) || signing_pk(32) || signed_prekey_pk(32) || signature(64)
-///   || has_otp(1) || [one_time_prekey_pk(32)]
-fn bytes_to_pubkey(b: &[u8]) -> Result<PublicKey, CoreError> {
-    let arr: [u8; 32] = b
-        .try_into()
-        .map_err(|_| CoreError::Handshake { msg: "expected a 32-byte public key".into() })?;
-    Ok(PublicKey::from(arr))
-}
-
 fn unpack_prekey_bundle(bytes: &[u8]) -> Result<PrekeyBundle, CoreError> {
-    if bytes.len() != 161 && bytes.len() != 193 {
-        return Err(CoreError::Handshake {
-            msg: format!("corrupt prekey bundle: {} bytes", bytes.len()),
+    if bytes.len() != PREKEY_BUNDLE_V1_LEN {
+        return Err(CoreError::InvalidPrekeyBundle {
+            msg: format!(
+                "expected {PREKEY_BUNDLE_V1_LEN} bytes, got {}",
+                bytes.len()
+            ),
         });
     }
-    let identity_pk = bytes_to_pubkey(&bytes[0..32])?;
-    let signing_pk_bytes: [u8; 32] = bytes[32..64].try_into().expect("checked length");
-    let signing_pk = VerifyingKey::from_bytes(&signing_pk_bytes)
-        .map_err(|_| CoreError::Handshake { msg: "invalid signing public key".into() })?;
-    let signed_prekey_pk = bytes_to_pubkey(&bytes[64..96])?;
-    let sig_bytes: [u8; 64] = bytes[96..160].try_into().expect("checked length");
+    check_version_and_suite(bytes[0], bytes[1])?;
+    let has_otp = check_flags(bytes[2], "bundle")?;
+    if bytes[3] != 0 {
+        return Err(CoreError::InvalidPrekeyBundle {
+            msg: format!("reserved byte must be zero, got {:#04x}", bytes[3]),
+        });
+    }
+
+    let identity_pk = bytes_to_pubkey(&bytes[4..36])?;
+    let signing_pk_bytes: [u8; 32] = bytes[36..68].try_into().expect("checked length");
+    let signing_pk =
+        VerifyingKey::from_bytes(&signing_pk_bytes).map_err(|_| CoreError::InvalidPrekeyBundle {
+            msg: "invalid signing public key".into(),
+        })?;
+    let signed_prekey_pk = bytes_to_pubkey(&bytes[68..100])?;
+    let sig_bytes: [u8; 64] = bytes[100..164].try_into().expect("checked length");
     let signed_prekey_signature = Signature::from_bytes(&sig_bytes);
-    let has_otp = bytes[160] == 1;
-    let one_time_prekey_pk = if has_otp {
-        if bytes.len() != 193 {
-            return Err(CoreError::Handshake {
-                msg: "corrupt prekey bundle: otp flag set but bundle too short".into(),
+
+    let (one_time_prekey_id, one_time_prekey_pk) = if has_otp {
+        let id = u64::from_be_bytes(bytes[164..172].try_into().expect("checked length"));
+        (Some(id), Some(bytes_to_pubkey(&bytes[172..204])?))
+    } else {
+        // "Absent" has exactly one encoding. Accepting arbitrary trailing bytes
+        // would leave a channel that rides along inside an authentic bundle.
+        if bytes[164..204].iter().any(|b| *b != 0) {
+            return Err(CoreError::InvalidPrekeyBundle {
+                msg: "one-time prekey absent but its bytes are not zero".into(),
             });
         }
-        Some(bytes_to_pubkey(&bytes[161..193])?)
-    } else {
-        None
+        (None, None)
     };
+
     Ok(PrekeyBundle {
         identity_pk,
         signing_pk,
         signed_prekey_pk,
         signed_prekey_signature,
         one_time_prekey_pk,
+        one_time_prekey_id,
+    })
+}
+
+/// Parsed `INITIATOR_HANDSHAKE_V1`.
+struct InitiatorHandshakeV1 {
+    identity_pk: PublicKey,
+    ephemeral_pk: PublicKey,
+    spk_id: [u8; SPK_ID_LEN],
+    /// The one-time prekey the initiator says it used, if any.
+    opk_id: Option<u64>,
+}
+
+fn pack_initiator_handshake(
+    identity_pk: &PublicKey,
+    ephemeral_pk: &PublicKey,
+    spk_id: &[u8; SPK_ID_LEN],
+    opk_id: Option<u64>,
+) -> Vec<u8> {
+    let mut out = vec![0u8; INITIATOR_HANDSHAKE_V1_LEN];
+    out[0] = PROTOCOL_VERSION;
+    out[1] = CIPHER_SUITE;
+    out[3] = 0x00; // reserved
+    out[4..36].copy_from_slice(identity_pk.as_bytes());
+    out[36..68].copy_from_slice(ephemeral_pk.as_bytes());
+    out[68..76].copy_from_slice(spk_id);
+    if let Some(id) = opk_id {
+        out[2] = FLAG_OTP;
+        out[76..84].copy_from_slice(&id.to_be_bytes());
+    }
+    out
+}
+
+fn unpack_initiator_handshake(bytes: &[u8]) -> Result<InitiatorHandshakeV1, CoreError> {
+    if bytes.len() != INITIATOR_HANDSHAKE_V1_LEN {
+        return Err(CoreError::InvalidHandshake {
+            msg: format!(
+                "expected {INITIATOR_HANDSHAKE_V1_LEN} bytes, got {}",
+                bytes.len()
+            ),
+        });
+    }
+    check_version_and_suite(bytes[0], bytes[1])?;
+    let used_otp = check_flags(bytes[2], "handshake")?;
+    if bytes[3] != 0 {
+        return Err(CoreError::InvalidHandshake {
+            msg: format!("reserved byte must be zero, got {:#04x}", bytes[3]),
+        });
+    }
+
+    let identity_pk = bytes_to_pubkey(&bytes[4..36])?;
+    let ephemeral_pk = bytes_to_pubkey(&bytes[36..68])?;
+    let spk_id: [u8; SPK_ID_LEN] = bytes[68..76].try_into().expect("checked length");
+
+    let opk_id = if used_otp {
+        Some(u64::from_be_bytes(
+            bytes[76..84].try_into().expect("checked length"),
+        ))
+    } else {
+        if bytes[76..84].iter().any(|b| *b != 0) {
+            return Err(CoreError::InvalidHandshake {
+                msg: "one-time prekey not used but its id is not zero".into(),
+            });
+        }
+        None
+    };
+
+    Ok(InitiatorHandshakeV1 {
+        identity_pk,
+        ephemeral_pk,
+        spk_id,
+        opk_id,
     })
 }
 
@@ -277,62 +544,68 @@ impl ArciumCore {
         }))
     }
 
-    /// Generates a signed-prekey keypair (and, for now, always a one-time
-    /// prekey — see D4: exhaustion/replenishment bookkeeping is out of
-    /// scope, so the same one-time prekey is reused across every
-    /// `establish_session_responder` call, which is a known, documented
-    /// limitation, not a production-ready model), signs the signed-prekey
-    /// with the saved identity's signing key, and persists everything
-    /// (secrets + signature) to the encrypted store. Calling this again
-    /// silently overwrites the previous prekeys (same UPSERT semantics as
-    /// `save_identity`) — no "already established" guard exists.
+    /// Generates this device's signed prekey and one one-time prekey, signs the
+    /// signed prekey over `SIGNED_PREKEY_OBJECT_V1`, and persists everything.
+    ///
+    /// Calling this again replaces both prekeys. Every bundle already handed out
+    /// then names a signed prekey and a one-time prekey this device no longer
+    /// holds, so handshakes built from those bundles are refused with
+    /// `StaleSignedPrekey` / `OneTimePrekeyUnavailable` rather than silently
+    /// deriving a key the peer cannot match.
     pub fn establish_prekeys(&self) -> Result<(), CoreError> {
         let identity = self.require_identity()?;
         let signed_prekey_sk = StaticSecret::random_from_rng(OsRng);
         let signed_prekey_pk = PublicKey::from(&signed_prekey_sk);
-        let signature = identity.signing_key.sign(signed_prekey_pk.as_bytes());
-        let otp_sk = StaticSecret::random_from_rng(OsRng);
-        let packed = pack_prekeys(&signed_prekey_sk, &signature, Some(&otp_sk));
+        let identity_dh_pk = PublicKey::from(&identity.dh_key);
+        let signing_pk = identity.signing_key.verifying_key();
+
+        let object = signed_prekey_object_v1(&identity_dh_pk, &signing_pk, &signed_prekey_pk);
+        let signature = identity.signing_key.sign(&object);
+
+        let record = PrekeyRecordV2 {
+            signed_prekey_sk,
+            signature,
+            opk: Some(new_one_time_prekey()),
+        };
         self.store
             .lock()
-            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?
-            .put(PREKEYS_KEY, &packed)?;
+            .map_err(|_| CoreError::Storage {
+                msg: "mutex poisoned".into(),
+            })?
+            .put(PREKEYS_KEY, &pack_prekeys(&record))?;
         Ok(())
     }
 
-    /// Pure read of the already-persisted prekey bundle (D3) — does not
-    /// generate anything. Fails if `establish_prekeys` was never called.
+    /// Pure read of the already-persisted prekey material as a
+    /// `PREKEY_BUNDLE_V1` (D3) — generates nothing and consumes nothing, so two
+    /// calls return identical bytes. Fails if `establish_prekeys` never ran.
     pub fn export_prekey_bundle(&self) -> Result<Vec<u8>, CoreError> {
         let identity = self.require_identity()?;
-        let prekey_bytes = self
+        let record_bytes = self
             .store
             .lock()
-            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?
+            .map_err(|_| CoreError::Storage {
+                msg: "mutex poisoned".into(),
+            })?
             .get(PREKEYS_KEY)?;
-        let (signed_sk, signature, otp_sk) = unpack_prekeys(&prekey_bytes)?;
-        let signed_prekey_pk = PublicKey::from(&signed_sk);
-        let identity_pk = PublicKey::from(&identity.dh_key);
-        let signing_pk = identity.signing_key.verifying_key();
+        let record = unpack_prekeys(&record_bytes)?;
 
-        let mut out = Vec::with_capacity(193);
-        out.extend_from_slice(identity_pk.as_bytes());
-        out.extend_from_slice(signing_pk.as_bytes());
-        out.extend_from_slice(signed_prekey_pk.as_bytes());
-        out.extend_from_slice(&signature.to_bytes());
-        match otp_sk {
-            Some(sk) => {
-                out.push(1);
-                out.extend_from_slice(PublicKey::from(&sk).as_bytes());
-            }
-            None => out.push(0),
-        }
-        Ok(out)
+        Ok(pack_prekey_bundle(
+            &PublicKey::from(&identity.dh_key),
+            &identity.signing_key.verifying_key(),
+            &record.signed_prekey_pk(),
+            &record.signature,
+            record.opk.as_ref().map(|(id, sk)| (*id, PublicKey::from(sk))),
+        ))
     }
 
-    /// Establishes a session as the X3DH initiator ("Alice") against a
-    /// peer's exported prekey bundle. Returns
-    /// `our_identity_pk(32) || our_ephemeral_pk(32)` — the bytes the peer
-    /// needs to call `establish_session_responder`.
+    /// Establishes a session as the X3DH initiator ("Alice") against a peer's
+    /// `PREKEY_BUNDLE_V1`. Returns the 84-byte `INITIATOR_HANDSHAKE_V1` the peer
+    /// needs for `establish_session_responder`.
+    ///
+    /// The signature over the bundle is checked before any Diffie-Hellman runs,
+    /// so a bundle whose parts do not belong together never contributes key
+    /// material.
     pub fn establish_session_initiator(
         &self,
         session_id: u64,
@@ -341,9 +614,16 @@ impl ArciumCore {
         let identity = self.require_identity()?;
         let bundle = unpack_prekey_bundle(&peer_bundle)?;
         let our_identity_pk = PublicKey::from(&identity.dh_key);
-        let alice_session = x3dh_initiate(&identity.dh_key, our_identity_pk, &bundle)?;
 
-        let ratchet = DoubleRatchet::init_alice(alice_session.root_key, alice_session.their_signed_prekey_pk);
+        // x3dh_initiate verifies the signed-prekey object first; surface that as
+        // its own error rather than as a generic handshake failure.
+        let alice_session = x3dh_initiate(&identity.dh_key, our_identity_pk, &bundle)
+            .map_err(|X3dhError::BadSignature| CoreError::BadSignedPrekeySignature)?;
+
+        let ratchet = DoubleRatchet::init_alice(
+            alice_session.root_key,
+            alice_session.their_signed_prekey_pk,
+        );
         // The peer recorded as owner is the identity taken from the bundle —
         // the same key X3DH just ran against — so ownership cannot disagree
         // with the cryptography.
@@ -354,57 +634,124 @@ impl ArciumCore {
         };
         self.sessions
             .lock()
-            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?
+            .map_err(|_| CoreError::Storage {
+                msg: "mutex poisoned".into(),
+            })?
             .try_new_session(session_id, session)?;
 
-        let mut out = Vec::with_capacity(64);
-        out.extend_from_slice(our_identity_pk.as_bytes());
-        out.extend_from_slice(alice_session.ephemeral_pk.as_bytes());
-        Ok(out)
+        Ok(pack_initiator_handshake(
+            &our_identity_pk,
+            &alice_session.ephemeral_pk,
+            &spk_id(bundle.signed_prekey_pk.as_bytes()),
+            bundle.one_time_prekey_id,
+        ))
     }
 
-    /// Establishes a session as the X3DH responder ("Bob") from Alice's
-    /// identity + ephemeral public keys (the bytes returned by
-    /// `establish_session_initiator`). Requires `establish_prekeys` to have
-    /// been called first.
+    /// Establishes a session as the X3DH responder ("Bob") from the 84-byte
+    /// `INITIATOR_HANDSHAKE_V1` the initiator produced.
+    ///
+    /// # Prekey state transition
+    ///
+    /// The handshake names which signed prekey and which one-time prekey it used.
+    /// This device answers from its own record, never from what the handshake
+    /// asserts, so the six outcomes are decided by comparing the two:
+    ///
+    /// | stored state | `used_otp` | named `opk_id` | outcome |
+    /// |---|---|---|---|
+    /// | any | any | any | `StaleSignedPrekey` if `spk_id` differs |
+    /// | one-time prekey held | yes | matches | accept, consume it, publish a replacement |
+    /// | one-time prekey held | yes | differs | `OneTimePrekeyUnavailable` |
+    /// | one-time prekey held | no | — | `OneTimePrekeyRequired` |
+    /// | none held | no | — | accept without `dh4` |
+    /// | none held | yes | any | `OneTimePrekeyUnavailable` |
+    ///
+    /// A one-time prekey error never falls back to the weaker no-`dh4` path: that
+    /// would let anyone who can edit bytes in flight choose the weaker handshake.
+    ///
+    /// Because a consumed identifier is replaced rather than remembered, replaying
+    /// a handshake this device already accepted names an identifier that is no
+    /// longer current and is refused. That is the whole of the replay property
+    /// claimed here — it holds for every state reachable through
+    /// `establish_prekeys` and this method, which always keep a one-time prekey
+    /// published. It is not a general anti-replay mechanism, and the no-one-time-
+    /// prekey branch above has none.
+    ///
+    /// # Atomicity
+    ///
+    /// Reading the record, validating it against the handshake, generating the
+    /// replacement and writing it all happen under a single continuous
+    /// `EncryptedStore` guard, so two threads cannot both consume one one-time
+    /// prekey. The write is a single `put`, which is one SQLite statement in
+    /// autocommit and therefore one transaction — that, not the mutex, is what
+    /// makes the transition survive a crash. The mutex only serializes threads.
+    ///
+    /// The store guard is released before the session lock is taken; the two are
+    /// never held together. If session insertion then fails, the one-time prekey
+    /// stays consumed and is not restored: a prekey that has been handed to a
+    /// handshake must never return to circulation.
     pub fn establish_session_responder(
         &self,
         session_id: u64,
-        alice_identity_pk: Vec<u8>,
-        alice_ephemeral_pk: Vec<u8>,
+        initiator_handshake: Vec<u8>,
     ) -> Result<(), CoreError> {
         let identity = self.require_identity()?;
-        let alice_id_pk = bytes_to_pubkey(&alice_identity_pk)?;
-        let alice_eph_pk = bytes_to_pubkey(&alice_ephemeral_pk)?;
+        let handshake = unpack_initiator_handshake(&initiator_handshake)?;
 
-        let prekey_bytes = self
-            .store
-            .lock()
-            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?
-            .get(PREKEYS_KEY)?;
-        let (signed_sk, _signature, otp_sk) = unpack_prekeys(&prekey_bytes)?;
+        // ── one continuous store guard: read → validate → rotate → single put ──
+        let (signed_prekey_sk, taken_opk) = {
+            let store = self.store.lock().map_err(|_| CoreError::Storage {
+                msg: "mutex poisoned".into(),
+            })?;
+            let mut record = unpack_prekeys(&store.get(PREKEYS_KEY)?)?;
+
+            if spk_id(record.signed_prekey_pk().as_bytes()) != handshake.spk_id {
+                return Err(CoreError::StaleSignedPrekey);
+            }
+
+            // Every rejection below returns before the write, leaving the record
+            // exactly as it was found.
+            let taken = match (record.opk.take(), handshake.opk_id) {
+                (Some((held_id, held_sk)), Some(named)) if held_id == named => {
+                    record.opk = Some(new_one_time_prekey());
+                    store.put(PREKEYS_KEY, &pack_prekeys(&record))?;
+                    Some(held_sk)
+                }
+                (Some(_), Some(named)) => {
+                    return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
+                }
+                (Some(_), None) => return Err(CoreError::OneTimePrekeyRequired),
+                (None, Some(named)) => {
+                    return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
+                }
+                (None, None) => None,
+            };
+
+            (record.signed_prekey_sk, taken)
+        };
 
         let our_identity_pk = PublicKey::from(&identity.dh_key);
         let bob_session = x3dh_respond(
             &identity.dh_key,
             our_identity_pk,
-            &signed_sk,
-            otp_sk.as_ref(),
-            alice_id_pk,
-            alice_eph_pk,
+            &signed_prekey_sk,
+            taken_opk.as_ref(),
+            handshake.identity_pk,
+            handshake.ephemeral_pk,
         );
 
-        let ratchet = DoubleRatchet::init_bob(bob_session.root_key, signed_sk);
+        let ratchet = DoubleRatchet::init_bob(bob_session.root_key, signed_prekey_sk);
         // Owner is the initiator identity this handshake was actually answered
         // for, not anything the caller asserted separately.
         let session = Session {
             ratchet,
             ad: bob_session.ad.clone(),
-            peer_identity_pk: alice_id_pk.to_bytes(),
+            peer_identity_pk: handshake.identity_pk.to_bytes(),
         };
         self.sessions
             .lock()
-            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?
+            .map_err(|_| CoreError::Storage {
+                msg: "mutex poisoned".into(),
+            })?
             .try_new_session(session_id, session)?;
         Ok(())
     }
@@ -580,6 +927,18 @@ mod tests {
 
     // ── Messaging FFI surface ────────────────────────────────────────────────
 
+    /// A structurally valid v1 handshake for a peer, with no one-time prekey
+    /// named. Used where a test needs the parser to pass so a *later* stage is
+    /// what fails; the identity is real, the ephemeral key is arbitrary.
+    fn synthetic_handshake(identity_pk: &[u8]) -> Vec<u8> {
+        let mut hs = vec![0u8; INITIATOR_HANDSHAKE_V1_LEN];
+        hs[0] = 0x01;
+        hs[1] = 0x01;
+        hs[4..36].copy_from_slice(identity_pk);
+        hs[36..68].copy_from_slice(&[9u8; 32]);
+        hs
+    }
+
     fn fresh_core(byte: u8) -> Arc<ArciumCore> {
         let dir = tempdir().unwrap();
         // Leak the tempdir so the DB file survives for the life of the test
@@ -598,7 +957,11 @@ mod tests {
         let bundle1 = core.export_prekey_bundle().unwrap();
         let bundle2 = core.export_prekey_bundle().unwrap();
         assert_eq!(bundle1, bundle2, "export_prekey_bundle must be a pure read (D3), not regenerate");
-        assert_eq!(bundle1.len(), 193, "bundle with an OTP present must be 193 bytes");
+        assert_eq!(
+            bundle1.len(),
+            PREKEY_BUNDLE_V1_LEN,
+            "v1 bundles are always {PREKEY_BUNDLE_V1_LEN} bytes, with or without a one-time prekey"
+        );
     }
 
     #[test]
@@ -621,11 +984,9 @@ mod tests {
         alice.save_identity(Identity::generate()).unwrap();
 
         let alice_handshake_bytes = alice.establish_session_initiator(session_id, bob_bundle).unwrap();
-        assert_eq!(alice_handshake_bytes.len(), 64);
-        let alice_identity_pk = alice_handshake_bytes[..32].to_vec();
-        let alice_ephemeral_pk = alice_handshake_bytes[32..].to_vec();
+        assert_eq!(alice_handshake_bytes.len(), INITIATOR_HANDSHAKE_V1_LEN);
 
-        bob.establish_session_responder(session_id, alice_identity_pk, alice_ephemeral_pk)
+        bob.establish_session_responder(session_id, alice_handshake_bytes.clone())
             .unwrap();
 
         let plaintext = b"hello arcium".to_vec();
@@ -650,7 +1011,7 @@ mod tests {
         let alice = fresh_core(40);
         alice.save_identity(Identity::generate()).unwrap();
         let handshake = alice.establish_session_initiator(session_id, bob_bundle).unwrap();
-        bob.establish_session_responder(session_id, handshake[..32].to_vec(), handshake[32..].to_vec())
+        bob.establish_session_responder(session_id, handshake.clone())
             .unwrap();
 
         let genuine = alice.encrypt_message(session_id, b"real message".to_vec()).unwrap();
@@ -682,7 +1043,7 @@ mod tests {
         let alice = fresh_core(60);
         alice.save_identity(Identity::generate()).unwrap();
         let handshake = alice.establish_session_initiator(session_id, bob_bundle).unwrap();
-        bob.establish_session_responder(session_id, handshake[..32].to_vec(), handshake[32..].to_vec())
+        bob.establish_session_responder(session_id, handshake.clone())
             .unwrap();
 
         // Alice must send first: Bob's sending chain key isn't derived until
@@ -745,11 +1106,7 @@ mod tests {
         let handshake = alice
             .establish_session_initiator(alice_session_id, bob_bundle)
             .unwrap();
-        bob.establish_session_responder(
-            bob_session_id,
-            handshake[..32].to_vec(),
-            handshake[32..].to_vec(),
-        )
+        bob.establish_session_responder(bob_session_id, handshake.clone())
         .unwrap();
 
         // Alice must send first: Bob's sending chain key isn't derived until
@@ -834,11 +1191,7 @@ mod tests {
         assert_ne!(alice_handle, bob_handle);
 
         let handshake = alice.establish_session_initiator(alice_handle, bob_bundle).unwrap();
-        bob.establish_session_responder(
-            bob_handle,
-            handshake[..32].to_vec(),
-            handshake[32..].to_vec(),
-        )
+        bob.establish_session_responder(bob_handle, handshake.clone())
         .unwrap();
 
         let plaintext = b"addressed by derived handle".to_vec();
@@ -873,7 +1226,7 @@ mod tests {
         let handshake = alice
             .establish_session_initiator(handle, bob_bundle.clone())
             .unwrap();
-        bob.establish_session_responder(handle, handshake[..32].to_vec(), handshake[32..].to_vec())
+        bob.establish_session_responder(handle, handshake.clone())
             .unwrap();
 
         // Move the ratchet forward so a reset would be observable.
@@ -913,7 +1266,7 @@ mod tests {
         let handle: u64 = 77;
 
         let handshake = alice.establish_session_initiator(handle, bob_bundle).unwrap();
-        bob.establish_session_responder(handle, handshake[..32].to_vec(), handshake[32..].to_vec())
+        bob.establish_session_responder(handle, handshake.clone())
             .unwrap();
 
         let err = alice
@@ -936,9 +1289,10 @@ mod tests {
     #[test]
     fn failed_initiator_leaves_no_session() {
         let (_bob, mut bundle) = peer_with_prekeys(160);
-        // Corrupt the signed-prekey signature (bytes 96..160) so the bundle is
-        // structurally valid and carries a real identity, but X3DH rejects it.
-        bundle[96] ^= 0xFF;
+        // Corrupt the signed-prekey signature (v1 places it at 100..164) so the
+        // bundle is structurally valid and carries a real identity, but the
+        // signed-prekey object fails to verify.
+        bundle[100] ^= 0xFF;
 
         let alice = fresh_core(161);
         alice.save_identity(Identity::generate()).unwrap();
@@ -948,8 +1302,8 @@ mod tests {
             .establish_session_initiator(handle, bundle)
             .expect_err("a bad signature must fail the handshake");
         assert!(
-            matches!(err, CoreError::Handshake { .. }),
-            "expected Handshake error, got {err:?}"
+            matches!(err, CoreError::BadSignedPrekeySignature),
+            "expected BadSignedPrekeySignature, got {err:?}"
         );
 
         assert!(
@@ -975,7 +1329,7 @@ mod tests {
         let handle: u64 = 99;
 
         let err = bob
-            .establish_session_responder(handle, alice_identity_pk, vec![9u8; 32])
+            .establish_session_responder(handle, synthetic_handshake(&alice_identity_pk))
             .expect_err("responder without prekeys must fail");
         assert!(
             matches!(err, CoreError::Storage { .. }),
@@ -1013,7 +1367,7 @@ mod tests {
         let handshake = alice
             .establish_session_initiator(handle, bob_bundle)
             .expect("the id must not have been claimed by the failed calls");
-        bob.establish_session_responder(handle, handshake[..32].to_vec(), handshake[32..].to_vec())
+        bob.establish_session_responder(handle, handshake.clone())
             .unwrap();
 
         let msg = b"works after the earlier failures".to_vec();
@@ -1059,6 +1413,452 @@ mod tests {
                 Err(CoreError::SessionAlreadyExists { session_id }) if *session_id == handle
             )),
             "the loser must be refused as a duplicate, not silently overwrite: {results:?}"
+        );
+    }
+
+    // ── ARCIUM_X3DH_FORMAT_V1 ────────────────────────────────────────────────
+
+    /// Reads the persisted record straight out of the store, so a test can assert
+    /// on durable state instead of inferring it from later behaviour.
+    fn read_record(core: &ArciumCore) -> Vec<u8> {
+        core.store.lock().unwrap().get(PREKEYS_KEY).unwrap()
+    }
+
+    fn current_opk_id(core: &ArciumCore) -> Option<u64> {
+        unpack_prekeys(&read_record(core)).unwrap().opk.map(|(id, _)| id)
+    }
+
+    // ── Parsing ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn v1_lengths_are_exactly_as_frozen() {
+        assert_eq!(PREKEY_BUNDLE_V1_LEN, 204);
+        assert_eq!(INITIATOR_HANDSHAKE_V1_LEN, 84);
+        assert_eq!(PREKEY_RECORD_V2_LEN, 138);
+        assert_eq!(PREKEYS_KEY, "prekeys/v2");
+        assert_eq!(IDENTITY_KEY, "identity/v1", "identity storage must not change");
+    }
+
+    /// Neighbouring lengths — including both legacy bundle sizes — must be
+    /// refused. 161 and 193 are the strict-cutover cases: a pre-v1 bundle is not
+    /// a v1 bundle, and accepting one would reopen everything v1 closes.
+    #[test]
+    fn bundle_of_any_other_length_is_rejected() {
+        let (_bob, bundle) = peer_with_prekeys(200);
+        let alice = fresh_core(201);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        for len in [0usize, 32, 161, 193, 203, 205, 408] {
+            let mut malformed = bundle.clone();
+            malformed.resize(len, 0);
+            let err = alice
+                .establish_session_initiator(1, malformed)
+                .expect_err("a {len}-byte bundle must be refused");
+            assert!(
+                matches!(err, CoreError::InvalidPrekeyBundle { .. }),
+                "expected InvalidPrekeyBundle for length {len}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn handshake_of_any_other_length_is_rejected() {
+        let (bob, _bundle) = peer_with_prekeys(202);
+        for len in [0usize, 32, 64, 83, 85, 168] {
+            let err = bob
+                .establish_session_responder(1, vec![0u8; len])
+                .expect_err("a wrong-length handshake must be refused");
+            assert!(
+                matches!(err, CoreError::InvalidHandshake { .. }),
+                "expected InvalidHandshake for length {len}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrong_protocol_version_or_suite_is_reported_as_unsupported() {
+        let (bob, bundle) = peer_with_prekeys(203);
+        let alice = fresh_core(204);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        for (idx, label) in [(0usize, "version"), (1usize, "suite")] {
+            let mut b = bundle.clone();
+            b[idx] = 0x02;
+            let err = alice.establish_session_initiator(1, b).expect_err(label);
+            assert!(
+                matches!(err, CoreError::UnsupportedProtocolVersion { .. }),
+                "bundle {label}: expected UnsupportedProtocolVersion, got {err:?}"
+            );
+
+            let mut hs = vec![0u8; INITIATOR_HANDSHAKE_V1_LEN];
+            hs[0] = PROTOCOL_VERSION;
+            hs[1] = CIPHER_SUITE;
+            hs[idx] = 0x02;
+            let err = bob.establish_session_responder(1, hs).expect_err(label);
+            assert!(
+                matches!(err, CoreError::UnsupportedProtocolVersion { .. }),
+                "handshake {label}: expected UnsupportedProtocolVersion, got {err:?}"
+            );
+        }
+    }
+
+    /// The reserved byte and the undefined flag bits are refused rather than
+    /// ignored: a future version that uses them must not be silently downgraded
+    /// into this one.
+    #[test]
+    fn reserved_byte_and_unknown_flag_bits_are_rejected() {
+        let (bob, bundle) = peer_with_prekeys(205);
+        let alice = fresh_core(206);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        for (idx, value) in [(3usize, 0x01u8), (2usize, 0b1000_0001)] {
+            let mut b = bundle.clone();
+            b[idx] = value;
+            assert!(
+                matches!(
+                    alice.establish_session_initiator(1, b),
+                    Err(CoreError::InvalidPrekeyBundle { .. })
+                ),
+                "bundle byte {idx} = {value:#04x} must be refused"
+            );
+
+            let mut hs = vec![0u8; INITIATOR_HANDSHAKE_V1_LEN];
+            hs[0] = PROTOCOL_VERSION;
+            hs[1] = CIPHER_SUITE;
+            hs[idx] = value;
+            assert!(
+                matches!(
+                    bob.establish_session_responder(1, hs),
+                    Err(CoreError::InvalidHandshake { .. })
+                ),
+                "handshake byte {idx} = {value:#04x} must be refused"
+            );
+        }
+    }
+
+    /// "No one-time prekey" has exactly one encoding. Leaving the tail free would
+    /// carry a channel inside an otherwise authentic structure.
+    #[test]
+    fn absent_one_time_prekey_must_be_all_zero() {
+        let (bob, bundle) = peer_with_prekeys(207);
+        let alice = fresh_core(208);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        let mut b = bundle.clone();
+        b[2] = 0x00; // clear has_otp but leave the tail populated
+        assert!(
+            matches!(
+                alice.establish_session_initiator(1, b),
+                Err(CoreError::InvalidPrekeyBundle { .. })
+            ),
+            "bundle with has_otp=0 and a non-zero tail must be refused"
+        );
+
+        let mut hs = vec![0u8; INITIATOR_HANDSHAKE_V1_LEN];
+        hs[0] = PROTOCOL_VERSION;
+        hs[1] = CIPHER_SUITE;
+        hs[76] = 0x01; // used_otp=0 but an id is present
+        assert!(
+            matches!(
+                bob.establish_session_responder(1, hs),
+                Err(CoreError::InvalidHandshake { .. })
+            ),
+            "handshake with used_otp=0 and a non-zero id must be refused"
+        );
+    }
+
+    // ── Signed prekey ────────────────────────────────────────────────────────
+
+    /// The F-2 closure at the FFI boundary: pairing one peer's Ed25519 signing
+    /// key with another's X25519 identity no longer verifies.
+    #[test]
+    fn bundle_with_substituted_identity_key_is_rejected() {
+        let (_bob, bob_bundle) = peer_with_prekeys(210);
+        let (_carol, carol_bundle) = peer_with_prekeys(211);
+        let alice = fresh_core(212);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        // Bob's bundle carrying Carol's DH identity: structurally perfect, and
+        // before v1 the signature would still have verified.
+        let mut forged = bob_bundle.clone();
+        forged[4..36].copy_from_slice(&carol_bundle[4..36]);
+
+        let err = alice
+            .establish_session_initiator(1, forged)
+            .expect_err("a mismatched identity must not verify");
+        assert!(
+            matches!(err, CoreError::BadSignedPrekeySignature),
+            "expected BadSignedPrekeySignature, got {err:?}"
+        );
+    }
+
+    // ── One-time prekey state machine ────────────────────────────────────────
+
+    /// The accepted path: the named prekey is consumed exactly once and a fresh
+    /// one takes its place, so the record advances by one durable write.
+    #[test]
+    fn matching_one_time_prekey_is_consumed_and_replaced() {
+        let (bob, bob_bundle) = peer_with_prekeys(220);
+        let alice = fresh_core(221);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        let published = current_opk_id(&bob).expect("establish_prekeys publishes one");
+        assert_eq!(
+            u64::from_be_bytes(bob_bundle[164..172].try_into().unwrap()),
+            published,
+            "the bundle must advertise the id actually held"
+        );
+
+        let handshake = alice.establish_session_initiator(1, bob_bundle).unwrap();
+        bob.establish_session_responder(1, handshake).unwrap();
+
+        let replacement = current_opk_id(&bob).expect("a replacement must be published");
+        assert_ne!(replacement, published, "the consumed prekey must be replaced");
+
+        // Round trip proves dh4 was actually included on both sides.
+        let msg = b"through a one-time prekey".to_vec();
+        let ct = alice.encrypt_message(1, msg.clone()).unwrap();
+        assert_eq!(bob.decrypt_message(1, ct).unwrap(), msg);
+    }
+
+    /// Replay. The one property claimed: a handshake this device already accepted
+    /// names an identifier that is no longer current, so it is refused — and the
+    /// refusal happens before any state changes.
+    #[test]
+    fn replaying_an_accepted_handshake_is_rejected_and_changes_nothing() {
+        let (bob, bob_bundle) = peer_with_prekeys(222);
+        let alice = fresh_core(223);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        let handshake = alice.establish_session_initiator(1, bob_bundle).unwrap();
+        bob.establish_session_responder(1, handshake.clone()).unwrap();
+
+        let before = read_record(&bob);
+        let err = bob
+            .establish_session_responder(2, handshake)
+            .expect_err("a replayed handshake must be refused");
+        assert!(
+            matches!(err, CoreError::OneTimePrekeyUnavailable { .. }),
+            "expected OneTimePrekeyUnavailable, got {err:?}"
+        );
+        assert_eq!(read_record(&bob), before, "a refused replay must not touch the record");
+
+        assert!(
+            matches!(
+                bob.encrypt_message(2, b"x".to_vec()),
+                Err(CoreError::NoSession { session_id: 2 })
+            ),
+            "a refused replay must leave no session"
+        );
+    }
+
+    /// A wrong identifier must be refused *without* spending the prekey it failed
+    /// to name — otherwise anyone could burn prekeys by guessing.
+    #[test]
+    fn wrong_one_time_prekey_id_does_not_consume_the_current_one() {
+        let (bob, bob_bundle) = peer_with_prekeys(224);
+        let alice = fresh_core(225);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        let mut tampered = bob_bundle.clone();
+        tampered[164..172].copy_from_slice(&0xDEAD_BEEF_u64.to_be_bytes());
+        // Re-sign is impossible, but the id is outside the signature, so the
+        // bundle still verifies — which is exactly why the responder checks it
+        // against its own record.
+        let handshake = alice.establish_session_initiator(1, tampered).unwrap();
+
+        let before = read_record(&bob);
+        let err = bob
+            .establish_session_responder(1, handshake)
+            .expect_err("an unknown id must be refused");
+        assert!(
+            matches!(err, CoreError::OneTimePrekeyUnavailable { opk_id } if opk_id == 0xDEAD_BEEF),
+            "expected OneTimePrekeyUnavailable{{0xDEADBEEF}}, got {err:?}"
+        );
+        assert_eq!(read_record(&bob), before, "the held prekey must survive untouched");
+    }
+
+    /// Anti-downgrade. Stripping the one-time prekey from a bundle in flight
+    /// leaves a signature that still verifies, so the responder — not the
+    /// signature — is what must refuse the weaker handshake.
+    #[test]
+    fn stripping_the_one_time_prekey_is_refused_rather_than_downgraded() {
+        let (bob, bob_bundle) = peer_with_prekeys(226);
+        let alice = fresh_core(227);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        let mut stripped = bob_bundle.clone();
+        stripped[2] = 0x00;
+        stripped[164..204].fill(0);
+
+        // Alice accepts it: the signed object does not cover these bytes.
+        let handshake = alice.establish_session_initiator(1, stripped).unwrap();
+        assert_eq!(handshake[2] & FLAG_OTP, 0, "Alice built an SPK-only handshake");
+
+        let before = read_record(&bob);
+        let err = bob
+            .establish_session_responder(1, handshake)
+            .expect_err("Bob still publishes a one-time prekey, so this must be refused");
+        assert!(
+            matches!(err, CoreError::OneTimePrekeyRequired),
+            "expected OneTimePrekeyRequired, got {err:?}"
+        );
+        assert_eq!(read_record(&bob), before);
+    }
+
+    /// A bundle from before a rotation names a signed prekey this device no
+    /// longer holds, and is refused explicitly rather than deriving a key the
+    /// peer cannot match.
+    #[test]
+    fn stale_signed_prekey_is_rejected() {
+        let (bob, old_bundle) = peer_with_prekeys(228);
+        let alice = fresh_core(229);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        let handshake = alice.establish_session_initiator(1, old_bundle).unwrap();
+        bob.establish_prekeys().unwrap(); // rotation
+
+        let before = read_record(&bob);
+        let err = bob
+            .establish_session_responder(1, handshake)
+            .expect_err("a stale signed prekey must be refused");
+        assert!(
+            matches!(err, CoreError::StaleSignedPrekey),
+            "expected StaleSignedPrekey, got {err:?}"
+        );
+        assert_eq!(read_record(&bob), before);
+    }
+
+    /// The SPK-only branch. No normal writer produces a record without a one-time
+    /// prekey — `establish_prekeys` and the consume path both publish one — so
+    /// the record is constructed directly. Without this the branch would be
+    /// carried but never executed.
+    #[test]
+    fn spk_only_branch_accepts_and_omits_dh4() {
+        let (bob, bob_bundle) = peer_with_prekeys(230);
+        let alice = fresh_core(231);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        // Strip the one-time prekey from Bob's stored record.
+        let mut record = unpack_prekeys(&read_record(&bob)).unwrap();
+        record.opk = None;
+        bob.store
+            .lock()
+            .unwrap()
+            .put(PREKEYS_KEY, &pack_prekeys(&record))
+            .unwrap();
+        assert!(current_opk_id(&bob).is_none());
+
+        // Alice must also hold an SPK-only bundle, or the two sides disagree
+        // about dh4 — which is the mismatch the identifiers exist to surface.
+        let mut spk_only = bob_bundle.clone();
+        spk_only[2] = 0x00;
+        spk_only[164..204].fill(0);
+
+        let handshake = alice.establish_session_initiator(1, spk_only).unwrap();
+        bob.establish_session_responder(1, handshake).unwrap();
+
+        let msg = b"no one-time prekey here".to_vec();
+        let ct = alice.encrypt_message(1, msg.clone()).unwrap();
+        assert_eq!(
+            bob.decrypt_message(1, ct).unwrap(),
+            msg,
+            "both sides must have omitted dh4 identically"
+        );
+
+        // And a handshake that *does* name one must still be refused.
+        let (_c, carol_bundle) = peer_with_prekeys(232);
+        let named = alice.establish_session_initiator(2, carol_bundle).unwrap();
+        assert!(matches!(
+            bob.establish_session_responder(3, named),
+            Err(CoreError::StaleSignedPrekey) | Err(CoreError::OneTimePrekeyUnavailable { .. })
+        ));
+    }
+
+    // ── Atomicity ────────────────────────────────────────────────────────────
+
+    /// Two threads presenting the same valid handshake must not both consume the
+    /// one-time prekey it names. The transition is read-validate-rotate-write
+    /// under one continuous store guard, so the loser sees the replacement and is
+    /// refused — leaving exactly one accepted session and one durable advance.
+    #[test]
+    fn concurrent_receipt_of_one_handshake_consumes_the_prekey_once() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let (bob, bob_bundle) = peer_with_prekeys(240);
+        let alice = fresh_core(241);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        let published = current_opk_id(&bob).unwrap();
+        let handshake = alice.establish_session_initiator(1, bob_bundle).unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let mut joins = Vec::new();
+        for handle in [10u64, 11u64] {
+            let core = Arc::clone(&bob);
+            let hs = handshake.clone();
+            let tx = tx.clone();
+            joins.push(thread::spawn(move || {
+                tx.send(core.establish_session_responder(handle, hs)).unwrap();
+            }));
+        }
+        drop(tx);
+        for j in joins {
+            j.join().unwrap();
+        }
+
+        let results: Vec<_> = rx.iter().collect();
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results.iter().filter(|r| r.is_ok()).count(),
+            1,
+            "exactly one receipt may consume the prekey: {results:?}"
+        );
+        assert!(
+            results.iter().any(|r| matches!(
+                r,
+                Err(CoreError::OneTimePrekeyUnavailable { opk_id }) if *opk_id == published
+            )),
+            "the loser must be refused as unavailable, not silently accepted: {results:?}"
+        );
+
+        let after = current_opk_id(&bob).unwrap();
+        assert_ne!(after, published, "the durable state must have advanced once");
+    }
+
+    /// Session insertion failing after the prekey was durably consumed must not
+    /// put it back. A prekey handed to a handshake never returns to circulation,
+    /// even when nothing was built from it (T1).
+    #[test]
+    fn a_consumed_prekey_is_not_restored_when_session_insertion_fails() {
+        let (bob, first_bundle) = peer_with_prekeys(242);
+        let alice = fresh_core(243);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        // Occupy the handle with a real session first.
+        let hs1 = alice.establish_session_initiator(1, first_bundle).unwrap();
+        bob.establish_session_responder(7, hs1).unwrap();
+
+        // A second, different initiator aims at the same handle.
+        let second_bundle = bob.export_prekey_bundle().unwrap();
+        let carol = fresh_core(244);
+        carol.save_identity(Identity::generate()).unwrap();
+        let hs2 = carol.establish_session_initiator(1, second_bundle).unwrap();
+
+        let consumed = current_opk_id(&bob).unwrap();
+        let err = bob
+            .establish_session_responder(7, hs2)
+            .expect_err("the handle is taken by a different peer");
+        assert!(
+            matches!(err, CoreError::SessionIdCollision { session_id: 7 }),
+            "expected SessionIdCollision, got {err:?}"
+        );
+
+        let after = current_opk_id(&bob).unwrap();
+        assert_ne!(
+            after, consumed,
+            "the prekey was already consumed and must stay consumed"
         );
     }
 }

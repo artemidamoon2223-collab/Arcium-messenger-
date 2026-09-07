@@ -122,12 +122,8 @@ class ArciumCoreWrapper {
      * and responder are separate, non-interchangeable roles — neither call
      * substitutes for the other.
      */
-    fun establishSessionResponder(
-        sessionId: ULong,
-        aliceIdentityPk: ByteArray,
-        aliceEphemeralPk: ByteArray,
-    ) {
-        requireCore().establishSessionResponder(sessionId, aliceIdentityPk, aliceEphemeralPk)
+    fun establishSessionResponder(sessionId: ULong, initiatorHandshake: ByteArray) {
+        requireCore().establishSessionResponder(sessionId, initiatorHandshake)
     }
 
     /**

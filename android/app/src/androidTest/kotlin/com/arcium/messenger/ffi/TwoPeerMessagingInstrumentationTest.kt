@@ -50,9 +50,22 @@ class TwoPeerMessagingInstrumentationTest {
 
     private companion object {
         const val PUBLIC_KEY_BYTES = 32
-        const val HANDSHAKE_BYTES = 64
-        const val BUNDLE_BYTES_NO_OTP = 161
-        const val BUNDLE_BYTES_WITH_OTP = 193
+
+        /** `INITIATOR_HANDSHAKE_V1` — one fixed length, no variant. */
+        const val HANDSHAKE_BYTES = 84
+
+        /**
+         * `PREKEY_BUNDLE_V1` — one fixed length. v1 zero-fills the one-time
+         * prekey fields when absent instead of shortening the structure, so
+         * unlike the pre-v1 format there is no second valid size.
+         */
+        const val BUNDLE_BYTES = 204
+
+        /**
+         * Offset of the X25519 DH identity in both structures: each opens with
+         * `protocol_version || cipher_suite || flags || reserved`.
+         */
+        const val IDENTITY_OFFSET = 4
     }
 
     /**
@@ -83,24 +96,24 @@ class TwoPeerMessagingInstrumentationTest {
         return p
     }
 
-    /** Bob's real X25519 DH identity: the first 32 bytes of his exported bundle. */
+    /** Bob's real X25519 DH identity, read out of his exported v1 bundle. */
     private fun x25519IdentityFromBundle(bundle: ByteArray): ByteArray {
-        assertTrue(
-            "prekey bundle must be $BUNDLE_BYTES_NO_OTP or $BUNDLE_BYTES_WITH_OTP bytes, " +
-                "got ${bundle.size}",
-            bundle.size == BUNDLE_BYTES_NO_OTP || bundle.size == BUNDLE_BYTES_WITH_OTP,
+        assertEquals(
+            "prekey bundle must be exactly $BUNDLE_BYTES bytes",
+            BUNDLE_BYTES,
+            bundle.size,
         )
-        return bundle.copyOfRange(0, PUBLIC_KEY_BYTES)
+        return bundle.copyOfRange(IDENTITY_OFFSET, IDENTITY_OFFSET + PUBLIC_KEY_BYTES)
     }
 
-    /** Alice's real X25519 DH identity: the first 32 bytes of the handshake. */
+    /** Alice's real X25519 DH identity, read out of the v1 handshake. */
     private fun x25519IdentityFromHandshake(handshake: ByteArray): ByteArray {
         assertEquals(
-            "initiator handshake must be identity_pk(32) || ephemeral_pk(32)",
+            "initiator handshake must be exactly $HANDSHAKE_BYTES bytes",
             HANDSHAKE_BYTES,
             handshake.size,
         )
-        return handshake.copyOfRange(0, PUBLIC_KEY_BYTES)
+        return handshake.copyOfRange(IDENTITY_OFFSET, IDENTITY_OFFSET + PUBLIC_KEY_BYTES)
     }
 
     /** Establishes a live Alice↔Bob session and returns both peers and identities. */

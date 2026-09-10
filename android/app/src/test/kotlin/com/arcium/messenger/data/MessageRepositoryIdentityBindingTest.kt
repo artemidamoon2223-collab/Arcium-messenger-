@@ -6,6 +6,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
+ * `ARCIUM_X3DH_FORMAT_V1` sizes, restated here because the production copies are
+ * file-private in `MessageRepository.kt`. Restating them is deliberate: if the
+ * production constants ever change, these must be updated too and the tests below
+ * will fail loudly rather than following along silently.
+ */
+private const val BUNDLE_BYTES = 204
+private const val HANDSHAKE_BYTES = 84
+private const val IDENTITY_OFFSET = 4
+
+/**
  * Covers the identity binding between the peer the caller names and the peer
  * whose identity Rust would actually key the session from.
  *
@@ -32,15 +42,35 @@ class MessageRepositoryIdentityBindingTest {
 
     private fun key(byte: Byte) = ByteArray(32) { byte }
 
-    /** A structurally valid bundle whose leading identity is [identity]. */
+    /**
+     * A structurally valid `PREKEY_BUNDLE_V1` carrying [identity].
+     *
+     * Always 204 bytes: v1 zero-fills the one-time prekey fields when absent
+     * rather than shortening the structure, so [withOneTimePrekey] flips a flag
+     * and a tail, never the length.
+     */
     private fun bundle(identity: ByteArray, withOneTimePrekey: Boolean = false): ByteArray {
-        val size = if (withOneTimePrekey) 193 else 161
-        return ByteArray(size) { 7 }.also { identity.copyInto(it, 0) }
+        val b = ByteArray(BUNDLE_BYTES) { 7 }
+        b[0] = 0x01 // protocol_version
+        b[1] = 0x01 // cipher_suite
+        b[2] = if (withOneTimePrekey) 0x01 else 0x00
+        b[3] = 0x00 // reserved
+        identity.copyInto(b, IDENTITY_OFFSET)
+        if (!withOneTimePrekey) b.fill(0, 164, BUNDLE_BYTES)
+        return b
     }
 
-    /** A structurally valid 64-byte handshake whose leading identity is [identity]. */
-    private fun handshake(identity: ByteArray): ByteArray =
-        ByteArray(64) { 7 }.also { identity.copyInto(it, 0) }
+    /** A structurally valid 84-byte `INITIATOR_HANDSHAKE_V1` carrying [identity]. */
+    private fun handshake(identity: ByteArray): ByteArray {
+        val h = ByteArray(HANDSHAKE_BYTES) { 7 }
+        h[0] = 0x01
+        h[1] = 0x01
+        h[2] = 0x00 // used_otp = 0
+        h[3] = 0x00
+        identity.copyInto(h, IDENTITY_OFFSET)
+        h.fill(0, 76, HANDSHAKE_BYTES)
+        return h
+    }
 
     private fun repo() = MessageRepository(ArciumCoreWrapper())
 
@@ -92,8 +122,8 @@ class MessageRepositoryIdentityBindingTest {
     fun `initiator rejects a bundle of unrecognised length before comparing identity`() {
         val alice = key(1)
 
-        for (size in listOf(0, 32, 160, 162, 192, 194)) {
-            val malformed = ByteArray(size).also { if (size >= 32) alice.copyInto(it, 0) }
+        for (size in listOf(0, 32, 161, 193, 203, 205)) {
+            val malformed = ByteArray(size).also { if (size >= 36) alice.copyInto(it, IDENTITY_OFFSET) }
             assertThrows(
                 "a $size-byte bundle must be refused",
                 IllegalStateException::class.java,
@@ -102,11 +132,11 @@ class MessageRepositoryIdentityBindingTest {
     }
 
     @Test
-    fun `responder rejects a handshake that is not exactly 64 bytes`() {
+    fun `responder rejects a handshake that is not exactly 84 bytes`() {
         val alice = key(1)
 
-        for (size in listOf(0, 32, 63, 65, 128)) {
-            val malformed = ByteArray(size).also { if (size >= 32) alice.copyInto(it, 0) }
+        for (size in listOf(0, 32, 64, 83, 85, 168)) {
+            val malformed = ByteArray(size).also { if (size >= 36) alice.copyInto(it, IDENTITY_OFFSET) }
             assertThrows(
                 "a $size-byte handshake must be refused",
                 IllegalStateException::class.java,
@@ -145,8 +175,8 @@ class MessageRepositoryIdentityBindingTest {
         val alice = key(1)
         val bob = key(2)
 
-        // 193-byte form must pass the length check and fail on identity, proving
-        // the length gate does not reject the with-OTP layout.
+        // The with-OTP form must pass the length check and fail on identity,
+        // proving the flag byte does not disturb the length gate.
         val error = assertThrows(IllegalStateException::class.java) {
             repo().startSessionAsInitiator(bob, bundle(alice, withOneTimePrekey = true))
         }

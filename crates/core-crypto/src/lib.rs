@@ -5,6 +5,7 @@ pub mod hybrid;
 pub mod ratchet;
 pub mod rescue;
 pub mod session_handle;
+pub mod spk_id;
 pub mod x3dh;
 
 #[cfg(test)]
@@ -14,7 +15,9 @@ mod tests {
     use x25519_dalek::{PublicKey, StaticSecret};
 
     use crate::ratchet::DoubleRatchet;
-    use crate::x3dh::{x3dh_initiate, x3dh_respond, PrekeyBundle, X3dhError};
+    use crate::x3dh::{
+        signed_prekey_object_v1, x3dh_initiate, x3dh_respond, PrekeyBundle, X3dhError,
+    };
 
     // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -36,7 +39,12 @@ mod tests {
 
         let signed_prekey_sk = StaticSecret::random_from_rng(OsRng);
         let signed_prekey_pk = PublicKey::from(&signed_prekey_sk);
-        let sig = signing_sk.sign(signed_prekey_pk.as_bytes());
+        // v1 signs the 116-byte signed-prekey object, not the raw 32-byte key.
+        let sig = signing_sk.sign(&signed_prekey_object_v1(
+            &identity_pk,
+            &signing_sk.verifying_key(),
+            &signed_prekey_pk,
+        ));
 
         let otpk_sk = StaticSecret::random_from_rng(OsRng);
         let otpk_pk = PublicKey::from(&otpk_sk);
@@ -69,6 +77,7 @@ mod tests {
             signed_prekey_pk: b_spk_pk,
             signed_prekey_signature: b_spk_sig,
             one_time_prekey_pk: None,
+            one_time_prekey_id: None,
         };
 
         let alice = x3dh_initiate(&a_id_sk, a_id_pk, &bundle).expect("initiate");
@@ -97,9 +106,17 @@ mod tests {
             signed_prekey_pk: b_spk_pk,
             signed_prekey_signature: b_spk_sig,
             one_time_prekey_pk: None,
+            one_time_prekey_id: None,
         };
         let alice = x3dh_initiate(&a_id_sk, a_id_pk, &bundle).unwrap();
-        let bob = x3dh_respond(&b_id_sk, b_id_pk, &b_spk_sk, None, a_id_pk, alice.ephemeral_pk);
+        let bob = x3dh_respond(
+            &b_id_sk,
+            b_id_pk,
+            &b_spk_sk,
+            None,
+            a_id_pk,
+            alice.ephemeral_pk,
+        );
 
         assert_eq!(alice.root_key, bob.root_key);
         // AD: alice prepends hers, bob prepends theirs — the bytes must be identical.
@@ -120,6 +137,7 @@ mod tests {
             signed_prekey_pk: b_spk_pk,
             signed_prekey_signature: b_spk_sig,
             one_time_prekey_pk: Some(otpk_pk),
+            one_time_prekey_id: Some(0x0102_0304_0506_0708),
         };
         let alice = x3dh_initiate(&a_id_sk, a_id_pk, &bundle).unwrap();
         let bob = x3dh_respond(
@@ -149,6 +167,7 @@ mod tests {
             signed_prekey_pk: b_spk_pk,
             signed_prekey_signature: bad_sig,
             one_time_prekey_pk: None,
+            one_time_prekey_id: None,
         };
         let result = x3dh_initiate(&a_id_sk, a_id_pk, &bundle);
         assert!(
@@ -169,6 +188,7 @@ mod tests {
             signed_prekey_pk: b_spk_pk,
             signed_prekey_signature: b_spk_sig,
             one_time_prekey_pk: None,
+            one_time_prekey_id: None,
         };
 
         let a1_id_sk = StaticSecret::random_from_rng(OsRng);
@@ -183,8 +203,22 @@ mod tests {
         assert_ne!(s1.root_key, s2.root_key);
 
         // Both sessions must still be valid on Bob's end.
-        let b1 = x3dh_respond(&b_id_sk, b_id_pk, &b_spk_sk, None, a1_id_pk, s1.ephemeral_pk);
-        let b2 = x3dh_respond(&b_id_sk, b_id_pk, &b_spk_sk, None, a2_id_pk, s2.ephemeral_pk);
+        let b1 = x3dh_respond(
+            &b_id_sk,
+            b_id_pk,
+            &b_spk_sk,
+            None,
+            a1_id_pk,
+            s1.ephemeral_pk,
+        );
+        let b2 = x3dh_respond(
+            &b_id_sk,
+            b_id_pk,
+            &b_spk_sk,
+            None,
+            a2_id_pk,
+            s2.ephemeral_pk,
+        );
         assert_eq!(s1.root_key, b1.root_key);
         assert_eq!(s2.root_key, b2.root_key);
     }
@@ -203,9 +237,17 @@ mod tests {
             signed_prekey_pk: b_spk_pk,
             signed_prekey_signature: b_spk_sig,
             one_time_prekey_pk: None,
+            one_time_prekey_id: None,
         };
         let alice_x3dh = x3dh_initiate(&a_id_sk, a_id_pk, &bundle).unwrap();
-        let bob_x3dh = x3dh_respond(&b_id_sk, b_id_pk, &b_spk_sk, None, a_id_pk, alice_x3dh.ephemeral_pk);
+        let bob_x3dh = x3dh_respond(
+            &b_id_sk,
+            b_id_pk,
+            &b_spk_sk,
+            None,
+            a_id_pk,
+            alice_x3dh.ephemeral_pk,
+        );
 
         // Alice uses Bob's signed prekey as the initial DH public key.
         let alice_r = DoubleRatchet::init_alice(alice_x3dh.root_key, b_spk_pk);

@@ -3,18 +3,33 @@ package com.arcium.messenger.data
 import com.arcium.messenger.ArciumApp
 import com.arcium.messenger.ffi.ArciumCoreWrapper
 
-/** Length of the initiator handshake: `identity_pk(32) || ephemeral_pk(32)`. */
-private const val HANDSHAKE_BYTES = 64
 private const val PUBLIC_KEY_BYTES = 32
 
 /**
- * Prekey bundle lengths, from the Rust layout
- * `identity_pk(32) || signing_pk(32) || signed_prekey_pk(32) || signature(64) ||
- * has_otp(1) || [one_time_prekey_pk(32)]` — 161 without a one-time prekey, 193
- * with one. Rust rejects every other length.
+ * `INITIATOR_HANDSHAKE_V1`, always exactly this long:
+ * `protocol_version(1) || cipher_suite(1) || flags(1) || reserved(1) ||
+ * identity_dh_pk(32) || ephemeral_pk(32) || spk_id(8) || opk_id(8)`.
  */
-private const val BUNDLE_BYTES_NO_OTP = 161
-private const val BUNDLE_BYTES_WITH_OTP = 193
+private const val HANDSHAKE_BYTES = 84
+
+/**
+ * `PREKEY_BUNDLE_V1`, always exactly this long:
+ * `protocol_version(1) || cipher_suite(1) || flags(1) || reserved(1) ||
+ * identity_dh_pk(32) || signing_pk(32) || signed_prekey_pk(32) ||
+ * spk_signature(64) || opk_id(8) || opk_pk(32)`.
+ *
+ * One length, not two: v1 zero-fills the one-time prekey fields when absent
+ * rather than shortening the structure, so there is no length to branch on.
+ */
+private const val BUNDLE_BYTES = 204
+
+/**
+ * Offset of the X25519 DH identity in both wire structures. Both carry the same
+ * four-byte header, so the identity sits at the same place in each — named once
+ * here so the four call sites below cannot drift apart.
+ */
+private const val IDENTITY_OFFSET = 4
+private const val IDENTITY_END = IDENTITY_OFFSET + PUBLIC_KEY_BYTES
 
 data class Message(
     val id: String,
@@ -37,7 +52,7 @@ data class Message(
  * works here:
  *
  * - the **Ed25519** signing key from `Identity.publicKeyBytes()`, which is a
- *   different key of the same length and sits at bytes 32..64 of a prekey bundle;
+ *   different key of the same length and sits at bytes 36..68 of a prekey bundle;
  * - the peer's ratchet DH key from a message header, which changes every step;
  * - `hash_contact(phone)`, which is the PSI matching token, not an identity.
  *
@@ -89,7 +104,9 @@ class MessageRepository(
     /**
      * Generates and persists this device's prekeys so peers can open sessions
      * against it. Overwrites any previous prekeys — Rust has no "already
-     * established" guard.
+     * established" guard — which invalidates every bundle already handed out:
+     * handshakes built from those are refused as stale rather than silently
+     * deriving a key the peer cannot match.
      */
     fun publishOwnPrekeys() {
         core.establishPrekeys()
@@ -116,12 +133,12 @@ class MessageRepository(
      * Opens a session with [peerIdentityPk] as the X3DH initiator, against that
      * peer's [peerPrekeyBundle].
      *
-     * [peerIdentityPk] must equal the bundle's own identity (its first 32 bytes,
-     * the X25519 DH key), or this throws IllegalStateException having created no
+     * [peerIdentityPk] must equal the bundle's own identity (the X25519 DH key at
+     * [IDENTITY_OFFSET]), or this throws IllegalStateException having created no
      * session.
      *
-     * Returns `identity_pk(32) || ephemeral_pk(32)` — the bytes the peer needs
-     * for [acceptSessionAsResponder]. **Returning them is not sending them.**
+     * Returns the 84-byte `INITIATOR_HANDSHAKE_V1` the peer needs for
+     * [acceptSessionAsResponder]. **Returning it is not sending it.**
      */
     fun startSessionAsInitiator(peerIdentityPk: ByteArray, peerPrekeyBundle: ByteArray): ByteArray {
         // Before anything is created: the bundle's own identity is what
@@ -135,10 +152,10 @@ class MessageRepository(
 
     /**
      * Opens a session with [peerIdentityPk] as the X3DH responder, from the
-     * 64-byte [initiatorHandshake] that peer's [startSessionAsInitiator]
+     * 84-byte [initiatorHandshake] that peer's [startSessionAsInitiator]
      * produced. Requires [publishOwnPrekeys] to have run here first.
      *
-     * [peerIdentityPk] must equal the handshake's leading 32 bytes, or this
+     * [peerIdentityPk] must equal the identity the handshake carries, or this
      * throws IllegalStateException having created no session — otherwise a
      * session established with one peer could be recorded under another peer's
      * handle.
@@ -150,11 +167,11 @@ class MessageRepository(
         // Same binding as the initiator path, for the same reason: the identity
         // Rust will key the session from is the one inside the handshake.
         requireHandshakeIdentityMatches(peerIdentityPk, initiatorHandshake)
-        core.establishSessionResponder(
-            handleFor(peerIdentityPk),
-            initiatorHandshake.copyOfRange(0, PUBLIC_KEY_BYTES),
-            initiatorHandshake.copyOfRange(PUBLIC_KEY_BYTES, HANDSHAKE_BYTES),
-        )
+        // The whole structure goes across: the handshake also names which signed
+        // prekey and which one-time prekey it used, and Rust needs both to decide
+        // whether this device can still answer it. Slicing out the two keys here,
+        // as the pre-v1 API did, would discard exactly that.
+        core.establishSessionResponder(handleFor(peerIdentityPk), initiatorHandshake)
     }
 
     /**
@@ -187,28 +204,24 @@ class MessageRepository(
     }
 
     /**
-     * Requires [peerPrekeyBundle] to be a well-formed bundle whose identity — its
-     * first 32 bytes, the X25519 DH key Rust runs X3DH against — is exactly
-     * [peerIdentityPk]. Throws before any session is created.
+     * Requires [peerPrekeyBundle] to be a well-formed bundle whose identity — the
+     * X25519 DH key at [IDENTITY_OFFSET], the one Rust runs X3DH against — is
+     * exactly [peerIdentityPk]. Throws before any session is created.
      */
     private fun requireBundleIdentityMatches(peerIdentityPk: ByteArray, peerPrekeyBundle: ByteArray) {
         requirePublicKey(peerIdentityPk)
-        check(
-            peerPrekeyBundle.size == BUNDLE_BYTES_NO_OTP ||
-                peerPrekeyBundle.size == BUNDLE_BYTES_WITH_OTP,
-        ) {
-            "prekey bundle must be $BUNDLE_BYTES_NO_OTP or $BUNDLE_BYTES_WITH_OTP bytes, " +
-                "got ${peerPrekeyBundle.size}"
+        check(peerPrekeyBundle.size == BUNDLE_BYTES) {
+            "prekey bundle must be $BUNDLE_BYTES bytes, got ${peerPrekeyBundle.size}"
         }
         requireSameIdentity(
             expected = peerIdentityPk,
-            carried = peerPrekeyBundle.copyOfRange(0, PUBLIC_KEY_BYTES),
+            carried = peerPrekeyBundle.copyOfRange(IDENTITY_OFFSET, IDENTITY_END),
             source = "prekey bundle",
         )
     }
 
     /**
-     * Requires [initiatorHandshake] to be exactly 64 bytes whose leading identity
+     * Requires [initiatorHandshake] to be exactly 84 bytes whose carried identity
      * is exactly [peerIdentityPk]. Throws before any session is created, so a
      * session established with one peer can never be recorded under another
      * peer's identity.
@@ -216,12 +229,12 @@ class MessageRepository(
     private fun requireHandshakeIdentityMatches(peerIdentityPk: ByteArray, initiatorHandshake: ByteArray) {
         requirePublicKey(peerIdentityPk)
         check(initiatorHandshake.size == HANDSHAKE_BYTES) {
-            "initiator handshake must be $HANDSHAKE_BYTES bytes " +
-                "(identity_pk || ephemeral_pk), got ${initiatorHandshake.size}"
+            "initiator handshake must be $HANDSHAKE_BYTES bytes, " +
+                "got ${initiatorHandshake.size}"
         }
         requireSameIdentity(
             expected = peerIdentityPk,
-            carried = initiatorHandshake.copyOfRange(0, PUBLIC_KEY_BYTES),
+            carried = initiatorHandshake.copyOfRange(IDENTITY_OFFSET, IDENTITY_END),
             source = "initiator handshake",
         )
     }

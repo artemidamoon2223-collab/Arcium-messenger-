@@ -581,13 +581,17 @@ impl ArciumCore {
     /// calls return identical bytes. Fails if `establish_prekeys` never ran.
     pub fn export_prekey_bundle(&self) -> Result<Vec<u8>, CoreError> {
         let identity = self.require_identity()?;
-        let record_bytes = self
-            .store
-            .lock()
-            .map_err(|_| CoreError::Storage {
-                msg: "mutex poisoned".into(),
-            })?
-            .get(PREKEYS_KEY)?;
+        // The decrypted record holds the signed-prekey and one-time-prekey
+        // secrets in the clear; wipe the buffer on every exit path (F-8), as
+        // load_identity already does for the identity blob.
+        let record_bytes = Zeroizing::new(
+            self.store
+                .lock()
+                .map_err(|_| CoreError::Storage {
+                    msg: "mutex poisoned".into(),
+                })?
+                .get(PREKEYS_KEY)?,
+        );
         let record = unpack_prekeys(&record_bytes)?;
 
         Ok(pack_prekey_bundle(
@@ -686,9 +690,10 @@ impl ArciumCore {
     /// makes the transition survive a crash. The mutex only serializes threads.
     ///
     /// The store guard is released before the session lock is taken; the two are
-    /// never held together. If session insertion then fails, the one-time prekey
-    /// stays consumed and is not restored: a prekey that has been handed to a
-    /// handshake must never return to circulation.
+    /// never held together. If anything after the write fails — session insertion
+    /// refusing the handle, or the session mutex being poisoned — the one-time
+    /// prekey stays consumed and is not restored: a prekey that has been handed
+    /// to a handshake must never return to circulation.
     pub fn establish_session_responder(
         &self,
         session_id: u64,
@@ -702,7 +707,8 @@ impl ArciumCore {
             let store = self.store.lock().map_err(|_| CoreError::Storage {
                 msg: "mutex poisoned".into(),
             })?;
-            let mut record = unpack_prekeys(&store.get(PREKEYS_KEY)?)?;
+            let record_bytes = Zeroizing::new(store.get(PREKEYS_KEY)?);
+            let mut record = unpack_prekeys(&record_bytes)?;
 
             if spk_id(record.signed_prekey_pk().as_bytes()) != handshake.spk_id {
                 return Err(CoreError::StaleSignedPrekey);
@@ -1176,8 +1182,8 @@ mod tests {
         bob.save_identity(Identity::generate()).unwrap();
         bob.establish_prekeys().unwrap();
         let bob_bundle = bob.export_prekey_bundle().unwrap();
-        // The bundle leads with Bob's X25519 identity public key (D3 layout).
-        let bob_identity_pk = bob_bundle[0..32].to_vec();
+        // Bob's X25519 identity public key sits after the 4-byte v1 header.
+        let bob_identity_pk = bob_bundle[4..36].to_vec();
 
         let alice = fresh_core(130);
         let alice_identity = Identity::generate();
@@ -1320,7 +1326,7 @@ mod tests {
     #[test]
     fn failed_responder_leaves_no_session() {
         let (_alice_peer, alice_bundle) = peer_with_prekeys(170);
-        let alice_identity_pk = alice_bundle[0..32].to_vec();
+        let alice_identity_pk = alice_bundle[4..36].to_vec();
 
         // Bob has an identity but never called establish_prekeys, so the
         // responder path fails when it reads the missing prekey record.
@@ -1453,7 +1459,7 @@ mod tests {
             malformed.resize(len, 0);
             let err = alice
                 .establish_session_initiator(1, malformed)
-                .expect_err("a {len}-byte bundle must be refused");
+                .expect_err("a wrong-length bundle must be refused");
             assert!(
                 matches!(err, CoreError::InvalidPrekeyBundle { .. }),
                 "expected InvalidPrekeyBundle for length {len}, got {err:?}"
@@ -1766,12 +1772,30 @@ mod tests {
             "both sides must have omitted dh4 identically"
         );
 
-        // And a handshake that *does* name one must still be refused.
-        let (_c, carol_bundle) = peer_with_prekeys(232);
-        let named = alice.establish_session_initiator(2, carol_bundle).unwrap();
+        // And a handshake that names a one-time prekey Bob does not hold must be
+        // refused as unavailable — never quietly accepted on the SPK-only path.
+        // The bundle keeps Bob's real signed prekey (so spk_id matches and this
+        // reaches the OPK check), but advertises a one-time prekey that exists
+        // nowhere; the OPK fields sit outside the signature, so it still verifies.
+        let mut phantom = bob_bundle.clone();
+        phantom[2] = FLAG_OTP;
+        phantom[164..172].copy_from_slice(&0x5EED_5EED_5EED_5EEDu64.to_be_bytes());
+        phantom[172..204].copy_from_slice(&[0x42u8; 32]);
+        let named = alice.establish_session_initiator(2, phantom).unwrap();
+        assert_eq!(named[2] & FLAG_OTP, FLAG_OTP, "Alice must have set used_otp");
+
+        let before = read_record(&bob);
+        let err = bob
+            .establish_session_responder(3, named)
+            .expect_err("no one-time prekey is held, so naming one must fail");
+        assert!(
+            matches!(err, CoreError::OneTimePrekeyUnavailable { opk_id } if opk_id == 0x5EED_5EED_5EED_5EED),
+            "expected OneTimePrekeyUnavailable, got {err:?}"
+        );
+        assert_eq!(read_record(&bob), before, "the refusal must not touch the record");
         assert!(matches!(
-            bob.establish_session_responder(3, named),
-            Err(CoreError::StaleSignedPrekey) | Err(CoreError::OneTimePrekeyUnavailable { .. })
+            bob.encrypt_message(3, b"x".to_vec()),
+            Err(CoreError::NoSession { session_id: 3 })
         ));
     }
 
@@ -1793,13 +1817,21 @@ mod tests {
         let published = current_opk_id(&bob).unwrap();
         let handshake = alice.establish_session_initiator(1, bob_bundle).unwrap();
 
+        // Both threads block on the barrier and are released together, so they
+        // enter establish_session_responder as close to simultaneously as the
+        // scheduler allows. Without this the second thread would usually start
+        // after the first had already finished and the test would only be
+        // checking the sequential state machine.
+        let gate = Arc::new(std::sync::Barrier::new(2));
         let (tx, rx) = mpsc::channel();
         let mut joins = Vec::new();
         for handle in [10u64, 11u64] {
             let core = Arc::clone(&bob);
             let hs = handshake.clone();
             let tx = tx.clone();
+            let gate = Arc::clone(&gate);
             joins.push(thread::spawn(move || {
+                gate.wait();
                 tx.send(core.establish_session_responder(handle, hs)).unwrap();
             }));
         }

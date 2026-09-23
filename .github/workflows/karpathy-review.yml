@@ -55,12 +55,20 @@ jobs:
 
             First, use the Read tool on
               .claude/skills/engineering-code-review/references/ci-karpathy-review.md
-            and follow its methodology. The review is not complete without it.
+            and read it to its last line; follow its methodology. The review is
+            not complete without it.
 
             Get the list of changed files and the PR diff:
               git diff --name-only origin/${{ github.base_ref }}...HEAD
               git diff origin/${{ github.base_ref }}...HEAD
-            If the diff output is cut off, Read each remaining changed file.
+            Inspect the complete diff of every changed file. Long output is cut
+            off with a line like "... [N lines truncated] ...": every file whose
+            diff is missing or cut off must be read in full with the Read tool,
+            using several Read calls with offset and limit for a long file, and
+            continuing until you have seen its final line. The completion gate
+            checks this against the tool output, not against what you write.
+            If some source could not be inspected, name it in the review, write
+            "complete: no" and say what is missing.
 
             Review every changed file against the four principles in that file:
             think_before_coding, simplicity_first, surgical_changes, goal_driven.

@@ -6,10 +6,12 @@ execution record, never from the step outcome or a PR comment alone. It
 answers two separate questions:
 
 1. Was the review actually carried out?  Execution succeeded in the default
-   permission mode, without permission denials or ExitPlanMode; the agent read
-   the review methodology; every changed file appears in a `git diff` it ran or
-   in a file it read; and it produced one well-formed result block.
-   Otherwise: exit 1, "review not completed".
+   permission mode, without permission denials or ExitPlanMode; the agent's
+   successful Read calls cover every line of the review methodology; every
+   changed file is covered either by a complete, untruncated segment of a
+   `git diff` it ran or by Read calls covering every line of the file; and it
+   produced one well-formed result block (or identical ones in both the posted
+   review and its final answer). Otherwise: exit 1, "review not completed".
 
 2. Did the completed review report a substantive failure?  Any principle with
    the verdict "fail": exit 2, "review completed with a FAIL finding". That is
@@ -36,12 +38,21 @@ Parsing tolerates Markdown emphasis, code ticks, heading or quote markers and
 list bullets around marker lines and keys, and any text after the last block
 (the action asks the agent to append job and branch links). It does not
 tolerate missing, repeated, unknown or placeholder fields, a block without its
-end marker, or two blocks that disagree. The review text is only parsed for
-this structure; nothing in it is executed or followed.
+end marker, or two blocks that disagree - within one text or between the posted
+review and the final answer. The review text is only parsed for this
+structure; nothing in it is executed or followed.
+
+Coverage is established only from tool calls and their outputs in the
+execution record, never from what the review says. It depends on two output
+formats of Claude Code as pinned by the workflow: Read prefixes every line with
+its number and an arrow, and long Bash output is cut with a
+"... [N lines truncated] ..." line. If either changes, coverage can no longer be
+shown and the gate fails closed.
 """
 
 import json
 import os
+import re
 import sys
 
 RESULT_MARKER = "KARPATHY_REVIEW_RESULT"
@@ -119,21 +130,58 @@ def parse_block(lines):
     return fields
 
 
-def select_result(texts):
-    """The result of the first text that contains a block.
+def _canon_text(value):
+    """A field value with Markdown emphasis and code ticks removed and
+    whitespace collapsed, for comparison only."""
+    return " ".join(re.sub(r"[*_`]", "", value).split()).lower()
 
-    Within one text, several complete blocks must agree; the last is used.
+
+def canonical(fields):
+    """The comparable form of a parsed block: formatting is ignored, every
+    field's content is kept."""
+    out = {}
+    for key, value in fields.items():
+        if key == "files":
+            out[key] = tuple(sorted({f.strip(_DECORATION) for f in value.split(",") if f.strip(_DECORATION)}))
+        elif key in PRINCIPLES:
+            verdict, sep, evidence = value.partition("|")
+            out[key] = (_canon_text(verdict), sep, _canon_text(evidence))
+        else:
+            out[key] = _canon_text(value)
+    return out
+
+
+def _result_of(text, source):
+    """The single result a text states, or None if it has no block."""
+    blocks = [parse_block(b) for b in extract_blocks(text or "")]
+    if not blocks:
+        return None
+    if any(canonical(b) != canonical(blocks[-1]) for b in blocks):
+        raise GateError(f"the {source} contains conflicting result blocks")
+    return blocks[-1]
+
+
+def select_result(posted, final_answer):
+    """The review's result, from the posted review and/or the final answer.
+
+    If both contain a block they must state the same result field for field;
+    neither source is preferred over the other.
     """
-    for text in texts:
-        blocks = [parse_block(b) for b in extract_blocks(text or "")]
-        if not blocks:
-            continue
-        if any(b != blocks[-1] for b in blocks):
-            raise GateError("the review contains conflicting result blocks")
-        return blocks[-1]
-    raise GateError(
-        f"no complete {RESULT_MARKER} ... {END_MARKER} block in the posted review or the final answer"
-    )
+    in_post = _result_of(posted, "posted review") if posted is not None else None
+    in_final = _result_of(final_answer, "final answer")
+    if in_post is not None and in_final is not None:
+        a, b = canonical(in_post), canonical(in_final)
+        differing = [k for k in FIELDS if a[k] != b[k]]
+        if differing:
+            raise GateError(
+                f"the posted review and the final answer disagree on {', '.join(differing)}"
+            )
+    result = in_post if in_post is not None else in_final
+    if result is None:
+        raise GateError(
+            f"no complete {RESULT_MARKER} ... {END_MARKER} block in the posted review or the final answer"
+        )
+    return result
 
 
 def _is_placeholder(value):
@@ -184,9 +232,122 @@ def _text_of(content):
     return ""
 
 
-def _same_path(path, relative, workspace):
+def _relative(path, workspace):
+    """`path` relative to the workspace, or None if it lies outside it."""
     p = os.path.normpath(str(path))
-    return p == os.path.normpath(relative) or p == os.path.normpath(os.path.join(workspace, relative))
+    if not os.path.isabs(p):
+        return p
+    rel = os.path.relpath(p, os.path.normpath(workspace))
+    return None if rel.startswith("..") else rel
+
+
+_READ_LINE = re.compile(r"^\s*(\d+)\u2192", re.M)
+_TRUNCATED = re.compile(r"^\s*\.\.\. \[\d+ lines truncated\] \.\.\.\s*$")
+_DIFF_HEADER = re.compile(r"^diff --git a/(.+) b/(.+)$")
+_HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+_EXTENDED = ("index ", "new file mode ", "deleted file mode ", "old mode ", "new mode ",
+             "similarity index ", "dissimilarity index ", "rename from ", "rename to ",
+             "copy from ", "copy to ", "--- ", "+++ ")
+
+
+def read_lines(content):
+    """Line numbers a Read output shows: each output line starts with its
+    number and an arrow. Content lines cannot forge a number, because the
+    real prefix always comes first on the line."""
+    return {int(n) for n in _READ_LINE.findall(content)}
+
+
+def complete_diff_paths(output):
+    """Paths whose `git diff` segment in `output` is present in full.
+
+    A segment starts only at a column-0 `diff --git` line; in a unified diff
+    every content line starts with a space, `+`, `-` or a backslash, so text in
+    a file cannot start one. A segment is complete when every hunk has exactly
+    the lines its header declares and nothing else follows before the next
+    segment. A truncation marker, a short hunk or any unexpected line makes it
+    incomplete.
+    """
+    complete = set()
+    path, ok, hunk = None, False, None  # hunk: [old remaining, new remaining]
+
+    def close():
+        if path is not None and ok and hunk is None:
+            complete.add(path)
+
+    for line in output.split("\n"):
+        header = _DIFF_HEADER.match(line)
+        if header:
+            close()
+            path, ok, hunk = header.group(2), True, None
+            continue
+        if path is None or not ok:
+            continue
+        if _TRUNCATED.match(line):
+            ok = False
+        elif hunk is not None:
+            tag = line[:1]
+            if tag == " ":
+                hunk[0] -= 1
+                hunk[1] -= 1
+            elif tag == "-":
+                hunk[0] -= 1
+            elif tag == "+":
+                hunk[1] -= 1
+            elif tag != "\\":
+                ok = False
+            if hunk[0] < 0 or hunk[1] < 0:
+                ok = False
+            elif hunk == [0, 0]:
+                hunk = None
+        elif _HUNK.match(line):
+            m = _HUNK.match(line)
+            hunk = [int(m.group(1) or 1), int(m.group(2) or 1)]
+            if hunk == [0, 0]:
+                hunk = None
+        elif line.startswith(_EXTENDED) or (line.startswith("Binary files ") and line.endswith(" differ")):
+            pass
+        elif line.startswith("\\"):
+            pass  # "\ No newline at end of file" after the last hunk line
+        elif line == "":
+            pass  # the output's own trailing newline
+        else:
+            ok = False
+    close()
+    return complete
+
+
+def file_line_count(workspace, relative):
+    """Number of lines in a regular file of the checkout, or None."""
+    path = os.path.join(workspace, relative)
+    if os.path.islink(path) or not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8", errors="replace", newline="") as f:
+        text = f.read()
+    return text.count("\n") + (0 if text == "" or text.endswith("\n") else 1)
+
+
+def _ranges(numbers):
+    """Compress sorted numbers into "a-b" ranges."""
+    out, start, prev = [], None, None
+    for n in sorted(numbers):
+        if start is None:
+            start = prev = n
+        elif n == prev + 1:
+            prev = n
+        else:
+            out.append(f"{start}-{prev}" if start != prev else str(start))
+            start = prev = n
+    if start is not None:
+        out.append(f"{start}-{prev}" if start != prev else str(start))
+    return ", ".join(out)
+
+
+def missing_lines(workspace, relative, seen):
+    """Lines of the file not shown by any Read, or None if it cannot be read."""
+    total = file_line_count(workspace, relative)
+    if total is None:
+        return None
+    return set(range(1, total + 1)) - seen.get(relative, set())
 
 
 def check_execution(events, changed, workspace):
@@ -226,31 +387,40 @@ def check_execution(events, changed, workspace):
     if any(c.get("name") == "ExitPlanMode" for c in calls.values()):
         raise GateError("agent produced a plan for approval instead of a review")
 
-    diff_text, read_paths, posted = [], set(), []
+    diffed, seen, posted = set(), {}, []
     for tool_id, call in calls.items():
         out = outputs.get(tool_id)
         if out is None or out.get("is_error"):
             continue
         args = call.get("input") or {}
-        if call.get("name") == "Bash" and "git diff" in str(args.get("command", "")):
-            diff_text.append(_text_of(out.get("content")))
+        if call.get("name") == "Bash" and str(args.get("command", "")).lstrip().startswith("git diff"):
+            diffed |= complete_diff_paths(_text_of(out.get("content")))
         elif call.get("name") == "Read" and args.get("file_path"):
-            read_paths.add(os.path.normpath(str(args["file_path"])))
+            rel = _relative(args["file_path"], workspace)
+            if rel is not None:
+                seen.setdefault(rel, set()).update(read_lines(_text_of(out.get("content"))))
         elif call.get("name") == POST_TOOL:
             posted.append(_text_of(args.get("body")))
-    diff_text = "\n".join(diff_text)
 
-    if not any(_same_path(p, METHODOLOGY, workspace) for p in read_paths):
+    gap = missing_lines(workspace, METHODOLOGY, seen)
+    if gap is None:
+        raise GateError(f"{METHODOLOGY} is not in the checkout")
+    if gap and not seen.get(METHODOLOGY):
         raise GateError(f"the agent did not successfully Read {METHODOLOGY}")
+    if gap:
+        raise GateError(f"successful Read calls do not cover {METHODOLOGY} (missing lines {_ranges(gap)})")
 
-    unseen = []
+    uncovered = []
     for name in changed:
-        in_diff = f"diff --git a/{name} b/" in diff_text or f" b/{name}\n" in diff_text
-        was_read = any(_same_path(p, name, workspace) for p in read_paths)
-        if not (in_diff or was_read):
-            unseen.append(name)
-    if unseen:
-        raise GateError(f"no diff or file read in the record for: {', '.join(unseen)}")
+        if name in diffed:
+            continue
+        gap = missing_lines(workspace, name, seen)
+        if gap is None:
+            uncovered.append(f"{name} (no complete diff; not a readable file)")
+        elif gap:
+            uncovered.append(f"{name} (no complete diff; Read missing lines {_ranges(gap)})")
+    if uncovered:
+        raise GateError(f"no complete diff or full read in the record for: {'; '.join(uncovered)}")
 
     return posted, str(result.get("result", ""))
 
@@ -267,9 +437,9 @@ def evaluate(events, changed, workspace, review_outcome="success"):
             raise GateError("could not determine the PR's changed files")
         posted, final_answer = check_execution(events, changed, workspace)
         # In tag mode the agent delivers its review by updating the PR comment;
-        # the last update is the review, the final answer the fallback.
-        texts = ([posted[-1]] if posted else []) + [final_answer]
-        verdicts = validate_result(select_result(texts), changed)
+        # the last update is the review.
+        result = select_result(posted[-1] if posted else None, final_answer)
+        verdicts = validate_result(result, changed)
     except GateError as e:
         return EXIT_NOT_COMPLETED, f"Karpathy review not completed: {e}. Do NOT add continue-on-error.", None
     summary = ", ".join(f"{k}={verdicts[k]}" for k in PRINCIPLES)

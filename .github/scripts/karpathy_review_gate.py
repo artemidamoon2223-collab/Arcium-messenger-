@@ -244,7 +244,7 @@ def _relative(path, workspace):
 _READ_LINE = re.compile(r"^\s*(\d+)\u2192", re.M)
 _TRUNCATED = re.compile(r"^\s*\.\.\. \[\d+ lines truncated\] \.\.\.\s*$")
 _DIFF_HEADER = re.compile(r"^diff --git a/(.+) b/(.+)$")
-_HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+_HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _EXTENDED = ("index ", "new file mode ", "deleted file mode ", "old mode ", "new mode ",
              "similarity index ", "dissimilarity index ", "rename from ", "rename to ",
              "copy from ", "copy to ", "--- ", "+++ ")
@@ -257,7 +257,7 @@ def read_lines(content):
     return {int(n) for n in _READ_LINE.findall(content)}
 
 
-def complete_diff_paths(output):
+def complete_diff_paths(output, workspace=None):
     """Paths whose `git diff` segment in `output` is present in full.
 
     A segment starts only at a column-0 `diff --git` line; in a unified diff
@@ -266,9 +266,18 @@ def complete_diff_paths(output):
     the lines its header declares and nothing else follows before the next
     segment. A truncation marker, a short hunk or any unexpected line makes it
     incomplete.
+
+    One exception, checked against the checkout: Claude Code strips trailing
+    whitespace from Bash output, so a diff whose last lines are context lines
+    of blank or whitespace-only source lines arrives without them. A final hunk
+    left open at the very end of the output is accepted only if
+    `trimmed_tail_verified` confirms, from the file in `workspace`, that the
+    shown lines are where the header puts them and every missing line is a
+    whitespace-only context line.
     """
     complete = set()
     path, ok, hunk = None, False, None  # hunk: [old remaining, new remaining]
+    new_line, shown, last_tag = 0, [], None  # final-hunk position and new-side lines
 
     def close():
         if path is not None and ok and hunk is None:
@@ -282,6 +291,7 @@ def complete_diff_paths(output):
             continue
         if path is None or not ok:
             continue
+        last_tag = None
         if _TRUNCATED.match(line):
             ok = False
         elif hunk is not None:
@@ -295,13 +305,18 @@ def complete_diff_paths(output):
                 hunk[1] -= 1
             elif tag != "\\":
                 ok = False
+            if tag in (" ", "+"):
+                shown.append((new_line, line[1:]))
+                new_line += 1
+            last_tag = tag
             if hunk[0] < 0 or hunk[1] < 0:
                 ok = False
             elif hunk == [0, 0]:
                 hunk = None
         elif _HUNK.match(line):
             m = _HUNK.match(line)
-            hunk = [int(m.group(1) or 1), int(m.group(2) or 1)]
+            hunk = [int(m.group(1) or 1), int(m.group(3) or 1)]
+            new_line, shown = int(m.group(2)), []
             if hunk == [0, 0]:
                 hunk = None
         elif line.startswith(_EXTENDED) or (line.startswith("Binary files ") and line.endswith(" differ")):
@@ -312,8 +327,43 @@ def complete_diff_paths(output):
             pass  # the output's own trailing newline
         else:
             ok = False
+    if (path is not None and ok and hunk is not None and workspace is not None
+            and last_tag in (" ", "+", "-") and output == output.rstrip()
+            and trimmed_tail_verified(workspace, path, hunk, new_line, shown)):
+        hunk = None
     close()
     return complete
+
+
+def trimmed_tail_verified(workspace, path, remaining, next_line, shown):
+    """Whether the lines missing from an open final hunk are exactly what
+    trailing-whitespace stripping removes: context lines (equal old and new
+    remainders) whose source lines, at the positions the hunk header and the
+    shown lines fix, contain only whitespace. The shown new-side lines of the
+    hunk must match the file, so the positions are established by the source,
+    not assumed."""
+    old_left, new_left = remaining
+    if old_left != new_left or new_left <= 0:
+        return False
+    rel = _relative(path, workspace)
+    if rel is None:
+        return False
+    full = os.path.join(workspace, rel)
+    if os.path.islink(full) or not os.path.isfile(full):
+        return False
+    with open(full, encoding="utf-8", errors="replace", newline="") as f:
+        text = f.read()
+    lines = text.split("\n")
+    if text.endswith("\n"):
+        lines.pop()
+    elif next_line + new_left - 1 >= len(lines):
+        return False  # git would print "\ No newline at end of file" after it
+    if next_line < 1 or next_line + new_left - 1 > len(lines):
+        return False
+    for number, content in shown:
+        if number < 1 or number > len(lines) or lines[number - 1] != content:
+            return False
+    return all(lines[n - 1].strip() == "" for n in range(next_line, next_line + new_left))
 
 
 def file_line_count(workspace, relative):
@@ -394,7 +444,7 @@ def check_execution(events, changed, workspace):
             continue
         args = call.get("input") or {}
         if call.get("name") == "Bash" and str(args.get("command", "")).lstrip().startswith("git diff"):
-            diffed |= complete_diff_paths(_text_of(out.get("content")))
+            diffed |= complete_diff_paths(_text_of(out.get("content")), workspace)
         elif call.get("name") == "Read" and args.get("file_path"):
             rel = _relative(args["file_path"], workspace)
             if rel is not None:

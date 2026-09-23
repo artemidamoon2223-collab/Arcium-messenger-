@@ -459,6 +459,136 @@ class SourceCoverage(unittest.TestCase):
         self.assertEqual(gate.read_lines("     1\u2192x =    7\u2192 not a line\n     2\u2192y"), {1, 2})
 
 
+class TrailingWhitespaceDiffs(unittest.TestCase):
+    """Claude Code strips trailing whitespace from Bash output, which drops the
+    final blank context line of a diff. PR #88, run 35917931834: the tool result
+    for karpathy-origin.md ends at "## Subagent guidance ..."; `git diff` itself
+    prints one more line, " ". The missing lines are accepted only when the
+    checkout shows they are whitespace-only context lines at those positions."""
+
+    V = fixture("v2_valid.md")
+    PATH = ".claude/skills/engineering-code-review/references/karpathy-origin.md"
+    # The tool_result content of that run, verbatim.
+    REAL = (
+    'diff --git a/.claude/skills/engineering-code-review/references/karpathy-origin.md b/.claude/skills/engineering-code-review/references/karpathy-origin.md\n'
+    'index 232bfa3..7b1b65b 100644\n'
+    '--- a/.claude/skills/engineering-code-review/references/karpathy-origin.md\n'
+    '+++ b/.claude/skills/engineering-code-review/references/karpathy-origin.md\n'
+    '@@ -42,8 +42,10 @@ always-loaded context. They are motivational rather than testable, and the\n'
+    ' concrete requirements above stand on their own without the branding.\n'
+    ' \n'
+    ' Note that a CI job, `karpathy-review`, still scores pull requests against these\n'
+    '-four principles — see `.github/workflows/karpathy-review.yml`. That workflow is\n'
+    '-unchanged and remains a blocking gate; this file does not alter it.\n'
+    '+four principles and remains a blocking gate. Its methodology is\n'
+    '+`ci-karpathy-review.md`; its result block and completion gate are\n'
+    '+`.github/workflows/karpathy-review.yml` and\n'
+    '+`.github/scripts/karpathy_review_gate.py`. This file does not alter them.\n'
+    ' \n'
+    ' ## Subagent guidance — preserved, and in tension with session policy'
+)
+    # Lines 42-51 of karpathy-origin.md at blob 7b1b65b; the rest is filler.
+    SOURCE = (
+    'concrete requirements above stand on their own without the branding.',
+    '',
+    'Note that a CI job, `karpathy-review`, still scores pull requests against these',
+    'four principles and remains a blocking gate. Its methodology is',
+    '`ci-karpathy-review.md`; its result block and completion gate are',
+    '`.github/workflows/karpathy-review.yml` and',
+    '`.github/scripts/karpathy_review_gate.py`. This file does not alter them.',
+    '',
+    '## Subagent guidance — preserved, and in tension with session policy',
+    '',
+)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.write(cls.PATH, cls.SOURCE)
+
+    @staticmethod
+    def write(rel, middle, total=66, trailing_newline=True):
+        lines = [f"origin {i}" for i in range(1, 42)] + list(middle)
+        lines += [f"origin {i}" for i in range(len(lines) + 1, total + 1)]
+        os.makedirs(os.path.dirname(os.path.join(WORKSPACE, rel)), exist_ok=True)
+        with open(os.path.join(WORKSPACE, rel), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + ("\n" if trailing_newline else ""))
+
+    def covered(self, output, path=None):
+        return (path or self.PATH) in gate.complete_diff_paths(output, WORKSPACE)
+
+    def run_with(self, output, read=()):
+        review = self.V.replace("`docs/review.md`", f"`docs/review.md`, `{self.PATH}`")
+        diff = diff_segment("src/gate.py") + diff_segment("docs/review.md") + output
+        return run(record(review, diff=diff, read=read), changed=CHANGED + [self.PATH])
+
+    def test_real_pr88_output_is_complete_once_verified_against_the_checkout(self):
+        self.assertNotIn(self.PATH, gate.complete_diff_paths(self.REAL))
+        self.assertTrue(self.covered(self.REAL))
+        code, message, _ = self.run_with(self.REAL)
+        self.assertEqual(code, gate.EXIT_OK, message)
+
+    def test_complete_diff_ending_with_an_empty_context_line(self):
+        self.assertIn(self.PATH, gate.complete_diff_paths(self.REAL + "\n \n"))
+        self.assertIn(self.PATH, gate.complete_diff_paths(self.REAL + "\n "))
+
+    def test_truncated_diff_missing_context_lines_is_rejected(self):
+        cut = self.REAL.rsplit("\n", 2)[0] + "\n... [2 lines truncated] ..."
+        self.assertFalse(self.covered(cut))
+        code, message, _ = self.run_with(cut)
+        self.assertEqual(code, gate.EXIT_NOT_COMPLETED, message)
+        self.assertRegex(message, r"karpathy-origin\.md \(no complete diff; Read missing lines 1-66\)")
+
+    def test_missing_added_or_deleted_lines_are_rejected(self):
+        lines = self.REAL.split("\n")
+        added = next(i for i, l in enumerate(lines) if l.startswith("+four"))
+        deleted = next(i for i, l in enumerate(lines) if l.startswith("-four"))
+        for drop in (added, deleted):
+            partial = "\n".join(lines[:drop] + lines[drop + 1:])
+            self.assertFalse(self.covered(partial))
+            self.assertFalse(self.covered(partial + "\n... [1 lines truncated] ..."))
+        tail_cut = "\n".join(lines[:added + 3])  # ends inside the added block
+        self.assertFalse(self.covered(tail_cut))
+        self.assertFalse(self.covered(tail_cut + "\n... [3 lines truncated] ..."))
+
+    def test_incomplete_diff_without_marker_is_rejected(self):
+        # The missing line is not whitespace in the source.
+        other = ".claude/skills/other/origin.md"
+        self.write(other, self.SOURCE[:-1] + ("text, not a blank line",))
+        self.assertFalse(self.covered(self.REAL.replace(self.PATH, other), other))
+        # Output that was not stripped cannot have lost lines to stripping.
+        self.assertFalse(self.covered(self.REAL + "\n"))
+        spaced = ".claude/skills/other/spaced.md"
+        self.write(spaced, self.SOURCE[:-2] + (self.SOURCE[-2] + " ", ""))
+        self.assertFalse(self.covered(self.REAL.replace(self.PATH, spaced) + " ", spaced))
+        # Shown lines at positions other than the header's, or that differ
+        # from the source although the missing line is blank there.
+        self.assertFalse(self.covered(self.REAL.replace("+42,10 @@", "+41,10 @@")))
+        edited = ".claude/skills/other/edited.md"
+        self.write(edited, self.SOURCE[:2] + ("Note that a different line",) + self.SOURCE[3:])
+        self.assertFalse(self.covered(self.REAL.replace(self.PATH, edited), edited))
+        # Two lines short: the first missing one is not in the output's tail.
+        self.assertFalse(self.covered(self.REAL.rsplit("\n", 1)[0]))
+        # The missing line would be past the end of the file.
+        short = ".claude/skills/other/short.md"
+        self.write(short, self.SOURCE[:-1], total=50)
+        self.assertFalse(self.covered(self.REAL.replace(self.PATH, short), short))
+        # A blank last line without a final newline makes git print a
+        # "\ No newline at end of file" line, which stripping cannot remove.
+        unterminated = ".claude/skills/other/unterminated.md"
+        self.write(unterminated, self.SOURCE[:-1] + (" ",), total=51, trailing_newline=False)
+        self.assertFalse(self.covered(self.REAL.replace(self.PATH, unterminated), unterminated))
+        self.assertFalse(self.covered(self.REAL + "\n\\ No newline at end of file"))
+
+    def test_full_read_supplies_the_fallback_coverage(self):
+        bad = self.REAL.replace("+42,10 @@", "+41,10 @@")
+        code, message, _ = self.run_with(bad)
+        self.assertEqual(code, gate.EXIT_NOT_COMPLETED, message)
+        code, message, _ = self.run_with(bad, read=[self.PATH])
+        self.assertEqual(code, gate.EXIT_OK, message)
+        code, message, _ = self.run_with(bad, read=[(self.PATH, 1, 65)])
+        self.assertRegex(message, r"karpathy-origin\.md \(no complete diff; Read missing lines 66\)")
+
+
 class MethodologyCoverage(unittest.TestCase):
     """N-3: the whole methodology file must have been read."""
 

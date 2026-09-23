@@ -23,6 +23,11 @@ use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
+mod checkpoint;
+pub use checkpoint::{
+    CheckpointError, MAX_SKIPPED_KEYS, RATCHET_CHECKPOINT_MAX_LEN, RATCHET_CHECKPOINT_VERSION,
+};
+
 /// Max number of message keys that may be skipped within a single receiving chain.
 pub const MAX_SKIP: u32 = 1000;
 /// Header is: DH public key (32) || PN (4) || N (4).

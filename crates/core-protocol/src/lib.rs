@@ -4,6 +4,9 @@
 use core_crypto::ratchet::DoubleRatchet;
 use std::collections::HashMap;
 
+pub mod checkpoint;
+pub mod durable;
+
 pub type ContactId = u64;
 
 /// A session: the Double Ratchet state, the X3DH-derived associated data it must

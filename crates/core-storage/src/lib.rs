@@ -116,9 +116,12 @@ impl EncryptedStore {
     /// write. The store runs in SQLite's rollback-journal mode, where a
     /// deferred transaction that reads first and writes later can fail its lock
     /// upgrade with `SQLITE_BUSY` *without* the busy handler being consulted, in
-    /// the middle of the work. Taking the lock up front means a transaction
-    /// either cannot start or runs to its commit; it never dies half-way over a
-    /// lock another connection holds.
+    /// the middle of the work. Taking the lock up front means another writer
+    /// can stop a transaction from starting, but cannot begin while it is
+    /// open. Readers on other connections are not excluded: they can make
+    /// `COMMIT` fail with `SQLITE_BUSY` (see [`StoreTransaction::commit`]), and
+    /// may cause the same error earlier if a large transaction has to write
+    /// pages to the database file before `COMMIT`.
     ///
     /// # Contention
     ///
@@ -141,13 +144,17 @@ impl EncryptedStore {
     /// These are four different properties; only the first three are provided.
     ///
     /// - **Atomicity.** No connection ever observes some of the transaction's
-    ///   writes without the others, and a failed or abandoned transaction
-    ///   leaves no writes behind.
-    /// - **Successful `COMMIT`.** When `commit` returns `Ok`, SQLite has
-    ///   committed the transaction: other connections see all of it, and the
+    ///   writes without the others, and a transaction that is dropped or
+    ///   rolled back without committing leaves no writes behind. Atomicity
+    ///   covers the writes that are pending when `commit` runs: an error from
+    ///   one operation does not by itself cancel the others (see
+    ///   [`StoreTransaction`]).
+    /// - **Successful `COMMIT`.** When `commit` returns `Ok`, SQLite reports
+    ///   the transaction committed: other connections see all of it, and the
     ///   journal and database file were synced as `synchronous = FULL`
-    ///   requires. When it returns `Err`, the transaction was not committed
-    ///   (see [`StoreTransaction::commit`]).
+    ///   requires. An `Err` does not always mean the opposite — the outcome
+    ///   of a failed `commit` can be ambiguous (see
+    ///   [`StoreTransaction::commit`]).
     /// - **Process crash.** If the process dies while the transaction is open
     ///   or after `commit` returned, SQLite's journal recovery on the next open
     ///   yields either the state before the transaction or the state after it,
@@ -426,6 +433,17 @@ fn delete_row(conn: &Connection, keys: &KeyMaterial, key: &str) -> Result<(), St
 /// **Dropping it without committing rolls every write back.** That includes
 /// leaving a function early with `?` after a failed operation: the records
 /// written before the failure are discarded with it.
+///
+/// **An operation error does not abort the transaction by itself.** When
+/// `put`, `get` or `delete` returns `Err`, SQLite usually undoes only that one
+/// statement; the writes made earlier in the transaction stay pending. (Some
+/// errors make SQLite end the whole transaction instead; later operations then
+/// fail with [`StorageError::TransactionStateInvalid`] and `commit` fails.) If
+/// the caller ignores the error and calls [`commit`](Self::commit), those
+/// earlier writes are committed without the one that failed. After any error
+/// the caller must decide explicitly: abandon the whole transaction (drop it,
+/// or call [`rollback`](Self::rollback)), or continue knowing that the failed
+/// operation is not part of it. Nothing here makes that decision for it.
 pub struct StoreTransaction<'a> {
     tx: Transaction<'a>,
     keys: &'a KeyMaterial,
@@ -472,18 +490,36 @@ impl StoreTransaction<'_> {
     /// successful commit does and does not mean" on
     /// [`EncryptedStore::transaction`]: `Ok` is not a power-loss guarantee.
     ///
-    /// `Err` always means the transaction was **not** committed, and none of
-    /// its writes are visible. The transaction is consumed either way, so it
-    /// cannot be committed again by mistake. In particular:
+    /// `Ok` means SQLite completed the commit. `Err` does **not** always mean
+    /// the transaction was rolled back: depending on where the failure
+    /// happened, the writes may or may not have been committed. The
+    /// transaction is consumed either way, so it cannot be committed again by
+    /// mistake, and nothing is retried automatically.
     ///
-    /// - `COMMIT` needs every other connection's read lock released. If another
-    ///   connection is still reading when the busy timeout runs out, SQLite
-    ///   returns `SQLITE_BUSY` ([`StorageError::Db`]); the transaction is then
-    ///   rolled back as it is dropped. Nothing is retried: whether to redo the
-    ///   work — which, for anything cryptographic, means rebuilding it, not
-    ///   replaying it — is the caller's decision.
-    /// - If SQLite has already rolled the transaction back on its own, `COMMIT`
-    ///   fails with "cannot commit - no transaction is active".
+    /// - **Failure before the commit point — not committed.** `COMMIT` needs
+    ///   every other connection's read lock released. If another connection is
+    ///   still reading when the busy timeout runs out, SQLite returns
+    ///   `SQLITE_BUSY` ([`StorageError::Db`]) before anything is committed, and
+    ///   the transaction is rolled back as it is dropped. Likewise, if SQLite
+    ///   has already ended the transaction on its own, `COMMIT` fails with
+    ///   "cannot commit - no transaction is active" and nothing is committed.
+    /// - **Failure after the commit point — possibly committed.** In
+    ///   rollback-journal mode the commit takes effect when the journal is
+    ///   deleted. SQLite still has work to do after that (for example
+    ///   releasing file locks or truncating the database file), and an I/O
+    ///   error there is reported as an `Err` even though the transaction's
+    ///   writes are already in the database file.
+    ///
+    /// The error value does not reliably say which of these happened, so a
+    /// failed `commit` must not be read as proof of rollback. A caller that
+    /// needs a consistent state — above all one that derives cryptographic
+    /// state from what it believes was stored — must treat the outcome as
+    /// unresolved until it has established what the store actually holds,
+    /// and must not rebuild or replay the work on the assumption that nothing
+    /// was committed. Reading the store back can show what this connection
+    /// sees now; it does not show whether that state will survive a power
+    /// loss, and it cannot tell whether the whole database file was replaced
+    /// by an older copy.
     pub fn commit(self) -> Result<(), StorageError> {
         self.tx.commit()?;
         Ok(())

@@ -24,7 +24,19 @@
 //!
 //! The store interface is sealed: [`S1CheckpointStore`] is its only
 //! implementation outside this crate's tests, so callers cannot substitute a
-//! store that skips the check.
+//! store that skips the check. Sealing constrains implementations, not
+//! calls: code outside this crate that holds a `T: CheckpointStore` can call
+//! its `read` (which returns the same bytes `EncryptedStore::get` would), but
+//! not its conditional write, whose precondition type cannot be named or
+//! built there.
+//!
+//! The conditional write protects only writes made through this module. The
+//! S1 [`EncryptedStore`] a caller passes in keeps its own public `get`, `put`
+//! and `delete`: a caller can read a raw session record (and rebuild an
+//! independent ratchet from it), or overwrite the record unconditionally,
+//! including with an older one. A live instance detects such an overwrite as
+//! a [`Conflict`] on its next commit; a session loaded afterwards starts from
+//! whatever was written.
 //!
 //! When the store cannot say whether a write took effect, the instance
 //! becomes *unresolved* and refuses every further transition. There is no
@@ -1250,6 +1262,81 @@ mod tests {
             Err(StageError::Ratchet(RatchetError::Decryption))
         ));
         assert_eq!(*installed(&s), *mem);
+    }
+
+    /// F-1 at the session level: a stored record whose `nr` could overflow is
+    /// refused when loaded (decode), while a message that would carry a valid
+    /// state past the limit is refused when staged (transition) — without
+    /// touching the installed or stored state.
+    #[test]
+    fn receive_counter_limit_is_enforced_on_load_and_on_stage() {
+        use core_crypto::ratchet::{CheckpointError, MAX_SKIP};
+        const LIMIT: u32 = u32::MAX - MAX_SKIP - 1;
+
+        let p = pair();
+        let (mut alice, mut bob_r) = (p.alice.ratchet, p.bob.ratchet);
+        let (h, c) = alice.encrypt(b"sync", &p.alice.ad).unwrap();
+        bob_r.decrypt(&h, &c, &p.bob.ad).unwrap();
+        // Move both counters, leaving the chain keys in step.
+        let with_counter = |r: &DoubleRatchet, off: usize, v: u32| {
+            let mut rec = r.to_checkpoint().unwrap().to_vec();
+            rec[off..off + 4].copy_from_slice(&v.to_be_bytes());
+            DoubleRatchet::from_checkpoint(&rec)
+        };
+        let Ok(mut alice) = with_counter(&alice, 162, LIMIT) else {
+            panic!("ns")
+        };
+        let Ok(bob_r) = with_counter(&bob_r, 166, LIMIT) else {
+            panic!("nr")
+        };
+        assert!(matches!(
+            with_counter(&bob_r, 166, LIMIT + 1),
+            Err(CheckpointError::CounterExhausted("nr"))
+        ));
+
+        let mut db = memdb();
+        let bob = Session {
+            ratchet: bob_r,
+            ad: p.bob.ad.clone(),
+            peer_identity_pk: p.alice_pk,
+        };
+        let s = DurableSession::create(&mut s1(&mut db), bob, SessionRole::Responder, p.bob_pk)
+            .unwrap();
+        let (mem, disk) = (installed(&s), stored(&mut s1(&mut db), &s));
+
+        // Transition: an authentic message at n = LIMIT decrypts in the
+        // staged copy, but the resulting nr = LIMIT + 1 cannot be persisted.
+        let (h, c) = alice.encrypt(b"over", &p.alice.ad).unwrap();
+        assert_eq!(h.n, LIMIT);
+        assert!(matches!(
+            s.stage_decrypt(&h, &c),
+            Err(StageError::Checkpoint(SessionCheckpointError::Ratchet(
+                CheckpointError::CounterExhausted("nr")
+            )))
+        ));
+        // A forged header at n = u32::MAX fails the skip limit, no overflow.
+        let forged = Header {
+            dh: h.dh,
+            pn: 0,
+            n: u32::MAX,
+        };
+        assert!(matches!(
+            s.stage_decrypt(&forged, &[0u8; 40]),
+            Err(StageError::Ratchet(RatchetError::SkipLimit))
+        ));
+        assert_eq!(*installed(&s), *mem);
+        assert_eq!(*stored(&mut s1(&mut db), &s), *disk);
+
+        // Decode: a stored record past the limit is refused by load.
+        let mut rec = disk.to_vec();
+        rec[149 + 166..149 + 170].copy_from_slice(&(LIMIT + 1).to_be_bytes());
+        db.put(&s.key, &rec).unwrap();
+        assert!(matches!(
+            DurableSession::load(&mut s1(&mut db), &binding(p.bob_pk, p.alice_pk)),
+            Err(OpenError::Invalid(SessionCheckpointError::Ratchet(
+                CheckpointError::CounterExhausted("nr")
+            )))
+        ));
     }
 
     #[test]

@@ -61,13 +61,29 @@
 //!   `pn` is only set, and keys are only skipped, once a receiving chain exists.
 //! - In `(-, -, -)`, `ns == 0`: `encrypt` fails before advancing.
 //! - At most [`MAX_SKIPPED_KEYS`] skipped keys, no duplicate `(dh, n)`.
-//! - `ns` and `nr` are below `u32::MAX`. The ratchet increments them without
-//!   an overflow check (`encrypt`, `decrypt`), so a state holding `u32::MAX`
-//!   would panic in a debug build or wrap to `0` in a release build on its
-//!   next send or same-chain receive. Such a state is reachable only after
-//!   `2^32 - 1` messages in one chain; it is refused on both encode and
-//!   decode (`CounterExhausted`) instead of being persisted. `pn` is only
-//!   copied into headers and has no such limit.
+//! - `ns < u32::MAX` and `nr <= `[`MAX_RESUMABLE_NR`]. The ratchet increments
+//!   both without an overflow check, which panics in a debug build and wraps
+//!   to `0` in a release build:
+//!   - `encrypt` adds one to `ns`, so `ns == u32::MAX` cannot send again.
+//!   - `decrypt` first skips `nr` forward to the header's `n` (allowed while
+//!     `n <= nr + MAX_SKIP`) and then adds one. A message with
+//!     `n == u32::MAX` therefore overflows `nr` whenever
+//!     `nr >= u32::MAX - MAX_SKIP` — before the message is authenticated, so
+//!     a forged header is enough in a debug build, and in a release build an
+//!     authentic one leaves a wrapped `nr` behind. Rejecting only
+//!     `nr == u32::MAX` misses this. At `nr == MAX_RESUMABLE_NR` such a
+//!     message fails the skip limit instead, and no accepted message can take
+//!     `nr` past `u32::MAX`.
+//!
+//!   States beyond these bounds are refused on encode and decode
+//!   (`CounterExhausted`). A receive that would move `nr` past
+//!   [`MAX_RESUMABLE_NR`] still succeeds inside the ratchet; it is the
+//!   checkpoint of the resulting state that is refused, so a durable session
+//!   rejects that transition rather than persisting it. The limits are
+//!   reachable only after about `2^32` messages in one chain. `pn` is only
+//!   copied into headers and compared, never incremented, and has no limit.
+//!   These checks cover checkpointed state only; the ratchet's own
+//!   arithmetic is unchanged.
 //!
 //! `ckr` present with `dhr` absent is among the rejected combinations; the
 //! ratchet's `skip_message_keys` relies on that never happening.
@@ -77,7 +93,7 @@ use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
-use super::DoubleRatchet;
+use super::{DoubleRatchet, MAX_SKIP};
 
 /// Current `RATCHET_STATE_V1` format version.
 pub const RATCHET_CHECKPOINT_VERSION: u8 = 1;
@@ -93,6 +109,11 @@ const KNOWN_FLAGS: u8 = FLAG_DHR | FLAG_CKS | FLAG_CKR;
 
 const FIXED_LEN: usize = 182;
 const ENTRY_LEN: usize = 32 + 4 + 32;
+
+/// Largest receive counter a checkpointed state may hold. From here, no
+/// message passes both the skip limit and the final increment of `nr`
+/// without overflow; one more and a header with `n == u32::MAX` would.
+pub const MAX_RESUMABLE_NR: u32 = u32::MAX - MAX_SKIP - 1;
 
 /// Largest valid `RATCHET_STATE_V1` record, in bytes.
 pub const RATCHET_CHECKPOINT_MAX_LEN: usize = FIXED_LEN + ENTRY_LEN * MAX_SKIPPED_KEYS;
@@ -164,7 +185,7 @@ fn check_state(
     if ns == u32::MAX {
         return Err(CheckpointError::CounterExhausted("ns"));
     }
-    if nr == u32::MAX {
+    if nr > MAX_RESUMABLE_NR {
         return Err(CheckpointError::CounterExhausted("nr"));
     }
     Ok(())
@@ -363,7 +384,7 @@ fn read_32(b: &[u8], off: usize) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ratchet::{Header, HEADER_SIZE, NONCE_SIZE};
+    use crate::ratchet::{Header, RatchetError, HEADER_SIZE, NONCE_SIZE};
     use rand_core::OsRng;
 
     const AD: &[u8] = b"checkpoint-test-ad";
@@ -656,17 +677,23 @@ mod tests {
     fn exhausted_counters_are_refused_on_encode_and_decode() {
         let (alice, _) = pair();
         let (_, bob, _) = with_skipped(); // (+, +, +)
-        for (base, off, name) in [(&alice, 162, "ns"), (&bob, 162, "ns"), (&bob, 166, "nr")] {
+        for (base, off, name, limit) in [
+            (&alice, 162, "ns", u32::MAX - 1),
+            (&bob, 162, "ns", u32::MAX - 1),
+            (&bob, 166, "nr", MAX_RESUMABLE_NR),
+        ] {
             let mut r = base.to_checkpoint().unwrap().to_vec();
-            r[off..off + 4].copy_from_slice(&u32::MAX.to_be_bytes());
-            assert_eq!(decode_err(&r), CheckpointError::CounterExhausted(name));
-            // One below the limit is still accepted.
-            r[off..off + 4].copy_from_slice(&(u32::MAX - 1).to_be_bytes());
+            for bad in [limit + 1, u32::MAX] {
+                r[off..off + 4].copy_from_slice(&bad.to_be_bytes());
+                assert_eq!(decode_err(&r), CheckpointError::CounterExhausted(name));
+            }
+            r[off..off + 4].copy_from_slice(&limit.to_be_bytes());
             assert!(
                 DoubleRatchet::from_checkpoint(&r).is_ok(),
-                "{name} = MAX - 1"
+                "{name} at its limit"
             );
         }
+        assert_eq!(MAX_RESUMABLE_NR, u32::MAX - 1001);
         let mut exhausted = bob.staged_copy();
         exhausted.ns = u32::MAX;
         assert_eq!(
@@ -683,6 +710,92 @@ mod tests {
         let mut r = bob.to_checkpoint().unwrap().to_vec();
         r[170..174].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(DoubleRatchet::from_checkpoint(&r).is_ok());
+    }
+
+    /// A sender and receiver whose chains are in step with both counters at
+    /// `at`, built from a real exchange; only the counters are moved.
+    fn in_step_at(at: u32) -> (DoubleRatchet, DoubleRatchet) {
+        let (mut alice, mut bob) = pair();
+        let (h, c) = alice.encrypt(b"sync", AD).unwrap();
+        bob.decrypt(&h, &c, AD).unwrap();
+        alice.ns = at;
+        bob.nr = at;
+        (alice, bob)
+    }
+
+    /// F-1 regression. `b40c006` accepted `nr = u32::MAX - 2`; an authentic
+    /// message with `n = u32::MAX` then wrapped `nr` to 0 in a release build
+    /// and the wrapped state was accepted for checkpointing. Such a state is
+    /// now refused when it is decoded.
+    #[test]
+    fn f1_receiver_state_that_could_wrap_nr_is_refused_on_decode() {
+        let (_, bob) = in_step_at(u32::MAX - 2);
+        let mut r = bob.staged_copy();
+        r.nr = MAX_RESUMABLE_NR; // encodable
+        let mut rec = r.to_checkpoint().unwrap().to_vec();
+        rec[166..170].copy_from_slice(&(u32::MAX - 2).to_be_bytes());
+        assert_eq!(decode_err(&rec), CheckpointError::CounterExhausted("nr"));
+        for nr in [u32::MAX - MAX_SKIP, u32::MAX - 1] {
+            rec[166..170].copy_from_slice(&nr.to_be_bytes());
+            assert_eq!(decode_err(&rec), CheckpointError::CounterExhausted("nr"));
+        }
+    }
+
+    /// At the limit, incoming `n = u32::MAX` fails the skip limit before any
+    /// counter arithmetic (no panic in a debug build, no wrap in release),
+    /// and `n = u32::MAX - 1` decrypts but its resulting state is refused
+    /// for checkpointing: the rejection happens at the transition, not at
+    /// decode.
+    #[test]
+    fn at_the_limit_top_message_numbers_cannot_produce_a_persistable_state() {
+        let (mut alice, bob) = in_step_at(MAX_RESUMABLE_NR);
+        let mut bob = restore(&bob); // the limit itself decodes
+
+        let forged = Header {
+            dh: alice.our_dh_public().to_bytes(),
+            pn: 0,
+            n: u32::MAX,
+        };
+        assert!(matches!(
+            bob.decrypt(&forged, &[0u8; 40], AD),
+            Err(RatchetError::SkipLimit)
+        ));
+        assert_eq!(bob.nr, MAX_RESUMABLE_NR, "state untouched");
+
+        // Authentic n = u32::MAX - 1: the sender walks its chain up to it.
+        let mut last = None;
+        while alice.ns < u32::MAX {
+            last = Some(alice.encrypt(b"top", AD).unwrap());
+        }
+        let (h, c) = last.unwrap();
+        assert_eq!(h.n, u32::MAX - 1);
+        assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), b"top");
+        assert_eq!(bob.nr, u32::MAX);
+        assert_eq!(
+            bob.to_checkpoint().unwrap_err(),
+            CheckpointError::CounterExhausted("nr")
+        );
+    }
+
+    /// Below the limit, receiving continues and the results stay
+    /// checkpointable up to the limit itself.
+    #[test]
+    fn states_below_the_limit_keep_receiving_and_round_trip() {
+        let (mut alice, bob) = in_step_at(MAX_RESUMABLE_NR - 2);
+        let mut bob = restore(&bob);
+        for expected_nr in [MAX_RESUMABLE_NR - 1, MAX_RESUMABLE_NR] {
+            let (h, c) = alice.encrypt(b"m", AD).unwrap();
+            assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), b"m");
+            assert_eq!(bob.nr, expected_nr);
+            bob = restore(&bob);
+        }
+        // One more is a valid receive whose state can no longer be persisted.
+        let (h, c) = alice.encrypt(b"m", AD).unwrap();
+        assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), b"m");
+        assert_eq!(
+            bob.to_checkpoint().unwrap_err(),
+            CheckpointError::CounterExhausted("nr")
+        );
     }
 
     #[test]

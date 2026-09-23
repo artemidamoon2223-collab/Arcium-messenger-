@@ -69,15 +69,22 @@ jobs:
                rely on a single diff of the whole PR: long output is cut.
 
             4. A diff is cut off when its output contains a line like
-               "... [N lines truncated] ...". For every file whose diff is cut off,
-               Read the whole file with the Read tool. Read shows at most 2000 lines
-               per call; for a longer file, continue with offset and limit until
-               you have seen its final line. A deleted file cannot be Read: if its
-               diff is cut off, say so and write "complete: no".
+               "... [N lines truncated] ...". For every file whose diff is cut
+               off, or whose diff you are not sure you saw in full, Read the file
+               with the Read tool from its first line, not only the part the diff
+               did not show: a cut diff plus a Read of the rest does not count.
+               Read shows at most 2000 lines per call; continue with successive
+               offset and limit chunks, each starting where the previous one
+               ended, until you have seen the file's final line. A deleted file
+               cannot be Read: if its diff is cut off, write "complete: no".
 
-            5. If any source could not be inspected in full, name it in the review,
-               write "complete: no" and say what is missing. The completion gate
-               checks coverage against the tool output, not against what you write.
+            5. Before posting, check every changed file: either its own diff
+               was not cut off, or your Read calls together showed every line
+               from line 1 to the last. Do not judge this from memory of what you
+               reviewed; go by the tool output. If any file or line range is
+               still unread, name each file and range in the review and write
+               "complete: no". The completion gate checks coverage against the
+               tool output, not against what you write.
 
             Review every changed file against the four principles in that file:
             think_before_coding, simplicity_first, surgical_changes, goal_driven.

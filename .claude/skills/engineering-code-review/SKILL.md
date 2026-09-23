@@ -31,6 +31,8 @@ guards against, all of which have actually occurred in this repository:
 - Reviewing a diff, your own or someone else's.
 - About to report a task complete.
 - Deciding whether a claim in a PR body or report is supportable.
+- Running as the `karpathy-review` CI agent — read
+  `references/ci-karpathy-review.md` first.
 
 ## Do not use when
 
@@ -83,5 +85,7 @@ guards against, all of which have actually occurred in this repository:
   task done.
 - `references/repo-map.md` — where things live, and how to re-derive the map
   instead of trusting it.
+- `references/ci-karpathy-review.md` — how the `karpathy-review` CI job
+  reviews a pull request. Its result block is defined in the workflow.
 - `references/karpathy-origin.md` — the original external principles this
   skill was derived from. Optional background, non-normative.

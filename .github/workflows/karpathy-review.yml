@@ -72,10 +72,19 @@ jobs:
             (file and line where possible). Finish with a 1-2 sentence overall verdict.
             Post the result as a comment on this PR.
 
-            The LAST line of your final answer must be exactly one line of this form,
-            with valid single-line JSON and nothing after it:
-            KARPATHY_REVIEW_RESULT: {"review_completed": true, "files": ["<every changed path, exactly as git diff --name-only prints it>"], "principles": {"think_before_coding": {"verdict": "pass|warning|fail", "evidence": "<specific evidence>"}, "simplicity_first": {"verdict": "...", "evidence": "..."}, "surgical_changes": {"verdict": "...", "evidence": "..."}, "goal_driven": {"verdict": "...", "evidence": "..."}}, "summary": "<overall verdict>"}
-            If you could not review every changed file, set "review_completed" to false.
+            End the review you post as the PR comment with this block, exactly as
+            shown: one field per line, nothing after the last line. Use "|" between
+            each verdict and its evidence; list files separated by commas.
+            KARPATHY_REVIEW_RESULT
+            complete: yes
+            files: <every changed path, exactly as git diff --name-only prints it>
+            think_before_coding: <pass, warning or fail> | <specific evidence>
+            simplicity_first: <pass, warning or fail> | <specific evidence>
+            surgical_changes: <pass, warning or fail> | <specific evidence>
+            goal_driven: <pass, warning or fail> | <specific evidence>
+            summary: <overall verdict>
+            KARPATHY_REVIEW_END
+            If you could not review every changed file, write "complete: no".
 
       - name: List the PR's changed files
         if: always()
@@ -182,30 +191,55 @@ jobs:
           if unseen:
               fail(f"no diff or file read in the record for: {', '.join(unseen)}")
 
-          final = [line for line in str(result.get("result", "")).splitlines() if line.strip()]
-          marker = "KARPATHY_REVIEW_RESULT:"
-          if not final or not final[-1].strip().startswith(marker):
-              fail("final answer does not end with the KARPATHY_REVIEW_RESULT line")
-          try:
-              verdict = json.loads(final[-1].strip()[len(marker):])
-          except ValueError as e:
-              fail(f"KARPATHY_REVIEW_RESULT is not valid JSON ({e})")
-          if not isinstance(verdict, dict) or verdict.get("review_completed") is not True:
-              fail("review_completed is not true")
-          if not isinstance(verdict.get("files"), list) or set(verdict["files"]) != set(changed):
+          # In this action's tag mode the agent delivers its review by updating the PR
+          # comment, so the review it actually posted is the primary place to look; its
+          # final answer is the fallback.
+          posted = [text_of({"content": (c.get("input") or {}).get("body")})
+                    for i, c in calls.items()
+                    if c.get("name") == "mcp__github_comment__update_claude_comment"
+                    and i in outputs and not outputs[i].get("is_error")]
+          # Line-based on purpose: a long single-line JSON verdict was malformed in a
+          # real run (an object left unclosed), and a nesting slip should not decide
+          # whether a review counts. Each field is still required and checked.
+          def parse_block(text):
+              lines = [line.strip() for line in text.splitlines() if line.strip()]
+              if not lines or lines[-1] != "KARPATHY_REVIEW_END":
+                  return None
+              starts = [n for n, line in enumerate(lines) if line == "KARPATHY_REVIEW_RESULT"]
+              if not starts:
+                  return None
+              fields = {}
+              for line in lines[starts[-1] + 1:-1]:
+                  key, sep, value = line.partition(":")
+                  if not sep:
+                      return None
+                  fields[key.strip(" -*`").lower()] = value.strip()
+              return fields
+
+          fields = None
+          for text in [posted[-1] if posted else "", str(result.get("result", ""))]:
+              fields = parse_block(text)
+              if fields is not None:
+                  break
+          if fields is None:
+              fail("neither the posted review nor the final answer ends with a KARPATHY_REVIEW_RESULT ... KARPATHY_REVIEW_END block")
+          if fields.get("complete", "").lower() != "yes":
+              fail(f"review not marked complete (complete: {fields.get('complete', 'missing')!r})")
+          files = [f.strip(" `") for f in fields.get("files", "").split(",") if f.strip(" `")]
+          if set(files) != set(changed):
               fail("reviewed file list does not match the PR's changed files")
-          principles = verdict.get("principles")
           required = ("think_before_coding", "simplicity_first", "surgical_changes", "goal_driven")
-          if not isinstance(principles, dict):
-              fail("principles missing")
+          verdicts = {}
           for key in required:
-              p = principles.get(key)
-              if not isinstance(p, dict) or p.get("verdict") not in ("pass", "warning", "fail"):
+              verdict, sep, evidence = fields.get(key, "").partition("|")
+              verdict = verdict.strip(" *`").lower()
+              if verdict not in ("pass", "warning", "fail"):
                   fail(f"principle {key} has no pass/warning/fail verdict")
-              if not isinstance(p.get("evidence"), str) or len(p["evidence"].strip()) < 20:
+              if not sep or len(evidence.strip()) < 20:
                   fail(f"principle {key} has no substantive evidence")
-          if not isinstance(verdict.get("summary"), str) or len(verdict["summary"].strip()) < 20:
+              verdicts[key] = verdict
+          if len(fields.get("summary", "")) < 20:
               fail("overall summary missing")
 
-          print("Karpathy review completed:", ", ".join(f"{k}={principles[k]['verdict']}" for k in required))
+          print("Karpathy review completed:", ", ".join(f"{k}={verdicts[k]}" for k in required))
           GATE

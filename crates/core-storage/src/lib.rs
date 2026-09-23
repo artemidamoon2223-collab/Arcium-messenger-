@@ -43,6 +43,10 @@ pub enum StorageError {
     Decryption,
     #[error("key not found")]
     NotFound,
+    /// The connection is not in the transaction state the operation requires.
+    /// See [`EncryptedStore::transaction`] ("When a rollback fails").
+    #[error("transaction state invalid: {0}")]
+    TransactionStateInvalid(&'static str),
 }
 
 pub struct EncryptedStore {
@@ -84,20 +88,23 @@ impl EncryptedStore {
     }
 
     pub fn put(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
+        self.ensure_no_open_transaction()?;
         put_row(&self.conn, &self.keys, key, value)
     }
 
     pub fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.ensure_no_open_transaction()?;
         get_row(&self.conn, &self.keys, key)
     }
 
     pub fn delete(&self, key: &str) -> Result<(), StorageError> {
+        self.ensure_no_open_transaction()?;
         delete_row(&self.conn, &self.keys, key)
     }
 
     /// Begins a transaction over several records. Every `put`/`delete` made
-    /// through it becomes durable together on [`StoreTransaction::commit`], or
-    /// not at all.
+    /// through it is applied atomically on [`StoreTransaction::commit`]: all of
+    /// them or none of them.
     ///
     /// Takes `&mut self`, so while the transaction is alive nothing else can
     /// write through this store — the borrow checker rules out a stray `put`
@@ -128,7 +135,50 @@ impl EncryptedStore {
     /// callback, a network operation, or anything else whose duration this
     /// code does not control: build the records first, then open, write,
     /// commit.
+    ///
+    /// # What a successful commit does and does not mean
+    ///
+    /// These are four different properties; only the first three are provided.
+    ///
+    /// - **Atomicity.** No connection ever observes some of the transaction's
+    ///   writes without the others, and a failed or abandoned transaction
+    ///   leaves no writes behind.
+    /// - **Successful `COMMIT`.** When `commit` returns `Ok`, SQLite has
+    ///   committed the transaction: other connections see all of it, and the
+    ///   journal and database file were synced as `synchronous = FULL`
+    ///   requires. When it returns `Err`, the transaction was not committed
+    ///   (see [`StoreTransaction::commit`]).
+    /// - **Process crash.** If the process dies while the transaction is open
+    ///   or after `commit` returned, SQLite's journal recovery on the next open
+    ///   yields either the state before the transaction or the state after it,
+    ///   never a mix. The tests kill a process before and after `commit`; a
+    ///   death inside `COMMIT` itself relies on the same SQLite recovery but is
+    ///   not separately tested here.
+    /// - **Sudden power loss: not guaranteed.** The store runs in rollback-
+    ///   journal (`DELETE`) mode with `synchronous = FULL`. In that mode SQLite
+    ///   does not sync the directory after deleting the journal, which is the
+    ///   step that makes a commit final (it only does so under
+    ///   `synchronous = EXTRA`). A power loss shortly after `commit` returns
+    ///   can therefore bring the journal back and roll the most recent
+    ///   committed transaction back on the next open. Atomicity still holds —
+    ///   it is rolled back whole — but the caller must not treat `Ok` from
+    ///   `commit` as proof that the data will survive a power cut. Whether the
+    ///   device's storage honours `fsync` at all is outside this code.
+    ///
+    /// # When a rollback fails
+    ///
+    /// Rolling back can itself fail: SQLite can return `SQLITE_NOMEM` for
+    /// `ROLLBACK` before executing it, which leaves the connection inside the
+    /// transaction that should have been discarded, and a rollback on drop
+    /// cannot report that. Every operation on the store first checks for this
+    /// state. If it finds a transaction still open, it retries the rollback
+    /// once and returns [`StorageError::TransactionStateInvalid`] without
+    /// reading or writing a record — so a later `put` can never be silently
+    /// absorbed into, or a `get` read from, the abandoned transaction. The
+    /// check only detects an open transaction; it does not detect or repair
+    /// any other kind of SQLite failure.
     pub fn transaction(&mut self) -> Result<StoreTransaction<'_>, StorageError> {
+        self.ensure_no_open_transaction()?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -145,6 +195,7 @@ impl EncryptedStore {
     /// its first `:`, or the whole key if it has none) can match — the
     /// same convention `namespace_of` uses when writing.
     pub fn list_keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
+        self.ensure_no_open_transaction()?;
         let ns_hash = self.keys.key_name_hash(prefix);
         let mut stmt = self
             .conn
@@ -160,6 +211,23 @@ impl EncryptedStore {
             .collect::<Result<_, _>>()?;
         keys.sort();
         Ok(keys)
+    }
+
+    /// Outside a [`StoreTransaction`] this connection must be in autocommit
+    /// mode. If it is not, an earlier rollback failed (see "When a rollback
+    /// fails" on [`transaction`](Self::transaction)): retry that rollback once
+    /// and refuse the current operation either way, so the caller learns that
+    /// the earlier transaction's rollback did not complete when it should have.
+    fn ensure_no_open_transaction(&self) -> Result<(), StorageError> {
+        if self.conn.is_autocommit() {
+            return Ok(());
+        }
+        // Completes the discard the dropped transaction already asked for. Its
+        // own result is not needed: the state is re-checked on the next call.
+        let _ = self.conn.execute_batch("ROLLBACK");
+        Err(StorageError::TransactionStateInvalid(
+            "a previous transaction was not rolled back",
+        ))
     }
 
     /// Test-only shortcut to the lookup key a record is stored under.
@@ -366,25 +434,56 @@ pub struct StoreTransaction<'a> {
 impl StoreTransaction<'_> {
     /// Inserts `key`, or replaces its value if it already exists.
     pub fn put(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
+        self.ensure_active()?;
         put_row(&self.tx, self.keys, key, value)
     }
 
     /// Reads `key` as this transaction currently sees it, including writes made
     /// earlier in the same transaction.
     pub fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.ensure_active()?;
         get_row(&self.tx, self.keys, key)
     }
 
     /// Deletes `key`. Deleting a key that does not exist is not an error, as
     /// with [`EncryptedStore::delete`].
     pub fn delete(&self, key: &str) -> Result<(), StorageError> {
+        self.ensure_active()?;
         delete_row(&self.tx, self.keys, key)
     }
 
-    /// Makes every write in the transaction durable at once.
+    /// SQLite ends a transaction on its own after some errors (for example
+    /// `SQLITE_NOMEM` in the middle of a statement), rolling back every write
+    /// made so far. From then on the connection is in autocommit mode, and a
+    /// further write through this handle would be committed on its own, outside
+    /// any transaction. Refuse instead, so a caller that carries on after an
+    /// error cannot turn the rest of an intended transaction into individually
+    /// committed records.
+    fn ensure_active(&self) -> Result<(), StorageError> {
+        if self.tx.is_autocommit() {
+            return Err(StorageError::TransactionStateInvalid(
+                "SQLite already rolled this transaction back",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Commits every write in the transaction atomically. See "What a
+    /// successful commit does and does not mean" on
+    /// [`EncryptedStore::transaction`]: `Ok` is not a power-loss guarantee.
     ///
-    /// If the commit itself fails, the transaction is rolled back and none of
-    /// its writes are kept.
+    /// `Err` always means the transaction was **not** committed, and none of
+    /// its writes are visible. The transaction is consumed either way, so it
+    /// cannot be committed again by mistake. In particular:
+    ///
+    /// - `COMMIT` needs every other connection's read lock released. If another
+    ///   connection is still reading when the busy timeout runs out, SQLite
+    ///   returns `SQLITE_BUSY` ([`StorageError::Db`]); the transaction is then
+    ///   rolled back as it is dropped. Nothing is retried: whether to redo the
+    ///   work — which, for anything cryptographic, means rebuilding it, not
+    ///   replaying it — is the caller's decision.
+    /// - If SQLite has already rolled the transaction back on its own, `COMMIT`
+    ///   fails with "cannot commit - no transaction is active".
     pub fn commit(self) -> Result<(), StorageError> {
         self.tx.commit()?;
         Ok(())
@@ -392,6 +491,14 @@ impl StoreTransaction<'_> {
 
     /// Discards every write in the transaction. Equivalent to dropping it,
     /// but reports an error instead of swallowing it.
+    ///
+    /// If SQLite already rolled the transaction back on its own, this returns
+    /// an error ("cannot rollback - no transaction is active") even though
+    /// nothing was kept. If `ROLLBACK` itself fails, the error is returned;
+    /// `rusqlite` tries once more as the handle is dropped, and if the
+    /// transaction is still open after that, the next operation on the store
+    /// deals with it (see "When a rollback fails" on
+    /// [`EncryptedStore::transaction`]).
     pub fn rollback(self) -> Result<(), StorageError> {
         self.tx.rollback()?;
         Ok(())
@@ -1131,5 +1238,223 @@ mod tests {
             store.list_keys_with_prefix("bulk:").unwrap().len(),
             CHILD_RECORDS
         );
+    }
+
+    // ── S1 follow-up: COMMIT failure (R2) ──────────────────────────────────
+
+    /// `COMMIT` in rollback-journal mode needs every other connection's read
+    /// lock gone. A reader holding one past the busy timeout makes `COMMIT`
+    /// fail with `SQLITE_BUSY`. No threads: the reader's lock is held by an
+    /// open read transaction on its own connection for the whole test.
+    #[test]
+    fn commit_blocked_by_a_reader_fails_and_publishes_nothing() {
+        let dir = tempdir().unwrap();
+        let key = random_key();
+        let mut writer = file_store(dir.path(), key);
+        let reader = file_store(dir.path(), key);
+        writer.put("base", b"before").unwrap();
+        // Test-only: shorten the wait so the test does not sit for 5 s.
+        writer.conn.busy_timeout(Duration::from_millis(50)).unwrap();
+
+        // Raw SQL on purpose: the store's own methods refuse to run on a
+        // connection with an open transaction.
+        let count = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT count(*) FROM kv", [], |r| r.get(0))
+                .unwrap()
+        };
+        reader.conn.execute_batch("BEGIN DEFERRED").unwrap();
+        assert_eq!(count(&reader.conn), 1, "reader now holds a read lock");
+
+        let tx = writer.transaction().unwrap();
+        tx.put("new", b"1").unwrap();
+        tx.put("base", b"after").unwrap();
+        match tx.commit() {
+            Err(StorageError::Db(rusqlite::Error::SqliteFailure(e, _))) => {
+                assert_eq!(e.code, rusqlite::ErrorCode::DatabaseBusy);
+            }
+            Err(e) => panic!("expected SQLITE_BUSY from COMMIT, got {e:?}"),
+            Ok(()) => panic!("COMMIT must not succeed while another connection reads"),
+        }
+
+        // The failed commit was rolled back as the transaction was dropped.
+        assert!(
+            writer.conn.is_autocommit(),
+            "writer left inside a transaction"
+        );
+        assert_eq!(count(&reader.conn), 1, "uncommitted row reached the reader");
+        reader.conn.execute_batch("COMMIT").unwrap();
+
+        for store in [&writer, &reader] {
+            assert_absent(store, "new");
+            assert_eq!(store.get("base").unwrap(), b"before");
+        }
+
+        // With the reader gone, the same work commits normally.
+        let tx = writer.transaction().unwrap();
+        tx.put("new", b"1").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(reader.get("new").unwrap(), b"1");
+    }
+
+    // ── S1 follow-up: rollback that fails, or that SQLite did itself (R3) ──
+
+    /// A connection left inside a transaction is refused by every store
+    /// operation, and the refusal completes the rollback.
+    ///
+    /// SIMULATION: the open transaction is created here with a plain `BEGIN`,
+    /// not by a failing `ROLLBACK`. An actual failed `ROLLBACK` is reproduced
+    /// in `failed_rollback_is_detected_before_the_next_write`.
+    #[test]
+    fn simulated_open_transaction_is_refused_by_every_store_operation() {
+        fn stuck(dir: &std::path::Path) -> EncryptedStore {
+            let store = file_store(dir, random_key());
+            store.put("base", b"kept").unwrap();
+            store.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            put_row(&store.conn, &store.keys, "abandoned", b"x").unwrap();
+            store
+        }
+        fn refused<T: std::fmt::Debug>(r: Result<T, StorageError>) {
+            assert!(
+                matches!(r, Err(StorageError::TransactionStateInvalid(_))),
+                "expected TransactionStateInvalid, got {r:?}"
+            );
+        }
+        fn recovered(store: &EncryptedStore) {
+            assert!(store.conn.is_autocommit(), "rollback was not completed");
+            assert_absent(store, "abandoned");
+            assert_eq!(store.get("base").unwrap(), b"kept");
+        }
+
+        let dirs: Vec<_> = (0..5).map(|_| tempdir().unwrap()).collect();
+        let store = stuck(dirs[0].path());
+        refused(store.put("later", b"y"));
+        recovered(&store);
+        assert_absent(&store, "later");
+
+        let store = stuck(dirs[1].path());
+        refused(store.get("abandoned"));
+        recovered(&store);
+
+        let store = stuck(dirs[2].path());
+        refused(store.delete("base"));
+        recovered(&store);
+
+        let store = stuck(dirs[3].path());
+        refused(store.list_keys_with_prefix("abandoned"));
+        recovered(&store);
+
+        let mut store = stuck(dirs[4].path());
+        refused(store.transaction().map(|_| ()));
+        recovered(&store);
+    }
+
+    /// Once SQLite has ended the transaction on its own, writes through the
+    /// handle are refused instead of being committed one by one, and
+    /// `commit` fails.
+    ///
+    /// SIMULATION: SQLite's own rollback is imitated with a raw `ROLLBACK` on
+    /// the transaction's connection. The real trigger (e.g. `SQLITE_NOMEM` in
+    /// the middle of a statement) is not reproduced by this test.
+    #[test]
+    fn writes_after_sqlite_ended_the_transaction_are_refused() {
+        let dir = tempdir().unwrap();
+        let key = random_key();
+        let mut store = file_store(dir.path(), key);
+        let tx = store.transaction().unwrap();
+        tx.put("first", b"1").unwrap();
+        tx.tx.execute_batch("ROLLBACK").unwrap();
+
+        for r in [
+            tx.put("second", b"2"),
+            tx.delete("first"),
+            tx.get("first").map(|_| ()),
+        ] {
+            assert!(
+                matches!(r, Err(StorageError::TransactionStateInvalid(_))),
+                "expected TransactionStateInvalid, got {r:?}"
+            );
+        }
+        assert!(tx.commit().is_err(), "commit must not report success");
+
+        let other = file_store(dir.path(), key);
+        assert_absent(&other, "first");
+        assert_absent(&other, "second");
+    }
+
+    const ROLLBACK_CHILD_ENV_PATH: &str = "CORE_STORAGE_S1_ROLLBACK_CHILD_PATH";
+
+    /// Child role: makes `ROLLBACK` genuinely fail with `SQLITE_NOMEM`, then
+    /// checks the store's response. Runs in its own process because
+    /// `sqlite3_hard_heap_limit64` is process-wide and would break tests
+    /// running in parallel threads.
+    #[test]
+    #[ignore = "child role for failed_rollback_is_detected_before_the_next_write"]
+    fn s1_failed_rollback_child() {
+        let Ok(path) = std::env::var(ROLLBACK_CHILD_ENV_PATH) else {
+            return;
+        };
+        let conn = Connection::open(&path).unwrap();
+        // Lookaside memory would satisfy ROLLBACK's small allocations without
+        // touching the heap limit; turn it off so the limit can bite.
+        let rc = unsafe {
+            rusqlite::ffi::sqlite3_db_config(
+                conn.handle(),
+                rusqlite::ffi::SQLITE_DBCONFIG_LOOKASIDE,
+                std::ptr::null_mut::<std::ffi::c_void>(),
+                0i32,
+                0i32,
+            )
+        };
+        assert_eq!(rc, rusqlite::ffi::SQLITE_OK, "could not disable lookaside");
+        let mut store = EncryptedStore::init(conn, CHILD_KEY).unwrap();
+        store.put("base", b"kept").unwrap();
+
+        let tx = store.transaction().unwrap();
+        tx.put("abandoned", b"x").unwrap();
+        unsafe { rusqlite::ffi::sqlite3_hard_heap_limit64(1) };
+        drop(tx); // ROLLBACK fails with SQLITE_NOMEM; the drop cannot report it
+        unsafe { rusqlite::ffi::sqlite3_hard_heap_limit64(0) };
+
+        // Precondition, not a result: if SQLite did roll back, this test proves
+        // nothing and must say so rather than pass.
+        assert!(
+            !store.conn.is_autocommit(),
+            "ROLLBACK did not fail; the reproduction did not happen"
+        );
+
+        match store.put("later", b"y") {
+            Err(StorageError::TransactionStateInvalid(_)) => {}
+            other => panic!("write on a connection left in a transaction: {other:?}"),
+        }
+        assert!(store.conn.is_autocommit(), "rollback was not completed");
+        assert_absent(&store, "abandoned");
+        assert_absent(&store, "later");
+
+        store.put("later", b"y").unwrap();
+        let other = EncryptedStore::open(&path, CHILD_KEY).unwrap();
+        assert_eq!(other.get("base").unwrap(), b"kept");
+        assert_eq!(other.get("later").unwrap(), b"y");
+        assert_absent(&other, "abandoned");
+    }
+
+    #[test]
+    fn failed_rollback_is_detected_before_the_next_write() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::s1_failed_rollback_child",
+                "--ignored",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(ROLLBACK_CHILD_ENV_PATH, &path)
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&output.stdout).into_owned()
+            + &String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "child failed:\n{log}");
+        assert!(log.contains("1 passed"), "child role did not run:\n{log}");
     }
 }

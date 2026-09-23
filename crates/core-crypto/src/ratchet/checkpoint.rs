@@ -5,10 +5,24 @@
 //! evolution, KDFs, AEAD, nonces or the message header, and nothing in the live
 //! message path calls it.
 //!
-//! What a checkpoint is *not*: it is not encrypted or authenticated here (the
-//! caller's store provides that), and restoring one says nothing about whether
-//! it is the latest state that existed. An older record decodes exactly as well
-//! as a newer one.
+//! What a checkpoint is *not*: it is not encrypted or authenticated here.
+//! Confidentiality, integrity and authenticity of a stored record come only
+//! from the authenticated encrypted store it is kept in. Restoring a record
+//! says nothing about whether it is the latest state that existed: an older
+//! record decodes exactly as well as a newer one, so validation here is no
+//! protection against a rolled-back database.
+//!
+//! # Internal interface
+//!
+//! [`DoubleRatchet::to_checkpoint`], [`DoubleRatchet::from_checkpoint`] and
+//! [`DoubleRatchet::staged_copy`] are public only because `core-protocol`'s
+//! durable sessions call them across the crate boundary. They are not a
+//! general-purpose API. Rust visibility cannot restrict them to that caller:
+//! any code holding a `DoubleRatchet`, or a record and the means to read it,
+//! can make a second instance, and two instances of one state produce
+//! competing ciphertexts under the same message key and counter. The durable
+//! session enforces its transition rules only for state it owns; it cannot
+//! prevent misuse of ratchets held elsewhere.
 //!
 //! # Layout (all integers big-endian)
 //!
@@ -32,8 +46,12 @@
 //!
 //! # Accepted states
 //!
-//! Decoding accepts only states the ratchet itself can reach, so a record that
-//! could never have been written by this code is rejected rather than repaired:
+//! Decoding checks structural rules that every state produced by this ratchet
+//! satisfies, and rejects a record that breaks any of them rather than
+//! repairing it. The rules are necessary, not sufficient: a record that passes
+//! them (for example, with arbitrary key bytes) is not thereby shown to have
+//! been reached by legitimate ratchet evolution. That assurance, such as it
+//! is, comes from the authenticated store.
 //!
 //! - `(dhr, cks, ckr)` presence is one of `(-, -, -)` (`init_bob`, before the
 //!   first message), `(+, +, -)` (`init_alice`, before the first reply) or
@@ -43,6 +61,13 @@
 //!   `pn` is only set, and keys are only skipped, once a receiving chain exists.
 //! - In `(-, -, -)`, `ns == 0`: `encrypt` fails before advancing.
 //! - At most [`MAX_SKIPPED_KEYS`] skipped keys, no duplicate `(dh, n)`.
+//! - `ns` and `nr` are below `u32::MAX`. The ratchet increments them without
+//!   an overflow check (`encrypt`, `decrypt`), so a state holding `u32::MAX`
+//!   would panic in a debug build or wrap to `0` in a release build on its
+//!   next send or same-chain receive. Such a state is reachable only after
+//!   `2^32 - 1` messages in one chain; it is refused on both encode and
+//!   decode (`CounterExhausted`) instead of being persisted. `pn` is only
+//!   copied into headers and has no such limit.
 //!
 //! `ckr` present with `dhr` absent is among the rejected combinations; the
 //! ratchet's `skip_message_keys` relies on that never happening.
@@ -94,8 +119,10 @@ pub enum CheckpointError {
     DuplicateSkippedKey,
     #[error("ratchet checkpoint field {0} is marked absent but not zero")]
     AbsentFieldNotZero(&'static str),
-    #[error("ratchet state is not one this implementation can reach: {0}")]
+    #[error("ratchet state violates a structural rule: {0}")]
     InconsistentState(&'static str),
+    #[error("ratchet counter {0} is exhausted; the state cannot be resumed safely")]
+    CounterExhausted(&'static str),
 }
 
 /// Checks the cross-field rules listed in the module docs. Shared by encode
@@ -134,11 +161,20 @@ fn check_state(
             u32::try_from(skipped).unwrap_or(u32::MAX),
         ));
     }
+    if ns == u32::MAX {
+        return Err(CheckpointError::CounterExhausted("ns"));
+    }
+    if nr == u32::MAX {
+        return Err(CheckpointError::CounterExhausted("nr"));
+    }
     Ok(())
 }
 
 impl DoubleRatchet {
     /// Encodes the complete ratchet state as a `RATCHET_STATE_V1` record.
+    ///
+    /// Internal interface for `core-protocol`'s durable sessions; see the
+    /// module documentation for what calling it outside them allows.
     ///
     /// The returned buffer holds secret keys and is wiped when dropped. It is
     /// allocated at its final size, so no partial copies are left behind by
@@ -197,14 +233,17 @@ impl DoubleRatchet {
 
     /// Rebuilds a ratchet from a `RATCHET_STATE_V1` record.
     ///
+    /// Internal interface for `core-protocol`'s durable sessions; see the
+    /// module documentation for what calling it outside them allows.
+    ///
     /// Every field is taken as stored: nothing is regenerated, defaulted or
     /// corrected, and a record that fails any check is rejected as a whole.
     /// Skipped keys come back in the stored order, so eviction continues
     /// exactly where it left off.
     ///
-    /// Success means the bytes describe a reachable ratchet state. It does not
-    /// mean the state is current, belongs to the session the caller expects,
-    /// or was not rolled back; those are the caller's to establish.
+    /// Success means the bytes pass the structural rules in the module docs.
+    /// It does not mean the state was reached legitimately, is current,
+    /// belongs to the session the caller expects, or was not rolled back.
     pub fn from_checkpoint(record: &[u8]) -> Result<Self, CheckpointError> {
         if record.len() > RATCHET_CHECKPOINT_MAX_LEN {
             return Err(CheckpointError::Oversized {
@@ -288,6 +327,9 @@ impl DoubleRatchet {
 
     /// Returns an independent copy of the full ratchet state, for preparing a
     /// transition without touching the original.
+    ///
+    /// Internal interface for `core-protocol`'s durable sessions; see the
+    /// module documentation for what calling it outside them allows.
     ///
     /// The copy derives the same keys as the original. Using both to send
     /// produces two messages under one message key and counter, so at most one
@@ -608,6 +650,39 @@ mod tests {
         let key: Vec<u8> = r[first..first + 36].to_vec();
         r[second..second + 36].copy_from_slice(&key);
         assert_eq!(decode_err(&r), CheckpointError::DuplicateSkippedKey);
+    }
+
+    #[test]
+    fn exhausted_counters_are_refused_on_encode_and_decode() {
+        let (alice, _) = pair();
+        let (_, bob, _) = with_skipped(); // (+, +, +)
+        for (base, off, name) in [(&alice, 162, "ns"), (&bob, 162, "ns"), (&bob, 166, "nr")] {
+            let mut r = base.to_checkpoint().unwrap().to_vec();
+            r[off..off + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+            assert_eq!(decode_err(&r), CheckpointError::CounterExhausted(name));
+            // One below the limit is still accepted.
+            r[off..off + 4].copy_from_slice(&(u32::MAX - 1).to_be_bytes());
+            assert!(
+                DoubleRatchet::from_checkpoint(&r).is_ok(),
+                "{name} = MAX - 1"
+            );
+        }
+        let mut exhausted = bob.staged_copy();
+        exhausted.ns = u32::MAX;
+        assert_eq!(
+            exhausted.to_checkpoint().unwrap_err(),
+            CheckpointError::CounterExhausted("ns")
+        );
+        let mut exhausted = bob.staged_copy();
+        exhausted.nr = u32::MAX;
+        assert_eq!(
+            exhausted.to_checkpoint().unwrap_err(),
+            CheckpointError::CounterExhausted("nr")
+        );
+        // pn has no arithmetic and no limit.
+        let mut r = bob.to_checkpoint().unwrap().to_vec();
+        r[170..174].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(DoubleRatchet::from_checkpoint(&r).is_ok());
     }
 
     #[test]

@@ -3,7 +3,12 @@
 //! caller is asking for.
 //!
 //! Not used by the live message path. The record is plaintext containing
-//! secret keys; it is meant to be stored only through an encrypted store.
+//! secret keys. Its confidentiality, integrity and authenticity come only
+//! from the authenticated encrypted store it is kept in; the checks below are
+//! structural and do not show that a record is genuine or current.
+//!
+//! Encoding and decoding are crate-private: outside this crate a session
+//! record is reachable only through [`crate::durable::DurableSession`].
 //!
 //! # Layout (all integers big-endian)
 //!
@@ -89,7 +94,7 @@ pub struct SessionBinding {
 }
 
 /// A session rebuilt from a record, with the metadata stored beside it.
-pub struct RestoredSession {
+pub(crate) struct RestoredSession {
     pub session: Session,
     pub role: SessionRole,
     pub generation: u64,
@@ -167,7 +172,7 @@ impl std::error::Error for SessionCheckpointError {
 }
 
 /// The store key for the session with `peer_identity_pk`.
-pub fn session_storage_key(peer_identity_pk: &[u8; 32]) -> String {
+pub(crate) fn session_storage_key(peer_identity_pk: &[u8; 32]) -> String {
     let mut key = String::with_capacity(11 + 64);
     key.push_str("session:v1/");
     for b in peer_identity_pk {
@@ -181,7 +186,7 @@ pub fn session_storage_key(peer_identity_pk: &[u8; 32]) -> String {
 /// Refuses a session whose AD is not the X3DH AD for `role`, `our_identity_pk`
 /// and the session's own peer key, so an inconsistent session is never
 /// written.
-pub fn encode_session_checkpoint(
+pub(crate) fn encode_session_checkpoint(
     session: &Session,
     role: SessionRole,
     our_identity_pk: &[u8; 32],
@@ -231,7 +236,7 @@ pub(crate) fn encode_parts(
 /// Rejects the whole record on any mismatch; nothing is repaired or replaced
 /// with fresh state. Success does not show that the record is the newest one
 /// that was written.
-pub fn decode_session_checkpoint(
+pub(crate) fn decode_session_checkpoint(
     record: &[u8],
     expected: &SessionBinding,
 ) -> Result<RestoredSession, SessionCheckpointError> {

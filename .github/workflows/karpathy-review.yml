@@ -50,32 +50,44 @@ jobs:
           direct_prompt: |
             You are reviewing this pull request. You must not change the repository:
             do not edit or create files, and do not run git add, commit, push or rm.
-            Use only Read, Grep, Glob, LS, and Bash for `git diff`, `git log` and
-            `git status`.
+            Tools: use only Read, Grep, Glob and LS, and Bash for plain `git diff`,
+            `git log` and `git status` commands. A Bash command must be exactly one
+            git command: no pipes (|), no redirection (> <), no `&&` or `;`, no
+            `$( )` or `<( )`, and no other programs such as wc, head, tail, cat or
+            sed. Anything else is refused, and a refused command fails the review.
 
-            First, use the Read tool on
-              .claude/skills/engineering-code-review/references/ci-karpathy-review.md
-            and read it to its last line; follow its methodology. The review is
-            not complete without it.
+            1. Read the methodology in full with the Read tool:
+                 .claude/skills/engineering-code-review/references/ci-karpathy-review.md
+               and follow it. The review is not complete without it.
 
-            Get the list of changed files and the PR diff:
-              git diff --name-only origin/${{ github.base_ref }}...HEAD
-              git diff origin/${{ github.base_ref }}...HEAD
-            Inspect the complete diff of every changed file. Long output is cut
-            off with a line like "... [N lines truncated] ...": every file whose
-            diff is missing or cut off must be read in full with the Read tool,
-            using several Read calls with offset and limit for a long file, and
-            continuing until you have seen its final line. The completion gate
-            checks this against the tool output, not against what you write.
-            If some source could not be inspected, name it in the review, write
-            "complete: no" and say what is missing.
+            2. List the changed files:
+                 git diff --name-only origin/${{ github.base_ref }}...HEAD
+
+            3. For every changed file, run its own diff, one command per file:
+                 git diff origin/${{ github.base_ref }}...HEAD -- <path>
+               Issue these in parallel, several in one step, to save turns. Do not
+               rely on a single diff of the whole PR: long output is cut.
+
+            4. A diff is cut off when its output contains a line like
+               "... [N lines truncated] ...". For every file whose diff is cut off,
+               Read the whole file with the Read tool. Read shows at most 2000 lines
+               per call; for a longer file, continue with offset and limit until
+               you have seen its final line. A deleted file cannot be Read: if its
+               diff is cut off, say so and write "complete: no".
+
+            5. If any source could not be inspected in full, name it in the review,
+               write "complete: no" and say what is missing. The completion gate
+               checks coverage against the tool output, not against what you write.
 
             Review every changed file against the four principles in that file:
             think_before_coding, simplicity_first, surgical_changes, goal_driven.
             Give each a verdict (pass, warning or fail) with concrete evidence
             (path:line). You cannot run tests: never report that tests pass or
             fail, and list claims you could not verify under "unverified".
-            Post the review as a comment on this PR.
+            Post the review as a comment on this PR once, when it is finished.
+            Put the result block only in that comment. Do not repeat it in your
+            final answer; if you do, it must be identical, since a differing copy
+            fails the review.
 
             End the review with this block, one field per line, with the marker
             lines on their own. Use "|" between each verdict and its evidence;

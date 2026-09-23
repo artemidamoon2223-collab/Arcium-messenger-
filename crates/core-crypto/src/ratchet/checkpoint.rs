@@ -335,7 +335,16 @@ impl DoubleRatchet {
             skipped: IndexMap::with_capacity(count as usize),
             max_skipped: MAX_SKIPPED_KEYS,
         };
-        for entry in record[FIXED_LEN..].chunks_exact(ENTRY_LEN) {
+        // The exact-length check above leaves no partial entry; refuse one
+        // anyway rather than drop it silently.
+        let (entries, partial) = record[FIXED_LEN..].as_chunks::<ENTRY_LEN>();
+        if !partial.is_empty() {
+            return Err(CheckpointError::LengthMismatch {
+                expected,
+                actual: record.len(),
+            });
+        }
+        for entry in entries {
             let dh = read_32(entry, 0);
             let n = read_u32(entry, 32);
             if ratchet.skipped.contains_key(&(dh, n)) {

@@ -42,8 +42,10 @@ always-loaded context. They are motivational rather than testable, and the
 concrete requirements above stand on their own without the branding.
 
 Note that a CI job, `karpathy-review`, still scores pull requests against these
-four principles — see `.github/workflows/karpathy-review.yml`. That workflow is
-unchanged and remains a blocking gate; this file does not alter it.
+four principles and remains a blocking gate. Its methodology is
+`ci-karpathy-review.md`; its result block and completion gate are
+`.github/workflows/karpathy-review.yml` and
+`.github/scripts/karpathy_review_gate.py`. This file does not alter them.
 
 ## Subagent guidance — preserved, and in tension with session policy
 

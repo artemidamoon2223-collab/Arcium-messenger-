@@ -18,6 +18,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Self-test the completion gate
+        run: python3 .github/scripts/test_karpathy_review_gate.py
+
       - name: Run the review agent in default permission mode (this runner only)
         run: |
           # The repository's .claude/settings.json sets "defaultMode": "plan" for
@@ -50,31 +53,26 @@ jobs:
             Use only Read, Grep, Glob, LS, and Bash for `git diff`, `git log` and
             `git status`.
 
+            First, use the Read tool on
+              .claude/skills/engineering-code-review/references/ci-karpathy-review.md
+            and follow its methodology. The review is not complete without it.
+
             Get the list of changed files and the PR diff:
               git diff --name-only origin/${{ github.base_ref }}...HEAD
               git diff origin/${{ github.base_ref }}...HEAD
             If the diff output is cut off, Read each remaining changed file.
 
-            Review every changed file against Andrej Karpathy's 4 principles
-            (https://github.com/forrestchang/andrej-karpathy-skills).
+            Review every changed file against the four principles in that file:
+            think_before_coding, simplicity_first, surgical_changes, goal_driven.
+            Give each a verdict (pass, warning or fail) with concrete evidence
+            (path:line). You cannot run tests: never report that tests pass or
+            fail, and list claims you could not verify under "unverified".
+            Post the review as a comment on this PR.
 
-            1. **Think Before Coding** — every choice traces to a real requirement;
-               no speculation, no silent assumptions.
-            2. **Simplicity First** — minimum code that solves the stated problem;
-               no speculative features, unnecessary abstractions, or impossible-case
-               error handling.
-            3. **Surgical Changes** — only the requested lines were touched;
-               no "while I'm here" formatting, refactoring, or adjacent cleanup.
-            4. **Goal-Driven** — the change is verifiable:
-               tests added/updated, `cargo test` / `tsc --noEmit` stays green.
-
-            Score each principle: ✅ Pass | ⚠️ Warning | ❌ Fail — with concrete evidence
-            (file and line where possible). Finish with a 1-2 sentence overall verdict.
-            Post the result as a comment on this PR.
-
-            End the review you post as the PR comment with this block, exactly as
-            shown: one field per line, nothing after the last line. Use "|" between
-            each verdict and its evidence; list files separated by commas.
+            End the review with this block, one field per line, with the marker
+            lines on their own. Use "|" between each verdict and its evidence;
+            list files separated by commas. The job and branch links may follow
+            the block.
             KARPATHY_REVIEW_RESULT
             complete: yes
             files: <every changed path, exactly as git diff --name-only prints it>
@@ -82,6 +80,7 @@ jobs:
             simplicity_first: <pass, warning or fail> | <specific evidence>
             surgical_changes: <pass, warning or fail> | <specific evidence>
             goal_driven: <pass, warning or fail> | <specific evidence>
+            unverified: <claims you could not verify, or none>
             summary: <overall verdict>
             KARPATHY_REVIEW_END
             If you could not review every changed file, write "complete: no".
@@ -98,148 +97,10 @@ jobs:
           REVIEW_OUTCOME: ${{ steps.claude_run.outcome }}
           EXECUTION_FILE: ${{ steps.claude_run.outputs.execution_file }}
           CHANGED_FILES: ${{ runner.temp }}/karpathy-changed-files.txt
-        run: |
-          # karpathy-review is a required check. It passes only when the execution record
-          # itself shows a finished, unobstructed review of every changed file. The step
-          # outcome, CLAUDE_SUCCESS (never visible to this step) or a PR comment alone
-          # prove nothing: in PR #85 the agent ended in plan mode with outcome=success.
-          # Passing this gate does not mean the reviewed code is correct or secure.
-          python3 - <<'GATE'
-          import json, os, sys
-
-          def fail(reason):
-              print(f"::error::Karpathy review not completed: {reason}. Do NOT add continue-on-error.")
-              sys.exit(1)
-
-          if os.environ.get("REVIEW_OUTCOME") != "success":
-              fail(f"review step outcome={os.environ.get('REVIEW_OUTCOME') or 'unset'}")
-
-          path = os.environ.get("EXECUTION_FILE") or ""
-          if not path or not os.path.isfile(path):
-              fail("no execution record")
-          try:
-              with open(path, encoding="utf-8") as f:
-                  events = json.load(f)
-          except (OSError, ValueError) as e:
-              fail(f"execution record unreadable ({e})")
-          if not isinstance(events, list) or not events:
-              fail("execution record is empty or not a list")
-
-          init = next((e for e in events if isinstance(e, dict) and e.get("type") == "system" and e.get("subtype") == "init"), None)
-          if init is None:
-              fail("no session start in execution record")
-          if init.get("permissionMode") != "default":
-              fail(f"agent ran in permission mode {init.get('permissionMode')!r}, expected 'default'")
-
-          results = [e for e in events if isinstance(e, dict) and e.get("type") == "result"]
-          if not results:
-              fail("execution ended without a result (interrupted?)")
-          result = results[-1]
-          if result.get("subtype") != "success" or result.get("is_error") is not False:
-              fail(f"execution ended as {result.get('subtype')!r}, is_error={result.get('is_error')!r}")
-          if result.get("permission_denials"):
-              names = ", ".join(sorted({d.get("tool_name", "?") for d in result["permission_denials"]}))
-              fail(f"permission denied during review: {names}")
-
-          # Pair each tool call with its result.
-          calls, outputs = {}, {}
-          for e in events:
-              if not isinstance(e, dict):
-                  continue
-              for block in (e.get("message") or {}).get("content") or []:
-                  if not isinstance(block, dict):
-                      continue
-                  if block.get("type") == "tool_use":
-                      calls[block.get("id")] = block
-                  elif block.get("type") == "tool_result":
-                      outputs[block.get("tool_use_id")] = block
-          if any(c.get("name") == "ExitPlanMode" for c in calls.values()):
-              fail("agent produced a plan for approval instead of a review")
-
-          def text_of(block):
-              content = block.get("content")
-              if isinstance(content, str):
-                  return content
-              if isinstance(content, list):
-                  return "\n".join(p.get("text", "") for p in content if isinstance(p, dict))
-              return ""
-
-          diff_text, read_paths = [], set()
-          for tool_id, call in calls.items():
-              out = outputs.get(tool_id)
-              if out is None or out.get("is_error"):
-                  continue
-              args = call.get("input") or {}
-              if call.get("name") == "Bash" and "git diff" in str(args.get("command", "")):
-                  diff_text.append(text_of(out))
-              elif call.get("name") == "Read" and args.get("file_path"):
-                  read_paths.add(os.path.normpath(str(args["file_path"])))
-          diff_text = "\n".join(diff_text)
-
-          with open(os.environ["CHANGED_FILES"], encoding="utf-8") as f:
-              changed = [line.strip() for line in f if line.strip()]
-          if not changed:
-              fail("could not determine the PR's changed files")
-
-          workspace = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
-          unseen = []
-          for name in changed:
-              in_diff = f"diff --git a/{name} b/" in diff_text or f" b/{name}\n" in diff_text
-              was_read = os.path.normpath(os.path.join(workspace, name)) in read_paths or name in read_paths
-              if not (in_diff or was_read):
-                  unseen.append(name)
-          if unseen:
-              fail(f"no diff or file read in the record for: {', '.join(unseen)}")
-
-          # In this action's tag mode the agent delivers its review by updating the PR
-          # comment, so the review it actually posted is the primary place to look; its
-          # final answer is the fallback.
-          posted = [text_of({"content": (c.get("input") or {}).get("body")})
-                    for i, c in calls.items()
-                    if c.get("name") == "mcp__github_comment__update_claude_comment"
-                    and i in outputs and not outputs[i].get("is_error")]
-          # Line-based on purpose: a long single-line JSON verdict was malformed in a
-          # real run (an object left unclosed), and a nesting slip should not decide
-          # whether a review counts. Each field is still required and checked.
-          def parse_block(text):
-              lines = [line.strip() for line in text.splitlines() if line.strip()]
-              if not lines or lines[-1] != "KARPATHY_REVIEW_END":
-                  return None
-              starts = [n for n, line in enumerate(lines) if line == "KARPATHY_REVIEW_RESULT"]
-              if not starts:
-                  return None
-              fields = {}
-              for line in lines[starts[-1] + 1:-1]:
-                  key, sep, value = line.partition(":")
-                  if not sep:
-                      return None
-                  fields[key.strip(" -*`").lower()] = value.strip()
-              return fields
-
-          fields = None
-          for text in [posted[-1] if posted else "", str(result.get("result", ""))]:
-              fields = parse_block(text)
-              if fields is not None:
-                  break
-          if fields is None:
-              fail("neither the posted review nor the final answer ends with a KARPATHY_REVIEW_RESULT ... KARPATHY_REVIEW_END block")
-          if fields.get("complete", "").lower() != "yes":
-              fail(f"review not marked complete (complete: {fields.get('complete', 'missing')!r})")
-          files = [f.strip(" `") for f in fields.get("files", "").split(",") if f.strip(" `")]
-          if set(files) != set(changed):
-              fail("reviewed file list does not match the PR's changed files")
-          required = ("think_before_coding", "simplicity_first", "surgical_changes", "goal_driven")
-          verdicts = {}
-          for key in required:
-              verdict, sep, evidence = fields.get(key, "").partition("|")
-              verdict = verdict.strip(" *`").lower()
-              if verdict not in ("pass", "warning", "fail"):
-                  fail(f"principle {key} has no pass/warning/fail verdict")
-              if not sep or len(evidence.strip()) < 20:
-                  fail(f"principle {key} has no substantive evidence")
-              verdicts[key] = verdict
-          if len(fields.get("summary", "")) < 20:
-              fail("overall summary missing")
-
-          print("Karpathy review completed:", ", ".join(f"{k}={verdicts[k]}" for k in required))
-          GATE
+        # karpathy-review is a required check. The gate decides it from the execution
+        # record, never from the step outcome or a PR comment alone (in PR #85 the
+        # agent ended in plan mode with outcome=success). Exit 1: the review was not
+        # completed. Exit 2: it was completed and reported a FAIL finding, which
+        # needs the owner's review. Passing does not mean the code is correct or
+        # secure. See .github/scripts/karpathy_review_gate.py.
+        run: python3 .github/scripts/karpathy_review_gate.py

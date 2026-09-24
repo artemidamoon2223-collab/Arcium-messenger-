@@ -29,7 +29,7 @@ use zeroize::Zeroizing;
 
 use crate::checkpoint::SessionBinding;
 use crate::durable::{
-    CommitError, Conflict, DurableSession, OpenError, S1CheckpointStore, SideWrite, StageError,
+    CommitError, Conflict, DurableSession, OpenError, S1CheckpointStore, SideWrite,
 };
 
 /// Length of a [`MessageId`].
@@ -50,7 +50,11 @@ pub fn message_id(wire: &[u8]) -> MessageId {
     h.finalize().into()
 }
 
+mod helpers;
 mod records;
+mod removal;
+use helpers::*;
+pub use records::MAX_CLIENT_MESSAGE_ID_LEN;
 use records::*;
 
 mod types;
@@ -58,7 +62,8 @@ pub use types::*;
 
 struct Unresolved {
     attempted_generation: u64,
-    artifact_key: String,
+    /// The transition took effect if any of these records exists.
+    artifact_keys: Vec<String>,
 }
 
 /// Durable messaging over an S1 [`EncryptedStore`]. Holds no session state;
@@ -138,7 +143,7 @@ impl Messenger {
                     handle,
                     Unresolved {
                         attempted_generation: 0,
-                        artifact_key: handle_key(handle),
+                        artifact_keys: vec![handle_key(handle)],
                     },
                 );
                 Err(MessagingError::OutcomeUnknown {
@@ -177,17 +182,34 @@ impl Messenger {
         }
     }
 
-    /// Encrypts `plaintext` and commits the new session state with the outbox
-    /// record. Returns the message only after that commit.
+    /// Sends the logical message `client_id` (the caller's own id for it,
+    /// 1 to [`MAX_CLIENT_MESSAGE_ID_LEN`] bytes, unique per logical message).
+    ///
+    /// The first call encrypts `plaintext` and commits the new session state,
+    /// the outbox record and the `client_id` → message mapping together, and
+    /// returns the message only after that commit. Any later call with the
+    /// same `client_id` encrypts nothing and returns what the first one
+    /// committed — so a caller that cannot tell whether an earlier attempt
+    /// took effect (an unknown commit outcome, a crash, a restart) can simply
+    /// call again. The `plaintext` of a repeated call is ignored.
     pub fn send(
         &mut self,
         store: &mut EncryptedStore,
         our_identity_pk: [u8; 32],
         handle: u64,
+        client_id: &[u8],
         plaintext: &[u8],
-    ) -> Result<OutgoingMessage, MessagingError> {
+    ) -> Result<SendOutcome, MessagingError> {
+        if client_id.is_empty() || client_id.len() > MAX_CLIENT_MESSAGE_ID_LEN {
+            return Err(MessagingError::InvalidClientMessageId);
+        }
         self.require_resolved(handle)?;
-        let (mut session, peer) = self.load(store, our_identity_pk, handle)?;
+        let peer = self.require_peer(store, handle)?;
+        let index_key = sendid_key(&peer, client_id);
+        if let Some(prior) = read_prior_send(store, &peer, &index_key)? {
+            return Ok(prior);
+        }
+        let (mut session, _) = self.load(store, our_identity_pk, handle)?;
         let staged = session.stage_encrypt(plaintext).map_err(stage_error)?;
         let generation = staged.generation();
         let (header, ciphertext) = staged.output();
@@ -195,18 +217,23 @@ impl Messenger {
         wire.extend_from_slice(&header.to_bytes());
         wire.extend_from_slice(ciphertext);
         let id = message_id(&wire);
-        let key = outbox_key(&peer, &id);
         let side = [
-            SideWrite::insert(key.clone(), encode_outbox(generation, &id, &wire))
+            SideWrite::insert(
+                outbox_key(&peer, &id),
+                encode_outbox(generation, &id, client_id, &wire),
+            )
+            .map_err(MessagingError::SideWrite)?,
+            SideWrite::insert(index_key.clone(), encode_id_record(SENDID_MAGIC, &id))
                 .map_err(MessagingError::SideWrite)?,
         ];
         match session.commit_with(&mut S1CheckpointStore::new(store), staged, &side) {
-            Ok(_) => Ok(OutgoingMessage {
+            Ok(_) => Ok(SendOutcome::Sent(OutgoingMessage {
                 message_id: id,
+                client_message_id: client_id.to_vec(),
                 generation,
                 wire,
-            }),
-            Err(e) => Err(self.commit_error(handle, generation, key, e)),
+            })),
+            Err(e) => Err(self.commit_error(handle, generation, vec![index_key], e)),
         }
     }
 
@@ -230,30 +257,33 @@ impl Messenger {
             Header::from_bytes(header_bytes).map_err(|_| MessagingError::MalformedMessage)?;
         let id = message_id(wire);
         let (mut session, peer) = self.load(store, our_identity_pk, handle)?;
-        let key = inbox_key(&peer, &id);
-        if let Some(duplicate) = read_duplicate(store, &key, id)? {
+        let (key, seen) = (inbox_key(&peer, &id), seen_key(&peer, &id));
+        if let Some(duplicate) = read_duplicate(store, &key, &seen, id)? {
             return Ok(duplicate);
         }
         let staged = session
             .stage_decrypt(&header, ciphertext)
             .map_err(stage_error)?;
         let generation = staged.generation();
-        let record = encode_inbox(INBOX_PENDING, generation, &id, staged.output());
-        let side = [SideWrite::insert(key.clone(), record).map_err(MessagingError::SideWrite)?];
+        let record = encode_inbox(generation, &id, staged.output());
+        let side = [
+            SideWrite::insert(key.clone(), record).map_err(MessagingError::SideWrite)?,
+            SideWrite::require_absent(seen.clone()).map_err(MessagingError::SideWrite)?,
+        ];
         match session.commit_with(&mut S1CheckpointStore::new(store), staged, &side) {
             Ok(plaintext) => Ok(Received::Accepted(IncomingMessage {
                 message_id: id,
                 generation,
                 plaintext: Zeroizing::new(plaintext),
             })),
-            // Accepted by another instance between the check above and this
-            // commit.
+            // Accepted (and possibly acknowledged) by another instance
+            // between the check above and this commit.
             Err(CommitError::SideConflict {
                 conflict: Conflict::RecordExists,
                 ..
-            }) => read_duplicate(store, &key, id)?
+            }) => read_duplicate(store, &key, &seen, id)?
                 .ok_or(MessagingError::InconsistentStore("inbox record vanished")),
-            Err(e) => Err(self.commit_error(handle, generation, key, e)),
+            Err(e) => Err(self.commit_error(handle, generation, vec![key, seen], e)),
         }
     }
 
@@ -275,7 +305,9 @@ impl Messenger {
     }
 
     /// Removes the outgoing message `id` once its delivery is confirmed.
-    /// Returns whether it was still pending; repeating it is harmless.
+    /// Returns whether it was still pending; repeating it is harmless. The
+    /// `client_id` mapping stays, so resending that logical message reports
+    /// it as acknowledged instead of encrypting it again.
     pub fn acknowledge_outgoing(
         &self,
         store: &EncryptedStore,
@@ -295,7 +327,9 @@ impl Messenger {
     }
 
     /// Every committed incoming message not yet acknowledged, in the order it
-    /// was received.
+    /// was received. A message can appear here again after a crash even if
+    /// the application already showed it: delivery to the application is at
+    /// least once, and its `message_id` is what identifies a repeat.
     pub fn pending_incoming(
         &self,
         store: &EncryptedStore,
@@ -305,18 +339,18 @@ impl Messenger {
         let mut out = Vec::new();
         for key in keys_under(store, INBOX_NAMESPACE, &inbox_prefix(&peer))? {
             let bytes = Zeroizing::new(store.get(&key).map_err(MessagingError::Store)?);
-            let record = decode_inbox(&bytes)?;
-            if !record.acknowledged {
-                out.push(record.message);
-            }
+            out.push(decode_inbox(&bytes)?);
         }
         out.sort_by_key(|m| m.generation);
         Ok(out)
     }
 
-    /// Marks the incoming message `id` delivered and erases its plaintext.
-    /// Its id is kept so the same message is still recognised as a duplicate.
-    /// Returns whether it was undelivered until now; repeating it is harmless.
+    /// Records that the application has durably processed the incoming
+    /// message `id`: its plaintext is erased and only its id is kept (outside
+    /// the listed namespace), so the same message is still recognised as a
+    /// duplicate. Call it only after the message is safe on the application's
+    /// side; acknowledging earlier can lose it. Returns whether it was
+    /// undelivered until now; repeating it is harmless.
     pub fn acknowledge_incoming(
         &self,
         store: &mut EncryptedStore,
@@ -324,22 +358,26 @@ impl Messenger {
         id: &MessageId,
     ) -> Result<bool, MessagingError> {
         let peer = self.require_peer(store, handle)?;
-        let key = inbox_key(&peer, id);
+        let (key, seen) = (inbox_key(&peer, id), seen_key(&peer, id));
         let tx = store.transaction().map_err(MessagingError::NotCommitted)?;
-        let bytes = match tx.get(&key) {
-            Ok(b) => Zeroizing::new(b),
-            Err(StorageError::NotFound) => return Err(MessagingError::UnknownMessage),
+        match tx.get(&key) {
+            Ok(bytes) => {
+                if decode_inbox(&Zeroizing::new(bytes))?.message_id != *id {
+                    return Err(MessagingError::InvalidRecord("inbox"));
+                }
+            }
+            Err(StorageError::NotFound) => {
+                return match tx.get(&seen) {
+                    Ok(_) => Ok(false),
+                    Err(StorageError::NotFound) => Err(MessagingError::UnknownMessage),
+                    Err(e) => Err(MessagingError::Store(e)),
+                }
+            }
             Err(e) => return Err(MessagingError::Store(e)),
-        };
-        let record = decode_inbox(&bytes)?;
-        if record.acknowledged {
-            return Ok(false);
         }
-        tx.put(
-            &key,
-            &encode_inbox(INBOX_ACKNOWLEDGED, record.message.generation, id, &[]),
-        )
-        .map_err(MessagingError::NotCommitted)?;
+        tx.delete(&key).map_err(MessagingError::NotCommitted)?;
+        tx.put(&seen, &encode_id_record(SEEN_MAGIC, id))
+            .map_err(MessagingError::NotCommitted)?;
         tx.commit().map_err(MessagingError::Store)?;
         Ok(true)
     }
@@ -367,11 +405,14 @@ impl Messenger {
             return Ok(None);
         };
         let attempted_generation = unresolved.attempted_generation;
-        let artifact_committed = match store.get(&unresolved.artifact_key) {
-            Ok(_) => true,
-            Err(StorageError::NotFound) => false,
-            Err(e) => return Err(MessagingError::Store(e)),
-        };
+        let mut artifact_committed = false;
+        for key in &unresolved.artifact_keys {
+            match store.get(key) {
+                Ok(_) => artifact_committed = true,
+                Err(StorageError::NotFound) => {}
+                Err(e) => return Err(MessagingError::Store(e)),
+            }
+        }
         let stored_generation = match self.load(store, our_identity_pk, handle) {
             Ok((session, _)) => session.generation(),
             // An unresolved creation that did not take effect.
@@ -437,7 +478,7 @@ impl Messenger {
         &mut self,
         handle: u64,
         attempted_generation: u64,
-        artifact_key: String,
+        artifact_keys: Vec<String>,
         e: CommitError,
     ) -> MessagingError {
         match e {
@@ -446,7 +487,7 @@ impl Messenger {
                     handle,
                     Unresolved {
                         attempted_generation,
-                        artifact_key,
+                        artifact_keys,
                     },
                 );
                 MessagingError::OutcomeUnknown {
@@ -469,70 +510,24 @@ impl Messenger {
     }
 }
 
-fn stage_error(e: StageError) -> MessagingError {
-    match e {
-        StageError::Ratchet(e) => MessagingError::Ratchet(e),
-        StageError::Checkpoint(e) => MessagingError::Checkpoint(e),
-        StageError::GenerationExhausted => MessagingError::GenerationExhausted,
-        StageError::Unresolved { .. } | StageError::Conflicted => {
-            MessagingError::InconsistentStore("unexpected stage state")
+/// Lets a test act between `remove_session`'s reads and its transaction.
+#[cfg(test)]
+mod remove_hook {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    pub(super) fn set(f: impl FnOnce() + 'static) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(super) fn run() {
+        if let Some(f) = HOOK.with(|h| h.borrow_mut().take()) {
+            f();
         }
     }
-}
-
-/// After a refused creation: the handle belongs to another peer, or this
-/// peer already has a session.
-fn classify_taken(
-    store: &EncryptedStore,
-    handle: u64,
-    peer: &[u8; 32],
-) -> Result<MessagingError, MessagingError> {
-    match store.get(&handle_key(handle)) {
-        Ok(bytes) => {
-            if decode_handle(&bytes)? == *peer {
-                Ok(MessagingError::AlreadyExists { handle })
-            } else {
-                Ok(MessagingError::HandleCollision { handle })
-            }
-        }
-        Err(StorageError::NotFound) => Ok(MessagingError::AlreadyExists { handle }),
-        Err(e) => Err(MessagingError::Store(e)),
-    }
-}
-
-fn read_duplicate(
-    store: &EncryptedStore,
-    key: &str,
-    id: MessageId,
-) -> Result<Option<Received>, MessagingError> {
-    match store.get(key) {
-        Ok(bytes) => {
-            let record = decode_inbox(&Zeroizing::new(bytes))?;
-            if record.message.message_id != id {
-                return Err(MessagingError::InvalidRecord("inbox"));
-            }
-            Ok(Some(Received::Duplicate {
-                message_id: id,
-                undelivered: (!record.acknowledged).then_some(record.message),
-            }))
-        }
-        Err(StorageError::NotFound) => Ok(None),
-        Err(e) => Err(MessagingError::Store(e)),
-    }
-}
-
-/// Keys in `namespace` that start with `prefix`.
-fn keys_under(
-    store: &EncryptedStore,
-    namespace: &str,
-    prefix: &str,
-) -> Result<Vec<String>, MessagingError> {
-    Ok(store
-        .list_keys_with_prefix(namespace)
-        .map_err(MessagingError::Store)?
-        .into_iter()
-        .filter(|k| k.starts_with(prefix))
-        .collect())
 }
 
 #[cfg(test)]

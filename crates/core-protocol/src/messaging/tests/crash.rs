@@ -246,3 +246,132 @@ fn process_killed_during_session_creation_leaves_both_records_or_neither() {
         }
     }
 }
+
+// ── Q1: unknown commit outcome, then the process dies ─────────────────────────
+
+#[test]
+fn unknown_outcome_child() {
+    let (Ok(scenario), Ok(dir)) = (
+        std::env::var("ARCIUM_UNKNOWN_CHILD"),
+        std::env::var(DIR_ENV),
+    ) else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let ids = std::fs::read(dir.join("ids")).unwrap();
+    let fx = Fixture {
+        dir: dir.clone(),
+        alice_pk: ids[..32].try_into().unwrap(),
+        bob_pk: ids[32..].try_into().unwrap(),
+    };
+    let mut p = fx.peers();
+    let (op, fault) = scenario.split_once('/').unwrap();
+    test_hooks::inject(if fault == "stored" {
+        CommitFault::UnknownStored
+    } else {
+        CommitFault::UnknownLost
+    });
+    let r = match op {
+        "send" => {
+            p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"L1", b"once")
+                .map(|_| ())
+        }
+        _ => {
+            let wire = std::fs::read(dir.join("wire")).unwrap();
+            p.bm.receive(&mut p.b, p.bob_pk, BOB_HANDLE, &wire)
+                .map(|_| ())
+        }
+    };
+    assert!(matches!(r, Err(MessagingError::OutcomeUnknown { .. })));
+    // Nothing was handed out; the process dies before any recovery.
+    std::process::abort();
+}
+
+#[cfg(unix)]
+fn run_unknown_child(fx: &Fixture, scenario: &str) {
+    use std::os::unix::process::ExitStatusExt;
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "messaging::tests::crash::unknown_outcome_child",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("ARCIUM_UNKNOWN_CHILD", scenario)
+        .env(DIR_ENV, &fx.dir)
+        .status()
+        .unwrap();
+    assert_eq!(status.signal(), Some(6), "{status:?}");
+}
+
+/// Q1 for sends: after `OutcomeUnknown` and a crash, the restarted process
+/// repeats the logical send. Whichever way the commit went, exactly one
+/// ciphertext exists for it and the peer accepts it once.
+#[cfg(unix)]
+#[test]
+fn unknown_send_outcome_then_crash_never_duplicates_or_forks() {
+    for (fault, committed) in [("stored", true), ("lost", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = fixture(dir.path());
+        run_unknown_child(&fx, &format!("send/{fault}"));
+        let mut p = fx.peers();
+        assert_eq!(
+            generation(&mut p.a, p.alice_pk, ALICE_HANDLE),
+            u64::from(committed)
+        );
+        let m = match p
+            .am
+            .send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"L1", b"once")
+            .unwrap()
+        {
+            SendOutcome::AlreadyPending(m) if committed => m,
+            SendOutcome::Sent(m) if !committed => m,
+            other => panic!("{fault}: {other:?}"),
+        };
+        assert_eq!(Header::from_bytes(&m.wire[..HEADER_SIZE]).unwrap().n, 0);
+        assert_eq!(
+            p.am.pending_outgoing(&p.a, ALICE_HANDLE).unwrap(),
+            vec![m.clone()]
+        );
+        assert_eq!(
+            *accepted(p.bob_receives(&m.wire).unwrap()).plaintext,
+            b"once"
+        );
+        let next = p.alice_sends(b"next");
+        assert_eq!(
+            *accepted(p.bob_receives(&next.wire).unwrap()).plaintext,
+            b"next"
+        );
+    }
+}
+
+/// Q1 for receives: after `OutcomeUnknown` and a crash, the message is
+/// delivered to the application exactly as the store recorded it, and
+/// receiving it again never advances the ratchet a second time.
+#[cfg(unix)]
+#[test]
+fn unknown_receive_outcome_then_crash_accepts_once() {
+    for (fault, committed) in [("stored", true), ("lost", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = fixture(dir.path());
+        let wire = fx.peers().alice_sends(b"in").wire;
+        std::fs::write(dir.path().join("wire"), &wire).unwrap();
+        run_unknown_child(&fx, &format!("receive/{fault}"));
+        let mut p = fx.peers();
+        assert_eq!(
+            generation(&mut p.b, p.bob_pk, BOB_HANDLE),
+            u64::from(committed)
+        );
+        let pending = p.bm.pending_incoming(&p.b, BOB_HANDLE).unwrap();
+        assert_eq!(pending.len(), usize::from(committed));
+        match p.bob_receives(&wire).unwrap() {
+            Received::Duplicate {
+                undelivered: Some(m),
+                ..
+            } if committed => assert_eq!(*m.plaintext, b"in"),
+            Received::Accepted(m) if !committed => assert_eq!(*m.plaintext, b"in"),
+            other => panic!("{fault}: {other:?}"),
+        }
+        assert_eq!(generation(&mut p.b, p.bob_pk, BOB_HANDLE), 1);
+    }
+}

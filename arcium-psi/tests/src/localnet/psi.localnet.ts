@@ -87,8 +87,36 @@ describe('LOCALNET — Arcium PSI program', function () {
     expect(state.queriesMade.toNumber()).to.equal(0);
   });
 
+  // The program does not check who registers the computation definition; the
+  // Arcium program does, against the MXE authority. Whoever registers it
+  // becomes the circuit upload authority, so an outside signer must not be
+  // able to register it first or write circuit data.
+  it('rejects computation definition registration by a non-MXE-authority signer', async () => {
+    const arcium: any = getArciumProgram(provider);
+    const mxe = await arcium.account.mxeAccount.fetch(mxeAccount);
+    expect(mxe.authority?.toBase58(), 'MXE authority').to.equal(owner.toBase58());
+
+    const outsider = await fundedKeypair(provider);
+    const error = await rejection(
+      program.methods
+        .initPsiIntersectCompDef()
+        .accounts({
+          authority: outsider.publicKey,
+          mxeAccount,
+          compDefAccount,
+          addressLookupTable: getLookupTableAddress(programId, mxe.lutOffsetSlot),
+          lutProgram: AddressLookupTableProgram.programId,
+        })
+        .signers([outsider])
+        .rpc({ commitment: 'confirmed' }),
+    );
+    expect(error).to.include('InvalidAuthority');
+    expect(await provider.connection.getAccountInfo(compDefAccount)).to.equal(null);
+  });
+
   it('registers the psi_intersect computation definition', async () => {
-    const mxe = await getArciumProgram(provider).account.mxeAccount.fetch(mxeAccount);
+    const arcium: any = getArciumProgram(provider);
+    const mxe = await arcium.account.mxeAccount.fetch(mxeAccount);
     await program.methods
       .initPsiIntersectCompDef()
       .accounts({
@@ -99,6 +127,24 @@ describe('LOCALNET — Arcium PSI program', function () {
         lutProgram: AddressLookupTableProgram.programId,
       })
       .rpc({ commitment: 'confirmed' });
+
+    const compDef = await arcium.account.computationDefinitionAccount.fetch(compDefAccount);
+    const onChain = compDef.circuitSource.onChain?.[0];
+    expect(onChain, 'circuit source is not OnChain').to.not.equal(undefined);
+    expect(onChain.uploadAuth.toBase58()).to.equal(owner.toBase58());
+    expect(onChain.isCompleted).to.equal(false);
+
+    // An outside signer cannot start writing the circuit.
+    const outsider = await fundedKeypair(provider);
+    const offset = Buffer.from(getCompDefAccOffset('psi_intersect')).readUInt32LE();
+    const error = await rejection(
+      arcium.methods
+        .initRawCircuitAcc(offset, programId, 0)
+        .accounts({ signer: outsider.publicKey })
+        .signers([outsider])
+        .rpc({ commitment: 'confirmed' }),
+    );
+    expect(error).to.include('InvalidAuthority');
 
     await uploadCircuit(
       provider,
@@ -195,6 +241,24 @@ describe('LOCALNET — Arcium PSI program', function () {
     expect(logs!.some((l) => l.includes('PSI result delivered'))).to.equal(true);
   });
 });
+
+async function fundedKeypair(provider: anchor.AnchorProvider) {
+  const kp = anchor.web3.Keypair.generate();
+  const sig = await provider.connection.requestAirdrop(kp.publicKey, 10_000_000_000);
+  const latest = await provider.connection.getLatestBlockhash('confirmed');
+  await provider.connection.confirmTransaction({ signature: sig, ...latest }, 'confirmed');
+  return kp;
+}
+
+// Awaits a transaction that must fail; returns its error message and logs.
+async function rejection(tx: Promise<unknown>): Promise<string> {
+  try {
+    await tx;
+  } catch (e: any) {
+    return `${e?.message ?? e}\n${(e?.logs ?? []).join('\n')}`;
+  }
+  throw new Error('transaction from an outside signer was accepted');
+}
 
 function encryptSide(hashes: bigint[], mxePublicKey: Uint8Array) {
   const values = hashes.slice(0, BATCH_SIZE);

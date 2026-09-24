@@ -160,6 +160,13 @@ a peer is offline, not on a new handshake.
   (stale prekey) tells nobody; the initiator keeps retrying until the user
   removes the session (S2-B2 section 6a).
 - A second initiator racing for the same one-time prekey fails the same way.
+- Simultaneous initiation: if both users start a session with each other
+  before either handshake arrives, each device holds an unconfirmed initiator
+  session and drops the other's handshake, so neither proceeds (no fork: each
+  side's messages fail to decrypt at the other and write nothing). One user
+  must remove the session (S2-B2 section 6a) and accept the other's. An
+  automatic tie-break would replace a session without the user, which this
+  version does not do.
 - Read receipts; multi-device; group messaging; attachments.
 - Envelopes waiting for a missing handshake occupy the first slots of each
   FETCH (at most 256 are returned per round).

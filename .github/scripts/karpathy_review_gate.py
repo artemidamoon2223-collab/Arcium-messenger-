@@ -31,7 +31,7 @@ The result block is canonical here and in the workflow prompt; nowhere else.
     surgical_changes: pass|warning|fail | <evidence>
     goal_driven: pass|warning|fail | <evidence>
     unverified: <claims the reviewer could not verify, or none>
-    summary: <overall verdict>
+    summary: <one or two sentences: the overall verdict and its main reason>
     KARPATHY_REVIEW_END
 
 Parsing tolerates Markdown emphasis, code ticks, heading or quote markers and

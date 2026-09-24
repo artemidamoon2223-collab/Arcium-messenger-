@@ -108,7 +108,7 @@ jobs:
             surgical_changes: <pass, warning or fail> | <specific evidence>
             goal_driven: <pass, warning or fail> | <specific evidence>
             unverified: <claims you could not verify, or none>
-            summary: <overall verdict>
+            summary: <one or two sentences: the overall verdict and its main reason, not just a verdict word>
             KARPATHY_REVIEW_END
             If you could not review every changed file, write "complete: no".
 

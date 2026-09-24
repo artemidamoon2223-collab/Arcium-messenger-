@@ -6,7 +6,10 @@ license.workspace = true
 
 [dependencies]
 core-crypto = { path = "../core-crypto" }
+core-storage = { path = "../core-storage" }
+zeroize.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 x25519-dalek.workspace = true
 rand_core.workspace = true

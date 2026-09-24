@@ -152,7 +152,12 @@ describe('LOCALNET — Arcium PSI program', function () {
         instructions: [ix],
       }).compileToV0Message([lut!]),
     );
-    await provider.sendAndConfirm(tx, [], { skipPreflight: true, commitment: 'confirmed' });
+    // Sent through the connection, not AnchorProvider.sendAndConfirm: on a
+    // failed v0 transaction the latter throws "Unknown action 'undefined'"
+    // (@anchor-lang/core provider.ts:196) and hides the program error.
+    const signed = await provider.wallet.signTransaction(tx);
+    const queueSig = await sendAndCheck(provider, signed.serialize());
+    console.log('    submit_psi_query:', queueSig);
 
     await awaitComputationFinalization(
       provider,
@@ -216,4 +221,39 @@ async function callbackLogs(
     if (logs.some((l) => l.includes('Instruction: PsiIntersectCallback'))) return logs;
   }
   return null;
+}
+
+// Send with preflight so a failing instruction reports its program logs,
+// then require the confirmed transaction to have no error.
+async function sendAndCheck(
+  provider: anchor.AnchorProvider,
+  raw: Uint8Array,
+): Promise<string> {
+  let sig: string;
+  try {
+    sig = await provider.connection.sendRawTransaction(raw, {
+      preflightCommitment: 'confirmed',
+    });
+  } catch (e: any) {
+    const logs = typeof e?.getLogs === 'function'
+      ? await e.getLogs(provider.connection).catch(() => e.logs)
+      : e?.logs;
+    throw new Error(`${e?.message ?? e}\n${(logs ?? []).join('\n')}`);
+  }
+  const latest = await provider.connection.getLatestBlockhash('confirmed');
+  const res = await provider.connection.confirmTransaction(
+    { signature: sig, ...latest },
+    'confirmed',
+  );
+  if (res.value.err) {
+    const tx = await provider.connection.getTransaction(sig, {
+      commitment: 'confirmed',
+      maxSupportedTransactionVersion: 0,
+    });
+    throw new Error(
+      `transaction ${sig} failed: ${JSON.stringify(res.value.err)}\n` +
+        (tx?.meta?.logMessages ?? []).join('\n'),
+    );
+  }
+  return sig;
 }

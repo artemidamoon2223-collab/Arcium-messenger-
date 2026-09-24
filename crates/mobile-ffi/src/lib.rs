@@ -1,10 +1,13 @@
-use core_crypto::ratchet::{DoubleRatchet, Header, RatchetError, HEADER_SIZE};
+use core_crypto::ratchet::{DoubleRatchet, RatchetError};
 use core_crypto::spk_id::{spk_id, SPK_ID_LEN};
 use core_crypto::x3dh::{
     signed_prekey_object_v1, x3dh_initiate, x3dh_respond, PrekeyBundle, X3dhError, CIPHER_SUITE,
     PROTOCOL_VERSION,
 };
-use core_protocol::{Session, SessionError, SessionManager};
+use core_protocol::checkpoint::SessionRole;
+use core_protocol::durable::SideWrite;
+use core_protocol::messaging::{self, Messenger, MessagingError, NewSession, Received};
+use core_protocol::Session;
 use core_storage::{EncryptedStore, StorageError};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::{OsRng, RngCore};
@@ -70,6 +73,28 @@ pub enum CoreError {
     /// bundle predates a rotation; fetching a fresh one resolves it.
     #[error("signed prekey is stale")]
     StaleSignedPrekey,
+    /// Another instance on the same database committed this session first.
+    /// Nothing was written and nothing was released; calling again works
+    /// from the newer state.
+    #[error("session {session_id} was advanced by another instance; nothing was written")]
+    SessionConflict { session_id: u64 },
+    /// The commit of this operation reported an error after which the store
+    /// may or may not hold it. Its output was withheld. The session refuses
+    /// further operations until `recover_session`.
+    #[error("commit outcome unknown for session {session_id} (generation {attempted_generation})")]
+    CommitOutcomeUnknown { session_id: u64, attempted_generation: u64 },
+    /// An earlier commit on this session had an unknown outcome; call
+    /// `recover_session` first.
+    #[error("session {session_id} is unresolved (generation {attempted_generation}); call recover_session")]
+    SessionUnresolved { session_id: u64, attempted_generation: u64 },
+    /// A stored session or message record is corrupt, unsupported or bound to
+    /// other identities. It is left untouched and is never replaced by a new
+    /// session.
+    #[error("stored state for session {session_id} is invalid: {msg}")]
+    InvalidSessionState { session_id: u64, msg: String },
+    /// No message with this id is recorded for this session.
+    #[error("unknown message for session {session_id}")]
+    UnknownMessage { session_id: u64 },
 }
 
 impl From<StorageError> for CoreError {
@@ -90,20 +115,121 @@ impl From<RatchetError> for CoreError {
     }
 }
 
-impl From<SessionError> for CoreError {
-    /// Kept as two distinct variants rather than one generic failure: "you
-    /// already have this session" and "this id belongs to someone else" call
-    /// for different handling by the platform layer.
-    fn from(e: SessionError) -> Self {
+impl CoreError {
+    /// Maps a messaging failure on `session_id` onto the FFI error surface.
+    fn messaging(session_id: u64, e: MessagingError) -> Self {
+        use MessagingError as M;
         match e {
-            SessionError::AlreadyEstablished { contact_id } => {
-                CoreError::SessionAlreadyExists { session_id: contact_id }
-            }
-            SessionError::HandleCollision { contact_id } => {
-                CoreError::SessionIdCollision { session_id: contact_id }
-            }
+            M::NoSession { .. } => CoreError::NoSession { session_id },
+            M::AlreadyExists { .. } => CoreError::SessionAlreadyExists { session_id },
+            M::HandleCollision { .. } => CoreError::SessionIdCollision { session_id },
+            M::MissingSession { .. } => CoreError::InvalidSessionState {
+                session_id,
+                msg: "handle is registered but its session record is missing".into(),
+            },
+            M::InvalidSession(e) => CoreError::InvalidSessionState {
+                session_id,
+                msg: e.to_string(),
+            },
+            M::InvalidRecord(what) => CoreError::InvalidSessionState {
+                session_id,
+                msg: format!("corrupt {what} record"),
+            },
+            M::InconsistentStore(what) => CoreError::InvalidSessionState {
+                session_id,
+                msg: what.into(),
+            },
+            M::MalformedMessage => CoreError::Crypto {
+                msg: "malformed message".into(),
+            },
+            M::Ratchet(e) => CoreError::from(e),
+            M::Checkpoint(e) => CoreError::Crypto { msg: e.to_string() },
+            M::GenerationExhausted => CoreError::Crypto {
+                msg: "session generation exhausted".into(),
+            },
+            M::Conflict(_) => CoreError::SessionConflict { session_id },
+            M::ExtraConflict { .. } | M::SideWrite(_) => CoreError::Storage {
+                msg: "conflicting write".into(),
+            },
+            M::Store(e) | M::NotCommitted(e) => CoreError::from(e),
+            M::OutcomeUnknown {
+                attempted_generation,
+                ..
+            } => CoreError::CommitOutcomeUnknown {
+                session_id,
+                attempted_generation,
+            },
+            M::Unresolved {
+                attempted_generation,
+            } => CoreError::SessionUnresolved {
+                session_id,
+                attempted_generation,
+            },
+            M::UnknownMessage => CoreError::UnknownMessage { session_id },
         }
     }
+}
+
+// ── Durable messaging records ─────────────────────────────────────────────────
+
+/// A committed outgoing message. `wire` is exactly what must be sent — on
+/// the first attempt and on every retransmission.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OutgoingMessage {
+    /// 32-byte id of this exact message; both peers derive the same one.
+    pub message_id: Vec<u8>,
+    /// `header(40) || ciphertext`, the unchanged wire format.
+    pub wire: Vec<u8>,
+}
+
+/// A committed incoming message.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct IncomingMessage {
+    pub message_id: Vec<u8>,
+    pub plaintext: Vec<u8>,
+}
+
+/// The result of `receive_message`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum ReceiveResult {
+    /// Newly accepted and committed as undelivered. Show it, then call
+    /// `acknowledge_incoming`.
+    Accepted { message: IncomingMessage },
+    /// Accepted before; the ratchet was not touched. `undelivered` carries it
+    /// again if it was never acknowledged.
+    Duplicate {
+        message_id: Vec<u8>,
+        undelivered: Option<IncomingMessage>,
+    },
+}
+
+/// What `recover_session` found for a session whose commit outcome was
+/// unknown.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RecoveryReport {
+    pub attempted_generation: u64,
+    pub stored_generation: u64,
+    /// Whether, as the store reads now, the unresolved operation took effect
+    /// (its outbox / inbox / session record exists).
+    pub artifact_committed: bool,
+}
+
+fn outgoing(m: messaging::OutgoingMessage) -> OutgoingMessage {
+    OutgoingMessage {
+        message_id: m.message_id.to_vec(),
+        wire: m.wire,
+    }
+}
+
+fn incoming(m: messaging::IncomingMessage) -> IncomingMessage {
+    IncomingMessage {
+        message_id: m.message_id.to_vec(),
+        plaintext: m.plaintext.to_vec(),
+    }
+}
+
+fn message_id_arg(session_id: u64, id: &[u8]) -> Result<messaging::MessageId, CoreError> {
+    id.try_into().map_err(|_| CoreError::UnknownMessage { session_id })
 }
 
 // ── Local session handles ─────────────────────────────────────────────────────
@@ -485,12 +611,21 @@ fn unpack_initiator_handshake(bytes: &[u8]) -> Result<InitiatorHandshakeV1, Core
     })
 }
 
+/// The encrypted store and the durable messaging state machine over it.
+///
+/// Sessions live only in the store: every messaging call loads the session,
+/// stages its transition, and commits the new state together with the
+/// operation's outbox or inbox record before returning anything
+/// (`core_protocol::messaging`, spec `docs/S2-B2-DURABLE-MESSAGING.md`).
+/// Nothing about a session is cached here, so a second `ArciumCore` on the
+/// same file cannot advance a session from a state it no longer holds.
+///
+/// Lock order: `store`, then `messenger`. `messenger` only records which
+/// sessions have an unresolved commit.
 #[derive(uniffi::Object)]
 pub struct ArciumCore {
     store: Mutex<EncryptedStore>,
-    // D1: in-memory only, deliberately not persisted. Sessions are lost on
-    // process death; that is expected and acceptable for this task.
-    sessions: Mutex<SessionManager>,
+    messenger: Mutex<Messenger>,
 }
 
 #[uniffi::export]
@@ -507,7 +642,7 @@ impl ArciumCore {
         let store = EncryptedStore::open(&storage_path, key)?;
         Ok(Arc::new(Self {
             store: Mutex::new(store),
-            sessions: Mutex::new(SessionManager::new()),
+            messenger: Mutex::new(Messenger::new()),
         }))
     }
 
@@ -636,19 +771,49 @@ impl ArciumCore {
             ad: alice_session.ad.clone(),
             peer_identity_pk: bundle.identity_pk.to_bytes(),
         };
-        self.sessions
-            .lock()
-            .map_err(|_| CoreError::Storage {
-                msg: "mutex poisoned".into(),
-            })?
-            .try_new_session(session_id, session)?;
-
-        Ok(pack_initiator_handshake(
+        let handshake = pack_initiator_handshake(
             &our_identity_pk,
             &alice_session.ephemeral_pk,
             &spk_id(bundle.signed_prekey_pk.as_bytes()),
             bundle.one_time_prekey_id,
-        ))
+        );
+
+        // The session, its handle and the handshake are committed together;
+        // the handshake is returned only after that commit, and can be read
+        // again with `initiator_handshake` if it is lost before being sent.
+        let (mut store, mut messenger) = self.lock()?;
+        messenger
+            .create_session(
+                &mut store,
+                our_identity_pk.to_bytes(),
+                NewSession {
+                    handle: session_id,
+                    session,
+                    role: SessionRole::Initiator,
+                    initial_outbound: Some(handshake.clone()),
+                    extra: Vec::new(),
+                },
+            )
+            .map_err(|e| CoreError::messaging(session_id, e))?;
+        Ok(handshake)
+    }
+
+    /// The handshake stored with the initiator session under `session_id`,
+    /// for sending again after a restart. `None` for a responder session.
+    pub fn initiator_handshake(&self, session_id: u64) -> Result<Option<Vec<u8>>, CoreError> {
+        let (store, messenger) = self.lock()?;
+        messenger
+            .initial_outbound(&store, session_id)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// Whether a session is stored under `session_id`.
+    pub fn has_session(&self, session_id: u64) -> Result<bool, CoreError> {
+        let (store, messenger) = self.lock()?;
+        Ok(messenger
+            .peer_of(&store, session_id)
+            .map_err(|e| CoreError::messaging(session_id, e))?
+            .is_some())
     }
 
     /// Establishes a session as the X3DH responder ("Bob") from the 84-byte
@@ -682,18 +847,17 @@ impl ArciumCore {
     ///
     /// # Atomicity
     ///
-    /// Reading the record, validating it against the handshake, generating the
-    /// replacement and writing it all happen under a single continuous
-    /// `EncryptedStore` guard, so two threads cannot both consume one one-time
-    /// prekey. The write is a single `put`, which is one SQLite statement in
-    /// autocommit and therefore one transaction — that, not the mutex, is what
-    /// makes the transition survive a crash. The mutex only serializes threads.
+    /// The rotated prekey record, the new session and its handle are written in
+    /// one store transaction, and the prekey record is replaced only if it is
+    /// still byte-identical to the one validated here. A crash before that
+    /// commit leaves the one-time prekey unconsumed and no session — the same
+    /// handshake can be answered again; after it, both exist. Nothing is
+    /// consumed without the session that uses it.
     ///
-    /// The store guard is released before the session lock is taken; the two are
-    /// never held together. If anything after the write fails — session insertion
-    /// refusing the handle, or the session mutex being poisoned — the one-time
-    /// prekey stays consumed and is not restored: a prekey that has been handed
-    /// to a handshake must never return to circulation.
+    /// If the session is refused because this peer already has one or the
+    /// handle belongs to another peer, nothing from that transaction is written,
+    /// and the one-time prekey is then consumed on its own: a prekey named by a
+    /// handshake that reached this device never returns to circulation.
     pub fn establish_session_responder(
         &self,
         session_id: u64,
@@ -701,51 +865,40 @@ impl ArciumCore {
     ) -> Result<(), CoreError> {
         let identity = self.require_identity()?;
         let handshake = unpack_initiator_handshake(&initiator_handshake)?;
+        let (mut store, mut messenger) = self.lock()?;
 
-        // ── one continuous store guard: read → validate → rotate → single put ──
-        let (signed_prekey_sk, taken_opk) = {
-            let store = self.store.lock().map_err(|_| CoreError::Storage {
-                msg: "mutex poisoned".into(),
-            })?;
-            let record_bytes = Zeroizing::new(store.get(PREKEYS_KEY)?);
-            let mut record = unpack_prekeys(&record_bytes)?;
-
-            if spk_id(record.signed_prekey_pk().as_bytes()) != handshake.spk_id {
-                return Err(CoreError::StaleSignedPrekey);
+        let record_bytes = Zeroizing::new(store.get(PREKEYS_KEY)?);
+        let mut record = unpack_prekeys(&record_bytes)?;
+        if spk_id(record.signed_prekey_pk().as_bytes()) != handshake.spk_id {
+            return Err(CoreError::StaleSignedPrekey);
+        }
+        // Every rejection below returns before anything is written.
+        let taken = match (record.opk.take(), handshake.opk_id) {
+            (Some((held_id, held_sk)), Some(named)) if held_id == named => {
+                record.opk = Some(new_one_time_prekey());
+                Some(held_sk)
             }
-
-            // Every rejection below returns before the write, leaving the record
-            // exactly as it was found.
-            let taken = match (record.opk.take(), handshake.opk_id) {
-                (Some((held_id, held_sk)), Some(named)) if held_id == named => {
-                    record.opk = Some(new_one_time_prekey());
-                    store.put(PREKEYS_KEY, &pack_prekeys(&record))?;
-                    Some(held_sk)
-                }
-                (Some(_), Some(named)) => {
-                    return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
-                }
-                (Some(_), None) => return Err(CoreError::OneTimePrekeyRequired),
-                (None, Some(named)) => {
-                    return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
-                }
-                (None, None) => None,
-            };
-
-            (record.signed_prekey_sk, taken)
+            (Some(_), Some(named)) => {
+                return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
+            }
+            (Some(_), None) => return Err(CoreError::OneTimePrekeyRequired),
+            (None, Some(named)) => {
+                return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
+            }
+            (None, None) => None,
         };
+        let rotated = taken.is_some().then(|| pack_prekeys(&record));
 
         let our_identity_pk = PublicKey::from(&identity.dh_key);
         let bob_session = x3dh_respond(
             &identity.dh_key,
             our_identity_pk,
-            &signed_prekey_sk,
-            taken_opk.as_ref(),
+            &record.signed_prekey_sk,
+            taken.as_ref(),
             handshake.identity_pk,
             handshake.ephemeral_pk,
         );
-
-        let ratchet = DoubleRatchet::init_bob(bob_session.root_key, signed_prekey_sk);
+        let ratchet = DoubleRatchet::init_bob(bob_session.root_key, record.signed_prekey_sk.clone());
         // Owner is the initiator identity this handshake was actually answered
         // for, not anything the caller asserted separately.
         let session = Session {
@@ -753,62 +906,207 @@ impl ArciumCore {
             ad: bob_session.ad.clone(),
             peer_identity_pk: handshake.identity_pk.to_bytes(),
         };
-        self.sessions
-            .lock()
+        let extra = match &rotated {
+            Some(new_record) => vec![SideWrite::replace(
+                PREKEYS_KEY.into(),
+                record_bytes.clone(),
+                new_record.clone(),
+            )
             .map_err(|_| CoreError::Storage {
-                msg: "mutex poisoned".into(),
-            })?
-            .try_new_session(session_id, session)?;
-        Ok(())
-    }
-
-    /// Encrypts `plaintext` for the given established session. Returns
-    /// `header.to_bytes()(40) || ciphertext`.
-    pub fn encrypt_message(&self, session_id: u64, plaintext: Vec<u8>) -> Result<Vec<u8>, CoreError> {
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?;
-        let session = sessions
-            .get_session(session_id)
-            .ok_or(CoreError::NoSession { session_id })?;
-        let (header, ciphertext) = session.ratchet.encrypt(&plaintext, &session.ad)?;
-
-        let mut out = Vec::with_capacity(HEADER_SIZE + ciphertext.len());
-        out.extend_from_slice(&header.to_bytes());
-        out.extend_from_slice(&ciphertext);
-        Ok(out)
-    }
-
-    /// Decrypts `message` (as produced by `encrypt_message`) for the given
-    /// established session. Preserves the F-1 commit-on-success guarantee:
-    /// `DoubleRatchet::decrypt` internally snapshots and rolls back on any
-    /// authentication failure, so a forged/tampered message leaves the
-    /// session's ratchet state completely unchanged — this wrapper adds no
-    /// extra mutation that could undermine that.
-    pub fn decrypt_message(&self, session_id: u64, message: Vec<u8>) -> Result<Vec<u8>, CoreError> {
-        if message.len() < HEADER_SIZE {
-            return Err(CoreError::Crypto { msg: "message shorter than header".into() });
+                msg: "prekey record key is reserved".into(),
+            })?],
+            None => Vec::new(),
+        };
+        let created = messenger.create_session(
+            &mut store,
+            our_identity_pk.to_bytes(),
+            NewSession {
+                handle: session_id,
+                session,
+                role: SessionRole::Responder,
+                initial_outbound: None,
+                extra,
+            },
+        );
+        match created {
+            Ok(()) => Ok(()),
+            // The prekey record changed since it was validated: another
+            // receipt consumed the one-time prekey first.
+            Err(MessagingError::ExtraConflict { .. }) => Err(CoreError::OneTimePrekeyUnavailable {
+                opk_id: handshake.opk_id.unwrap_or_default(),
+            }),
+            Err(e @ (MessagingError::AlreadyExists { .. } | MessagingError::HandleCollision { .. })) => {
+                if let Some(new_record) = rotated {
+                    // Best effort: the refusal is reported whatever this does.
+                    let _ = consume_prekey(&mut store, &record_bytes, &new_record);
+                }
+                Err(CoreError::messaging(session_id, e))
+            }
+            Err(e) => Err(CoreError::messaging(session_id, e)),
         }
-        let (header_bytes, ciphertext) = message.split_at(HEADER_SIZE);
-        let header = Header::from_bytes(header_bytes)?;
-
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?;
-        let session = sessions
-            .get_session(session_id)
-            .ok_or(CoreError::NoSession { session_id })?;
-        let plaintext = session.ratchet.decrypt(&header, ciphertext, &session.ad)?;
-        Ok(plaintext)
     }
+
+    /// Encrypts `plaintext` for the session under `session_id`. The new
+    /// session state and the outbox record holding the returned bytes are
+    /// committed together before this returns; nothing is returned otherwise.
+    ///
+    /// The message stays in `pending_outgoing` until `acknowledge_outgoing`.
+    /// To resend, send those stored bytes again — never call this again for
+    /// the same logical message.
+    pub fn send_message(
+        &self,
+        session_id: u64,
+        plaintext: Vec<u8>,
+    ) -> Result<OutgoingMessage, CoreError> {
+        let our = self.our_identity_pk()?;
+        let plaintext = Zeroizing::new(plaintext);
+        let (mut store, mut messenger) = self.lock()?;
+        messenger
+            .send(&mut store, our, session_id, &plaintext)
+            .map(outgoing)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// Every committed, unacknowledged outgoing message for `session_id`, in
+    /// send order, with the exact bytes to (re)send.
+    pub fn pending_outgoing(&self, session_id: u64) -> Result<Vec<OutgoingMessage>, CoreError> {
+        let (store, messenger) = self.lock()?;
+        messenger
+            .pending_outgoing(&store, session_id)
+            .map(|v| v.into_iter().map(outgoing).collect())
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// Removes an outgoing message once its delivery is confirmed. Returns
+    /// whether it was still pending; repeating it is harmless.
+    pub fn acknowledge_outgoing(
+        &self,
+        session_id: u64,
+        message_id: Vec<u8>,
+    ) -> Result<bool, CoreError> {
+        let id = message_id_arg(session_id, &message_id)?;
+        let (store, messenger) = self.lock()?;
+        messenger
+            .acknowledge_outgoing(&store, session_id, &id)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// Decrypts `message` (the `wire` bytes of a peer's `OutgoingMessage`).
+    ///
+    /// A new message advances the session and is committed as undelivered
+    /// before its plaintext is returned; it stays in `pending_incoming` until
+    /// `acknowledge_incoming`. A message received before returns `Duplicate`
+    /// and advances nothing. A forged message fails and writes nothing (F-1).
+    pub fn receive_message(
+        &self,
+        session_id: u64,
+        message: Vec<u8>,
+    ) -> Result<ReceiveResult, CoreError> {
+        let our = self.our_identity_pk()?;
+        let (mut store, mut messenger) = self.lock()?;
+        let received = messenger
+            .receive(&mut store, our, session_id, &message)
+            .map_err(|e| CoreError::messaging(session_id, e))?;
+        Ok(match received {
+            Received::Accepted(m) => ReceiveResult::Accepted {
+                message: incoming(m),
+            },
+            Received::Duplicate {
+                message_id,
+                undelivered,
+            } => ReceiveResult::Duplicate {
+                message_id: message_id.to_vec(),
+                undelivered: undelivered.map(incoming),
+            },
+        })
+    }
+
+    /// Every committed incoming message for `session_id` not yet
+    /// acknowledged, in receive order.
+    pub fn pending_incoming(&self, session_id: u64) -> Result<Vec<IncomingMessage>, CoreError> {
+        let (store, messenger) = self.lock()?;
+        messenger
+            .pending_incoming(&store, session_id)
+            .map(|v| v.into_iter().map(incoming).collect())
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// Marks an incoming message delivered and erases its stored plaintext.
+    /// Returns whether it was undelivered until now; repeating it is harmless.
+    pub fn acknowledge_incoming(
+        &self,
+        session_id: u64,
+        message_id: Vec<u8>,
+    ) -> Result<bool, CoreError> {
+        let id = message_id_arg(session_id, &message_id)?;
+        let (mut store, messenger) = self.lock()?;
+        messenger
+            .acknowledge_incoming(&mut store, session_id, &id)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// After `CommitOutcomeUnknown`: reports what the store holds for the
+    /// session and lets it continue from there. `None` if it was not
+    /// unresolved. The unresolved operation's output was never released, so
+    /// continuing cannot compete with anything sent or shown. This reflects
+    /// what the store reads now; it proves nothing about power loss.
+    pub fn recover_session(&self, session_id: u64) -> Result<Option<RecoveryReport>, CoreError> {
+        let our = self.our_identity_pk()?;
+        let (mut store, mut messenger) = self.lock()?;
+        Ok(messenger
+            .recover(&mut store, our, session_id)
+            .map_err(|e| CoreError::messaging(session_id, e))?
+            .map(|r| RecoveryReport {
+                attempted_generation: r.attempted_generation,
+                stored_generation: r.stored_generation,
+                artifact_committed: r.artifact_committed,
+            }))
+    }
+}
+
+/// Replaces the prekey record with `rotated` if it is still `expected`.
+fn consume_prekey(
+    store: &mut EncryptedStore,
+    expected: &[u8],
+    rotated: &[u8],
+) -> Result<(), StorageError> {
+    let tx = store.transaction()?;
+    if tx.get(PREKEYS_KEY)?.as_slice() == expected {
+        tx.put(PREKEYS_KEY, rotated)?;
+        tx.commit()?;
+    }
+    Ok(())
 }
 
 // Plain (non-exported) impl block: helpers here are NOT visible to UniFFI,
 // unlike methods inside the `#[uniffi::export] impl ArciumCore` block above,
 // where export applies to every method regardless of Rust-level visibility.
 impl ArciumCore {
+    /// Locks the store, then the messenger (the only lock order used).
+    #[allow(clippy::type_complexity)]
+    fn lock(
+        &self,
+    ) -> Result<
+        (
+            std::sync::MutexGuard<'_, EncryptedStore>,
+            std::sync::MutexGuard<'_, Messenger>,
+        ),
+        CoreError,
+    > {
+        let poisoned = |_| CoreError::Storage {
+            msg: "mutex poisoned".into(),
+        };
+        let store = self.store.lock().map_err(poisoned)?;
+        let messenger = self.messenger.lock().map_err(|_| CoreError::Storage {
+            msg: "mutex poisoned".into(),
+        })?;
+        Ok((store, messenger))
+    }
+
+    fn our_identity_pk(&self) -> Result<[u8; 32], CoreError> {
+        Ok(PublicKey::from(&self.require_identity()?.dh_key).to_bytes())
+    }
+
     fn require_identity(&self) -> Result<Arc<Identity>, CoreError> {
         self.load_identity()
             .ok_or_else(|| CoreError::InvalidKey { msg: "no identity saved — call save_identity first".into() })
@@ -820,6 +1118,21 @@ impl ArciumCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_crypto::ratchet::HEADER_SIZE;
+
+    /// Test shorthand for the durable send path: the committed wire bytes.
+    fn send(core: &ArciumCore, session_id: u64, plaintext: Vec<u8>) -> Result<Vec<u8>, CoreError> {
+        core.send_message(session_id, plaintext).map(|m| m.wire)
+    }
+
+    /// Test shorthand for the durable receive path: the plaintext of a newly
+    /// accepted message. A duplicate here would be a test bug.
+    fn recv(core: &ArciumCore, session_id: u64, message: Vec<u8>) -> Result<Vec<u8>, CoreError> {
+        match core.receive_message(session_id, message)? {
+            ReceiveResult::Accepted { message } => Ok(message.plaintext),
+            other => panic!("expected a new message, got {other:?}"),
+        }
+    }
     use tempfile::tempdir;
 
     fn key32(byte: u8) -> Vec<u8> {
@@ -996,12 +1309,12 @@ mod tests {
             .unwrap();
 
         let plaintext = b"hello arcium".to_vec();
-        let message = alice.encrypt_message(session_id, plaintext.clone()).unwrap();
+        let message = send(&alice, session_id, plaintext.clone()).unwrap();
 
         // Ciphertext must not equal the plaintext — this is not a stub echo.
         assert_ne!(&message[HEADER_SIZE..], plaintext.as_slice());
 
-        let recovered = bob.decrypt_message(session_id, message).unwrap();
+        let recovered = recv(&bob, session_id, message).unwrap();
         assert_eq!(recovered, plaintext, "Bob must recover exactly what Alice sent");
     }
 
@@ -1020,7 +1333,7 @@ mod tests {
         bob.establish_session_responder(session_id, handshake.clone())
             .unwrap();
 
-        let genuine = alice.encrypt_message(session_id, b"real message".to_vec()).unwrap();
+        let genuine = send(&alice, session_id, b"real message".to_vec()).unwrap();
 
         // Tamper one byte of the ciphertext (not the header) before Bob ever
         // sees a genuine message — this is Bob's very first decrypt, so it
@@ -1029,11 +1342,11 @@ mod tests {
         let last = forged.len() - 1;
         forged[last] ^= 0xFF;
 
-        assert!(bob.decrypt_message(session_id, forged).is_err(), "forged ciphertext must fail authentication");
+        assert!(recv(&bob, session_id, forged).is_err(), "forged ciphertext must fail authentication");
 
         // The genuine message, unmodified, must still decrypt correctly —
         // proof the failed forged attempt did not desync Bob's session.
-        let recovered = bob.decrypt_message(session_id, genuine).unwrap();
+        let recovered = recv(&bob, session_id, genuine).unwrap();
         assert_eq!(recovered, b"real message");
     }
 
@@ -1054,21 +1367,21 @@ mod tests {
 
         // Alice must send first: Bob's sending chain key isn't derived until
         // his receiving DH ratchet step runs on the first inbound message.
-        let m1 = alice.encrypt_message(session_id, b"one".to_vec()).unwrap();
-        assert_eq!(bob.decrypt_message(session_id, m1).unwrap(), b"one");
+        let m1 = send(&alice, session_id, b"one".to_vec()).unwrap();
+        assert_eq!(recv(&bob, session_id, m1).unwrap(), b"one");
 
-        let m2 = alice.encrypt_message(session_id, b"two".to_vec()).unwrap();
-        assert_eq!(bob.decrypt_message(session_id, m2).unwrap(), b"two");
+        let m2 = send(&alice, session_id, b"two".to_vec()).unwrap();
+        assert_eq!(recv(&bob, session_id, m2).unwrap(), b"two");
 
         // Now Bob can reply — his cks was derived by the DH step above.
-        let r1 = bob.encrypt_message(session_id, b"reply one".to_vec()).unwrap();
-        assert_eq!(alice.decrypt_message(session_id, r1).unwrap(), b"reply one");
+        let r1 = send(&bob, session_id, b"reply one".to_vec()).unwrap();
+        assert_eq!(recv(&alice, session_id, r1).unwrap(), b"reply one");
 
-        let r2 = bob.encrypt_message(session_id, b"reply two".to_vec()).unwrap();
-        assert_eq!(alice.decrypt_message(session_id, r2).unwrap(), b"reply two");
+        let r2 = send(&bob, session_id, b"reply two".to_vec()).unwrap();
+        assert_eq!(recv(&alice, session_id, r2).unwrap(), b"reply two");
 
-        let m3 = alice.encrypt_message(session_id, b"three".to_vec()).unwrap();
-        assert_eq!(bob.decrypt_message(session_id, m3).unwrap(), b"three");
+        let m3 = send(&alice, session_id, b"three".to_vec()).unwrap();
+        assert_eq!(recv(&bob, session_id, m3).unwrap(), b"three");
     }
 
     #[test]
@@ -1076,11 +1389,11 @@ mod tests {
         let core = fresh_core(70);
         core.save_identity(Identity::generate()).unwrap();
         assert!(matches!(
-            core.encrypt_message(1, b"x".to_vec()),
+            send(&core, 1, b"x".to_vec()),
             Err(CoreError::NoSession { session_id: 1 })
         ));
         assert!(matches!(
-            core.decrypt_message(1, vec![0u8; HEADER_SIZE]),
+            recv(&core, 1, vec![0u8; HEADER_SIZE]),
             Err(CoreError::NoSession { session_id: 1 })
         ));
     }
@@ -1118,19 +1431,18 @@ mod tests {
         // Alice must send first: Bob's sending chain key isn't derived until
         // his receiving DH ratchet step runs on the first inbound message.
         let outbound = b"from alice under id 42".to_vec();
-        let message = alice
-            .encrypt_message(alice_session_id, outbound.clone())
+        let message = send(&alice, alice_session_id, outbound.clone())
             .unwrap();
         assert_eq!(
-            bob.decrypt_message(bob_session_id, message).unwrap(),
+            recv(&bob, bob_session_id, message).unwrap(),
             outbound,
             "Bob must recover Alice's plaintext exactly while looking the session up under a different id",
         );
 
         let reply = b"from bob under id 77".to_vec();
-        let reply_message = bob.encrypt_message(bob_session_id, reply.clone()).unwrap();
+        let reply_message = send(&bob, bob_session_id, reply.clone()).unwrap();
         assert_eq!(
-            alice.decrypt_message(alice_session_id, reply_message).unwrap(),
+            recv(&alice, alice_session_id, reply_message).unwrap(),
             reply,
             "Alice must recover Bob's reply exactly under her own unrelated id",
         );
@@ -1138,11 +1450,11 @@ mod tests {
         // Each side's id is meaningless to the other: the peer's id resolves to
         // nothing locally, which is what "local handle" means in practice.
         assert!(matches!(
-            alice.encrypt_message(bob_session_id, b"x".to_vec()),
+            send(&alice, bob_session_id, b"x".to_vec()),
             Err(CoreError::NoSession { session_id }) if session_id == bob_session_id
         ));
         assert!(matches!(
-            bob.encrypt_message(alice_session_id, b"x".to_vec()),
+            send(&bob, alice_session_id, b"x".to_vec()),
             Err(CoreError::NoSession { session_id }) if session_id == alice_session_id
         ));
     }
@@ -1201,8 +1513,8 @@ mod tests {
         .unwrap();
 
         let plaintext = b"addressed by derived handle".to_vec();
-        let message = alice.encrypt_message(alice_handle, plaintext.clone()).unwrap();
-        assert_eq!(bob.decrypt_message(bob_handle, message).unwrap(), plaintext);
+        let message = send(&alice, alice_handle, plaintext.clone()).unwrap();
+        assert_eq!(recv(&bob, bob_handle, message).unwrap(), plaintext);
     }
 
     // ── Session ownership: no silent replacement ─────────────────────────────
@@ -1237,8 +1549,8 @@ mod tests {
 
         // Move the ratchet forward so a reset would be observable.
         let first = b"first message, advances the ratchet".to_vec();
-        let ct = alice.encrypt_message(handle, first.clone()).unwrap();
-        assert_eq!(bob.decrypt_message(handle, ct).unwrap(), first);
+        let ct = send(&alice, handle, first.clone()).unwrap();
+        assert_eq!(recv(&bob, handle, ct).unwrap(), first);
 
         // Second establishment for the same peer under the same handle.
         let err = alice
@@ -1251,9 +1563,9 @@ mod tests {
 
         // The original session must still be the one in place and still usable.
         let second = b"sent after the rejected duplicate".to_vec();
-        let ct2 = alice.encrypt_message(handle, second.clone()).unwrap();
+        let ct2 = send(&alice, handle, second.clone()).unwrap();
         assert_eq!(
-            bob.decrypt_message(handle, ct2).unwrap(),
+            recv(&bob, handle, ct2).unwrap(),
             second,
             "the surviving session must still decrypt on the peer — a silent reset would break this"
         );
@@ -1285,12 +1597,12 @@ mod tests {
 
         // Bob's session must be exactly the one still installed.
         let msg = b"bob still owns this handle".to_vec();
-        let ct = alice.encrypt_message(handle, msg.clone()).unwrap();
-        assert_eq!(bob.decrypt_message(handle, ct).unwrap(), msg);
+        let ct = send(&alice, handle, msg.clone()).unwrap();
+        assert_eq!(recv(&bob, handle, ct).unwrap(), msg);
     }
 
     /// A handshake that fails must leave no ownership behind: the id stays free,
-    /// which `encrypt_message` reports as NoSession rather than as a session
+    /// which `send_message` reports as NoSession rather than as a session
     /// belonging to someone.
     #[test]
     fn failed_initiator_leaves_no_session() {
@@ -1314,7 +1626,7 @@ mod tests {
 
         assert!(
             matches!(
-                alice.encrypt_message(handle, b"x".to_vec()),
+                send(&alice, handle, b"x".to_vec()),
                 Err(CoreError::NoSession { session_id }) if session_id == handle
             ),
             "a failed handshake must not leave an owned session behind"
@@ -1344,7 +1656,7 @@ mod tests {
 
         assert!(
             matches!(
-                bob.encrypt_message(handle, b"x".to_vec()),
+                send(&bob, handle, b"x".to_vec()),
                 Err(CoreError::NoSession { session_id }) if session_id == handle
             ),
             "a failed responder handshake must not leave an owned session behind"
@@ -1361,11 +1673,11 @@ mod tests {
         let handle: u64 = 123;
 
         assert!(matches!(
-            alice.encrypt_message(handle, b"x".to_vec()),
+            send(&alice, handle, b"x".to_vec()),
             Err(CoreError::NoSession { session_id }) if session_id == handle
         ));
         assert!(matches!(
-            alice.decrypt_message(handle, vec![0u8; HEADER_SIZE + 16]),
+            recv(&alice, handle, vec![0u8; HEADER_SIZE + 16]),
             Err(CoreError::NoSession { session_id }) if session_id == handle
         ));
 
@@ -1377,8 +1689,8 @@ mod tests {
             .unwrap();
 
         let msg = b"works after the earlier failures".to_vec();
-        let ct = alice.encrypt_message(handle, msg.clone()).unwrap();
-        assert_eq!(bob.decrypt_message(handle, ct).unwrap(), msg);
+        let ct = send(&alice, handle, msg.clone()).unwrap();
+        assert_eq!(recv(&bob, handle, ct).unwrap(), msg);
     }
 
     /// Two threads racing to establish the same handle on one core: the check
@@ -1623,8 +1935,8 @@ mod tests {
 
         // Round trip proves dh4 was actually included on both sides.
         let msg = b"through a one-time prekey".to_vec();
-        let ct = alice.encrypt_message(1, msg.clone()).unwrap();
-        assert_eq!(bob.decrypt_message(1, ct).unwrap(), msg);
+        let ct = send(&alice, 1, msg.clone()).unwrap();
+        assert_eq!(recv(&bob, 1, ct).unwrap(), msg);
     }
 
     /// Replay. The one property claimed: a handshake this device already accepted
@@ -1651,7 +1963,7 @@ mod tests {
 
         assert!(
             matches!(
-                bob.encrypt_message(2, b"x".to_vec()),
+                send(&bob, 2, b"x".to_vec()),
                 Err(CoreError::NoSession { session_id: 2 })
             ),
             "a refused replay must leave no session"
@@ -1765,9 +2077,9 @@ mod tests {
         bob.establish_session_responder(1, handshake).unwrap();
 
         let msg = b"no one-time prekey here".to_vec();
-        let ct = alice.encrypt_message(1, msg.clone()).unwrap();
+        let ct = send(&alice, 1, msg.clone()).unwrap();
         assert_eq!(
-            bob.decrypt_message(1, ct).unwrap(),
+            recv(&bob, 1, ct).unwrap(),
             msg,
             "both sides must have omitted dh4 identically"
         );
@@ -1781,7 +2093,11 @@ mod tests {
         phantom[2] = FLAG_OTP;
         phantom[164..172].copy_from_slice(&0x5EED_5EED_5EED_5EEDu64.to_be_bytes());
         phantom[172..204].copy_from_slice(&[0x42u8; 32]);
-        let named = alice.establish_session_initiator(2, phantom).unwrap();
+        // A second initiator: Alice already holds her one session with Bob,
+        // and sessions are stored one per peer identity.
+        let dave = fresh_core(232);
+        dave.save_identity(Identity::generate()).unwrap();
+        let named = dave.establish_session_initiator(2, phantom).unwrap();
         assert_eq!(named[2] & FLAG_OTP, FLAG_OTP, "Alice must have set used_otp");
 
         let before = read_record(&bob);
@@ -1794,7 +2110,7 @@ mod tests {
         );
         assert_eq!(read_record(&bob), before, "the refusal must not touch the record");
         assert!(matches!(
-            bob.encrypt_message(3, b"x".to_vec()),
+            send(&bob, 3, b"x".to_vec()),
             Err(CoreError::NoSession { session_id: 3 })
         ));
     }
@@ -1892,5 +2208,337 @@ mod tests {
             after, consumed,
             "the prekey was already consumed and must stay consumed"
         );
+    }
+
+    // ── S2-B2: durable sessions and messages ─────────────────────────────────
+
+    /// A database path that outlives the core, so a test can reopen it.
+    fn db_path() -> String {
+        tempdir().unwrap().keep().join("db").to_str().unwrap().to_string()
+    }
+
+    fn open_at(path: &str, byte: u8) -> Arc<ArciumCore> {
+        ArciumCore::new(path.to_string(), key32(byte)).unwrap()
+    }
+
+    /// Alice and Bob with an established session (handle 1 on both sides), each
+    /// in a file database. Returns the two paths.
+    fn established_pair() -> (String, String) {
+        let (pa, pb) = (db_path(), db_path());
+        let bob = open_at(&pb, 1);
+        bob.save_identity(Identity::generate()).unwrap();
+        bob.establish_prekeys().unwrap();
+        let alice = open_at(&pa, 2);
+        alice.save_identity(Identity::generate()).unwrap();
+        let hs = alice
+            .establish_session_initiator(1, bob.export_prekey_bundle().unwrap())
+            .unwrap();
+        bob.establish_session_responder(1, hs).unwrap();
+        (pa, pb)
+    }
+
+    /// Before S2-B2 a session lived only in memory: a new `ArciumCore` on the
+    /// same database had none. Now both sides reopen and keep talking.
+    #[test]
+    fn sessions_survive_reopening_the_database() {
+        let (pa, pb) = established_pair();
+        for i in 0u8..3 {
+            let (alice, bob) = (open_at(&pa, 2), open_at(&pb, 1));
+            assert!(alice.has_session(1).unwrap() && bob.has_session(1).unwrap());
+            let m = send(&alice, 1, vec![i]).unwrap();
+            drop(alice);
+            assert_eq!(recv(&bob, 1, m).unwrap(), vec![i]);
+            let r = send(&bob, 1, vec![i, i]).unwrap();
+            drop(bob);
+            assert_eq!(recv(&open_at(&pa, 2), 1, r).unwrap(), vec![i, i]);
+        }
+    }
+
+    #[test]
+    fn the_initiator_handshake_can_be_read_again_after_reopening() {
+        let bob = fresh_core(3);
+        bob.save_identity(Identity::generate()).unwrap();
+        bob.establish_prekeys().unwrap();
+        let pa = db_path();
+        let alice = open_at(&pa, 4);
+        alice.save_identity(Identity::generate()).unwrap();
+        let hs = alice
+            .establish_session_initiator(9, bob.export_prekey_bundle().unwrap())
+            .unwrap();
+        drop(alice);
+        // Lost before sending: read it back from the reopened store.
+        let again = open_at(&pa, 4).initiator_handshake(9).unwrap();
+        assert_eq!(again, Some(hs.clone()));
+        bob.establish_session_responder(9, again.unwrap()).unwrap();
+        assert_eq!(bob.initiator_handshake(9).unwrap(), None);
+    }
+
+    #[test]
+    fn outgoing_messages_are_resent_byte_for_byte_and_accepted_once() {
+        let (pa, pb) = established_pair();
+        let alice = open_at(&pa, 2);
+        let sent = alice.send_message(1, b"resend me".to_vec()).unwrap();
+        drop(alice);
+
+        let alice = open_at(&pa, 2);
+        let pending = alice.pending_outgoing(1).unwrap();
+        assert_eq!(pending, vec![sent.clone()], "same id, same bytes after reopening");
+
+        let bob = open_at(&pb, 1);
+        match bob.receive_message(1, pending[0].wire.clone()).unwrap() {
+            ReceiveResult::Accepted { message } => {
+                assert_eq!(message.plaintext, b"resend me");
+                assert_eq!(message.message_id, sent.message_id);
+            }
+            other => panic!("{other:?}"),
+        }
+        // The retransmission of the same bytes is a duplicate, still undelivered.
+        match bob.receive_message(1, sent.wire.clone()).unwrap() {
+            ReceiveResult::Duplicate {
+                message_id,
+                undelivered: Some(m),
+            } => {
+                assert_eq!(message_id, sent.message_id);
+                assert_eq!(m.plaintext, b"resend me");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(bob.acknowledge_incoming(1, sent.message_id.clone()).unwrap());
+        assert!(!bob.acknowledge_incoming(1, sent.message_id.clone()).unwrap());
+        assert_eq!(
+            bob.receive_message(1, sent.wire.clone()).unwrap(),
+            ReceiveResult::Duplicate {
+                message_id: sent.message_id.clone(),
+                undelivered: None
+            }
+        );
+        assert!(alice.acknowledge_outgoing(1, sent.message_id.clone()).unwrap());
+        assert!(alice.pending_outgoing(1).unwrap().is_empty());
+        assert!(bob.pending_incoming(1).unwrap().is_empty());
+    }
+
+    /// Two `ArciumCore` objects on one database — what reopening the store
+    /// without closing the old handle produces. Neither caches a session, so
+    /// alternating between them never forks the ratchet.
+    #[test]
+    fn two_cores_on_one_database_share_one_session_state() {
+        let (pa, pb) = established_pair();
+        let (a1, a2) = (open_at(&pa, 2), open_at(&pa, 2));
+        let bob = open_at(&pb, 1);
+        for i in 0u8..6 {
+            let core = if i % 2 == 0 { &a1 } else { &a2 };
+            let m = send(core, 1, vec![i]).unwrap();
+            assert_eq!(recv(&bob, 1, m).unwrap(), vec![i]);
+        }
+        assert_eq!(a1.pending_outgoing(1).unwrap().len(), 6);
+        assert_eq!(a1.pending_outgoing(1).unwrap(), a2.pending_outgoing(1).unwrap());
+    }
+
+    /// Two cores sending concurrently: every returned message has a distinct
+    /// chain position, is in the outbox, and is accepted by the peer; every
+    /// failure is a conflict or a busy store that released nothing.
+    #[test]
+    fn concurrent_cores_release_one_message_per_position() {
+        let (pa, pb) = established_pair();
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let joins: Vec<_> = (0u8..2)
+            .map(|t| {
+                let (pa, gate) = (pa.clone(), gate.clone());
+                std::thread::spawn(move || {
+                    let core = open_at(&pa, 2);
+                    gate.wait();
+                    (0u8..20)
+                        .filter_map(|i| match core.send_message(1, vec![t, i]) {
+                            Ok(m) => Some(m),
+                            Err(CoreError::SessionConflict { .. } | CoreError::Storage { .. }) => None,
+                            Err(e) => panic!("{e:?}"),
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut released: Vec<_> = joins.into_iter().flat_map(|j| j.join().unwrap()).collect();
+        let mut outbox = open_at(&pa, 2).pending_outgoing(1).unwrap();
+        released.sort_by(|x, y| x.message_id.cmp(&y.message_id));
+        outbox.sort_by(|x, y| x.message_id.cmp(&y.message_id));
+        assert_eq!(released, outbox, "exactly the committed messages were released");
+        let mut positions: Vec<_> = released.iter().map(|m| m.wire[..HEADER_SIZE].to_vec()).collect();
+        positions.sort();
+        positions.dedup();
+        assert_eq!(positions.len(), released.len(), "no two messages share a header");
+        let bob = open_at(&pb, 1);
+        for m in &released {
+            assert!(matches!(
+                bob.receive_message(1, m.wire.clone()).unwrap(),
+                ReceiveResult::Accepted { .. }
+            ));
+        }
+    }
+
+    /// A corrupt stored session is reported and never replaced — neither by
+    /// messaging on it nor by establishing a new session with that peer.
+    #[test]
+    fn a_corrupt_session_record_is_reported_and_not_overwritten() {
+        let (pa, _pb) = established_pair();
+        let alice = open_at(&pa, 2);
+        // Find the session record: the only `session:` key.
+        let key = {
+            let store = alice.store.lock().unwrap();
+            let keys = store.list_keys_with_prefix("session:").unwrap();
+            assert_eq!(keys.len(), 1);
+            keys[0].clone()
+        };
+        alice.store.lock().unwrap().put(&key, b"corrupt").unwrap();
+        assert!(matches!(
+            alice.send_message(1, b"x".to_vec()),
+            Err(CoreError::InvalidSessionState { session_id: 1, .. })
+        ));
+        assert!(matches!(
+            alice.receive_message(1, vec![0u8; HEADER_SIZE + 40]),
+            Err(CoreError::InvalidSessionState { session_id: 1, .. })
+        ));
+        assert_eq!(alice.store.lock().unwrap().get(&key).unwrap(), b"corrupt");
+    }
+
+    #[test]
+    fn acknowledging_an_unknown_message_is_reported() {
+        let (_pa, pb) = established_pair();
+        let bob = open_at(&pb, 1);
+        assert!(matches!(
+            bob.acknowledge_incoming(1, vec![0u8; 32]),
+            Err(CoreError::UnknownMessage { session_id: 1 })
+        ));
+        assert!(matches!(
+            bob.acknowledge_incoming(1, vec![0u8; 5]),
+            Err(CoreError::UnknownMessage { session_id: 1 })
+        ));
+        assert!(!bob.acknowledge_outgoing(1, vec![0u8; 32]).unwrap());
+    }
+
+    // ── S2-B2: process termination ───────────────────────────────────────────
+    //
+    // The child is this test binary running only `ffi_crash_child`. It does one
+    // FFI call on a file database, records what it returned, and dies by
+    // `abort()` before acknowledging anything. Real process deaths on the host;
+    // not power-loss tests. Deaths inside the transaction are covered in
+    // `core_protocol::messaging`.
+
+    const FFI_CHILD_ENV: &str = "ARCIUM_FFI_CHILD";
+    const FFI_DIR_ENV: &str = "ARCIUM_FFI_DIR";
+
+    #[test]
+    fn ffi_crash_child() {
+        let (Ok(scenario), Ok(dir)) = (std::env::var(FFI_CHILD_ENV), std::env::var(FFI_DIR_ENV))
+        else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let read = |n: &str| std::fs::read_to_string(dir.join(n)).unwrap();
+        match scenario.as_str() {
+            "send" => {
+                let m = open_at(&read("a"), 2).send_message(1, b"in flight".to_vec()).unwrap();
+                std::fs::write(dir.join("published"), m.wire).unwrap();
+            }
+            "receive" => {
+                let wire = std::fs::read(dir.join("wire")).unwrap();
+                recv(&open_at(&read("b"), 1), 1, wire).unwrap();
+            }
+            "respond" => {
+                let hs = std::fs::read(dir.join("handshake")).unwrap();
+                open_at(&read("b"), 1).establish_session_responder(5, hs).unwrap();
+            }
+            other => panic!("unknown scenario {other}"),
+        }
+        std::process::abort();
+    }
+
+    #[cfg(unix)]
+    fn run_ffi_child(dir: &std::path::Path, scenario: &str) {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::ffi_crash_child", "--nocapture", "--test-threads=1"])
+            .env(FFI_CHILD_ENV, scenario)
+            .env(FFI_DIR_ENV, dir)
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(6), "child must die by abort(): {status:?}");
+    }
+
+    fn crash_dir(pa: &str, pb: &str) -> std::path::PathBuf {
+        let dir = tempdir().unwrap().keep();
+        std::fs::write(dir.join("a"), pa).unwrap();
+        std::fs::write(dir.join("b"), pb).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn killed_after_sending_the_message_is_resent_byte_for_byte() {
+        let (pa, pb) = established_pair();
+        let dir = crash_dir(&pa, &pb);
+        run_ffi_child(&dir, "send");
+        let published = std::fs::read(dir.join("published")).unwrap();
+        let alice = open_at(&pa, 2);
+        let pending = alice.pending_outgoing(1).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].wire, published);
+        let bob = open_at(&pb, 1);
+        assert_eq!(recv(&bob, 1, published).unwrap(), b"in flight");
+        let r = send(&bob, 1, b"ack".to_vec()).unwrap();
+        assert_eq!(recv(&alice, 1, r).unwrap(), b"ack");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn killed_before_delivering_the_message_it_is_still_pending() {
+        let (pa, pb) = established_pair();
+        let dir = crash_dir(&pa, &pb);
+        let wire = send(&open_at(&pa, 2), 1, b"undelivered".to_vec()).unwrap();
+        std::fs::write(dir.join("wire"), &wire).unwrap();
+        run_ffi_child(&dir, "receive");
+        let bob = open_at(&pb, 1);
+        let pending = bob.pending_incoming(1).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].plaintext, b"undelivered");
+        assert!(matches!(
+            bob.receive_message(1, wire).unwrap(),
+            ReceiveResult::Duplicate {
+                undelivered: Some(_),
+                ..
+            }
+        ));
+        assert!(bob.acknowledge_incoming(1, pending[0].message_id.clone()).unwrap());
+    }
+
+    /// The responder's prekey rotation and session are committed together,
+    /// so after a kill right after the call both are there.
+    #[cfg(unix)]
+    #[test]
+    fn killed_after_answering_a_handshake_the_session_and_rotation_both_persist() {
+        let pb = db_path();
+        let bob = open_at(&pb, 1);
+        bob.save_identity(Identity::generate()).unwrap();
+        bob.establish_prekeys().unwrap();
+        let published = current_opk_id(&bob).unwrap();
+        let alice = fresh_core(6);
+        alice.save_identity(Identity::generate()).unwrap();
+        let hs = alice
+            .establish_session_initiator(5, bob.export_prekey_bundle().unwrap())
+            .unwrap();
+        drop(bob);
+        let dir = crash_dir("", &pb);
+        std::fs::write(dir.join("handshake"), &hs).unwrap();
+        run_ffi_child(&dir, "respond");
+
+        let bob = open_at(&pb, 1);
+        assert!(bob.has_session(5).unwrap());
+        assert_ne!(current_opk_id(&bob).unwrap(), published, "prekey consumed");
+        // The same handshake cannot be answered twice.
+        assert!(matches!(
+            bob.establish_session_responder(6, hs),
+            Err(CoreError::OneTimePrekeyUnavailable { .. })
+        ));
+        let m = send(&alice, 5, b"after restart".to_vec()).unwrap();
+        assert_eq!(recv(&bob, 5, m).unwrap(), b"after restart");
     }
 }

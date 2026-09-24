@@ -110,8 +110,8 @@ jobs:
           retention-days: 7
 
       # The second half of what a device run needs. Both this and the app APK
-      # must be installed to execute TwoPeerMessagingInstrumentationTest; CI
-      # itself never runs them.
+      # must be installed to execute the instrumentation tests; this workflow
+      # does not run them — android-instrumentation.yml does, on an emulator.
       - name: Upload instrumentation test APK
         uses: actions/upload-artifact@v4
         with:

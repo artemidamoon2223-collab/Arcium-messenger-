@@ -68,7 +68,7 @@ class ArciumCoreWrapper {
     // it is never caught, never flattened into a Boolean or null, never
     // rewritten into a generic Exception.
     //
-    // `sessionId` is a local lookup handle into the Rust SessionManager, not a
+    // `sessionId` is a local lookup handle into the Rust session store, not a
     // protocol field — it is absent from the prekey bundle, the handshake, the
     // message header, and the associated data. PR #75 established by test that
     // two peers may use different ids for the same cryptographic session, so
@@ -126,30 +126,70 @@ class ArciumCoreWrapper {
         requireCore().establishSessionResponder(sessionId, initiatorHandshake)
     }
 
+    // ── Durable messaging (S2-B2) ────────────────────────────────────────────
+    //
+    // Rust owns every session transition. Each call below loads the session
+    // from the encrypted store, advances it, and commits the new state together
+    // with the message record before returning anything; Kotlin holds no
+    // session state and never retries an encryption. Specification:
+    // docs/S2-B2-DURABLE-MESSAGING.md.
+
     /**
-     * Encrypts [plaintext] with the Double Ratchet of the session registered
-     * under [sessionId], returning `header || ciphertext`. An id with no
-     * session behind it fails with CoreException.NoSession rather than
-     * yielding anything a caller could mistake for ciphertext.
+     * Encrypts [plaintext] for the session under [sessionId]. The returned
+     * message is already committed to the outbox: its `wire` bytes are what
+     * must be sent, now and on every retransmission. To resend, use
+     * [pendingOutgoing] — never call this again for the same logical message.
      */
-    fun encryptMessage(sessionId: ULong, plaintext: ByteArray): ByteArray {
-        return requireCore().encryptMessage(sessionId, plaintext)
+    fun sendMessage(sessionId: ULong, plaintext: ByteArray): uniffi.arcium_core.OutgoingMessage {
+        return requireCore().sendMessage(sessionId, plaintext)
+    }
+
+    /** Committed, unacknowledged outgoing messages for [sessionId], in send order. */
+    fun pendingOutgoing(sessionId: ULong): List<uniffi.arcium_core.OutgoingMessage> {
+        return requireCore().pendingOutgoing(sessionId)
+    }
+
+    /** Drops an outgoing message once delivery is confirmed. Idempotent. */
+    fun acknowledgeOutgoing(sessionId: ULong, messageId: ByteArray): Boolean {
+        return requireCore().acknowledgeOutgoing(sessionId, messageId)
     }
 
     /**
-     * Decrypts [message] (as produced by [encryptMessage]) with the session
-     * registered under [sessionId]. Authentication failure surfaces as
-     * CoreException and leaves the ratchet untouched — Rust snapshots and
-     * rolls back, which is the F-1 guarantee, and this wrapper adds no
-     * mutation that could weaken it. An unknown id fails with
-     * CoreException.NoSession.
-     *
-     * Which local session an inbound message belongs to is not decided here:
-     * the id travels in no part of the message, so the caller must already
-     * know it.
+     * Decrypts a peer's `wire` bytes. A new message is committed as undelivered
+     * before its plaintext is returned; a message seen before comes back as
+     * `Duplicate` without advancing the ratchet. Authentication failure throws
+     * CoreException and writes nothing (F-1).
      */
-    fun decryptMessage(sessionId: ULong, message: ByteArray): ByteArray {
-        return requireCore().decryptMessage(sessionId, message)
+    fun receiveMessage(sessionId: ULong, message: ByteArray): uniffi.arcium_core.ReceiveResult {
+        return requireCore().receiveMessage(sessionId, message)
+    }
+
+    /** Committed incoming messages for [sessionId] not yet acknowledged. */
+    fun pendingIncoming(sessionId: ULong): List<uniffi.arcium_core.IncomingMessage> {
+        return requireCore().pendingIncoming(sessionId)
+    }
+
+    /** Marks an incoming message delivered and erases its stored plaintext. Idempotent. */
+    fun acknowledgeIncoming(sessionId: ULong, messageId: ByteArray): Boolean {
+        return requireCore().acknowledgeIncoming(sessionId, messageId)
+    }
+
+    /**
+     * After CoreException.CommitOutcomeUnknown: reports what the store holds
+     * and lets the session continue. Null if it was not unresolved.
+     */
+    fun recoverSession(sessionId: ULong): uniffi.arcium_core.RecoveryReport? {
+        return requireCore().recoverSession(sessionId)
+    }
+
+    /** The initiator handshake stored with [sessionId], for sending again. */
+    fun initiatorHandshake(sessionId: ULong): ByteArray? {
+        return requireCore().initiatorHandshake(sessionId)
+    }
+
+    /** Whether a session is stored under [sessionId]. */
+    fun hasSession(sessionId: ULong): Boolean {
+        return requireCore().hasSession(sessionId)
     }
 
     /**
@@ -205,6 +245,13 @@ class ArciumCoreWrapper {
     fun openEncryptedDb(storagePath: String, masterKey: ByteArray) {
         val previous = core
         core = uniffi.arcium_core.ArciumCore(storagePath, masterKey)
+        previous?.close()
+    }
+
+    /** Releases the Rust store handle. Everything committed stays on disk. */
+    fun closeEncryptedDb() {
+        val previous = core
+        core = null
         previous?.close()
     }
 

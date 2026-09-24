@@ -75,11 +75,12 @@ data class Message(
  *
  * ## Ownership lives in Rust
  *
- * This class keeps no session bookkeeping of its own. The Rust `SessionManager`
- * is the single authority on which sessions exist and who owns them: it stores
- * the peer's full public key beside the ratchet and refuses to place a second
- * session on an occupied handle, surfacing `CoreException.SessionAlreadyExists`
- * or `CoreException.SessionIdCollision`. A Kotlin mirror of that state used to
+ * This class keeps no session bookkeeping of its own. Rust is the single
+ * authority on which sessions exist and who owns them: the encrypted store
+ * holds each session with the peer's full public key, and an occupied handle is
+ * never reused, surfacing `CoreException.SessionAlreadyExists` or
+ * `CoreException.SessionIdCollision`. Sessions and undelivered messages survive
+ * process death (S2-B2, docs/S2-B2-DURABLE-MESSAGING.md). A Kotlin mirror of that state used to
  * exist and was removed, because it could record an owner before the FFI call
  * that would have created the session succeeded — and then keep that record when
  * the call failed.
@@ -90,8 +91,8 @@ data class Message(
  * exports no transport surface, so there is no way to deliver a ciphertext to a
  * peer. Producing ciphertext and delivering it are therefore separate, and no
  * method returns success for a delivery that did not happen. The bytes returned
- * by [startSessionAsInitiator] and [encryptForPeer], and the bytes consumed by
- * [acceptSessionAsResponder] and [decryptFromPeer], have to cross to the peer by
+ * by [startSessionAsInitiator] and [sendToPeer], and the bytes consumed by
+ * [acceptSessionAsResponder] and [receiveFromPeer], have to cross to the peer by
  * some channel this layer does not provide.
  *
  * CoreException from Rust propagates unchanged — it is never caught, flattened
@@ -175,26 +176,49 @@ class MessageRepository(
     }
 
     /**
-     * Encrypts [plaintext] for [peerIdentityPk] and returns `header || ciphertext`.
+     * Encrypts [plaintext] for [peerIdentityPk]. The returned message is already
+     * committed to the durable outbox together with the new session state; its
+     * `wire` bytes are what the peer needs.
      *
-     * **This does not transmit anything.** With no session open for that peer,
-     * Rust fails with CoreException.NoSession rather than returning bytes a
-     * caller could mistake for a delivered message.
+     * **This does not transmit anything.** To send again after a failure or a
+     * restart, use [pendingOutgoingTo] — which returns the same bytes — never a
+     * second call here for the same logical message.
      */
-    fun encryptForPeer(peerIdentityPk: ByteArray, plaintext: ByteArray): ByteArray {
-        return core.encryptMessage(handleFor(peerIdentityPk), plaintext)
+    fun sendToPeer(peerIdentityPk: ByteArray, plaintext: ByteArray): uniffi.arcium_core.OutgoingMessage {
+        return core.sendMessage(handleFor(peerIdentityPk), plaintext)
+    }
+
+    /** Committed messages to [peerIdentityPk] not yet confirmed delivered, in send order. */
+    fun pendingOutgoingTo(peerIdentityPk: ByteArray): List<uniffi.arcium_core.OutgoingMessage> {
+        return core.pendingOutgoing(handleFor(peerIdentityPk))
+    }
+
+    /** Called once delivery of [messageId] is confirmed. Idempotent. */
+    fun confirmDelivered(peerIdentityPk: ByteArray, messageId: ByteArray): Boolean {
+        return core.acknowledgeOutgoing(handleFor(peerIdentityPk), messageId)
     }
 
     /**
-     * Decrypts a [message] received from [peerIdentityPk].
+     * Accepts a [message] received from [peerIdentityPk].
      *
      * The caller must already know which peer sent it: the handle appears
-     * nowhere in the message, so nothing in the ciphertext identifies the
-     * session. Authentication failure surfaces as CoreException and leaves the
-     * ratchet state untouched.
+     * nowhere in the message. A new message is committed as undelivered before
+     * its plaintext is returned; one seen before is reported as a duplicate and
+     * does not advance the ratchet. Authentication failure surfaces as
+     * CoreException and writes nothing.
      */
-    fun decryptFromPeer(peerIdentityPk: ByteArray, message: ByteArray): ByteArray {
-        return core.decryptMessage(handleFor(peerIdentityPk), message)
+    fun receiveFromPeer(peerIdentityPk: ByteArray, message: ByteArray): uniffi.arcium_core.ReceiveResult {
+        return core.receiveMessage(handleFor(peerIdentityPk), message)
+    }
+
+    /** Committed messages from [peerIdentityPk] not yet shown, in receive order. */
+    fun pendingIncomingFrom(peerIdentityPk: ByteArray): List<uniffi.arcium_core.IncomingMessage> {
+        return core.pendingIncoming(handleFor(peerIdentityPk))
+    }
+
+    /** Called once [messageId] has been shown to the user. Idempotent. */
+    fun markShown(peerIdentityPk: ByteArray, messageId: ByteArray): Boolean {
+        return core.acknowledgeIncoming(handleFor(peerIdentityPk), messageId)
     }
 
     private fun requirePublicKey(peerIdentityPk: ByteArray) {

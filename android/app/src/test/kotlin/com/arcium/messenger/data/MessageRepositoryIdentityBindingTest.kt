@@ -35,7 +35,7 @@ private const val IDENTITY_OFFSET = 4
  * one, since `ArciumApp` never runs in a unit test.
  *
  * Session ownership itself is not asserted here any more: it lives in the Rust
- * `SessionManager`, and the tests that prove a rejected or failed establishment
+ * session store, and the tests that prove a rejected or failed establishment
  * leaves nothing behind are in `crates/mobile-ffi`.
  */
 class MessageRepositoryIdentityBindingTest {

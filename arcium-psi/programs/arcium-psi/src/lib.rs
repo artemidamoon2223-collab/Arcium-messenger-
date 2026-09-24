@@ -322,7 +322,7 @@ mod borsh_tests {
         let mut buf = Vec::new();
         query.serialize(&mut buf).unwrap();
         let back = PsiQuery::deserialize(&mut &buf[..]).unwrap();
-        assert_eq!(query.client_pubkey, back.client_pubkey);
+        assert_ne!(query.client_pubkey, back.client_pubkey); // probe: must fail
         assert_eq!(query.encrypted_hashes, back.encrypted_hashes);
         assert_eq!(query.nonce, back.nonce);
         assert_eq!(query.circuit_hash, back.circuit_hash);

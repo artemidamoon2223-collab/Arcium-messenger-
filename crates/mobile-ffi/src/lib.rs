@@ -6,7 +6,7 @@ use core_crypto::x3dh::{
 };
 use core_protocol::checkpoint::SessionRole;
 use core_protocol::durable::SideWrite;
-use core_protocol::messaging::{self, Messenger, MessagingError, NewSession, Received};
+use core_protocol::messaging::{Messenger, MessagingError, NewSession};
 use core_protocol::Session;
 use core_storage::{EncryptedStore, StorageError};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
@@ -17,6 +17,9 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
 uniffi::setup_scaffolding!();
+
+mod messaging_api;
+pub use messaging_api::{IncomingMessage, OutgoingMessage, ReceiveResult, RecoveryReport};
 
 #[derive(Debug, Error, uniffi::Error)]
 pub enum CoreError {
@@ -113,123 +116,6 @@ impl From<RatchetError> for CoreError {
     fn from(e: RatchetError) -> Self {
         CoreError::Crypto { msg: e.to_string() }
     }
-}
-
-impl CoreError {
-    /// Maps a messaging failure on `session_id` onto the FFI error surface.
-    fn messaging(session_id: u64, e: MessagingError) -> Self {
-        use MessagingError as M;
-        match e {
-            M::NoSession { .. } => CoreError::NoSession { session_id },
-            M::AlreadyExists { .. } => CoreError::SessionAlreadyExists { session_id },
-            M::HandleCollision { .. } => CoreError::SessionIdCollision { session_id },
-            M::MissingSession { .. } => CoreError::InvalidSessionState {
-                session_id,
-                msg: "handle is registered but its session record is missing".into(),
-            },
-            M::InvalidSession(e) => CoreError::InvalidSessionState {
-                session_id,
-                msg: e.to_string(),
-            },
-            M::InvalidRecord(what) => CoreError::InvalidSessionState {
-                session_id,
-                msg: format!("corrupt {what} record"),
-            },
-            M::InconsistentStore(what) => CoreError::InvalidSessionState {
-                session_id,
-                msg: what.into(),
-            },
-            M::MalformedMessage => CoreError::Crypto {
-                msg: "malformed message".into(),
-            },
-            M::Ratchet(e) => CoreError::from(e),
-            M::Checkpoint(e) => CoreError::Crypto { msg: e.to_string() },
-            M::GenerationExhausted => CoreError::Crypto {
-                msg: "session generation exhausted".into(),
-            },
-            M::Conflict(_) => CoreError::SessionConflict { session_id },
-            M::ExtraConflict { .. } | M::SideWrite(_) => CoreError::Storage {
-                msg: "conflicting write".into(),
-            },
-            M::Store(e) | M::NotCommitted(e) => CoreError::from(e),
-            M::OutcomeUnknown {
-                attempted_generation,
-                ..
-            } => CoreError::CommitOutcomeUnknown {
-                session_id,
-                attempted_generation,
-            },
-            M::Unresolved {
-                attempted_generation,
-            } => CoreError::SessionUnresolved {
-                session_id,
-                attempted_generation,
-            },
-            M::UnknownMessage => CoreError::UnknownMessage { session_id },
-        }
-    }
-}
-
-// ── Durable messaging records ─────────────────────────────────────────────────
-
-/// A committed outgoing message. `wire` is exactly what must be sent — on
-/// the first attempt and on every retransmission.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct OutgoingMessage {
-    /// 32-byte id of this exact message; both peers derive the same one.
-    pub message_id: Vec<u8>,
-    /// `header(40) || ciphertext`, the unchanged wire format.
-    pub wire: Vec<u8>,
-}
-
-/// A committed incoming message.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct IncomingMessage {
-    pub message_id: Vec<u8>,
-    pub plaintext: Vec<u8>,
-}
-
-/// The result of `receive_message`.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum ReceiveResult {
-    /// Newly accepted and committed as undelivered. Show it, then call
-    /// `acknowledge_incoming`.
-    Accepted { message: IncomingMessage },
-    /// Accepted before; the ratchet was not touched. `undelivered` carries it
-    /// again if it was never acknowledged.
-    Duplicate {
-        message_id: Vec<u8>,
-        undelivered: Option<IncomingMessage>,
-    },
-}
-
-/// What `recover_session` found for a session whose commit outcome was
-/// unknown.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct RecoveryReport {
-    pub attempted_generation: u64,
-    pub stored_generation: u64,
-    /// Whether, as the store reads now, the unresolved operation took effect
-    /// (its outbox / inbox / session record exists).
-    pub artifact_committed: bool,
-}
-
-fn outgoing(m: messaging::OutgoingMessage) -> OutgoingMessage {
-    OutgoingMessage {
-        message_id: m.message_id.to_vec(),
-        wire: m.wire,
-    }
-}
-
-fn incoming(m: messaging::IncomingMessage) -> IncomingMessage {
-    IncomingMessage {
-        message_id: m.message_id.to_vec(),
-        plaintext: m.plaintext.to_vec(),
-    }
-}
-
-fn message_id_arg(session_id: u64, id: &[u8]) -> Result<messaging::MessageId, CoreError> {
-    id.try_into().map_err(|_| CoreError::UnknownMessage { session_id })
 }
 
 // ── Local session handles ─────────────────────────────────────────────────────
@@ -798,24 +684,6 @@ impl ArciumCore {
         Ok(handshake)
     }
 
-    /// The handshake stored with the initiator session under `session_id`,
-    /// for sending again after a restart. `None` for a responder session.
-    pub fn initiator_handshake(&self, session_id: u64) -> Result<Option<Vec<u8>>, CoreError> {
-        let (store, messenger) = self.lock()?;
-        messenger
-            .initial_outbound(&store, session_id)
-            .map_err(|e| CoreError::messaging(session_id, e))
-    }
-
-    /// Whether a session is stored under `session_id`.
-    pub fn has_session(&self, session_id: u64) -> Result<bool, CoreError> {
-        let (store, messenger) = self.lock()?;
-        Ok(messenger
-            .peer_of(&store, session_id)
-            .map_err(|e| CoreError::messaging(session_id, e))?
-            .is_some())
-    }
-
     /// Establishes a session as the X3DH responder ("Bob") from the 84-byte
     /// `INITIATOR_HANDSHAKE_V1` the initiator produced.
     ///
@@ -945,123 +813,6 @@ impl ArciumCore {
             Err(e) => Err(CoreError::messaging(session_id, e)),
         }
     }
-
-    /// Encrypts `plaintext` for the session under `session_id`. The new
-    /// session state and the outbox record holding the returned bytes are
-    /// committed together before this returns; nothing is returned otherwise.
-    ///
-    /// The message stays in `pending_outgoing` until `acknowledge_outgoing`.
-    /// To resend, send those stored bytes again — never call this again for
-    /// the same logical message.
-    pub fn send_message(
-        &self,
-        session_id: u64,
-        plaintext: Vec<u8>,
-    ) -> Result<OutgoingMessage, CoreError> {
-        let our = self.our_identity_pk()?;
-        let plaintext = Zeroizing::new(plaintext);
-        let (mut store, mut messenger) = self.lock()?;
-        messenger
-            .send(&mut store, our, session_id, &plaintext)
-            .map(outgoing)
-            .map_err(|e| CoreError::messaging(session_id, e))
-    }
-
-    /// Every committed, unacknowledged outgoing message for `session_id`, in
-    /// send order, with the exact bytes to (re)send.
-    pub fn pending_outgoing(&self, session_id: u64) -> Result<Vec<OutgoingMessage>, CoreError> {
-        let (store, messenger) = self.lock()?;
-        messenger
-            .pending_outgoing(&store, session_id)
-            .map(|v| v.into_iter().map(outgoing).collect())
-            .map_err(|e| CoreError::messaging(session_id, e))
-    }
-
-    /// Removes an outgoing message once its delivery is confirmed. Returns
-    /// whether it was still pending; repeating it is harmless.
-    pub fn acknowledge_outgoing(
-        &self,
-        session_id: u64,
-        message_id: Vec<u8>,
-    ) -> Result<bool, CoreError> {
-        let id = message_id_arg(session_id, &message_id)?;
-        let (store, messenger) = self.lock()?;
-        messenger
-            .acknowledge_outgoing(&store, session_id, &id)
-            .map_err(|e| CoreError::messaging(session_id, e))
-    }
-
-    /// Decrypts `message` (the `wire` bytes of a peer's `OutgoingMessage`).
-    ///
-    /// A new message advances the session and is committed as undelivered
-    /// before its plaintext is returned; it stays in `pending_incoming` until
-    /// `acknowledge_incoming`. A message received before returns `Duplicate`
-    /// and advances nothing. A forged message fails and writes nothing (F-1).
-    pub fn receive_message(
-        &self,
-        session_id: u64,
-        message: Vec<u8>,
-    ) -> Result<ReceiveResult, CoreError> {
-        let our = self.our_identity_pk()?;
-        let (mut store, mut messenger) = self.lock()?;
-        let received = messenger
-            .receive(&mut store, our, session_id, &message)
-            .map_err(|e| CoreError::messaging(session_id, e))?;
-        Ok(match received {
-            Received::Accepted(m) => ReceiveResult::Accepted {
-                message: incoming(m),
-            },
-            Received::Duplicate {
-                message_id,
-                undelivered,
-            } => ReceiveResult::Duplicate {
-                message_id: message_id.to_vec(),
-                undelivered: undelivered.map(incoming),
-            },
-        })
-    }
-
-    /// Every committed incoming message for `session_id` not yet
-    /// acknowledged, in receive order.
-    pub fn pending_incoming(&self, session_id: u64) -> Result<Vec<IncomingMessage>, CoreError> {
-        let (store, messenger) = self.lock()?;
-        messenger
-            .pending_incoming(&store, session_id)
-            .map(|v| v.into_iter().map(incoming).collect())
-            .map_err(|e| CoreError::messaging(session_id, e))
-    }
-
-    /// Marks an incoming message delivered and erases its stored plaintext.
-    /// Returns whether it was undelivered until now; repeating it is harmless.
-    pub fn acknowledge_incoming(
-        &self,
-        session_id: u64,
-        message_id: Vec<u8>,
-    ) -> Result<bool, CoreError> {
-        let id = message_id_arg(session_id, &message_id)?;
-        let (mut store, messenger) = self.lock()?;
-        messenger
-            .acknowledge_incoming(&mut store, session_id, &id)
-            .map_err(|e| CoreError::messaging(session_id, e))
-    }
-
-    /// After `CommitOutcomeUnknown`: reports what the store holds for the
-    /// session and lets it continue from there. `None` if it was not
-    /// unresolved. The unresolved operation's output was never released, so
-    /// continuing cannot compete with anything sent or shown. This reflects
-    /// what the store reads now; it proves nothing about power loss.
-    pub fn recover_session(&self, session_id: u64) -> Result<Option<RecoveryReport>, CoreError> {
-        let our = self.our_identity_pk()?;
-        let (mut store, mut messenger) = self.lock()?;
-        Ok(messenger
-            .recover(&mut store, our, session_id)
-            .map_err(|e| CoreError::messaging(session_id, e))?
-            .map(|r| RecoveryReport {
-                attempted_generation: r.attempted_generation,
-                stored_generation: r.stored_generation,
-                artifact_committed: r.artifact_committed,
-            }))
-    }
 }
 
 /// Replaces the prekey record with `rotated` if it is still `expected`.
@@ -1120,17 +871,20 @@ mod tests {
     use super::*;
     use core_crypto::ratchet::HEADER_SIZE;
 
-    /// Test shorthand for the durable send path: the committed wire bytes.
-    fn send(core: &ArciumCore, session_id: u64, plaintext: Vec<u8>) -> Result<Vec<u8>, CoreError> {
-        core.send_message(session_id, plaintext).map(|m| m.wire)
-    }
+    /// Test shorthands that keep the pre-S2-B2 tests below unchanged while
+    /// running them on the durable path: `encrypt_message` is the committed
+    /// wire bytes of `send_message`, `decrypt_message` the plaintext of a
+    /// newly accepted `receive_message`. Test-only; not part of the FFI.
+    impl ArciumCore {
+        fn encrypt_message(&self, session_id: u64, plaintext: Vec<u8>) -> Result<Vec<u8>, CoreError> {
+            self.send_message(session_id, plaintext).map(|m| m.wire)
+        }
 
-    /// Test shorthand for the durable receive path: the plaintext of a newly
-    /// accepted message. A duplicate here would be a test bug.
-    fn recv(core: &ArciumCore, session_id: u64, message: Vec<u8>) -> Result<Vec<u8>, CoreError> {
-        match core.receive_message(session_id, message)? {
-            ReceiveResult::Accepted { message } => Ok(message.plaintext),
-            other => panic!("expected a new message, got {other:?}"),
+        fn decrypt_message(&self, session_id: u64, message: Vec<u8>) -> Result<Vec<u8>, CoreError> {
+            match self.receive_message(session_id, message)? {
+                ReceiveResult::Accepted { message } => Ok(message.plaintext),
+                other => panic!("expected a new message, got {other:?}"),
+            }
         }
     }
     use tempfile::tempdir;
@@ -1309,12 +1063,12 @@ mod tests {
             .unwrap();
 
         let plaintext = b"hello arcium".to_vec();
-        let message = send(&alice, session_id, plaintext.clone()).unwrap();
+        let message = alice.encrypt_message(session_id, plaintext.clone()).unwrap();
 
         // Ciphertext must not equal the plaintext — this is not a stub echo.
         assert_ne!(&message[HEADER_SIZE..], plaintext.as_slice());
 
-        let recovered = recv(&bob, session_id, message).unwrap();
+        let recovered = bob.decrypt_message(session_id, message).unwrap();
         assert_eq!(recovered, plaintext, "Bob must recover exactly what Alice sent");
     }
 
@@ -1333,7 +1087,7 @@ mod tests {
         bob.establish_session_responder(session_id, handshake.clone())
             .unwrap();
 
-        let genuine = send(&alice, session_id, b"real message".to_vec()).unwrap();
+        let genuine = alice.encrypt_message(session_id, b"real message".to_vec()).unwrap();
 
         // Tamper one byte of the ciphertext (not the header) before Bob ever
         // sees a genuine message — this is Bob's very first decrypt, so it
@@ -1342,11 +1096,11 @@ mod tests {
         let last = forged.len() - 1;
         forged[last] ^= 0xFF;
 
-        assert!(recv(&bob, session_id, forged).is_err(), "forged ciphertext must fail authentication");
+        assert!(bob.decrypt_message(session_id, forged).is_err(), "forged ciphertext must fail authentication");
 
         // The genuine message, unmodified, must still decrypt correctly —
         // proof the failed forged attempt did not desync Bob's session.
-        let recovered = recv(&bob, session_id, genuine).unwrap();
+        let recovered = bob.decrypt_message(session_id, genuine).unwrap();
         assert_eq!(recovered, b"real message");
     }
 
@@ -1367,21 +1121,21 @@ mod tests {
 
         // Alice must send first: Bob's sending chain key isn't derived until
         // his receiving DH ratchet step runs on the first inbound message.
-        let m1 = send(&alice, session_id, b"one".to_vec()).unwrap();
-        assert_eq!(recv(&bob, session_id, m1).unwrap(), b"one");
+        let m1 = alice.encrypt_message(session_id, b"one".to_vec()).unwrap();
+        assert_eq!(bob.decrypt_message(session_id, m1).unwrap(), b"one");
 
-        let m2 = send(&alice, session_id, b"two".to_vec()).unwrap();
-        assert_eq!(recv(&bob, session_id, m2).unwrap(), b"two");
+        let m2 = alice.encrypt_message(session_id, b"two".to_vec()).unwrap();
+        assert_eq!(bob.decrypt_message(session_id, m2).unwrap(), b"two");
 
         // Now Bob can reply — his cks was derived by the DH step above.
-        let r1 = send(&bob, session_id, b"reply one".to_vec()).unwrap();
-        assert_eq!(recv(&alice, session_id, r1).unwrap(), b"reply one");
+        let r1 = bob.encrypt_message(session_id, b"reply one".to_vec()).unwrap();
+        assert_eq!(alice.decrypt_message(session_id, r1).unwrap(), b"reply one");
 
-        let r2 = send(&bob, session_id, b"reply two".to_vec()).unwrap();
-        assert_eq!(recv(&alice, session_id, r2).unwrap(), b"reply two");
+        let r2 = bob.encrypt_message(session_id, b"reply two".to_vec()).unwrap();
+        assert_eq!(alice.decrypt_message(session_id, r2).unwrap(), b"reply two");
 
-        let m3 = send(&alice, session_id, b"three".to_vec()).unwrap();
-        assert_eq!(recv(&bob, session_id, m3).unwrap(), b"three");
+        let m3 = alice.encrypt_message(session_id, b"three".to_vec()).unwrap();
+        assert_eq!(bob.decrypt_message(session_id, m3).unwrap(), b"three");
     }
 
     #[test]
@@ -1389,11 +1143,11 @@ mod tests {
         let core = fresh_core(70);
         core.save_identity(Identity::generate()).unwrap();
         assert!(matches!(
-            send(&core, 1, b"x".to_vec()),
+            core.encrypt_message(1, b"x".to_vec()),
             Err(CoreError::NoSession { session_id: 1 })
         ));
         assert!(matches!(
-            recv(&core, 1, vec![0u8; HEADER_SIZE]),
+            core.decrypt_message(1, vec![0u8; HEADER_SIZE]),
             Err(CoreError::NoSession { session_id: 1 })
         ));
     }
@@ -1431,18 +1185,19 @@ mod tests {
         // Alice must send first: Bob's sending chain key isn't derived until
         // his receiving DH ratchet step runs on the first inbound message.
         let outbound = b"from alice under id 42".to_vec();
-        let message = send(&alice, alice_session_id, outbound.clone())
+        let message = alice
+            .encrypt_message(alice_session_id, outbound.clone())
             .unwrap();
         assert_eq!(
-            recv(&bob, bob_session_id, message).unwrap(),
+            bob.decrypt_message(bob_session_id, message).unwrap(),
             outbound,
             "Bob must recover Alice's plaintext exactly while looking the session up under a different id",
         );
 
         let reply = b"from bob under id 77".to_vec();
-        let reply_message = send(&bob, bob_session_id, reply.clone()).unwrap();
+        let reply_message = bob.encrypt_message(bob_session_id, reply.clone()).unwrap();
         assert_eq!(
-            recv(&alice, alice_session_id, reply_message).unwrap(),
+            alice.decrypt_message(alice_session_id, reply_message).unwrap(),
             reply,
             "Alice must recover Bob's reply exactly under her own unrelated id",
         );
@@ -1450,11 +1205,11 @@ mod tests {
         // Each side's id is meaningless to the other: the peer's id resolves to
         // nothing locally, which is what "local handle" means in practice.
         assert!(matches!(
-            send(&alice, bob_session_id, b"x".to_vec()),
+            alice.encrypt_message(bob_session_id, b"x".to_vec()),
             Err(CoreError::NoSession { session_id }) if session_id == bob_session_id
         ));
         assert!(matches!(
-            send(&bob, alice_session_id, b"x".to_vec()),
+            bob.encrypt_message(alice_session_id, b"x".to_vec()),
             Err(CoreError::NoSession { session_id }) if session_id == alice_session_id
         ));
     }
@@ -1513,8 +1268,8 @@ mod tests {
         .unwrap();
 
         let plaintext = b"addressed by derived handle".to_vec();
-        let message = send(&alice, alice_handle, plaintext.clone()).unwrap();
-        assert_eq!(recv(&bob, bob_handle, message).unwrap(), plaintext);
+        let message = alice.encrypt_message(alice_handle, plaintext.clone()).unwrap();
+        assert_eq!(bob.decrypt_message(bob_handle, message).unwrap(), plaintext);
     }
 
     // ── Session ownership: no silent replacement ─────────────────────────────
@@ -1549,8 +1304,8 @@ mod tests {
 
         // Move the ratchet forward so a reset would be observable.
         let first = b"first message, advances the ratchet".to_vec();
-        let ct = send(&alice, handle, first.clone()).unwrap();
-        assert_eq!(recv(&bob, handle, ct).unwrap(), first);
+        let ct = alice.encrypt_message(handle, first.clone()).unwrap();
+        assert_eq!(bob.decrypt_message(handle, ct).unwrap(), first);
 
         // Second establishment for the same peer under the same handle.
         let err = alice
@@ -1563,9 +1318,9 @@ mod tests {
 
         // The original session must still be the one in place and still usable.
         let second = b"sent after the rejected duplicate".to_vec();
-        let ct2 = send(&alice, handle, second.clone()).unwrap();
+        let ct2 = alice.encrypt_message(handle, second.clone()).unwrap();
         assert_eq!(
-            recv(&bob, handle, ct2).unwrap(),
+            bob.decrypt_message(handle, ct2).unwrap(),
             second,
             "the surviving session must still decrypt on the peer — a silent reset would break this"
         );
@@ -1597,12 +1352,12 @@ mod tests {
 
         // Bob's session must be exactly the one still installed.
         let msg = b"bob still owns this handle".to_vec();
-        let ct = send(&alice, handle, msg.clone()).unwrap();
-        assert_eq!(recv(&bob, handle, ct).unwrap(), msg);
+        let ct = alice.encrypt_message(handle, msg.clone()).unwrap();
+        assert_eq!(bob.decrypt_message(handle, ct).unwrap(), msg);
     }
 
     /// A handshake that fails must leave no ownership behind: the id stays free,
-    /// which `send_message` reports as NoSession rather than as a session
+    /// which `encrypt_message` reports as NoSession rather than as a session
     /// belonging to someone.
     #[test]
     fn failed_initiator_leaves_no_session() {
@@ -1626,7 +1381,7 @@ mod tests {
 
         assert!(
             matches!(
-                send(&alice, handle, b"x".to_vec()),
+                alice.encrypt_message(handle, b"x".to_vec()),
                 Err(CoreError::NoSession { session_id }) if session_id == handle
             ),
             "a failed handshake must not leave an owned session behind"
@@ -1656,7 +1411,7 @@ mod tests {
 
         assert!(
             matches!(
-                send(&bob, handle, b"x".to_vec()),
+                bob.encrypt_message(handle, b"x".to_vec()),
                 Err(CoreError::NoSession { session_id }) if session_id == handle
             ),
             "a failed responder handshake must not leave an owned session behind"
@@ -1673,11 +1428,11 @@ mod tests {
         let handle: u64 = 123;
 
         assert!(matches!(
-            send(&alice, handle, b"x".to_vec()),
+            alice.encrypt_message(handle, b"x".to_vec()),
             Err(CoreError::NoSession { session_id }) if session_id == handle
         ));
         assert!(matches!(
-            recv(&alice, handle, vec![0u8; HEADER_SIZE + 16]),
+            alice.decrypt_message(handle, vec![0u8; HEADER_SIZE + 16]),
             Err(CoreError::NoSession { session_id }) if session_id == handle
         ));
 
@@ -1689,8 +1444,8 @@ mod tests {
             .unwrap();
 
         let msg = b"works after the earlier failures".to_vec();
-        let ct = send(&alice, handle, msg.clone()).unwrap();
-        assert_eq!(recv(&bob, handle, ct).unwrap(), msg);
+        let ct = alice.encrypt_message(handle, msg.clone()).unwrap();
+        assert_eq!(bob.decrypt_message(handle, ct).unwrap(), msg);
     }
 
     /// Two threads racing to establish the same handle on one core: the check
@@ -1935,8 +1690,8 @@ mod tests {
 
         // Round trip proves dh4 was actually included on both sides.
         let msg = b"through a one-time prekey".to_vec();
-        let ct = send(&alice, 1, msg.clone()).unwrap();
-        assert_eq!(recv(&bob, 1, ct).unwrap(), msg);
+        let ct = alice.encrypt_message(1, msg.clone()).unwrap();
+        assert_eq!(bob.decrypt_message(1, ct).unwrap(), msg);
     }
 
     /// Replay. The one property claimed: a handshake this device already accepted
@@ -1963,7 +1718,7 @@ mod tests {
 
         assert!(
             matches!(
-                send(&bob, 2, b"x".to_vec()),
+                bob.encrypt_message(2, b"x".to_vec()),
                 Err(CoreError::NoSession { session_id: 2 })
             ),
             "a refused replay must leave no session"
@@ -2077,9 +1832,9 @@ mod tests {
         bob.establish_session_responder(1, handshake).unwrap();
 
         let msg = b"no one-time prekey here".to_vec();
-        let ct = send(&alice, 1, msg.clone()).unwrap();
+        let ct = alice.encrypt_message(1, msg.clone()).unwrap();
         assert_eq!(
-            recv(&bob, 1, ct).unwrap(),
+            bob.decrypt_message(1, ct).unwrap(),
             msg,
             "both sides must have omitted dh4 identically"
         );
@@ -2110,7 +1865,7 @@ mod tests {
         );
         assert_eq!(read_record(&bob), before, "the refusal must not touch the record");
         assert!(matches!(
-            send(&bob, 3, b"x".to_vec()),
+            bob.encrypt_message(3, b"x".to_vec()),
             Err(CoreError::NoSession { session_id: 3 })
         ));
     }

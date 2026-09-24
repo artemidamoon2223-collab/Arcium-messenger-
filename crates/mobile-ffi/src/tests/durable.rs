@@ -44,12 +44,12 @@ fn sessions_survive_reopening_the_database() {
     for i in 0u8..3 {
         let (alice, bob) = (open_at(&pa, 2), open_at(&pb, 1));
         assert!(alice.has_session(1).unwrap() && bob.has_session(1).unwrap());
-        let m = send(&alice, 1, vec![i]).unwrap();
+        let m = alice.encrypt_message(1, vec![i]).unwrap();
         drop(alice);
-        assert_eq!(recv(&bob, 1, m).unwrap(), vec![i]);
-        let r = send(&bob, 1, vec![i, i]).unwrap();
+        assert_eq!(bob.decrypt_message(1, m).unwrap(), vec![i]);
+        let r = bob.encrypt_message(1, vec![i, i]).unwrap();
         drop(bob);
-        assert_eq!(recv(&open_at(&pa, 2), 1, r).unwrap(), vec![i, i]);
+        assert_eq!(open_at(&pa, 2).decrypt_message(1, r).unwrap(), vec![i, i]);
     }
 }
 
@@ -136,8 +136,8 @@ fn two_cores_on_one_database_share_one_session_state() {
     let bob = open_at(&pb, 1);
     for i in 0u8..6 {
         let core = if i % 2 == 0 { &a1 } else { &a2 };
-        let m = send(core, 1, vec![i]).unwrap();
-        assert_eq!(recv(&bob, 1, m).unwrap(), vec![i]);
+        let m = core.encrypt_message(1, vec![i]).unwrap();
+        assert_eq!(bob.decrypt_message(1, m).unwrap(), vec![i]);
     }
     assert_eq!(a1.pending_outgoing(1).unwrap().len(), 6);
     assert_eq!(
@@ -264,7 +264,7 @@ fn ffi_crash_child() {
         }
         "receive" => {
             let wire = std::fs::read(dir.join("wire")).unwrap();
-            recv(&open_at(&read("b"), 1), 1, wire).unwrap();
+            open_at(&read("b"), 1).decrypt_message(1, wire).unwrap();
         }
         "respond" => {
             let hs = std::fs::read(dir.join("handshake")).unwrap();
@@ -317,9 +317,9 @@ fn killed_after_sending_the_message_is_resent_byte_for_byte() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].wire, published);
     let bob = open_at(&pb, 1);
-    assert_eq!(recv(&bob, 1, published).unwrap(), b"in flight");
-    let r = send(&bob, 1, b"ack".to_vec()).unwrap();
-    assert_eq!(recv(&alice, 1, r).unwrap(), b"ack");
+    assert_eq!(bob.decrypt_message(1, published).unwrap(), b"in flight");
+    let r = bob.encrypt_message(1, b"ack".to_vec()).unwrap();
+    assert_eq!(alice.decrypt_message(1, r).unwrap(), b"ack");
 }
 
 #[cfg(unix)]
@@ -327,7 +327,9 @@ fn killed_after_sending_the_message_is_resent_byte_for_byte() {
 fn killed_before_delivering_the_message_it_is_still_pending() {
     let (pa, pb) = established_pair();
     let dir = crash_dir(&pa, &pb);
-    let wire = send(&open_at(&pa, 2), 1, b"undelivered".to_vec()).unwrap();
+    let wire = open_at(&pa, 2)
+        .encrypt_message(1, b"undelivered".to_vec())
+        .unwrap();
     std::fs::write(dir.join("wire"), &wire).unwrap();
     run_ffi_child(&dir, "receive");
     let bob = open_at(&pb, 1);
@@ -374,6 +376,6 @@ fn killed_after_answering_a_handshake_the_session_and_rotation_both_persist() {
         bob.establish_session_responder(6, hs),
         Err(CoreError::OneTimePrekeyUnavailable { .. })
     ));
-    let m = send(&alice, 5, b"after restart".to_vec()).unwrap();
-    assert_eq!(recv(&bob, 5, m).unwrap(), b"after restart");
+    let m = alice.encrypt_message(5, b"after restart".to_vec()).unwrap();
+    assert_eq!(bob.decrypt_message(5, m).unwrap(), b"after restart");
 }

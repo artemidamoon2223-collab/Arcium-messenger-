@@ -135,13 +135,29 @@ class ArciumCoreWrapper {
     // docs/S2-B2-DURABLE-MESSAGING.md.
 
     /**
-     * Encrypts [plaintext] for the session under [sessionId]. The returned
-     * message is already committed to the outbox: its `wire` bytes are what
-     * must be sent, now and on every retransmission. To resend, use
-     * [pendingOutgoing] — never call this again for the same logical message.
+     * Sends the logical message [clientMessageId] (the caller's own id for it,
+     * 1 to 64 bytes, unique per logical message). The first call encrypts
+     * [plaintext] and commits it to the outbox before returning `Sent`; its
+     * `wire` bytes are what must be sent, now and on every retransmission.
+     * Any later call with the same id encrypts nothing and returns the stored
+     * message (`AlreadyPending`) or `AlreadyAcknowledged` — so after a crash
+     * or CoreException.CommitOutcomeUnknown, call again with the same id.
      */
-    fun sendMessage(sessionId: ULong, plaintext: ByteArray): uniffi.arcium_core.OutgoingMessage {
-        return requireCore().sendMessage(sessionId, plaintext)
+    fun sendMessage(
+        sessionId: ULong,
+        clientMessageId: ByteArray,
+        plaintext: ByteArray,
+    ): uniffi.arcium_core.SendResult {
+        return requireCore().sendMessage(sessionId, clientMessageId, plaintext)
+    }
+
+    /**
+     * Deletes the session under [sessionId] with its unacknowledged outgoing
+     * messages (returned), so a new session with that peer can be
+     * established. Refused while incoming messages are unacknowledged.
+     */
+    fun removeSession(sessionId: ULong): List<uniffi.arcium_core.OutgoingMessage> {
+        return requireCore().removeSession(sessionId)
     }
 
     /** Committed, unacknowledged outgoing messages for [sessionId], in send order. */
@@ -164,12 +180,20 @@ class ArciumCoreWrapper {
         return requireCore().receiveMessage(sessionId, message)
     }
 
-    /** Committed incoming messages for [sessionId] not yet acknowledged. */
+    /**
+     * Committed incoming messages for [sessionId] not yet acknowledged.
+     * Delivery to the app is at least once: after a crash a message shown but
+     * not acknowledged is listed again, identified by its `messageId`.
+     */
     fun pendingIncoming(sessionId: ULong): List<uniffi.arcium_core.IncomingMessage> {
         return requireCore().pendingIncoming(sessionId)
     }
 
-    /** Marks an incoming message delivered and erases its stored plaintext. Idempotent. */
+    /**
+     * Records that the app has durably processed an incoming message; its
+     * stored plaintext is erased. Call only once the message is safe on the
+     * app side. Idempotent.
+     */
     fun acknowledgeIncoming(sessionId: ULong, messageId: ByteArray): Boolean {
         return requireCore().acknowledgeIncoming(sessionId, messageId)
     }

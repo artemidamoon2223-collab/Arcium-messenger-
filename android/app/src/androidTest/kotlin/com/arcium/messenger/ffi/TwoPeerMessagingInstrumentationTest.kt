@@ -90,7 +90,10 @@ class TwoPeerMessagingInstrumentationTest {
 
         /** Durable send; the committed wire bytes. */
         fun encryptFor(peer: ByteArray, plaintext: ByteArray): ByteArray =
-            repo.sendToPeer(peer, plaintext).wire
+            when (val r = repo.sendToPeer(peer, UUID.randomUUID().toString().toByteArray(), plaintext)) {
+                is uniffi.arcium_core.SendResult.Sent -> r.message.wire
+                else -> throw AssertionError("expected a new message, got $r")
+            }
 
         /** Durable receive; the plaintext of a newly accepted message. */
         fun decryptFrom(peer: ByteArray, message: ByteArray): ByteArray =
@@ -211,7 +214,7 @@ class TwoPeerMessagingInstrumentationTest {
         assertThrows(
             "the rejected establishment must not have created a session",
             uniffi.arcium_core.CoreException.NoSession::class.java,
-        ) { alice.core.sendMessage(carolHandle, "x".toByteArray()) }
+        ) { alice.core.sendMessage(carolHandle, "cid".toByteArray(), "x".toByteArray()) }
     }
 
     /** B: an id nobody established must fail as NoSession, never as a fake success. */
@@ -219,7 +222,7 @@ class TwoPeerMessagingInstrumentationTest {
     fun unknownSessionFailsWithNoSession() {
         val alice = peer("alice", 0x41)
         assertThrows(uniffi.arcium_core.CoreException.NoSession::class.java) {
-            alice.core.sendMessage(918_273_645uL, "x".toByteArray())
+            alice.core.sendMessage(918_273_645uL, "cid".toByteArray(), "x".toByteArray())
         }
     }
 
@@ -310,7 +313,7 @@ class TwoPeerMessagingInstrumentationTest {
         assertThrows(
             "the rejected responder handshake must not have created a session",
             uniffi.arcium_core.CoreException.NoSession::class.java,
-        ) { bob.core.sendMessage(carolHandle, "x".toByteArray()) }
+        ) { bob.core.sendMessage(carolHandle, "cid".toByteArray(), "x".toByteArray()) }
     }
 
     /**

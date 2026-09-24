@@ -6,7 +6,7 @@
 
 use zeroize::Zeroizing;
 
-use core_protocol::messaging::{self, MessagingError, Received};
+use core_protocol::messaging::{self, MessagingError, Received, SendOutcome};
 
 use crate::{ArciumCore, CoreError};
 
@@ -61,6 +61,11 @@ impl CoreError {
                 attempted_generation,
             },
             M::UnknownMessage => CoreError::UnknownMessage { session_id },
+            M::InvalidClientMessageId => CoreError::InvalidClientMessageId,
+            M::UndeliveredIncoming { count } => CoreError::UndeliveredIncoming {
+                session_id,
+                count: count as u64,
+            },
         }
     }
 }
@@ -73,8 +78,23 @@ impl CoreError {
 pub struct OutgoingMessage {
     /// 32-byte id of this exact message; both peers derive the same one.
     pub message_id: Vec<u8>,
+    /// The caller's id for the logical message, as passed to `send_message`.
+    pub client_message_id: Vec<u8>,
     /// `header(40) || ciphertext`, the unchanged wire format.
     pub wire: Vec<u8>,
+}
+
+/// The result of `send_message`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SendResult {
+    /// Newly encrypted and committed. Send `message.wire`.
+    Sent { message: OutgoingMessage },
+    /// This logical message was committed by an earlier call and is still
+    /// pending: the stored message, byte for byte. Nothing was encrypted.
+    AlreadyPending { message: OutgoingMessage },
+    /// This logical message was committed earlier and has been acknowledged.
+    /// Nothing was encrypted.
+    AlreadyAcknowledged { message_id: Vec<u8> },
 }
 
 /// A committed incoming message.
@@ -112,6 +132,7 @@ pub struct RecoveryReport {
 fn outgoing(m: messaging::OutgoingMessage) -> OutgoingMessage {
     OutgoingMessage {
         message_id: m.message_id.to_vec(),
+        client_message_id: m.client_message_id,
         wire: m.wire,
     }
 }
@@ -148,24 +169,54 @@ impl ArciumCore {
             .is_some())
     }
 
-    /// Encrypts `plaintext` for the session under `session_id`. The new
-    /// session state and the outbox record holding the returned bytes are
-    /// committed together before this returns; nothing is returned otherwise.
+    /// Sends the logical message `client_message_id` (the caller's own id
+    /// for it: 1 to 64 bytes, unique per logical message) on the session
+    /// under `session_id`.
     ///
-    /// The message stays in `pending_outgoing` until `acknowledge_outgoing`.
-    /// To resend, send those stored bytes again — never call this again for
-    /// the same logical message.
+    /// The first call encrypts `plaintext` and commits the new session state
+    /// and the outbox record together before returning `Sent`. Any later
+    /// call with the same `client_message_id` encrypts nothing and returns
+    /// the stored message (`AlreadyPending`) or `AlreadyAcknowledged`; its
+    /// `plaintext` is ignored. So after `CommitOutcomeUnknown`, a crash or a
+    /// restart, call again with the same id rather than guessing whether the
+    /// earlier attempt took effect. To retransmit, send the stored `wire`.
     pub fn send_message(
         &self,
         session_id: u64,
+        client_message_id: Vec<u8>,
         plaintext: Vec<u8>,
-    ) -> Result<OutgoingMessage, CoreError> {
+    ) -> Result<SendResult, CoreError> {
         let our = self.our_identity_pk()?;
         let plaintext = Zeroizing::new(plaintext);
         let (mut store, mut messenger) = self.lock()?;
+        let outcome = messenger
+            .send(&mut store, our, session_id, &client_message_id, &plaintext)
+            .map_err(|e| CoreError::messaging(session_id, e))?;
+        Ok(match outcome {
+            SendOutcome::Sent(m) => SendResult::Sent {
+                message: outgoing(m),
+            },
+            SendOutcome::AlreadyPending(m) => SendResult::AlreadyPending {
+                message: outgoing(m),
+            },
+            SendOutcome::AlreadyAcknowledged { message_id } => SendResult::AlreadyAcknowledged {
+                message_id: message_id.to_vec(),
+            },
+        })
+    }
+
+    /// Deletes the session under `session_id` with its handle, stored
+    /// handshake and unacknowledged outgoing messages, in one transaction,
+    /// so a new session with that peer can be established — for example
+    /// after the peer refused this session's handshake. Returns the discarded
+    /// outgoing messages. Refused with `UndeliveredIncoming` while incoming
+    /// messages are unacknowledged, and with `SessionConflict` if the session
+    /// changed meanwhile; nothing is deleted then.
+    pub fn remove_session(&self, session_id: u64) -> Result<Vec<OutgoingMessage>, CoreError> {
+        let (mut store, mut messenger) = self.lock()?;
         messenger
-            .send(&mut store, our, session_id, &plaintext)
-            .map(outgoing)
+            .remove_session(&mut store, session_id)
+            .map(|r| r.discarded_outgoing.into_iter().map(outgoing).collect())
             .map_err(|e| CoreError::messaging(session_id, e))
     }
 
@@ -224,7 +275,9 @@ impl ArciumCore {
     }
 
     /// Every committed incoming message for `session_id` not yet
-    /// acknowledged, in receive order.
+    /// acknowledged, in receive order. Delivery to the application is at
+    /// least once: a message shown but not acknowledged before a crash is
+    /// listed again, and its `message_id` identifies the repeat.
     pub fn pending_incoming(&self, session_id: u64) -> Result<Vec<IncomingMessage>, CoreError> {
         let (store, messenger) = self.lock()?;
         messenger
@@ -233,8 +286,11 @@ impl ArciumCore {
             .map_err(|e| CoreError::messaging(session_id, e))
     }
 
-    /// Marks an incoming message delivered and erases its stored plaintext.
-    /// Returns whether it was undelivered until now; repeating it is harmless.
+    /// Records that the application has durably processed an incoming
+    /// message: its stored plaintext is erased and only its id is kept for
+    /// duplicate detection. Call it only once the message is safe on the
+    /// application side. Returns whether it was undelivered until now;
+    /// repeating it is harmless.
     pub fn acknowledge_incoming(
         &self,
         session_id: u64,

@@ -21,6 +21,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import uniffi.arcium_core.CoreException
 import uniffi.arcium_core.ReceiveResult
+import uniffi.arcium_core.SendResult
 
 /**
  * S2-B2 on an Android runtime: sessions and messages survive the store being
@@ -107,6 +108,13 @@ class DurableMessagingInstrumentationTest {
 
     private fun bytes(s: String) = s.toByteArray()
 
+    /** A first send of a new logical message; its committed outgoing message. */
+    private fun sendNew(core: ArciumCoreWrapper, session: ULong, plaintext: ByteArray) =
+        when (val r = core.sendMessage(session, UUID.randomUUID().toString().toByteArray(), plaintext)) {
+            is SendResult.Sent -> r.message
+            else -> throw AssertionError("expected a new message, got $r")
+        }
+
     /**
      * Runs [scenario] in the `:victim` process and waits for that process to
      * be gone. Fails if the victim reported an error.
@@ -154,9 +162,9 @@ class DurableMessagingInstrumentationTest {
             val bob = open(w.bobDb, BOB_KEY)
             assertTrue(alice.hasSession(p.aliceHandle))
             assertTrue(bob.hasSession(p.bobHandle))
-            val m = alice.sendMessage(p.aliceHandle, bytes("to bob $round"))
+            val m = sendNew(alice, p.aliceHandle, bytes("to bob $round"))
             assertArrayEquals(bytes("to bob $round"), accepted(bob.receiveMessage(p.bobHandle, m.wire)))
-            val r = bob.sendMessage(p.bobHandle, bytes("to alice $round"))
+            val r = sendNew(bob, p.bobHandle, bytes("to alice $round"))
             alice.closeEncryptedDb()
             val reopened = open(w.aliceDb, ALICE_KEY)
             assertArrayEquals(bytes("to alice $round"), accepted(reopened.receiveMessage(p.aliceHandle, r.wire)))
@@ -178,7 +186,7 @@ class DurableMessagingInstrumentationTest {
         val bob = open(w.bobDb, BOB_KEY)
         for (i in 0 until 6) {
             val sender = if (i % 2 == 0) a1 else a2
-            val m = sender.sendMessage(p.aliceHandle, bytes("m$i"))
+            val m = sendNew(sender, p.aliceHandle, bytes("m$i"))
             assertArrayEquals(bytes("m$i"), accepted(bob.receiveMessage(p.bobHandle, m.wire)))
         }
         assertEquals(6, a1.pendingOutgoing(p.aliceHandle).size)
@@ -195,6 +203,7 @@ class DurableMessagingInstrumentationTest {
     fun killedAfterSendingTheMessageIsResentByteForByte() {
         val w = workspace()
         val p = establish(w)
+        File(w.dir, "clientId").writeBytes(bytes("logical-send-1"))
         File(w.dir, "plaintext").writeBytes(bytes("sent before the crash"))
         runVictim(w, CrashVictimProvider.SCENARIO_SEND, w.aliceDb, ALICE_KEY, p.aliceHandle)
         val published = File(w.dir, "published").readBytes()
@@ -204,6 +213,13 @@ class DurableMessagingInstrumentationTest {
         val pending = alice.pendingOutgoing(p.aliceHandle)
         assertEquals(1, pending.size)
         assertArrayEquals("byte-identical across the crash", published, pending[0].wire)
+        // The restarted app, unsure whether its send took effect, sends the
+        // same logical message again: it gets the stored bytes, not a new
+        // ciphertext.
+        val again = alice.sendMessage(p.aliceHandle, bytes("logical-send-1"), bytes("sent before the crash"))
+        assertTrue("a repeated logical send must not encrypt again", again is SendResult.AlreadyPending)
+        assertArrayEquals(published, (again as SendResult.AlreadyPending).message.wire)
+        assertEquals(1, alice.pendingOutgoing(p.aliceHandle).size)
 
         assertArrayEquals(bytes("sent before the crash"), accepted(bob.receiveMessage(p.bobHandle, published)))
         val again = bob.receiveMessage(p.bobHandle, pending[0].wire)
@@ -211,9 +227,9 @@ class DurableMessagingInstrumentationTest {
         assertTrue(alice.acknowledgeOutgoing(p.aliceHandle, pending[0].messageId))
         assertTrue(alice.pendingOutgoing(p.aliceHandle).isEmpty())
 
-        val reply = bob.sendMessage(p.bobHandle, bytes("reply after restart"))
+        val reply = sendNew(bob, p.bobHandle, bytes("reply after restart"))
         assertArrayEquals(bytes("reply after restart"), accepted(alice.receiveMessage(p.aliceHandle, reply.wire)))
-        val more = alice.sendMessage(p.aliceHandle, bytes("and onwards"))
+        val more = sendNew(alice, p.aliceHandle, bytes("and onwards"))
         assertArrayEquals(bytes("and onwards"), accepted(bob.receiveMessage(p.bobHandle, more.wire)))
     }
 
@@ -227,7 +243,7 @@ class DurableMessagingInstrumentationTest {
         val w = workspace()
         val p = establish(w)
         val alice = open(w.aliceDb, ALICE_KEY)
-        val wire = alice.sendMessage(p.aliceHandle, bytes("received before the crash")).wire
+        val wire = sendNew(alice, p.aliceHandle, bytes("received before the crash")).wire
         File(w.dir, "wire").writeBytes(wire)
         runVictim(w, CrashVictimProvider.SCENARIO_RECEIVE, w.bobDb, BOB_KEY, p.bobHandle)
 
@@ -244,7 +260,7 @@ class DurableMessagingInstrumentationTest {
         val after = bob.receiveMessage(p.bobHandle, wire)
         assertTrue(after is ReceiveResult.Duplicate && after.undelivered == null)
 
-        val reply = bob.sendMessage(p.bobHandle, bytes("reply after restart"))
+        val reply = sendNew(bob, p.bobHandle, bytes("reply after restart"))
         assertArrayEquals(bytes("reply after restart"), accepted(alice.receiveMessage(p.aliceHandle, reply.wire)))
     }
 
@@ -279,9 +295,47 @@ class DurableMessagingInstrumentationTest {
         assertThrows(CoreException.OneTimePrekeyUnavailable::class.java) {
             restarted.establishSessionResponder(bobHandle + 1uL, handshake)
         }
-        val m = alice.sendMessage(aliceHandle, bytes("first after restart"))
+        val m = sendNew(alice, aliceHandle, bytes("first after restart"))
         assertArrayEquals(bytes("first after restart"), accepted(restarted.receiveMessage(bobHandle, m.wire)))
-        val r = restarted.sendMessage(bobHandle, bytes("responder replies"))
+        val r = sendNew(restarted, bobHandle, bytes("responder replies"))
         assertArrayEquals(bytes("responder replies"), accepted(alice.receiveMessage(aliceHandle, r.wire)))
+    }
+
+    /**
+     * The responder refuses the initiator's handshake because its prekeys
+     * rotated first. The initiator removes the stranded session and
+     * establishes a working one with the peer's fresh bundle.
+     */
+    @Test
+    fun aRefusedHandshakeIsReplacedAfterRemovingTheSession() {
+        val w = workspace()
+        val alice = open(w.aliceDb, ALICE_KEY)
+        val bob = open(w.bobDb, BOB_KEY)
+        alice.generateAndSaveIdentity()
+        bob.generateAndSaveIdentity()
+        val bobRepo = MessageRepository(bob)
+        val aliceRepo = MessageRepository(alice)
+        bobRepo.publishOwnPrekeys()
+        val bundle = bobRepo.ownPrekeyBundle()
+        val bobIdentity = identityAt(bundle)
+        val handshake = aliceRepo.startSessionAsInitiator(bobIdentity, bundle)
+        val aliceIdentity = identityAt(handshake)
+        bobRepo.publishOwnPrekeys() // rotation before the handshake arrives
+        assertThrows(CoreException.StaleSignedPrekey::class.java) {
+            bobRepo.acceptSessionAsResponder(aliceIdentity, handshake)
+        }
+        val fresh = bobRepo.ownPrekeyBundle()
+        assertThrows(CoreException.SessionAlreadyExists::class.java) {
+            aliceRepo.startSessionAsInitiator(bobIdentity, fresh)
+        }
+
+        assertTrue(aliceRepo.removeSessionWith(bobIdentity).isEmpty())
+        val handshake2 = aliceRepo.startSessionAsInitiator(bobIdentity, fresh)
+        bobRepo.acceptSessionAsResponder(aliceIdentity, handshake2)
+        val m = sendNew(alice, alice.localSessionHandle(bobIdentity), bytes("after replacement"))
+        assertArrayEquals(
+            bytes("after replacement"),
+            accepted(bob.receiveMessage(bob.localSessionHandle(aliceIdentity), m.wire)),
+        )
     }
 }

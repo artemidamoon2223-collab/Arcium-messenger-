@@ -22,7 +22,7 @@ import java.io.File
  * nothing restarts it and replays the operation.
  *
  * Files in the directory named by `dir`:
- * - inputs: `plaintext`, `wire`, `handshake` (as the scenario needs);
+ * - inputs: `clientId`, `plaintext`, `wire`, `handshake` (as the scenario needs);
  * - outputs: `published` (send), `received` (receive), then `done`, or
  *   `error` with the exception if the operation failed.
  */
@@ -43,7 +43,12 @@ class CrashVictimProvider : ContentProvider() {
             val session = args.getLong(KEY_SESSION).toULong()
             when (arg) {
                 SCENARIO_SEND -> {
-                    val sent = core.sendMessage(session, File(dir, "plaintext").readBytes())
+                    val result = core.sendMessage(
+                        session,
+                        File(dir, "clientId").readBytes(),
+                        File(dir, "plaintext").readBytes(),
+                    )
+                    val sent = (result as uniffi.arcium_core.SendResult.Sent).message
                     // Handed to the transport: the caller now holds these bytes.
                     File(dir, "published").writeBytes(sent.wire)
                 }

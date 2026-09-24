@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 uniffi::setup_scaffolding!();
 
 mod messaging_api;
-pub use messaging_api::{IncomingMessage, OutgoingMessage, ReceiveResult, RecoveryReport};
+pub use messaging_api::{IncomingMessage, OutgoingMessage, ReceiveResult, RecoveryReport, SendResult};
 
 #[derive(Debug, Error, uniffi::Error)]
 pub enum CoreError {
@@ -98,6 +98,13 @@ pub enum CoreError {
     /// No message with this id is recorded for this session.
     #[error("unknown message for session {session_id}")]
     UnknownMessage { session_id: u64 },
+    /// A client message id must be 1 to 64 bytes.
+    #[error("client message id must be 1 to 64 bytes")]
+    InvalidClientMessageId,
+    /// The session still holds accepted incoming messages the application
+    /// has not acknowledged; removing it would lose them. Nothing changed.
+    #[error("session {session_id} has {count} unacknowledged incoming messages")]
+    UndeliveredIncoming { session_id: u64, count: u64 },
 }
 
 impl From<StorageError> for CoreError {
@@ -873,11 +880,18 @@ mod tests {
 
     /// Test shorthands that keep the pre-S2-B2 tests below unchanged while
     /// running them on the durable path: `encrypt_message` is the committed
-    /// wire bytes of `send_message`, `decrypt_message` the plaintext of a
+    /// wire bytes of a `send_message` with a fresh client message id,
+    /// `decrypt_message` the plaintext of a
     /// newly accepted `receive_message`. Test-only; not part of the FFI.
     impl ArciumCore {
         fn encrypt_message(&self, session_id: u64, plaintext: Vec<u8>) -> Result<Vec<u8>, CoreError> {
-            self.send_message(session_id, plaintext).map(|m| m.wire)
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            let client_id = NEXT.fetch_add(1, Ordering::Relaxed).to_be_bytes().to_vec();
+            match self.send_message(session_id, client_id, plaintext)? {
+                SendResult::Sent { message } => Ok(message.wire),
+                other => panic!("expected a new message, got {other:?}"),
+            }
         }
 
         fn decrypt_message(&self, session_id: u64, message: Vec<u8>) -> Result<Vec<u8>, CoreError> {

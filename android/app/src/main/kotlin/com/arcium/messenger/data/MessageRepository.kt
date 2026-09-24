@@ -176,16 +176,30 @@ class MessageRepository(
     }
 
     /**
-     * Encrypts [plaintext] for [peerIdentityPk]. The returned message is already
-     * committed to the durable outbox together with the new session state; its
-     * `wire` bytes are what the peer needs.
+     * Sends the logical message [clientMessageId] (the app's own id for it,
+     * 1 to 64 bytes, unique per logical message) to [peerIdentityPk]. The first
+     * call encrypts [plaintext] and commits it to the durable outbox with the
+     * new session state; repeating the call with the same id — after a crash,
+     * a restart or an unknown commit outcome — returns what was committed and
+     * never encrypts the message a second time.
      *
-     * **This does not transmit anything.** To send again after a failure or a
-     * restart, use [pendingOutgoingTo] — which returns the same bytes — never a
-     * second call here for the same logical message.
+     * **This does not transmit anything.** Pending bytes are in [pendingOutgoingTo].
      */
-    fun sendToPeer(peerIdentityPk: ByteArray, plaintext: ByteArray): uniffi.arcium_core.OutgoingMessage {
-        return core.sendMessage(handleFor(peerIdentityPk), plaintext)
+    fun sendToPeer(
+        peerIdentityPk: ByteArray,
+        clientMessageId: ByteArray,
+        plaintext: ByteArray,
+    ): uniffi.arcium_core.SendResult {
+        return core.sendMessage(handleFor(peerIdentityPk), clientMessageId, plaintext)
+    }
+
+    /**
+     * Deletes the session with [peerIdentityPk] — for example after the peer
+     * refused its handshake — so a new one can be established. Returns the
+     * unacknowledged outgoing messages it discarded.
+     */
+    fun removeSessionWith(peerIdentityPk: ByteArray): List<uniffi.arcium_core.OutgoingMessage> {
+        return core.removeSession(handleFor(peerIdentityPk))
     }
 
     /** Committed messages to [peerIdentityPk] not yet confirmed delivered, in send order. */
@@ -216,7 +230,10 @@ class MessageRepository(
         return core.pendingIncoming(handleFor(peerIdentityPk))
     }
 
-    /** Called once [messageId] has been shown to the user. Idempotent. */
+    /**
+     * Called once [messageId] is durably processed on the app side (stored or
+     * shown); acknowledging earlier can lose it. Idempotent.
+     */
     fun markShown(peerIdentityPk: ByteArray, messageId: ByteArray): Boolean {
         return core.acknowledgeIncoming(handleFor(peerIdentityPk), messageId)
     }

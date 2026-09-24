@@ -5,6 +5,14 @@ use super::*;
 
 // ── S2-B2: durable sessions and messages ─────────────────────────────────
 
+/// The message of a first send of a logical message.
+fn sent_new(r: SendResult) -> OutgoingMessage {
+    match r {
+        SendResult::Sent { message } => message,
+        other => panic!("expected a new message, got {other:?}"),
+    }
+}
+
 /// A database path that outlives the core, so a test can reopen it.
 fn db_path() -> String {
     tempdir()
@@ -76,7 +84,11 @@ fn the_initiator_handshake_can_be_read_again_after_reopening() {
 fn outgoing_messages_are_resent_byte_for_byte_and_accepted_once() {
     let (pa, pb) = established_pair();
     let alice = open_at(&pa, 2);
-    let sent = alice.send_message(1, b"resend me".to_vec()).unwrap();
+    let sent = sent_new(
+        alice
+            .send_message(1, b"c1".to_vec(), b"resend me".to_vec())
+            .unwrap(),
+    );
     drop(alice);
 
     let alice = open_at(&pa, 2);
@@ -160,8 +172,8 @@ fn concurrent_cores_release_one_message_per_position() {
                 let core = open_at(&pa, 2);
                 gate.wait();
                 (0u8..20)
-                    .filter_map(|i| match core.send_message(1, vec![t, i]) {
-                        Ok(m) => Some(m),
+                    .filter_map(|i| match core.send_message(1, vec![t, i], vec![t, i]) {
+                        Ok(r) => Some(sent_new(r)),
                         Err(CoreError::SessionConflict { .. } | CoreError::Storage { .. }) => None,
                         Err(e) => panic!("{e:?}"),
                     })
@@ -212,7 +224,7 @@ fn a_corrupt_session_record_is_reported_and_not_overwritten() {
     };
     alice.store.lock().unwrap().put(&key, b"corrupt").unwrap();
     assert!(matches!(
-        alice.send_message(1, b"x".to_vec()),
+        alice.send_message(1, b"x".to_vec(), b"x".to_vec()),
         Err(CoreError::InvalidSessionState { session_id: 1, .. })
     ));
     assert!(matches!(
@@ -257,9 +269,11 @@ fn ffi_crash_child() {
     let read = |n: &str| std::fs::read_to_string(dir.join(n)).unwrap();
     match scenario.as_str() {
         "send" => {
-            let m = open_at(&read("a"), 2)
-                .send_message(1, b"in flight".to_vec())
-                .unwrap();
+            let m = sent_new(
+                open_at(&read("a"), 2)
+                    .send_message(1, b"in-flight".to_vec(), b"in flight".to_vec())
+                    .unwrap(),
+            );
             std::fs::write(dir.join("published"), m.wire).unwrap();
         }
         "receive" => {
@@ -378,4 +392,104 @@ fn killed_after_answering_a_handshake_the_session_and_rotation_both_persist() {
     ));
     let m = alice.encrypt_message(5, b"after restart".to_vec()).unwrap();
     assert_eq!(bob.decrypt_message(5, m).unwrap(), b"after restart");
+}
+
+// ── Acceptance: idempotent sends and session removal through the FFI ─────────
+
+/// After the process died holding a committed message, sending the same
+/// logical message again returns those bytes instead of a new ciphertext.
+#[cfg(unix)]
+#[test]
+fn resending_a_logical_message_after_a_crash_returns_the_same_bytes() {
+    let (pa, pb) = established_pair();
+    let dir = crash_dir(&pa, &pb);
+    run_ffi_child(&dir, "send");
+    let published = std::fs::read(dir.join("published")).unwrap();
+    let alice = open_at(&pa, 2);
+    match alice
+        .send_message(1, b"in-flight".to_vec(), b"in flight".to_vec())
+        .unwrap()
+    {
+        SendResult::AlreadyPending { message } => {
+            assert_eq!(message.wire, published);
+            assert_eq!(message.client_message_id, b"in-flight");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(alice.pending_outgoing(1).unwrap().len(), 1);
+    let bob = open_at(&pb, 1);
+    assert_eq!(bob.decrypt_message(1, published).unwrap(), b"in flight");
+}
+
+/// The responder refuses the initiator's handshake (its prekeys rotated
+/// first). Before `remove_session` the initiator could never replace that
+/// session; now it removes it and establishes a working one.
+#[test]
+fn a_refused_handshake_can_be_replaced_after_removing_the_session() {
+    let (pa, pb) = (db_path(), db_path());
+    let bob = open_at(&pb, 1);
+    bob.save_identity(Identity::generate()).unwrap();
+    bob.establish_prekeys().unwrap();
+    let alice = open_at(&pa, 2);
+    alice.save_identity(Identity::generate()).unwrap();
+    let hs = alice
+        .establish_session_initiator(1, bob.export_prekey_bundle().unwrap())
+        .unwrap();
+    let orphan = sent_new(
+        alice
+            .send_message(1, b"o".to_vec(), b"never read".to_vec())
+            .unwrap(),
+    );
+    bob.establish_prekeys().unwrap();
+    assert!(matches!(
+        bob.establish_session_responder(1, hs),
+        Err(CoreError::StaleSignedPrekey)
+    ));
+    let fresh = bob.export_prekey_bundle().unwrap();
+    assert!(matches!(
+        alice.establish_session_initiator(1, fresh.clone()),
+        Err(CoreError::SessionAlreadyExists { session_id: 1 })
+    ));
+
+    assert_eq!(alice.remove_session(1).unwrap(), vec![orphan]);
+    assert!(!alice.has_session(1).unwrap());
+    let hs2 = alice.establish_session_initiator(1, fresh).unwrap();
+    bob.establish_session_responder(1, hs2).unwrap();
+    let m = alice.encrypt_message(1, b"works now".to_vec()).unwrap();
+    assert_eq!(bob.decrypt_message(1, m).unwrap(), b"works now");
+    let r = bob.encrypt_message(1, b"and back".to_vec()).unwrap();
+    assert_eq!(alice.decrypt_message(1, r).unwrap(), b"and back");
+}
+
+#[test]
+fn removal_is_refused_while_incoming_messages_are_unacknowledged() {
+    let (pa, pb) = established_pair();
+    let m = open_at(&pa, 2)
+        .encrypt_message(1, b"unread".to_vec())
+        .unwrap();
+    let bob = open_at(&pb, 1);
+    bob.decrypt_message(1, m).unwrap();
+    assert!(matches!(
+        bob.remove_session(1),
+        Err(CoreError::UndeliveredIncoming {
+            session_id: 1,
+            count: 1
+        })
+    ));
+    assert!(bob.has_session(1).unwrap());
+    let id = bob.pending_incoming(1).unwrap()[0].message_id.clone();
+    bob.acknowledge_incoming(1, id).unwrap();
+    assert!(bob.remove_session(1).unwrap().is_empty());
+}
+
+#[test]
+fn client_message_ids_are_bounded() {
+    let (pa, _pb) = established_pair();
+    let alice = open_at(&pa, 2);
+    for bad in [vec![], vec![1u8; 65]] {
+        assert!(matches!(
+            alice.send_message(1, bad, b"x".to_vec()),
+            Err(CoreError::InvalidClientMessageId)
+        ));
+    }
 }

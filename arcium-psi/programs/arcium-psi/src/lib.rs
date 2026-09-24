@@ -2,6 +2,8 @@
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
 
+const COMP_DEF_OFFSET_PSI_INTERSECT: u32 = comp_def_offset("psi_intersect");
+
 declare_id!("PSiArc1um1111111111111111111111111111111111");
 
 #[arcium_program]
@@ -176,15 +178,16 @@ pub struct SubmitQuery<'info> {
 pub struct InitPsiIntersectCompDef<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
-    #[account(mut)]
-    pub mxe_account: Account<'info, MXEAccount>,
-    /// CHECK: validated by init_computation_definition_accounts macro
+    #[account(mut, address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    /// CHECK: checked by the Arcium program; not initialized yet.
     #[account(mut)]
     pub comp_def_account: UncheckedAccount<'info>,
-    /// CHECK: address lookup table for Arcium PDAs
-    #[account(mut)]
+    /// CHECK: the MXE's address lookup table, checked by the Arcium program.
+    #[account(mut, address = derive_mxe_lut_pda!(mxe_account.lut_offset_slot))]
     pub address_lookup_table: UncheckedAccount<'info>,
-    /// CHECK: lookup table program
+    /// CHECK: the Address Lookup Table program.
+    #[account(address = LUT_PROGRAM_ID)]
     pub lut_program: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
     pub arcium_program: Program<'info, Arcium>,
@@ -193,10 +196,16 @@ pub struct InitPsiIntersectCompDef<'info> {
 /// Submits an encrypted PSI query to the Arcium MPC cluster.
 #[queue_computation_accounts("psi_intersect", user)]
 #[derive(Accounts)]
+#[instruction(
+    client_data: SharedEncryptedStruct<10>,
+    server_data: SharedEncryptedStruct<10>,
+    computation_offset: u64,
+)]
 pub struct SubmitPsiQuery<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    pub mxe_account: Account<'info, MXEAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
     // Created on first use, as in the Arcium 0.10.4 examples. Nothing else
     // initializes this PDA, so requiring it to exist made every query fail
     // with AccountNotInitialized.
@@ -209,21 +218,22 @@ pub struct SubmitPsiQuery<'info> {
         address = derive_sign_pda!(),
     )]
     pub sign_pda_account: Account<'info, ArciumSignerAccount>,
-    /// CHECK: Arcium mempool PDA
-    #[account(mut)]
+    /// CHECK: Arcium mempool PDA, checked by the Arcium program.
+    #[account(mut, address = derive_mempool_pda!(mxe_account))]
     pub mempool_account: UncheckedAccount<'info>,
-    /// CHECK: Arcium executing pool PDA
-    #[account(mut)]
+    /// CHECK: Arcium executing pool PDA, checked by the Arcium program.
+    #[account(mut, address = derive_execpool_pda!(mxe_account))]
     pub executing_pool: UncheckedAccount<'info>,
-    /// CHECK: computation account (created by this instruction)
-    #[account(mut)]
+    /// CHECK: computation account, created by the Arcium program.
+    #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account))]
     pub computation_account: UncheckedAccount<'info>,
-    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
-    #[account(mut)]
-    pub cluster_account: Account<'info, Cluster>,
-    #[account(mut)]
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_PSI_INTERSECT))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
     pub pool_account: Account<'info, FeePool>,
-    #[account(mut)]
+    #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
     pub clock_account: Account<'info, ClockAccount>,
     pub system_program: Program<'info, System>,
     pub arcium_program: Program<'info, Arcium>,
@@ -235,11 +245,17 @@ pub struct SubmitPsiQuery<'info> {
 #[derive(Accounts)]
 pub struct PsiIntersectCallback<'info> {
     pub arcium_program: Program<'info, Arcium>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_PSI_INTERSECT))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
     pub mxe_account: Account<'info, MXEAccount>,
-    /// CHECK: computation account (verified by BLS signature)
+    /// CHECK: computation account, checked by the Arcium program through the
+    /// callback context.
     pub computation_account: UncheckedAccount<'info>,
-    pub cluster_account: Account<'info, Cluster>,
+    // Pinned to this MXE's cluster: verify_output checks the BLS signature
+    // against this account, so it must not be caller-chosen.
+    #[account(address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
     /// CHECK: instructions sysvar for callback validation
     #[account(address = INSTRUCTIONS_SYSVAR_ID)]
     pub instructions_sysvar: UncheckedAccount<'info>,

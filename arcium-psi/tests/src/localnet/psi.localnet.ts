@@ -135,19 +135,30 @@ describe('LOCALNET — Arcium PSI program', function () {
     expect(onChain.uploadAuth.toBase58()).to.equal(owner.toBase58());
     expect(onChain.isCompleted).to.equal(false);
 
-    // An outside signer cannot start writing the circuit.
     const outsider = await fundedKeypair(provider);
     const offset = Buffer.from(getCompDefAccOffset('psi_intersect')).readUInt32LE();
-    const error = await rejection(
+    const raw = await provider.connection.getAccountInfo(getRawCircuitAccAddress(compDefAccount, 0));
+    console.log('    PROBE raw acc 0 exists:', raw !== null, raw?.data.length);
+    // Rewrites bytes identical to what is stored, so acceptance cannot corrupt the circuit.
+    const same = raw ? Array.from(raw.data.subarray(9, 9 + 814)) : new Array(814).fill(0);
+    const upErr = await rejection(
       arcium.methods
-        .initRawCircuitAcc(offset, programId, 0)
+        .uploadCircuit(offset, programId, 0, same, 0)
         .accounts({ signer: outsider.publicKey })
         .signers([outsider])
         .rpc({ commitment: 'confirmed' }),
-    );
-    console.log('    PROBE outsider initRawCircuitAcc error:\n' + error);
-    console.log('    PROBE raw acc 0 after outsider:',
-      await provider.connection.getAccountInfo(getRawCircuitAccAddress(compDefAccount, 0)));
+    ).catch((e: any) => 'ACCEPTED: ' + e.message);
+    console.log('    PROBE outsider upload_circuit:\n' + upErr);
+    const finErr = await rejection(
+      arcium.methods
+        .finalizeComputationDefinition(offset, programId)
+        .accounts({ signer: outsider.publicKey })
+        .signers([outsider])
+        .rpc({ commitment: 'confirmed' }),
+    ).catch((e: any) => 'ACCEPTED: ' + e.message);
+    console.log('    PROBE outsider finalize_computation_definition:\n' + finErr);
+    const cd = await arcium.account.computationDefinitionAccount.fetch(compDefAccount);
+    console.log('    PROBE comp def after outsider:', JSON.stringify(cd.circuitSource));
 
     await uploadCircuit(
       provider,

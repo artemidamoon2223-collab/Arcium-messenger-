@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 pub mod checkpoint;
 pub mod durable;
+pub mod messaging;
 
 pub type ContactId = u64;
 

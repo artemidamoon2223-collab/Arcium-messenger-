@@ -2,10 +2,11 @@
 //! needed to check, on reload, that the record belongs to the session the
 //! caller is asking for.
 //!
-//! Not used by the live message path. The record is plaintext containing
-//! secret keys. Its confidentiality, integrity and authenticity come only
-//! from the authenticated encrypted store it is kept in; the checks below are
-//! structural and do not show that a record is genuine or current.
+//! Written by the live message path through `crate::messaging`. The record
+//! is plaintext containing secret keys. Its confidentiality, integrity and
+//! authenticity come only from the authenticated encrypted store it is kept
+//! in; the checks below are structural and do not show that a record is
+//! genuine or current.
 //!
 //! Encoding and decoding are crate-private: outside this crate a session
 //! record is reachable only through [`crate::durable::DurableSession`].

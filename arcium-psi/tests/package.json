@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "scripts": {
     "test": "mocha --require ts-node/register 'src/**/*.test.ts'",
+    "test:localnet": "mocha --require ts-node/register --timeout 1000000 'src/localnet/**/*.localnet.ts'",
     "test:devnet": "SOLANA_RPC_URL=https://api.devnet.solana.com npm test"
   },
   "dependencies": {
@@ -13,6 +14,7 @@
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
+    "@anchor-lang/core": "^1.0.2",
     "@types/chai": "^5.2.3",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.10.0",

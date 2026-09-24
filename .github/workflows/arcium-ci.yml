@@ -49,8 +49,9 @@ jobs:
           npx tsc --noEmit
           npx mocha --require ts-node/register 'src/crypto.test.ts'
 
-  # ── Job 3: Arcium build — informational; may fail on toolchain/circuit issues ──
-  # Outputs build_success=true/false so dependent steps can skip gracefully.
+  # ── Job 3: Arcium build — circuit, SBF program, IDL, borsh tests ──
+  # Every step fails the job on a nonzero exit (F-11: this job used to swallow
+  # `arcium build` failures and skip the borsh tests silently).
   arcium-build:
     runs-on: ubuntu-latest
     steps:
@@ -64,26 +65,35 @@ jobs:
           anchor --version || true
           solana --version || true
       - name: arcium build
-        id: arcium_build
+        working-directory: arcium-psi
+        run: arcium build
+      - name: Verify build artifacts
         working-directory: arcium-psi
         run: |
-          if arcium build; then
-            echo "build_success=true" >> "$GITHUB_OUTPUT"
-            echo "=== arcium build SUCCEEDED ==="
-            sha256sum build/psi_intersect.arcis.ir || echo "IR file not found"
-            find . -name "*.arcis.ir" | head -20
-            ls -la build/ 2>/dev/null || true
-          else
-            echo "build_success=false" >> "$GITHUB_OUTPUT"
-            echo "=== arcium build FAILED — see output above for details ==="
-            echo "Hint: check toolchain version mismatch or circuit API changes"
-          fi
+          for f in build/psi_intersect.arcis build/psi_intersect.arcis.ir \
+                   target/deploy/arcium_psi.so target/idl/arcium_psi.json; do
+            if [ ! -s "$f" ]; then
+              echo "::error::arcium build produced no $f"
+              exit 1
+            fi
+          done
+          sha256sum build/psi_intersect.arcis.ir target/deploy/arcium_psi.so
+      - name: arcium-psi borsh tests (require the arcium artifacts)
+        run: |
+          set -o pipefail
+          cargo test --manifest-path arcium-psi/programs/arcium-psi/Cargo.toml borsh_tests 2>&1 | tee borsh.log
+          # A filter that matches nothing still exits 0; require that tests ran.
+          grep -qE '^test result: ok\. [1-9][0-9]* passed' borsh.log || {
+            echo "::error::no borsh tests ran"
+            exit 1
+          }
         shell: bash
-      - name: arcium-psi borsh tests (requires arcium artifacts)
-        if: steps.arcium_build.outputs.build_success == 'true'
-        run: cargo test --manifest-path arcium-psi/programs/arcium-psi/Cargo.toml borsh_tests
 
-  # ── Job 4: Arcium test — full integration, requires Job 3 ──
+  # ── Job 4: Arcium test — localnet integration (validator + Arx MPC nodes) ──
+  # `arcium test` starts a local validator with the Arcium programs, this
+  # program at genesis and the Arx nodes in Docker, then runs
+  # tests/src/localnet (Anchor.toml [scripts] test). Its exit code is the
+  # job's result; a run with no passing or with pending tests also fails.
   arcium-test:
     needs: arcium-build
     runs-on: ubuntu-latest
@@ -92,9 +102,35 @@ jobs:
       - uses: arcium-hq/setup-arcium@v0.10.4
         with:
           runner-arch-os: x86_64_linux
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install test dependencies
+        run: npm ci --prefix arcium-psi/tests
+      - name: Local test wallet
+        run: |
+          test -f ~/.config/solana/id.json ||
+            solana-keygen new --no-bip39-passphrase --silent --outfile ~/.config/solana/id.json
       - name: arcium test (with open-files limit fix)
         working-directory: arcium-psi
         run: |
+          set -o pipefail
           sudo prlimit --pid $$ --nofile=1048576:1048576
-          arcium test || echo "arcium test did not pass — integration environment or circuit issue"
+          timeout 30m arcium test 2>&1 | tee arcium-test.log
+          if ! grep -qE '^ +[1-9][0-9]* passing' arcium-test.log; then
+            echo "::error::arcium test reported no passing tests"
+            exit 1
+          fi
+          if grep -qE '^ +[0-9]+ pending' arcium-test.log; then
+            echo "::error::arcium test left tests pending (not executed)"
+            exit 1
+          fi
         shell: bash
+      - name: Localnet diagnostics
+        if: failure()
+        working-directory: arcium-psi
+        run: |
+          docker ps -a || true
+          docker compose -f artifacts/docker-compose-arx-env.yml logs --tail 200 || true
+          cat artifacts/callback_server.log 2>/dev/null | tail -100 || true
+          tail -100 .anchor/test-ledger/validator.log 2>/dev/null || true

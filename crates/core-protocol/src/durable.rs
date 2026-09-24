@@ -17,8 +17,12 @@
 //! transaction (`BEGIN IMMEDIATE` … `COMMIT`): creating a session requires
 //! that no record exists, and a transition requires that the stored record is
 //! the predecessor this instance holds — same binding, same role, same
-//! generation. Because the check runs inside the write transaction, another
-//! connection cannot write between the check and the replacement. A failed
+//! generation, and the same record the instance last loaded or committed
+//! (compared by SHA-256). The last condition matters once a session can be
+//! removed: a replacement session with the same peer starts again at
+//! generation 0, and must not be overwritten by a transition staged from the
+//! session it replaced. Because the check runs inside the write transaction,
+//! another connection cannot write between the check and the replacement. A failed
 //! check is a [`Conflict`]: nothing is written, the staged state and its output
 //! are discarded, and the instance refuses further transitions. There is no
 //! automatic reload or retry.
@@ -65,6 +69,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use core_crypto::ratchet::{DoubleRatchet, Header, RatchetError};
 use core_storage::{EncryptedStore, StorageError};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::checkpoint::{
@@ -82,11 +87,13 @@ mod sealed {
     pub enum Expect<'a> {
         /// No record may exist.
         Absent,
-        /// The stored record must be this session's record at `generation`.
+        /// The stored record must be this session's record at `generation`,
+        /// and its SHA-256 must be `digest`.
         Predecessor {
             generation: u64,
             role: SessionRole,
             binding: &'a SessionBinding,
+            digest: &'a [u8; 32],
         },
         /// The stored record must be exactly these bytes.
         Exactly(&'a [u8]),
@@ -233,6 +240,10 @@ pub enum Conflict {
     /// A record required to be byte-identical to what the caller read has
     /// changed since.
     RecordChanged,
+    /// The stored record is at the expected generation but is not the record
+    /// this instance holds: the session was removed and another created with
+    /// the same peer since this instance loaded it.
+    Superseded,
 }
 
 /// Decides whether `current` satisfies `expect`. Runs inside the store's
@@ -257,6 +268,7 @@ fn check_precondition(current: Current<'_>, expect: &Expect<'_>) -> Result<(), C
                 generation,
                 role,
                 binding,
+                digest,
             },
             Current::Present(bytes),
         ) => {
@@ -274,9 +286,16 @@ fn check_precondition(current: Current<'_>, expect: &Expect<'_>) -> Result<(), C
                     found: found.generation,
                 });
             }
+            if record_digest(bytes) != **digest {
+                return Err(Conflict::Superseded);
+            }
             Ok(())
         }
     }
+}
+
+fn record_digest(record: &[u8]) -> [u8; 32] {
+    Sha256::digest(record).into()
 }
 
 /// Why creating or loading a durable session failed.
@@ -460,6 +479,8 @@ pub struct DurableSession {
     our_identity_pk: [u8; 32],
     key: String,
     generation: u64,
+    /// SHA-256 of the record this instance last loaded or committed.
+    record_digest: [u8; 32],
     status: Status,
     instance: u64,
 }
@@ -498,6 +519,7 @@ impl DurableSession {
         role: SessionRole,
         our_identity_pk: [u8; 32],
         generation: u64,
+        record: &[u8],
     ) -> Self {
         let key = session_storage_key(&session.peer_identity_pk);
         Self {
@@ -506,6 +528,7 @@ impl DurableSession {
             our_identity_pk,
             key,
             generation,
+            record_digest: record_digest(record),
             status: Status::Active,
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
         }
@@ -535,7 +558,7 @@ impl DurableSession {
     ) -> Result<Self, OpenError> {
         let record = encode_session_checkpoint(&session, role, &our_identity_pk, 0)
             .map_err(OpenError::Invalid)?;
-        let this = Self::new(session, role, our_identity_pk, 0);
+        let this = Self::new(session, role, our_identity_pk, 0, &record);
         let writes = batch(
             Write {
                 key: &this.key,
@@ -576,6 +599,7 @@ impl DurableSession {
             restored.role,
             binding.our_identity_pk,
             restored.generation,
+            &record,
         )))
     }
 
@@ -593,6 +617,17 @@ impl DurableSession {
 
     pub fn peer_identity_pk(&self) -> [u8; 32] {
         self.session.peer_identity_pk
+    }
+
+    /// Whether this session has committed a message from the peer, i.e. the
+    /// peer is known to hold it.
+    pub fn has_received(&self) -> bool {
+        self.session.ratchet.has_receiving_chain()
+    }
+
+    /// Whether `record` is the record this instance last loaded or committed.
+    pub(crate) fn holds_record(&self, record: &[u8]) -> bool {
+        record_digest(record) == self.record_digest
     }
 
     /// `Some(generation)` of the write whose outcome is unknown.
@@ -717,6 +752,7 @@ impl DurableSession {
                     generation: self.generation,
                     role: self.role,
                     binding: &binding,
+                    digest: &self.record_digest,
                 },
                 value: Some(&staged.record),
             },
@@ -729,12 +765,14 @@ impl DurableSession {
             Ok(()) => {
                 let StagedTransition {
                     ratchet,
+                    record,
                     output,
                     generation,
                     ..
                 } = staged;
                 self.session.ratchet = ratchet;
                 self.generation = generation;
+                self.record_digest = record_digest(&record);
                 Ok(output)
             }
             Err(WriteFailure::Conflict { index: 0, conflict }) => {
@@ -797,6 +835,21 @@ pub(crate) mod test_hooks {
 
     pub(super) fn take_fault() -> Option<CommitFault> {
         NEXT.with(|n| n.take())
+    }
+
+    /// Commits `tx`, which is not a checkpoint write, unless a fault is
+    /// scripted. `Err((outcome_unknown, error))` otherwise.
+    pub(crate) fn commit_or_fault(
+        tx: core_storage::StoreTransaction<'_>,
+    ) -> Result<(), (bool, StorageError)> {
+        match take_fault() {
+            None => tx.commit().map_err(|e| (true, e)),
+            Some(fault) => apply(fault, tx).map_err(|f| match f {
+                WriteFailure::NotCommitted(e) => (false, e),
+                WriteFailure::OutcomeUnknown(e) => (true, e),
+                WriteFailure::Conflict { .. } => unreachable!("faults never conflict"),
+            }),
+        }
     }
 
     pub(super) fn apply(
@@ -1290,6 +1343,25 @@ mod tests {
             commit_against(&mut db, &mut s),
             Err(CommitError::Conflict(Conflict::RoleMismatch))
         ));
+
+        // Another session with the same peer, identities, role and generation:
+        // what a removal followed by a new creation leaves.
+        let replacement = pair();
+        let mut ad = p.alice_pk.to_vec();
+        ad.extend_from_slice(&p.bob_pk);
+        let replacement = Session {
+            ad,
+            peer_identity_pk: p.bob_pk,
+            ..replacement.alice
+        };
+        let rec = encode_session_checkpoint(&replacement, SessionRole::Initiator, &p.alice_pk, 0)
+            .unwrap();
+        db.put(&key, &rec).unwrap();
+        assert!(matches!(
+            commit_against(&mut db, &mut s),
+            Err(CommitError::Conflict(Conflict::Superseded))
+        ));
+        assert_eq!(db.get(&key).unwrap(), *rec);
         assert_eq!(s.generation(), 0);
     }
 
@@ -1308,7 +1380,8 @@ mod tests {
                 &Expect::Predecessor {
                     generation: 0,
                     role: SessionRole::Initiator,
-                    binding: &b
+                    binding: &b,
+                    digest: &[0; 32],
                 }
             ),
             Err(Conflict::StoredRecordUnreadable)

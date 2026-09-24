@@ -36,7 +36,7 @@ here is transmitted.
 | `handle:v1/<handle>` | `HANDLE_RECORD_V1`: peer identity key the local handle belongs to | session creation |
 | `hsout:v1/<peer>` | initiator handshake bytes (public) | initiator session creation |
 | `outbox:v1/<peer>/<id>` | `OUTBOX_RECORD_V1`: generation, message id, client message id, exact wire bytes; only while unacknowledged | send |
-| `sendid:v1/<peer>/<client id>` | `SENDID_RECORD_V1`: the message id a logical message produced | send |
+| `sendid:v1/<peer>/<client id>` | `SENDID_RECORD_V1`: the message id a logical message produced, sent or abandoned | send, abandon outgoing |
 | `inbox:v1/<peer>/<id>` | `INBOX_RECORD_V1`: generation, message id, plaintext; only while undelivered | receive |
 | `seen:v1/<peer>/<id>` | `SEEN_RECORD_V1`: id of an acknowledged incoming message | acknowledge incoming |
 | `prekeys/v2` | unchanged format | responder session creation (same transaction) |
@@ -64,11 +64,23 @@ transaction; if any precondition fails, nothing is written.
 |---|---|---|
 | initiator establishment | session gen 0, handle, handshake | session absent, handle absent |
 | responder establishment | session gen 0, handle, rotated prekey record | session absent, handle absent, prekey record byte-identical to the one validated |
-| send | session gen n+1, outbox record, send-id record | session at gen n, outbox id absent, send-id absent |
-| receive | session gen n+1, inbox record (undelivered) | session at gen n, inbox id absent, seen id absent |
-| acknowledge incoming | inbox record deleted, seen record written | — (idempotent) |
-| acknowledge outgoing | outbox record deleted (send-id kept) | — (idempotent) |
-| remove session | session, handle, handshake, pending outbox and their send-ids deleted | no undelivered incoming; session record unchanged since read |
+| send | session gen n+1, outbox record, send-id record | session is the record loaded (gen n, same SHA-256), outbox id absent, send-id absent |
+| receive | session gen n+1, inbox record (undelivered) | session is the record loaded, inbox id absent, seen id absent |
+| acknowledge incoming | inbox record deleted, seen record written | inbox record present, else no-op (idempotent) |
+| acknowledge outgoing | outbox record deleted (send-id kept) | outbox record present, else no-op (idempotent) |
+| abandon outgoing | outbox record deleted, send-id marked abandoned | outbox record present, else no-op (idempotent) |
+| remove session | session, handle, handshake deleted | see 6a; session record unchanged since checked |
+
+A transition's precondition names the exact record it was staged from, not
+only its generation. A session that is removed and created again with the same
+peer starts at generation 0 again; without the digest, a transition staged from
+the old session commits over the new one and destroys it (reproduced on
+`bf4ea51`: the new session's peer could no longer decrypt). It is now refused
+as `Conflict::Superseded`.
+
+An error from the `COMMIT` of an acknowledgement, an abandonment or a removal
+is reported as `RepeatableOutcomeUnknown`, never as a rollback: repeating the
+call reports what the store holds.
 
 Order of every transition:
 
@@ -119,6 +131,14 @@ No output of a transition leaves Rust before its `COMMIT` returned `Ok`.
 - `acknowledge_outgoing(message_id)` removes the record once transport confirms
   delivery. Repeating it is harmless. (There is no transport or peer ACK yet;
   this is the hook it will call.)
+- `abandon_outgoing(message_id)` is the caller's explicit decision to stop
+  retransmitting a message without a delivery confirmation. The outbox record
+  goes, and the logical id is marked abandoned in the same transaction:
+  `send_message` with that id returns `Abandoned` and encrypts nothing, so the
+  outcome survives a crash and the content is only sent again under a new id,
+  deliberately. Abandoning claims nothing about the peer, which may or may not
+  have the message. An acknowledgement and an abandonment of the same message
+  are serialized; exactly one of them reports it as pending.
 
 ## 6. Incoming messages
 
@@ -145,15 +165,41 @@ is the application's explicit `acknowledge_incoming`.
 
 ## 6a. Removing a session
 
-`remove_session(handle)` deletes the session, its handle and handshake records
-and its unacknowledged outgoing messages (returned to the caller as discarded:
-only that session could have been used to read them) in one transaction. It is
-the way out of a session whose handshake the peer refused — without it such a
-session could never be replaced, since a peer has at most one session (also
-reproduced on the first version). It refuses while accepted incoming messages
-are unacknowledged, and refuses if the session changed between its reads and
-its transaction. `seen:` records are kept, so old messages are still
-recognised as duplicates.
+`remove_session(handle)` is the way out of a session whose handshake the peer
+refused: a peer has at most one session, so without it such a session could
+never be replaced (reproduced on the first version). What it may do follows
+from what the local store can and cannot know.
+
+The store cannot tell a refused handshake from one whose delivery is unknown:
+there is no authenticated refusal, and a missing acknowledgement proves
+nothing. It *can* tell whether the session has committed a message from the
+peer (the ratchet has a receiving chain only after an authenticated decrypt).
+If it has, the peer holds the session too, and removing it locally would
+leave the peer with a history this side no longer has.
+
+| state | removal | why |
+|---|---|---|
+| commit with unknown outcome on this handle | refused, `Unresolved` | an ambiguous commit is not a rollback; `recover_session` first |
+| session record unreadable or missing | refused, `InvalidSession` / `MissingSession` | whether it holds obligations cannot be decided |
+| a message from the peer committed (established) | refused, `SessionEstablished` | the peer holds the session; resetting it needs a peer-authenticated protocol, which does not exist here |
+| outgoing messages neither acknowledged nor abandoned | refused, `PendingOutgoing{count}` | each may have been published; the caller settles them one by one |
+| no message received, nothing pending (handshake refused or its delivery unknown) | session, handle and stored handshake deleted in one transaction | nothing received, nothing owed |
+| a send or receive commits between the checks and the transaction | refused, `Conflict(RecordChanged)`, nothing deleted | only those add obligations, and they change the record |
+
+Undelivered incoming messages imply a committed receive, so they are covered by
+`SessionEstablished`. `seen:` and `sendid:` records survive removal: a message
+already seen is still a duplicate, and a logical id keeps its outcome
+(`AlreadyAcknowledged`, `Abandoned`) for every later session with that peer, so
+nothing is encrypted twice for one logical id. A new session inherits no
+pending message: removal requires that there is none.
+
+Replacing a handshake whose delivery was unknown forks nothing: a peer that did
+accept it keeps its session and refuses the new handshake (`AlreadyExists`),
+and messages of either session fail to decrypt under the other and write
+nothing. What that costs is liveness: those two peers stay unable to talk until
+the peer's session can be reset, which needs a peer-authenticated reset
+protocol that is out of scope. Local removal proves nothing about the peer.
+
 - A forged or undecryptable message stages nothing and writes nothing.
 
 ## 7. Failure and recovery
@@ -169,6 +215,7 @@ recognised as duplicates.
 | process dies after return, before publication / delivery | same | caller had it | same as above, same bytes |
 | same ciphertext received again | unchanged | no new plaintext | `duplicate` |
 | two instances stage from one generation | first commit wins | only the winner's output | loser gets `Conflict` |
+| transition staged from a session since removed and re-created | the new session, untouched | nothing | `Conflict::Superseded` |
 | corrupt / incompatible checkpoint | unchanged | nothing | explicit error; never replaced |
 | SQLite left a transaction open | unchanged | nothing | S1 refuses (`TransactionStateInvalid`) |
 
@@ -212,7 +259,7 @@ ciphertext there (a fork); the receiver rejects the second one only if it
 already consumed that position. Nothing here prevents that.
 
 Retention: `seen:` and `sendid:` records are kept for the life of the session
-and beyond (about 40 bytes of payload plus the store's per-row overhead per
+and beyond, including across its removal (about 40 bytes of payload plus the store's per-row overhead per
 message). They are never listed, so they cost disk space, not time.
 
 ## 9. Compatibility
@@ -221,7 +268,7 @@ message). They are never listed, so they cost disk space, not time.
 `INITIATOR_HANDSHAKE_V1`, `PERSISTED_PREKEY_RECORD_V2` and the message format
 `header(40) || ciphertext` are unchanged. The FFI messaging calls change shape
 (`send_message` takes a client message id and returns an outcome;
-`receive_message` returns a record) and `remove_session` is new; the bytes on
+`receive_message` returns a record) and `remove_session` and `abandon_outgoing` are new; the bytes on
 the wire are identical.
 
 ## 10. Verification plan
@@ -235,7 +282,11 @@ the wire are identical.
 | responder prekey + session atomic | conditional batch; process abort before/after commit | process crash |
 | crash before / after `COMMIT`, before publication, before delivery | child process `abort()` at each point | process crash |
 | ambiguous `COMMIT` → unresolved, nothing released | scripted store failures | simulated |
-| invalid checkpoint never overwritten | corrupt record + create / receive | runtime |
+| invalid checkpoint never overwritten | corrupt record + create / receive / remove | runtime |
+| removal refused while unresolved, established or with pending outgoing; abandonment explicit and durable | `messaging/tests/lifecycle.rs` | runtime; unknown outcomes simulated |
+| a stale transition never commits over a replacement session | race hook on a second connection | runtime |
+| a logical message is never accepted under two sessions | two peers, replacement refused by the peer | runtime |
+| process death before / after the removal's `COMMIT` | child process `abort()` | process crash |
 | wire format unchanged | old-format decrypt across new API; fixed lengths | runtime |
 | Android: establish, messaging, process kill, restart, restore, pending recovery | instrumentation tests on an emulator, victim process killed with `Process.killProcess` | Android runtime (emulator) |
 | power loss | — | not verified |

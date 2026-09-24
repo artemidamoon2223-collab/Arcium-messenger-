@@ -1,69 +1,106 @@
-//! [`Messenger::remove_session`].
+//! Ending a session's obligations: [`Messenger::abandon_outgoing`] and
+//! [`Messenger::remove_session`]. Specification:
+//! `docs/S2-B2-DURABLE-MESSAGING.md`, section 6a.
 
 use core_storage::{EncryptedStore, StorageError};
 use zeroize::Zeroizing;
 
-use super::helpers::keys_under;
+use super::helpers::{commit_repeatable, keys_under};
 use super::records::*;
-use super::{MessagingError, Messenger, RemovedSession};
+use super::{MessageId, MessagingError, Messenger};
 use crate::checkpoint::session_storage_key;
 use crate::durable::Conflict;
 
 impl Messenger {
-    /// Deletes the session under `handle` — its checkpoint, handle record,
-    /// stored handshake and every unacknowledged outgoing message — in one
-    /// transaction, so a new session with that peer can be established (for
-    /// example after the peer refused this session's handshake).
+    /// Gives up on the pending outgoing message `id` without claiming it was
+    /// delivered: it leaves the outbox, and its logical id is recorded as
+    /// abandoned, so [`send`](Self::send) with that id reports
+    /// [`SendOutcome::Abandoned`](super::SendOutcome::Abandoned) instead of
+    /// encrypting it again. The peer may or may not have received it.
     ///
-    /// Refused with [`MessagingError::UndeliveredIncoming`] while accepted
-    /// incoming messages are unacknowledged, and with
-    /// [`MessagingError::Conflict`] if the session changed while this ran;
-    /// nothing is deleted in either case. Duplicate-detection records are
-    /// kept. The discarded outgoing messages are returned: only the removed
-    /// session could have been used to read them.
+    /// Returns whether it was still pending; repeating it is harmless.
+    pub fn abandon_outgoing(
+        &self,
+        store: &mut EncryptedStore,
+        handle: u64,
+        id: &MessageId,
+    ) -> Result<bool, MessagingError> {
+        let peer = self.require_peer(store, handle)?;
+        let key = outbox_key(&peer, id);
+        let tx = store.transaction().map_err(MessagingError::NotCommitted)?;
+        let message = match tx.get(&key) {
+            Ok(bytes) => decode_outbox(&Zeroizing::new(bytes))?,
+            Err(StorageError::NotFound) => return Ok(false),
+            Err(e) => return Err(MessagingError::Store(e)),
+        };
+        tx.delete(&key).map_err(MessagingError::NotCommitted)?;
+        tx.put(
+            &sendid_key(&peer, &message.client_message_id),
+            &encode_id_record(ABANDONED_MAGIC, id),
+        )
+        .map_err(MessagingError::NotCommitted)?;
+        commit_repeatable(tx)?;
+        Ok(true)
+    }
+
+    /// Deletes the session under `handle` — its checkpoint, handle record
+    /// and stored handshake — in one transaction, so that a new session with
+    /// that peer can be created (for example after the peer refused this
+    /// session's handshake). Duplicate-detection and send-id records stay.
+    ///
+    /// Only a session with no obligations left is removed. Refused, with
+    /// nothing changed:
+    /// - [`MessagingError::Unresolved`] while a commit on it has an unknown
+    ///   outcome;
+    /// - [`MessagingError::InvalidSession`] or
+    ///   [`MessagingError::MissingSession`] if its record cannot be read;
+    /// - [`MessagingError::SessionEstablished`] once it has committed a
+    ///   message from the peer, which then holds the session too;
+    /// - [`MessagingError::PendingOutgoing`] while outgoing messages are
+    ///   neither acknowledged nor abandoned;
+    /// - [`MessagingError::Conflict`] if the session changed while this ran.
+    ///
+    /// Local removal proves nothing about the peer: a peer that accepted the
+    /// handshake keeps its session and refuses a new one for this identity.
+    /// After [`MessagingError::RepeatableOutcomeUnknown`], calling this again
+    /// reports [`MessagingError::NoSession`] if the removal took effect.
     pub fn remove_session(
         &mut self,
         store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
         handle: u64,
-    ) -> Result<RemovedSession, MessagingError> {
-        let peer = self.require_peer(store, handle)?;
-        let session_key = session_storage_key(&peer);
-        // Read the session record first: any send or receive that commits
-        // after this changes it, and the transaction below then refuses.
-        let before = match store.get(&session_key) {
-            Ok(b) => Some(Zeroizing::new(b)),
-            Err(StorageError::NotFound) => None,
-            Err(e) => return Err(MessagingError::Store(e)),
-        };
-        let undelivered = keys_under(store, INBOX_NAMESPACE, &inbox_prefix(&peer))?.len();
-        if undelivered > 0 {
-            return Err(MessagingError::UndeliveredIncoming { count: undelivered });
+    ) -> Result<(), MessagingError> {
+        self.require_resolved(handle)?;
+        let (session, peer) = self.load(store, our_identity_pk, handle)?;
+        if session.has_received() {
+            return Err(MessagingError::SessionEstablished);
         }
-        let discarded = self.pending_outgoing(store, handle)?;
+        let pending = keys_under(store, OUTBOX_NAMESPACE, &outbox_prefix(&peer))?.len();
+        if pending > 0 {
+            return Err(MessagingError::PendingOutgoing { count: pending });
+        }
         #[cfg(test)]
-        super::remove_hook::run();
+        super::race_hook::run();
 
+        // Any send or receive committed since the load changed the record,
+        // and only those add obligations.
+        let session_key = session_storage_key(&peer);
         let tx = store.transaction().map_err(MessagingError::NotCommitted)?;
-        let now = match tx.get(&session_key) {
-            Ok(b) => Some(Zeroizing::new(b)),
-            Err(StorageError::NotFound) => None,
+        match tx.get(&session_key).map(Zeroizing::new) {
+            Ok(record) if session.holds_record(&record) => {}
+            Ok(_) | Err(StorageError::NotFound) => {
+                return Err(MessagingError::Conflict(Conflict::RecordChanged))
+            }
             Err(e) => return Err(MessagingError::Store(e)),
-        };
-        if now != before {
-            return Err(MessagingError::Conflict(Conflict::RecordChanged));
         }
-        let mut doomed = vec![session_key, handle_key(handle), handshake_key(&peer)];
-        for m in &discarded {
-            doomed.push(outbox_key(&peer, &m.message_id));
-            doomed.push(sendid_key(&peer, &m.client_message_id));
+        for key in [session_key, handle_key(handle), handshake_key(&peer)] {
+            tx.delete(&key).map_err(MessagingError::NotCommitted)?;
         }
-        for key in &doomed {
-            tx.delete(key).map_err(MessagingError::NotCommitted)?;
-        }
-        tx.commit().map_err(MessagingError::Store)?;
-        self.unresolved.remove(&handle);
-        Ok(RemovedSession {
-            discarded_outgoing: discarded,
-        })
+        #[cfg(test)]
+        crate::durable::test_hooks::crash_point("remove_before_commit");
+        commit_repeatable(tx)?;
+        #[cfg(test)]
+        crate::durable::test_hooks::crash_point("remove_after_commit");
+        Ok(())
     }
 }

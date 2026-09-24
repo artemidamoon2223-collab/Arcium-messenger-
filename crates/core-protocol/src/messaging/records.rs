@@ -63,6 +63,8 @@ pub(super) const OUTBOX_MAGIC: &[u8; 7] = b"ARCOUTB";
 pub(super) const INBOX_MAGIC: &[u8; 7] = b"ARCINBX";
 pub(super) const SEEN_MAGIC: &[u8; 7] = b"ARCSEEN";
 pub(super) const SENDID_MAGIC: &[u8; 7] = b"ARCSNDI";
+/// A send-id record whose message the caller abandoned.
+pub(super) const ABANDONED_MAGIC: &[u8; 7] = b"ARCSNDX";
 
 /// Longest caller-supplied logical message id, in bytes.
 pub const MAX_CLIENT_MESSAGE_ID_LEN: usize = 64;
@@ -166,7 +168,8 @@ pub(super) fn decode_inbox(bytes: &[u8]) -> Result<IncomingMessage, MessagingErr
     })
 }
 
-/// `SEEN_RECORD_V1` and `SENDID_RECORD_V1`: magic(7) version(1) id(32).
+/// `SEEN_RECORD_V1` and `SENDID_RECORD_V1` (sent or abandoned): magic(7)
+/// version(1) id(32).
 pub(super) fn encode_id_record(magic: &[u8; 7], id: &MessageId) -> Zeroizing<Vec<u8>> {
     let mut out = Zeroizing::new(Vec::with_capacity(40));
     out.extend_from_slice(magic);

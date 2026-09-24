@@ -36,16 +36,11 @@ pub enum SendOutcome {
     /// This logical message was sent before and has been acknowledged.
     /// Nothing was encrypted.
     AlreadyAcknowledged { message_id: MessageId },
-}
-
-/// What [`Messenger::remove_session`](super::Messenger::remove_session)
-/// deleted with the session.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemovedSession {
-    /// Outgoing messages of the removed session that were never
-    /// acknowledged. They were discarded; the peer can only read them with
-    /// the removed session.
-    pub discarded_outgoing: Vec<OutgoingMessage>,
+    /// This logical message was sent before and then abandoned
+    /// ([`Messenger::abandon_outgoing`](super::Messenger::abandon_outgoing)):
+    /// the peer may or may not have it. Nothing was encrypted; sending the
+    /// content again takes a new logical id.
+    Abandoned { message_id: MessageId },
 }
 
 /// A committed incoming message.
@@ -144,6 +139,9 @@ pub enum MessagingError {
     Store(StorageError),
     /// The store definitely kept nothing.
     NotCommitted(StorageError),
+    /// An acknowledgement, abandonment or removal may or may not have taken
+    /// effect. Repeating the call is safe and reports what the store holds.
+    RepeatableOutcomeUnknown(StorageError),
     /// The commit's outcome is unknown. Its output was withheld. The session
     /// refuses transitions until [`Messenger::recover`].
     OutcomeUnknown {
@@ -160,10 +158,13 @@ pub enum MessagingError {
     /// A caller's logical message id must be 1 to
     /// [`MAX_CLIENT_MESSAGE_ID_LEN`](super::MAX_CLIENT_MESSAGE_ID_LEN) bytes.
     InvalidClientMessageId,
-    /// The session still has accepted incoming messages the application has
-    /// not acknowledged; removing it now would lose them. Nothing was
-    /// changed.
-    UndeliveredIncoming {
+    /// The session has committed a message from the peer, so the peer holds
+    /// it: removing it locally would leave the peer with a session this side
+    /// no longer has. Nothing was changed.
+    SessionEstablished,
+    /// The session has outgoing messages that are neither acknowledged nor
+    /// abandoned. Nothing was changed.
+    PendingOutgoing {
         count: usize,
     },
 }

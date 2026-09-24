@@ -134,6 +134,13 @@ impl DoubleRatchet {
         PublicKey::from(&self.dhs)
     }
 
+    /// Whether a message from the peer has been authenticated. The receiving
+    /// chain is created only by a DH ratchet step inside [`decrypt`](Self::decrypt),
+    /// which is rolled back unless the message authenticates.
+    pub fn has_receiving_chain(&self) -> bool {
+        self.ckr.is_some()
+    }
+
     pub fn encrypt(&mut self, plaintext: &[u8], ad: &[u8]) -> Result<(Header, Vec<u8>), RatchetError> {
         let cks = self.cks.ok_or(RatchetError::NotInitialized)?;
         let (new_cks, mk) = kdf_ck(&cks);

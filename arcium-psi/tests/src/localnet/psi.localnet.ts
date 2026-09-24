@@ -34,6 +34,7 @@ import {
   getMempoolAccAddress,
   getMXEAccAddress,
   getMXEPublicKey,
+  getRawCircuitAccAddress,
   RescueCipher,
   uploadCircuit,
   x25519,
@@ -134,17 +135,31 @@ describe('LOCALNET — Arcium PSI program', function () {
     expect(onChain.uploadAuth.toBase58()).to.equal(owner.toBase58());
     expect(onChain.isCompleted).to.equal(false);
 
-    // An outside signer cannot start writing the circuit.
+    // An outside signer can neither write circuit data nor finalize the
+    // definition. `arcium test` pre-creates the raw circuit account at
+    // genesis, so this rewrites its first chunk with the bytes it already
+    // holds: accepted or not, the stored circuit is unchanged.
     const outsider = await fundedKeypair(provider);
     const offset = Buffer.from(getCompDefAccOffset('psi_intersect')).readUInt32LE();
-    const error = await rejection(
+    const raw = await provider.connection.getAccountInfo(getRawCircuitAccAddress(compDefAccount, 0));
+    expect(raw, 'no raw circuit account').to.not.equal(null);
+    const sameBytes = Array.from(raw!.data.subarray(9, 9 + 814));
+    const uploadError = await rejection(
       arcium.methods
-        .initRawCircuitAcc(offset, programId, 0)
+        .uploadCircuit(offset, programId, 0, sameBytes, 0)
         .accounts({ signer: outsider.publicKey })
         .signers([outsider])
         .rpc({ commitment: 'confirmed' }),
     );
-    expect(error).to.include('InvalidAuthority');
+    expect(uploadError).to.include('InvalidAuthority');
+    const finalizeError = await rejection(
+      arcium.methods
+        .finalizeComputationDefinition(offset, programId)
+        .accounts({ signer: outsider.publicKey })
+        .signers([outsider])
+        .rpc({ commitment: 'confirmed' }),
+    );
+    expect(finalizeError).to.include('InvalidAuthority');
 
     await uploadCircuit(
       provider,
@@ -153,6 +168,8 @@ describe('LOCALNET — Arcium PSI program', function () {
       fs.readFileSync(CIRCUIT_PATH),
       true,
     );
+    const finalized = await arcium.account.computationDefinitionAccount.fetch(compDefAccount);
+    expect(finalized.circuitSource.onChain[0].isCompleted).to.equal(true);
   });
 
   // Builds a signed v0 submit_psi_query transaction. `overrides` replaces

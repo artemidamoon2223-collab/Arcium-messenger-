@@ -2,3 +2,5 @@ target/
 .anchor/
 build/
 encrypted-ixs/build/
+artifacts/
+test-ledger/

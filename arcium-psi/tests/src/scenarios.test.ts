@@ -142,7 +142,7 @@ describe('ONLINE — Full PSI Flow (requires devnet)', () => {
   });
 
   it('initUser — creates user state PDA on devnet', async function (this: Mocha.Context) {
-    if (skipOnline) return;
+    if (skipOnline) this.skip();
     // TODO after devnet deploy:
     // 1. Load payer from ANCHOR_WALLET env
     // 2. Call initUser(connection, payer)
@@ -152,7 +152,7 @@ describe('ONLINE — Full PSI Flow (requires devnet)', () => {
   });
 
   it('submitPsiQuery — runs full PSI flow on devnet', async function (this: Mocha.Context) {
-    if (skipOnline) return;
+    if (skipOnline) this.skip();
     // TODO after devnet deploy:
     // Alice contacts: ["+1234567890", "+0987654321", "+1111111111"]
     // Bob contacts:   ["+1234567890", "+9999999999", "+1111111111"]
@@ -168,7 +168,7 @@ describe('ONLINE — Full PSI Flow (requires devnet)', () => {
   });
 
   it('contact hash in PSI result matches test vector', async function (this: Mocha.Context) {
-    if (skipOnline) return;
+    if (skipOnline) this.skip();
     // After real run: verify +1234567890 is in intersection
     this.skip();
   });

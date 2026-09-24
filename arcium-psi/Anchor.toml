@@ -2,6 +2,13 @@
 seeds = false
 skip-lint = false
 
+# localnet: `arcium test` loads the program at genesis under this address,
+# which must equal declare_id! in programs/arcium-psi/src/lib.rs. No program
+# keypair is needed for that. A devnet deployment still needs a real program
+# keypair and ID (finding F-14); this entry does not provide one.
+[programs.localnet]
+arcium_psi = "PSiArc1um1111111111111111111111111111111111"
+
 [programs.devnet]
 arcium_psi = "PSiArc1um1111111111111111111111111111111111"
 
@@ -9,8 +16,10 @@ arcium_psi = "PSiArc1um1111111111111111111111111111111111"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Devnet"
+# Default for `arcium test` / `anchor test`: local only. Devnet deploys pass
+# --provider.cluster devnet explicitly (docs/HOME-DEPLOY.md).
+cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "npm --prefix tests run test"
+test = "npm --prefix tests run test:localnet"

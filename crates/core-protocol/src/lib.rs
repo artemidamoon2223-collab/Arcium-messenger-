@@ -60,6 +60,10 @@ impl std::fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
+/// In-memory sessions keyed by local handle. Holds no durable state. The
+/// durable path, [`messaging::Messenger`], keeps sessions only in the
+/// encrypted store and never uses this; holding one session in both would
+/// create a second, diverging authority over it.
 pub struct SessionManager {
     sessions: HashMap<ContactId, RatchetState>,
 }

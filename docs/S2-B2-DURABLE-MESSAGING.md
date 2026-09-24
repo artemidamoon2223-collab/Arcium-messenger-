@@ -75,7 +75,8 @@ No output of a transition leaves Rust before its `COMMIT` returned `Ok`.
 
 - **Initiator.** X3DH, then one transaction storing the session, the handle and
   the handshake. The handshake is returned only after commit and can be read
-  again later (`initial_handshake`) if the process dies before sending it.
+  again later (`Messenger::initial_outbound`; `initiator_handshake` over the
+  FFI) if the process dies before sending it.
 - **Responder.** The prekey record is read and validated against the handshake
   (unchanged rules), X3DH runs, then one transaction stores the session and the
   handle and replaces the prekey record with the rotated one — only if the

@@ -1,5 +1,5 @@
 //! Adversarial acceptance tests: repeated logical sends, cross-session
-//! isolation, bounded listing of acknowledged history, and session removal.
+//! isolation, and bounded listing of acknowledged history.
 
 use super::*;
 
@@ -32,7 +32,7 @@ fn a_repeated_send_of_one_logical_message_encrypts_once() {
         p.bob_receives(&first.wire).unwrap(),
         Received::Accepted(_)
     ));
-    p.am.acknowledge_outgoing(&p.a, ALICE_HANDLE, &first.message_id)
+    p.am.acknowledge_outgoing(&mut p.a, ALICE_HANDLE, &first.message_id)
         .unwrap();
     assert_eq!(
         send_cid(&mut p, b"logical-1", b"hello"),
@@ -163,7 +163,7 @@ fn acknowledged_history_is_not_scanned_and_still_detects_duplicates() {
             .bm
             .acknowledge_incoming(&mut p.b, BOB_HANDLE, &id)
             .unwrap());
-        p.am.acknowledge_outgoing(&p.a, ALICE_HANDLE, &m.message_id)
+        p.am.acknowledge_outgoing(&mut p.a, ALICE_HANDLE, &m.message_id)
             .unwrap();
         wires.push(m.wire);
     }
@@ -241,111 +241,4 @@ fn one_sessions_message_ids_do_not_reach_another_session() {
         p.bm.send(&mut p.b, p.bob_pk, BOB_HANDLE, b"c1", b"to alice"),
         Err(MessagingError::Ratchet(_)) // Bob cannot send before Alice's first message
     ));
-}
-
-// ── D2: session removal ───────────────────────────────────────────────────────
-
-#[test]
-fn a_session_with_undelivered_incoming_messages_is_not_removed() {
-    let mut p = memory_peers();
-    let m = p.alice_sends(b"unread");
-    accepted(p.bob_receives(&m.wire).unwrap());
-    assert!(matches!(
-        p.bm.remove_session(&mut p.b, BOB_HANDLE),
-        Err(MessagingError::UndeliveredIncoming { count: 1 })
-    ));
-    assert_eq!(p.bm.pending_incoming(&p.b, BOB_HANDLE).unwrap().len(), 1);
-    assert_eq!(generation(&mut p.b, p.bob_pk, BOB_HANDLE), 1);
-}
-
-#[test]
-fn removing_a_session_allows_a_new_one_and_forgets_its_unsent_messages() {
-    let mut p = memory_peers();
-    let pending = new_message(send_cid(&mut p, b"never-delivered", b"lost"));
-    let delivered = new_message(send_cid(&mut p, b"delivered", b"kept"));
-    accepted(p.bob_receives(&delivered.wire).unwrap());
-    p.am.acknowledge_outgoing(&p.a, ALICE_HANDLE, &delivered.message_id)
-        .unwrap();
-
-    let removed = p.am.remove_session(&mut p.a, ALICE_HANDLE).unwrap();
-    assert_eq!(removed.discarded_outgoing, vec![pending.clone()]);
-    assert_eq!(p.am.peer_of(&p.a, ALICE_HANDLE).unwrap(), None);
-    assert!(p.a.list_keys_with_prefix("session:").unwrap().is_empty());
-    assert!(p.a.list_keys_with_prefix("outbox:").unwrap().is_empty());
-    assert!(p.a.list_keys_with_prefix("hsout:").unwrap().is_empty());
-    assert!(matches!(
-        p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"x", b"x"),
-        Err(MessagingError::NoSession { .. })
-    ));
-
-    // A fresh session with the same peer can now be created.
-    let again = pair();
-    let mut s = again.alice;
-    s.peer_identity_pk = p.bob_pk;
-    let mut ad = p.alice_pk.to_vec();
-    ad.extend_from_slice(&p.bob_pk);
-    s.ad = ad;
-    p.am.create_session(
-        &mut p.a,
-        p.alice_pk,
-        new_session(ALICE_HANDLE, s, SessionRole::Initiator),
-    )
-    .unwrap();
-    // The discarded logical message was never delivered, so it is sent anew;
-    // the delivered one stays acknowledged.
-    assert!(matches!(
-        send_cid(&mut p, b"never-delivered", b"lost"),
-        SendOutcome::Sent(_)
-    ));
-    assert!(matches!(
-        send_cid(&mut p, b"delivered", b"kept"),
-        SendOutcome::AlreadyAcknowledged { .. }
-    ));
-}
-
-#[test]
-fn removing_an_unknown_handle_is_no_session() {
-    let mut p = memory_peers();
-    assert!(matches!(
-        p.am.remove_session(&mut p.a, 999),
-        Err(MessagingError::NoSession { .. })
-    ));
-}
-
-/// A send committed by another connection between `remove_session`'s reads
-/// and its transaction: the removal refuses and deletes nothing, so the new
-/// message is not silently discarded.
-#[test]
-fn removal_refuses_if_the_session_changed_meanwhile() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("a.db");
-    let mut p = setup(
-        EncryptedStore::open(&path, KEY).unwrap(),
-        EncryptedStore::open_in_memory(KEY).unwrap(),
-    );
-    let alice_pk = p.alice_pk;
-    let other = path.clone();
-    crate::messaging::remove_hook::set(move || {
-        let mut db = EncryptedStore::open(&other, KEY).unwrap();
-        Messenger::new()
-            .send(
-                &mut db,
-                alice_pk,
-                ALICE_HANDLE,
-                b"racing",
-                b"sent meanwhile",
-            )
-            .unwrap();
-    });
-    assert!(matches!(
-        p.am.remove_session(&mut p.a, ALICE_HANDLE),
-        Err(MessagingError::Conflict(Conflict::RecordChanged))
-    ));
-    assert_eq!(p.am.peer_of(&p.a, ALICE_HANDLE).unwrap(), Some(p.bob_pk));
-    let pending = p.am.pending_outgoing(&p.a, ALICE_HANDLE).unwrap();
-    assert_eq!(pending.len(), 1);
-    assert_eq!(
-        *accepted(p.bob_receives(&pending[0].wire).unwrap()).plaintext,
-        b"sent meanwhile"
-    );
 }

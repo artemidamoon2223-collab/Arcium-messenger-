@@ -180,11 +180,11 @@ fn a_send_is_committed_with_its_outbox_record_and_returned_unchanged() {
 
     assert!(p
         .am
-        .acknowledge_outgoing(&p.a, ALICE_HANDLE, &sent.message_id)
+        .acknowledge_outgoing(&mut p.a, ALICE_HANDLE, &sent.message_id)
         .unwrap());
     assert!(!p
         .am
-        .acknowledge_outgoing(&p.a, ALICE_HANDLE, &sent.message_id)
+        .acknowledge_outgoing(&mut p.a, ALICE_HANDLE, &sent.message_id)
         .unwrap());
     assert!(p
         .am
@@ -644,3 +644,4 @@ fn a_failed_commit_leaves_the_session_usable_and_consumes_no_position() {
 
 mod acceptance;
 mod crash;
+mod lifecycle;

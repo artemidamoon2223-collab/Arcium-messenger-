@@ -217,6 +217,8 @@ impl Messenger {
         wire.extend_from_slice(&header.to_bytes());
         wire.extend_from_slice(ciphertext);
         let id = message_id(&wire);
+        #[cfg(test)]
+        race_hook::run();
         let side = [
             SideWrite::insert(
                 outbox_key(&peer, &id),
@@ -310,20 +312,21 @@ impl Messenger {
     /// it as acknowledged instead of encrypting it again.
     pub fn acknowledge_outgoing(
         &self,
-        store: &EncryptedStore,
+        store: &mut EncryptedStore,
         handle: u64,
         id: &MessageId,
     ) -> Result<bool, MessagingError> {
         let peer = self.require_peer(store, handle)?;
         let key = outbox_key(&peer, id);
-        match store.get(&key) {
-            Ok(_) => {
-                store.delete(&key).map_err(MessagingError::Store)?;
-                Ok(true)
-            }
-            Err(StorageError::NotFound) => Ok(false),
-            Err(e) => Err(MessagingError::Store(e)),
+        let tx = store.transaction().map_err(MessagingError::NotCommitted)?;
+        match tx.get(&key) {
+            Ok(_) => {}
+            Err(StorageError::NotFound) => return Ok(false),
+            Err(e) => return Err(MessagingError::Store(e)),
         }
+        tx.delete(&key).map_err(MessagingError::NotCommitted)?;
+        commit_repeatable(tx)?;
+        Ok(true)
     }
 
     /// Every committed incoming message not yet acknowledged, in the order it
@@ -378,7 +381,7 @@ impl Messenger {
         tx.delete(&key).map_err(MessagingError::NotCommitted)?;
         tx.put(&seen, &encode_id_record(SEEN_MAGIC, id))
             .map_err(MessagingError::NotCommitted)?;
-        tx.commit().map_err(MessagingError::Store)?;
+        commit_repeatable(tx)?;
         Ok(true)
     }
 
@@ -510,9 +513,11 @@ impl Messenger {
     }
 }
 
-/// Lets a test act between `remove_session`'s reads and its transaction.
+/// Lets a test act between an operation's reads and its transaction: after
+/// `send` has staged its transition, and after `remove_session` has checked
+/// the session.
 #[cfg(test)]
-mod remove_hook {
+mod race_hook {
     use std::cell::RefCell;
 
     thread_local! {

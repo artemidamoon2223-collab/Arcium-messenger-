@@ -1,6 +1,6 @@
 //! Free helpers of [`super::Messenger`].
 
-use core_storage::{EncryptedStore, StorageError};
+use core_storage::{EncryptedStore, StorageError, StoreTransaction};
 use zeroize::Zeroizing;
 
 use super::records::*;
@@ -80,6 +80,10 @@ pub(super) fn read_prior_send(
     index_key: &str,
 ) -> Result<Option<SendOutcome>, MessagingError> {
     let id = match store.get(index_key) {
+        Ok(bytes) if bytes.starts_with(ABANDONED_MAGIC) => {
+            let message_id = decode_id_record(ABANDONED_MAGIC, &bytes, "sendid")?;
+            return Ok(Some(SendOutcome::Abandoned { message_id }));
+        }
         Ok(bytes) => decode_id_record(SENDID_MAGIC, &bytes, "sendid")?,
         Err(StorageError::NotFound) => return Ok(None),
         Err(e) => return Err(MessagingError::Store(e)),
@@ -93,6 +97,19 @@ pub(super) fn read_prior_send(
         }
         Err(e) => Err(MessagingError::Store(e)),
     }
+}
+
+/// Commits a transaction that is not a session transition. An error from
+/// `COMMIT` leaves the outcome unknown; it is never reported as a rollback.
+pub(super) fn commit_repeatable(tx: StoreTransaction<'_>) -> Result<(), MessagingError> {
+    #[cfg(test)]
+    let result = crate::durable::test_hooks::commit_or_fault(tx);
+    #[cfg(not(test))]
+    let result = tx.commit().map_err(|e| (true, e));
+    result.map_err(|(unknown, e)| match unknown {
+        true => MessagingError::RepeatableOutcomeUnknown(e),
+        false => MessagingError::NotCommitted(e),
+    })
 }
 
 /// Keys in `namespace` that start with `prefix`.

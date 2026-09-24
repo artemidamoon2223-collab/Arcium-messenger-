@@ -80,6 +80,10 @@ fn crash_child() {
             std::fs::write(dir.join("created_peer"), pr.alice_pk).unwrap();
             p.bm.create_session(&mut p.b, pr.bob_pk, ns).unwrap();
         }
+        "remove" => {
+            p.am.remove_session(&mut p.a, p.alice_pk, ALICE_HANDLE)
+                .unwrap()
+        }
         other => panic!("unknown scenario {other}"),
     }
     // Died after the operation returned, before acknowledging anything.
@@ -373,5 +377,61 @@ fn unknown_receive_outcome_then_crash_accepts_once() {
             other => panic!("{fault}: {other:?}"),
         }
         assert_eq!(generation(&mut p.b, p.bob_pk, BOB_HANDLE), 1);
+    }
+}
+
+/// Scenario 7: a process death before the removal's commit leaves the session
+/// and every record as they were; after it, the session is gone and the
+/// records that detect repeats remain.
+#[cfg(unix)]
+#[test]
+fn process_killed_around_a_removal_loses_no_obligation() {
+    for point in [
+        "remove_before_commit",
+        "remove_after_commit",
+        "after_return",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = fixture(dir.path());
+        let mut p = fx.peers();
+        let m = new_message(
+            p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"L", b"x")
+                .unwrap(),
+        );
+        p.am.abandon_outgoing(&mut p.a, ALICE_HANDLE, &m.message_id)
+            .unwrap();
+        drop(p);
+        run_child(&fx, "remove", point);
+        let mut p = fx.peers();
+        let present = p.am.peer_of(&p.a, ALICE_HANDLE).unwrap().is_some();
+        assert_eq!(present, point == "remove_before_commit", "{point}");
+        if present {
+            assert_eq!(generation(&mut p.a, p.alice_pk, ALICE_HANDLE), 1);
+            p.am.remove_session(&mut p.a, p.alice_pk, ALICE_HANDLE)
+                .unwrap();
+        }
+        assert!(p.a.list_keys_with_prefix("session:").unwrap().is_empty());
+        // The logical id keeps its outcome for any later session.
+        let again = pair();
+        let mut ad = p.alice_pk.to_vec();
+        ad.extend_from_slice(&p.bob_pk);
+        let s = Session {
+            ad,
+            peer_identity_pk: p.bob_pk,
+            ..again.alice
+        };
+        p.am.create_session(
+            &mut p.a,
+            p.alice_pk,
+            new_session(ALICE_HANDLE, s, SessionRole::Initiator),
+        )
+        .unwrap();
+        assert_eq!(
+            p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"L", b"x")
+                .unwrap(),
+            SendOutcome::Abandoned {
+                message_id: m.message_id
+            }
+        );
     }
 }

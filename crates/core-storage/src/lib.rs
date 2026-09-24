@@ -73,8 +73,33 @@ impl EncryptedStore {
     }
 
     fn init(conn: Connection, master_key: [u8; 32]) -> Result<Self, StorageError> {
+        // Durability is set explicitly rather than inherited, so a change in a
+        // bundled-SQLite default cannot move it. See "What a successful commit
+        // does and does not mean" on `transaction` for what these give.
+        //
+        // - `journal_mode = DELETE`: rollback journal. The contention behaviour
+        //   documented on `transaction` and `StoreTransaction::commit` is
+        //   specific to this mode.
+        // - `synchronous = EXTRA`: in rollback-journal mode, `FULL` does not
+        //   sync the directory after deleting the journal, so the most recent
+        //   commit can return as a hot journal after a power cut and be rolled
+        //   back. `EXTRA` adds that directory sync. Durable messaging releases a
+        //   ciphertext only after its commit; losing such a commit would let the
+        //   sender re-derive the same ratchet position and emit a different
+        //   ciphertext there.
+        // - `busy_timeout = 5000`: the value rusqlite applied implicitly.
+        //
+        // `journal_mode` returns a row, so it is queried rather than batched.
+        let mode: String = conn.query_row("PRAGMA journal_mode = DELETE", [], |r| r.get(0))?;
+        if !mode.eq_ignore_ascii_case("delete") && !mode.eq_ignore_ascii_case("memory") {
+            return Err(StorageError::TransactionStateInvalid(
+                "SQLite refused rollback-journal mode",
+            ));
+        }
         conn.execute_batch(
-            "PRAGMA secure_delete = ON;
+            "PRAGMA synchronous = EXTRA;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA secure_delete = ON;
              CREATE TABLE IF NOT EXISTS kv (
                 k BLOB PRIMARY KEY,
                 ek BLOB NOT NULL,
@@ -161,16 +186,15 @@ impl EncryptedStore {
     ///   never a mix. The tests kill a process before and after `commit`; a
     ///   death inside `COMMIT` itself relies on the same SQLite recovery but is
     ///   not separately tested here.
-    /// - **Sudden power loss: not guaranteed.** The store runs in rollback-
-    ///   journal (`DELETE`) mode with `synchronous = FULL`. In that mode SQLite
-    ///   does not sync the directory after deleting the journal, which is the
-    ///   step that makes a commit final (it only does so under
-    ///   `synchronous = EXTRA`). A power loss shortly after `commit` returns
-    ///   can therefore bring the journal back and roll the most recent
-    ///   committed transaction back on the next open. Atomicity still holds —
-    ///   it is rolled back whole — but the caller must not treat `Ok` from
-    ///   `commit` as proof that the data will survive a power cut. Whether the
-    ///   device's storage honours `fsync` at all is outside this code.
+    /// - **Sudden power loss: assumed, not demonstrated.** The store runs in
+    ///   rollback-journal (`DELETE`) mode with `synchronous = EXTRA`, so SQLite
+    ///   syncs the journal, the database file and, after deleting the journal,
+    ///   the directory before `commit` returns. (Under `FULL`, used before
+    ///   S2-B2, that last directory sync is skipped and the most recent commit
+    ///   can come back as a hot journal after a power cut and be rolled back.)
+    ///   This holds only if the device's storage honours `fsync` on files and
+    ///   directories, which is outside this code and has not been tested here.
+    ///   Atomicity holds either way.
     ///
     /// # When a rollback fails
     ///
@@ -1134,12 +1158,11 @@ mod tests {
         );
     }
 
-    /// S1 must not change the durability configuration of existing databases.
-    /// These are the values observed on unmodified `main`; the test fails if
-    /// anything — this change, a dependency bump, a bundled-SQLite default —
-    /// moves them, so the change is at least visible.
+    /// The durability configuration set in `init`. Fails if anything — a
+    /// code change, a dependency bump, a bundled-SQLite default — moves it.
+    /// `synchronous` was 2 (FULL, the SQLite default) before S2-B2 set EXTRA.
     #[test]
-    fn durability_configuration_is_unchanged() {
+    fn durability_configuration_is_pinned() {
         let dir = tempdir().unwrap();
         let store = file_store(dir.path(), random_key());
         let journal: String = store
@@ -1155,8 +1178,8 @@ mod tests {
             .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
             .unwrap();
         assert_eq!(journal, "delete", "rollback-journal mode");
-        assert_eq!(sync, 2, "synchronous = FULL");
-        assert_eq!(busy, 5000, "rusqlite's per-connection default");
+        assert_eq!(sync, 3, "synchronous = EXTRA");
+        assert_eq!(busy, 5000, "busy timeout in milliseconds");
     }
 
     // ── S1: process termination ────────────────────────────────────────────

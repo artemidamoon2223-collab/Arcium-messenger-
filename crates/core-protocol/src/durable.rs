@@ -1,7 +1,8 @@
 //! Staged ratchet transitions with an explicit, conditional commit boundary.
 //!
-//! **Not connected to the live message path.** `mobile-ffi` keeps its
-//! in-memory `SessionManager`; nothing here is called from it.
+//! The live message path reaches this module through
+//! [`crate::messaging::Messenger`], which commits each transition together
+//! with its outbox or inbox record ([`DurableSession::commit_with`]).
 //!
 //! A transition (one encrypt or one decrypt) runs on an independent copy of
 //! the ratchet. The copy's new state is encoded, and only once the store
@@ -16,8 +17,12 @@
 //! transaction (`BEGIN IMMEDIATE` … `COMMIT`): creating a session requires
 //! that no record exists, and a transition requires that the stored record is
 //! the predecessor this instance holds — same binding, same role, same
-//! generation. Because the check runs inside the write transaction, another
-//! connection cannot write between the check and the replacement. A failed
+//! generation, and the same record the instance last loaded or committed
+//! (compared by SHA-256). The last condition matters once a session can be
+//! removed: a replacement session with the same peer starts again at
+//! generation 0, and must not be overwritten by a transition staged from the
+//! session it replaced. Because the check runs inside the write transaction,
+//! another connection cannot write between the check and the replacement. A failed
 //! check is a [`Conflict`]: nothing is written, the staged state and its output
 //! are discarded, and the instance refuses further transitions. There is no
 //! automatic reload or retry.
@@ -64,6 +69,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use core_crypto::ratchet::{DoubleRatchet, Header, RatchetError};
 use core_storage::{EncryptedStore, StorageError};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::checkpoint::{
@@ -72,7 +78,7 @@ use crate::checkpoint::{
 };
 use crate::Session;
 
-use sealed::{Current, Expect, Store, WriteFailure};
+use sealed::{Current, Expect, Store, Write, WriteFailure};
 
 mod sealed {
     use super::*;
@@ -81,12 +87,25 @@ mod sealed {
     pub enum Expect<'a> {
         /// No record may exist.
         Absent,
-        /// The stored record must be this session's record at `generation`.
+        /// The stored record must be this session's record at `generation`,
+        /// and its SHA-256 must be `digest`.
         Predecessor {
             generation: u64,
             role: SessionRole,
             binding: &'a SessionBinding,
+            digest: &'a [u8; 32],
         },
+        /// The stored record must be exactly these bytes.
+        Exactly(&'a [u8]),
+    }
+
+    /// One entry in a conditional batch: `value` replaces the record at
+    /// `key` only if `expect` holds for it. With `value: None` the entry is
+    /// a precondition only and writes nothing.
+    pub struct Write<'a> {
+        pub key: &'a str,
+        pub expect: Expect<'a>,
+        pub value: Option<&'a [u8]>,
     }
 
     /// The stored record as seen inside the write transaction.
@@ -98,11 +117,12 @@ mod sealed {
     }
 
     pub enum WriteFailure {
-        /// The precondition did not hold; nothing was written.
-        Conflict(Conflict),
-        /// The record was definitely not stored.
+        /// The precondition of `writes[index]` did not hold; nothing was
+        /// written.
+        Conflict { index: usize, conflict: Conflict },
+        /// No record was stored.
         NotCommitted(StorageError),
-        /// The record may or may not have been stored.
+        /// The records may or may not have been stored.
         OutcomeUnknown(StorageError),
     }
 
@@ -112,14 +132,9 @@ mod sealed {
         /// `Ok(None)` only when no record exists under `key`.
         fn read(&mut self, key: &str) -> Result<Option<Zeroizing<Vec<u8>>>, StorageError>;
 
-        /// Checks `expect` against the stored record and, only if it holds,
-        /// replaces it with `record` — atomically.
-        fn write_conditional(
-            &mut self,
-            key: &str,
-            expect: Expect<'_>,
-            record: &[u8],
-        ) -> Result<(), WriteFailure>;
+        /// Checks every write's precondition against the stored records and,
+        /// only if all hold, applies every write — atomically: all or none.
+        fn write_conditional(&mut self, writes: &[Write<'_>]) -> Result<(), WriteFailure>;
     }
 }
 
@@ -160,32 +175,45 @@ impl Store for S1CheckpointStore<'_> {
         }
     }
 
-    fn write_conditional(
-        &mut self,
-        key: &str,
-        expect: Expect<'_>,
-        record: &[u8],
-    ) -> Result<(), WriteFailure> {
+    fn write_conditional(&mut self, writes: &[Write<'_>]) -> Result<(), WriteFailure> {
         let tx = self
             .store
             .transaction()
             .map_err(WriteFailure::NotCommitted)?;
-        // Err(true): a row exists but fails authentication; Err(false): none.
-        let stored = match tx.get(key) {
-            Ok(v) => Ok(Zeroizing::new(v)),
-            Err(StorageError::NotFound) => Err(false),
-            Err(StorageError::Decryption) => Err(true),
-            Err(e) => return Err(WriteFailure::NotCommitted(e)),
-        };
-        let current = match &stored {
-            Ok(v) => Current::Present(v),
-            Err(false) => Current::Missing,
-            Err(true) => Current::Unreadable,
-        };
-        // On a conflict or any error below, `tx` is dropped and rolled back.
-        check_precondition(current, &expect).map_err(WriteFailure::Conflict)?;
-        tx.put(key, record).map_err(WriteFailure::NotCommitted)?;
-        tx.commit().map_err(WriteFailure::OutcomeUnknown)
+        // Every precondition is checked before anything is written. On a
+        // conflict or any error below, `tx` is dropped and rolled back.
+        for (index, w) in writes.iter().enumerate() {
+            // Err(true): a row exists but fails authentication; Err(false): none.
+            let stored = match tx.get(w.key) {
+                Ok(v) => Ok(Zeroizing::new(v)),
+                Err(StorageError::NotFound) => Err(false),
+                Err(StorageError::Decryption) => Err(true),
+                Err(e) => return Err(WriteFailure::NotCommitted(e)),
+            };
+            let current = match &stored {
+                Ok(v) => Current::Present(v),
+                Err(false) => Current::Missing,
+                Err(true) => Current::Unreadable,
+            };
+            check_precondition(current, &w.expect)
+                .map_err(|conflict| WriteFailure::Conflict { index, conflict })?;
+        }
+        for w in writes {
+            if let Some(value) = w.value {
+                tx.put(w.key, value).map_err(WriteFailure::NotCommitted)?;
+            }
+        }
+        #[cfg(test)]
+        {
+            test_hooks::crash_point("before_commit");
+            if let Some(fault) = test_hooks::take_fault() {
+                return test_hooks::apply(fault, tx);
+            }
+        }
+        let r = tx.commit().map_err(WriteFailure::OutcomeUnknown);
+        #[cfg(test)]
+        test_hooks::crash_point("after_commit");
+        r
     }
 }
 
@@ -209,6 +237,13 @@ pub enum Conflict {
     /// The stored record is at another generation: another instance has
     /// written since this one loaded, or the store was rolled back.
     GenerationMismatch { expected: u64, found: u64 },
+    /// A record required to be byte-identical to what the caller read has
+    /// changed since.
+    RecordChanged,
+    /// The stored record is at the expected generation but is not the record
+    /// this instance holds: the session was removed and another created with
+    /// the same peer since this instance loaded it.
+    Superseded,
 }
 
 /// Decides whether `current` satisfies `expect`. Runs inside the store's
@@ -217,6 +252,15 @@ fn check_precondition(current: Current<'_>, expect: &Expect<'_>) -> Result<(), C
     match (expect, current) {
         (Expect::Absent, Current::Missing) => Ok(()),
         (Expect::Absent, _) => Err(Conflict::RecordExists),
+        (Expect::Exactly(_), Current::Missing) => Err(Conflict::RecordMissing),
+        (Expect::Exactly(_), Current::Unreadable) => Err(Conflict::StoredRecordUnreadable),
+        (Expect::Exactly(want), Current::Present(have)) => {
+            if have == *want {
+                Ok(())
+            } else {
+                Err(Conflict::RecordChanged)
+            }
+        }
         (Expect::Predecessor { .. }, Current::Missing) => Err(Conflict::RecordMissing),
         (Expect::Predecessor { .. }, Current::Unreadable) => Err(Conflict::StoredRecordUnreadable),
         (
@@ -224,6 +268,7 @@ fn check_precondition(current: Current<'_>, expect: &Expect<'_>) -> Result<(), C
                 generation,
                 role,
                 binding,
+                digest,
             },
             Current::Present(bytes),
         ) => {
@@ -241,9 +286,16 @@ fn check_precondition(current: Current<'_>, expect: &Expect<'_>) -> Result<(), C
                     found: found.generation,
                 });
             }
+            if record_digest(bytes) != **digest {
+                return Err(Conflict::Superseded);
+            }
             Ok(())
         }
     }
+}
+
+fn record_digest(record: &[u8]) -> [u8; 32] {
+    Sha256::digest(record).into()
 }
 
 /// Why creating or loading a durable session failed.
@@ -254,6 +306,8 @@ pub enum OpenError {
     /// `create` found a record (valid or not) already stored for this peer
     /// and left it in place.
     AlreadyExists,
+    /// The precondition of `side[index]` did not hold; nothing was written.
+    SideConflict { index: usize, conflict: Conflict },
     /// A stored record exists but is invalid or bound to other identities,
     /// or the session given to `create` is inconsistent.
     Invalid(SessionCheckpointError),
@@ -261,6 +315,8 @@ pub enum OpenError {
     NotCommitted(StorageError),
     /// The initial record may or may not have been stored.
     OutcomeUnknown(StorageError),
+    /// The side writes were not usable; nothing was written.
+    SideWrite(SideWriteError),
 }
 
 /// Why a transition could not be staged. The installed state is unchanged.
@@ -293,12 +349,105 @@ pub enum CommitError {
     /// written. The installed state is unchanged and the instance now refuses
     /// further transitions. It is not reloaded or retried automatically.
     Conflict(Conflict),
+    /// The session record was this instance's predecessor, but the
+    /// precondition of `side[index]` did not hold; nothing was written. The
+    /// installed state is unchanged and the instance stays usable.
+    SideConflict { index: usize, conflict: Conflict },
     /// The store definitely did not keep the record. The installed state is
     /// unchanged.
     NotCommitted(StorageError),
     /// The store may or may not have kept the record. The instance is now
     /// unresolved.
     OutcomeUnknown(StorageError),
+    /// The side writes were not usable; nothing was written.
+    SideWrite(SideWriteError),
+}
+
+/// A record written in the same transaction as a session checkpoint, so that
+/// the two become durable together or not at all.
+///
+/// Side writes cannot touch session records: a key in the `session:`
+/// namespace is refused when the write is built, so the conditional check on
+/// the session record cannot be bypassed through a side write.
+pub struct SideWrite {
+    key: String,
+    expect: SideExpect,
+    /// `None`: a precondition only; nothing is written at `key`.
+    value: Option<Zeroizing<Vec<u8>>>,
+}
+
+enum SideExpect {
+    Absent,
+    Exactly(Zeroizing<Vec<u8>>),
+}
+
+/// Why a [`SideWrite`] could not be built, or a batch of them used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SideWriteError {
+    /// The key is in the namespace reserved for session records.
+    ReservedKey,
+    /// Two writes in one batch name the same key.
+    DuplicateKey,
+}
+
+const SESSION_NAMESPACE: &str = "session:";
+
+impl SideWrite {
+    /// Writes `value` at `key`, which must not exist yet.
+    pub fn insert(key: String, value: Zeroizing<Vec<u8>>) -> Result<Self, SideWriteError> {
+        Self::new(key, SideExpect::Absent, Some(value))
+    }
+
+    /// Writes nothing, but the transaction commits only if no record exists
+    /// at `key`.
+    pub fn require_absent(key: String) -> Result<Self, SideWriteError> {
+        Self::new(key, SideExpect::Absent, None)
+    }
+
+    /// Replaces the record at `key`, which must still be exactly `expected`.
+    pub fn replace(
+        key: String,
+        expected: Zeroizing<Vec<u8>>,
+        value: Zeroizing<Vec<u8>>,
+    ) -> Result<Self, SideWriteError> {
+        Self::new(key, SideExpect::Exactly(expected), Some(value))
+    }
+
+    fn new(
+        key: String,
+        expect: SideExpect,
+        value: Option<Zeroizing<Vec<u8>>>,
+    ) -> Result<Self, SideWriteError> {
+        if key.starts_with(SESSION_NAMESPACE) {
+            return Err(SideWriteError::ReservedKey);
+        }
+        Ok(Self { key, expect, value })
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+}
+
+/// The session write followed by the side writes, refusing a batch that
+/// names one key twice.
+fn batch<'a>(session: Write<'a>, side: &'a [SideWrite]) -> Result<Vec<Write<'a>>, SideWriteError> {
+    let mut writes = Vec::with_capacity(1 + side.len());
+    writes.push(session);
+    for w in side {
+        if writes.iter().any(|x| x.key == w.key) {
+            return Err(SideWriteError::DuplicateKey);
+        }
+        writes.push(Write {
+            key: &w.key,
+            expect: match &w.expect {
+                SideExpect::Absent => Expect::Absent,
+                SideExpect::Exactly(v) => Expect::Exactly(v),
+            },
+            value: w.value.as_deref().map(|v| v.as_slice()),
+        });
+    }
+    Ok(writes)
 }
 
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
@@ -330,6 +479,8 @@ pub struct DurableSession {
     our_identity_pk: [u8; 32],
     key: String,
     generation: u64,
+    /// SHA-256 of the record this instance last loaded or committed.
+    record_digest: [u8; 32],
     status: Status,
     instance: u64,
 }
@@ -352,6 +503,14 @@ impl<T> StagedTransition<T> {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+
+    /// The withheld output, readable inside this crate so that a record
+    /// derived from it (an outbox or inbox entry) can be written in the same
+    /// transaction as the checkpoint. Outside this crate the output is
+    /// reachable only through a successful commit.
+    pub(crate) fn output(&self) -> &T {
+        &self.output
+    }
 }
 
 impl DurableSession {
@@ -360,6 +519,7 @@ impl DurableSession {
         role: SessionRole,
         our_identity_pk: [u8; 32],
         generation: u64,
+        record: &[u8],
     ) -> Self {
         let key = session_storage_key(&session.peer_identity_pk);
         Self {
@@ -368,6 +528,7 @@ impl DurableSession {
             our_identity_pk,
             key,
             generation,
+            record_digest: record_digest(record),
             status: Status::Active,
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
         }
@@ -382,12 +543,38 @@ impl DurableSession {
         role: SessionRole,
         our_identity_pk: [u8; 32],
     ) -> Result<Self, OpenError> {
+        Self::create_with(store, session, role, our_identity_pk, &[])
+    }
+
+    /// [`create`](Self::create), writing `side` in the same transaction. If
+    /// any precondition fails — the session's or a side write's — nothing is
+    /// written.
+    pub fn create_with<S: CheckpointStore>(
+        store: &mut S,
+        session: Session,
+        role: SessionRole,
+        our_identity_pk: [u8; 32],
+        side: &[SideWrite],
+    ) -> Result<Self, OpenError> {
         let record = encode_session_checkpoint(&session, role, &our_identity_pk, 0)
             .map_err(OpenError::Invalid)?;
-        let this = Self::new(session, role, our_identity_pk, 0);
-        match store.write_conditional(&this.key, Expect::Absent, &record) {
+        let this = Self::new(session, role, our_identity_pk, 0, &record);
+        let writes = batch(
+            Write {
+                key: &this.key,
+                expect: Expect::Absent,
+                value: Some(&record),
+            },
+            side,
+        )
+        .map_err(OpenError::SideWrite)?;
+        match store.write_conditional(&writes) {
             Ok(()) => Ok(this),
-            Err(WriteFailure::Conflict(_)) => Err(OpenError::AlreadyExists),
+            Err(WriteFailure::Conflict { index: 0, .. }) => Err(OpenError::AlreadyExists),
+            Err(WriteFailure::Conflict { index, conflict }) => Err(OpenError::SideConflict {
+                index: index - 1,
+                conflict,
+            }),
             Err(WriteFailure::NotCommitted(e)) => Err(OpenError::NotCommitted(e)),
             Err(WriteFailure::OutcomeUnknown(e)) => Err(OpenError::OutcomeUnknown(e)),
         }
@@ -412,6 +599,7 @@ impl DurableSession {
             restored.role,
             binding.our_identity_pk,
             restored.generation,
+            &record,
         )))
     }
 
@@ -429,6 +617,17 @@ impl DurableSession {
 
     pub fn peer_identity_pk(&self) -> [u8; 32] {
         self.session.peer_identity_pk
+    }
+
+    /// Whether this session has committed a message from the peer, i.e. the
+    /// peer is known to hold it.
+    pub fn has_received(&self) -> bool {
+        self.session.ratchet.has_receiving_chain()
+    }
+
+    /// Whether `record` is the record this instance last loaded or committed.
+    pub(crate) fn holds_record(&self, record: &[u8]) -> bool {
+        record_digest(record) == self.record_digest
     }
 
     /// `Some(generation)` of the write whose outcome is unknown.
@@ -517,6 +716,17 @@ impl DurableSession {
         store: &mut S,
         staged: StagedTransition<T>,
     ) -> Result<T, CommitError> {
+        self.commit_with(store, staged, &[])
+    }
+
+    /// [`commit`](Self::commit), writing `side` in the same transaction as the
+    /// checkpoint. The output is released only if every write committed.
+    pub fn commit_with<S: CheckpointStore, T>(
+        &mut self,
+        store: &mut S,
+        staged: StagedTransition<T>,
+        side: &[SideWrite],
+    ) -> Result<T, CommitError> {
         match self.status {
             Status::Active => {}
             Status::Unresolved {
@@ -535,33 +745,130 @@ impl DurableSession {
             our_identity_pk: self.our_identity_pk,
             peer_identity_pk: self.session.peer_identity_pk,
         };
-        let expect = Expect::Predecessor {
-            generation: self.generation,
-            role: self.role,
-            binding: &binding,
-        };
-        match store.write_conditional(&self.key, expect, &staged.record) {
+        let writes = batch(
+            Write {
+                key: &self.key,
+                expect: Expect::Predecessor {
+                    generation: self.generation,
+                    role: self.role,
+                    binding: &binding,
+                    digest: &self.record_digest,
+                },
+                value: Some(&staged.record),
+            },
+            side,
+        )
+        .map_err(CommitError::SideWrite)?;
+        let result = store.write_conditional(&writes);
+        drop(writes);
+        match result {
             Ok(()) => {
                 let StagedTransition {
                     ratchet,
+                    record,
                     output,
                     generation,
                     ..
                 } = staged;
                 self.session.ratchet = ratchet;
                 self.generation = generation;
+                self.record_digest = record_digest(&record);
                 Ok(output)
             }
-            Err(WriteFailure::Conflict(c)) => {
+            Err(WriteFailure::Conflict { index: 0, conflict }) => {
                 self.status = Status::Conflicted;
-                Err(CommitError::Conflict(c))
+                Err(CommitError::Conflict(conflict))
             }
+            Err(WriteFailure::Conflict { index, conflict }) => Err(CommitError::SideConflict {
+                index: index - 1,
+                conflict,
+            }),
             Err(WriteFailure::NotCommitted(e)) => Err(CommitError::NotCommitted(e)),
             Err(WriteFailure::OutcomeUnknown(e)) => {
                 self.status = Status::Unresolved {
                     attempted_generation: staged.generation,
                 };
                 Err(CommitError::OutcomeUnknown(e))
+            }
+        }
+    }
+}
+
+/// Failure injection for this crate's tests. Compiled into tests only.
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use super::*;
+    use std::cell::Cell;
+
+    /// Environment variable naming the point at which a child test process
+    /// aborts inside `S1CheckpointStore::write_conditional`.
+    pub(crate) const CRASH_AT_ENV: &str = "ARCIUM_DURABLE_CRASH_AT";
+
+    /// Aborts the process — no unwinding, no destructors, no rollback by
+    /// `Drop` — when `CRASH_AT_ENV` names `point`.
+    pub(crate) fn crash_point(point: &str) {
+        if std::env::var(CRASH_AT_ENV).as_deref() == Ok(point) {
+            std::process::abort();
+        }
+    }
+
+    /// A scripted outcome for the next S1 commit on this thread. Simulated:
+    /// the real transaction is committed or rolled back, and the reported
+    /// result is chosen by the test, not by an I/O fault.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum CommitFault {
+        /// Roll back and report `NotCommitted`.
+        NotCommitted,
+        /// Commit, then report an unknown outcome.
+        UnknownStored,
+        /// Roll back, then report an unknown outcome.
+        UnknownLost,
+    }
+
+    thread_local! {
+        static NEXT: Cell<Option<CommitFault>> = const { Cell::new(None) };
+    }
+
+    pub(crate) fn inject(fault: CommitFault) {
+        NEXT.with(|n| n.set(Some(fault)));
+    }
+
+    pub(super) fn take_fault() -> Option<CommitFault> {
+        NEXT.with(|n| n.take())
+    }
+
+    /// Commits `tx`, which is not a checkpoint write, unless a fault is
+    /// scripted. `Err((outcome_unknown, error))` otherwise.
+    pub(crate) fn commit_or_fault(
+        tx: core_storage::StoreTransaction<'_>,
+    ) -> Result<(), (bool, StorageError)> {
+        match take_fault() {
+            None => tx.commit().map_err(|e| (true, e)),
+            Some(fault) => apply(fault, tx).map_err(|f| match f {
+                WriteFailure::NotCommitted(e) => (false, e),
+                WriteFailure::OutcomeUnknown(e) => (true, e),
+                WriteFailure::Conflict { .. } => unreachable!("faults never conflict"),
+            }),
+        }
+    }
+
+    pub(super) fn apply(
+        fault: CommitFault,
+        tx: core_storage::StoreTransaction<'_>,
+    ) -> Result<(), WriteFailure> {
+        let simulated = || StorageError::TransactionStateInvalid("simulated");
+        match fault {
+            CommitFault::NotCommitted => {
+                drop(tx);
+                Err(WriteFailure::NotCommitted(simulated()))
+            }
+            CommitFault::UnknownStored => {
+                tx.commit().expect("simulated fault needs a real commit");
+                Err(WriteFailure::OutcomeUnknown(simulated()))
+            }
+            CommitFault::UnknownLost => {
+                drop(tx);
+                Err(WriteFailure::OutcomeUnknown(simulated()))
             }
         }
     }
@@ -620,25 +927,30 @@ mod tests {
             Ok(self.records.get(key).map(|v| Zeroizing::new(v.clone())))
         }
 
-        fn write_conditional(
-            &mut self,
-            key: &str,
-            expect: Expect<'_>,
-            record: &[u8],
-        ) -> Result<(), WriteFailure> {
-            let current = match self.records.get(key) {
-                Some(v) => Current::Present(v),
-                None => Current::Missing,
+        fn write_conditional(&mut self, writes: &[Write<'_>]) -> Result<(), WriteFailure> {
+            for (index, w) in writes.iter().enumerate() {
+                let current = match self.records.get(w.key) {
+                    Some(v) => Current::Present(v),
+                    None => Current::Missing,
+                };
+                check_precondition(current, &w.expect)
+                    .map_err(|conflict| WriteFailure::Conflict { index, conflict })?;
+            }
+            let apply = |records: &mut HashMap<String, Vec<u8>>| {
+                for w in writes {
+                    if let Some(value) = w.value {
+                        records.insert(w.key.to_string(), value.to_vec());
+                    }
+                }
             };
-            check_precondition(current, &expect).map_err(WriteFailure::Conflict)?;
             match self.next_write.take() {
                 None => {
-                    self.records.insert(key.to_string(), record.to_vec());
+                    apply(&mut self.records);
                     Ok(())
                 }
                 Some(Fault::NotCommitted) => Err(WriteFailure::NotCommitted(simulated())),
                 Some(Fault::UnknownStored) => {
-                    self.records.insert(key.to_string(), record.to_vec());
+                    apply(&mut self.records);
                     Err(WriteFailure::OutcomeUnknown(simulated()))
                 }
                 Some(Fault::UnknownLost) => Err(WriteFailure::OutcomeUnknown(simulated())),
@@ -1031,6 +1343,25 @@ mod tests {
             commit_against(&mut db, &mut s),
             Err(CommitError::Conflict(Conflict::RoleMismatch))
         ));
+
+        // Another session with the same peer, identities, role and generation:
+        // what a removal followed by a new creation leaves.
+        let replacement = pair();
+        let mut ad = p.alice_pk.to_vec();
+        ad.extend_from_slice(&p.bob_pk);
+        let replacement = Session {
+            ad,
+            peer_identity_pk: p.bob_pk,
+            ..replacement.alice
+        };
+        let rec = encode_session_checkpoint(&replacement, SessionRole::Initiator, &p.alice_pk, 0)
+            .unwrap();
+        db.put(&key, &rec).unwrap();
+        assert!(matches!(
+            commit_against(&mut db, &mut s),
+            Err(CommitError::Conflict(Conflict::Superseded))
+        ));
+        assert_eq!(db.get(&key).unwrap(), *rec);
         assert_eq!(s.generation(), 0);
     }
 
@@ -1049,7 +1380,8 @@ mod tests {
                 &Expect::Predecessor {
                     generation: 0,
                     role: SessionRole::Initiator,
-                    binding: &b
+                    binding: &b,
+                    digest: &[0; 32],
                 }
             ),
             Err(Conflict::StoredRecordUnreadable)

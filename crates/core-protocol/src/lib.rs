@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 pub mod checkpoint;
 pub mod durable;
+pub mod messaging;
 
 pub type ContactId = u64;
 
@@ -59,6 +60,10 @@ impl std::fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
+/// In-memory sessions keyed by local handle. Holds no durable state. The
+/// durable path, [`messaging::Messenger`], keeps sessions only in the
+/// encrypted store and never uses this; holding one session in both would
+/// create a second, diverging authority over it.
 pub struct SessionManager {
     sessions: HashMap<ContactId, RatchetState>,
 }

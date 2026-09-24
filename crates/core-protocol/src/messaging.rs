@@ -168,6 +168,17 @@ impl Messenger {
         }
     }
 
+    /// Whether the session under `handle` has committed a message from the
+    /// peer, i.e. the peer is known to hold it (its handshake arrived).
+    pub fn has_received(
+        &self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+    ) -> Result<bool, MessagingError> {
+        Ok(self.load(store, our_identity_pk, handle)?.0.has_received())
+    }
+
     /// The initial outbound bytes stored with the session, if any.
     pub fn initial_outbound(
         &self,

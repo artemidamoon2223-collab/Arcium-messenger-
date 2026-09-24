@@ -18,7 +18,9 @@ use zeroize::Zeroizing;
 
 uniffi::setup_scaffolding!();
 
+mod contacts;
 mod messaging_api;
+pub(crate) mod network;
 pub use messaging_api::{IncomingMessage, OutgoingMessage, ReceiveResult, RecoveryReport, SendResult};
 
 #[derive(Debug, Error, uniffi::Error)]
@@ -113,6 +115,26 @@ pub enum CoreError {
     /// effect. Repeating the same call is safe and reports what is stored.
     #[error("outcome unknown for an operation on session {session_id}; repeat it")]
     RepeatableOutcomeUnknown { session_id: u64 },
+    /// The relay could not be reached, or the connection failed; whether the
+    /// last request took effect is unknown. Nothing local was lost.
+    #[error("network: {msg}")]
+    Network { msg: String },
+    /// Not a `CONTACT_CARD_V1`.
+    #[error("invalid contact card: {msg}")]
+    InvalidContactCard { msg: String },
+    /// A different card is already pinned for this identity. Nothing changed.
+    #[error("a different card is already pinned for this identity")]
+    ContactIdentityChanged,
+    /// The peer is not a pinned contact.
+    #[error("unknown contact")]
+    UnknownContact,
+    /// The relay has no prekey bundle for the peer.
+    #[error("the peer has no published prekey bundle")]
+    PeerBundleUnavailable,
+    /// The peer's published bundle names identity keys other than its pinned
+    /// card's. Nothing was created.
+    #[error("the published bundle does not match the pinned contact card")]
+    PeerIdentityMismatch,
 }
 
 impl From<StorageError> for CoreError {
@@ -1988,4 +2010,8 @@ mod tests {
     }
 
     mod durable;
+    mod net_harness;
+    mod network;
+    mod network_crash;
+    mod net_peer;
 }

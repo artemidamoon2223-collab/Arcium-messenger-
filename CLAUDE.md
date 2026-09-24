@@ -158,3 +158,7 @@ cd arcium-psi/tests && npx mocha --require ts-node/register 'src/crypto.test.ts'
   ревью, чеклист сдачи, карта репозитория.
 - **android-uniffi-bridge** — генерация UniFFI-биндингов, кросс-сборка `.so`,
   упаковка в APK и граница между compile/package и runtime-доказательством.
+- **mbr-integration** — что исследование MBR доказало, что осталось
+  допущением, и как его механизмы ложатся на durable-состояние Arcium.
+  Загружать при работе с персистентностью сессии, восстановлением после
+  крэша, outbox/retry, ACK, откатом и реплеем. Ничего не авторизует.

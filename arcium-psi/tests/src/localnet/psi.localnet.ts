@@ -8,7 +8,12 @@
 // inputs to the MXE key, queue the computation, await finalization.
 
 import * as anchor from '@anchor-lang/core';
-import { AddressLookupTableProgram, PublicKey } from '@solana/web3.js';
+import {
+  AddressLookupTableProgram,
+  PublicKey,
+  TransactionMessage,
+  VersionedTransaction,
+} from '@solana/web3.js';
 import { expect } from 'chai';
 import { randomBytes } from 'crypto';
 import * as fs from 'fs';
@@ -33,7 +38,6 @@ import {
   uploadCircuit,
   x25519,
 } from '@arcium-hq/client';
-import { PROGRAM_ID } from '../program';
 import { hashPhoneWithTruncation } from '../utils';
 
 const ROOT = path.resolve(__dirname, '../../..');
@@ -59,8 +63,13 @@ describe('LOCALNET — Arcium PSI program', function () {
     Buffer.from(getCompDefAccOffset('psi_intersect')).readUInt32LE(),
   );
 
-  it('runs the program built from this checkout, at the declared ID', () => {
-    expect(programId.toBase58()).to.equal(PROGRAM_ID.toBase58());
+  // `arcium build` (anchor build) syncs declare_id! and Anchor.toml to the
+  // program keypair it generates, so the ID is the one in the built IDL,
+  // not the constant in the repository.
+  it('the built program is deployed and executable at its IDL address', async () => {
+    const info = await provider.connection.getAccountInfo(programId);
+    expect(info, `no account at ${programId.toBase58()}`).to.not.equal(null);
+    expect(info!.executable).to.equal(true);
   });
 
   it('init_user creates the user state PDA', async () => {
@@ -113,7 +122,7 @@ describe('LOCALNET — Arcium PSI program', function () {
     );
     const computationOffset = new anchor.BN(randomBytes(8), 'hex');
 
-    await program.methods
+    const ix = await program.methods
       .submitPsiQuery(client, server, computationOffset)
       .accountsPartial({
         user: owner,
@@ -126,7 +135,24 @@ describe('LOCALNET — Arcium PSI program', function () {
         poolAccount: getFeePoolAccAddress(),
         clockAccount: getClockAccAddress(),
       })
-      .rpc({ skipPreflight: true, commitment: 'confirmed' });
+      .instruction();
+
+    // Two SharedEncryptedStruct<10> plus the Arcium accounts exceed a legacy
+    // transaction (1286 > 1232 bytes). A v0 transaction resolves the Arcium
+    // accounts through the MXE's address lookup table.
+    const mxe = await getArciumProgram(provider).account.mxeAccount.fetch(mxeAccount);
+    const lutAddress = getLookupTableAddress(programId, mxe.lutOffsetSlot);
+    const lut = (await provider.connection.getAddressLookupTable(lutAddress)).value;
+    expect(lut, `no lookup table at ${lutAddress.toBase58()}`).to.not.equal(null);
+    const { blockhash } = await provider.connection.getLatestBlockhash('confirmed');
+    const tx = new VersionedTransaction(
+      new TransactionMessage({
+        payerKey: owner,
+        recentBlockhash: blockhash,
+        instructions: [ix],
+      }).compileToV0Message([lut!]),
+    );
+    await provider.sendAndConfirm(tx, [], { skipPreflight: true, commitment: 'confirmed' });
 
     await awaitComputationFinalization(
       provider,

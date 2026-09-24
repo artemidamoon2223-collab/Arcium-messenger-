@@ -2,10 +2,11 @@
 seeds = false
 skip-lint = false
 
-# localnet: `arcium test` loads the program at genesis under this address,
-# which must equal declare_id! in programs/arcium-psi/src/lib.rs. No program
-# keypair is needed for that. A devnet deployment still needs a real program
-# keypair and ID (finding F-14); this entry does not provide one.
+# localnet: `arcium test` needs this section. `arcium build` (anchor build)
+# syncs it and declare_id! in programs/arcium-psi/src/lib.rs to the program
+# keypair it generates in target/deploy, so in a build the ID below is
+# replaced by that keypair's. A devnet deployment still needs a real,
+# retained program keypair and ID (finding F-14); this entry is not one.
 [programs.localnet]
 arcium_psi = "PSiArc1um1111111111111111111111111111111111"
 

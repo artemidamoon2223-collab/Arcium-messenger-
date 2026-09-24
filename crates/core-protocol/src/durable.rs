@@ -384,7 +384,11 @@ impl SideWrite {
         Self::new(key, SideExpect::Exactly(expected), value)
     }
 
-    fn new(key: String, expect: SideExpect, value: Zeroizing<Vec<u8>>) -> Result<Self, SideWriteError> {
+    fn new(
+        key: String,
+        expect: SideExpect,
+        value: Zeroizing<Vec<u8>>,
+    ) -> Result<Self, SideWriteError> {
         if key.starts_with(SESSION_NAMESPACE) {
             return Err(SideWriteError::ReservedKey);
         }
@@ -398,10 +402,7 @@ impl SideWrite {
 
 /// The session write followed by the side writes, refusing a batch that
 /// names one key twice.
-fn batch<'a>(
-    session: Write<'a>,
-    side: &'a [SideWrite],
-) -> Result<Vec<Write<'a>>, SideWriteError> {
+fn batch<'a>(session: Write<'a>, side: &'a [SideWrite]) -> Result<Vec<Write<'a>>, SideWriteError> {
     let mut writes = Vec::with_capacity(1 + side.len());
     writes.push(session);
     for w in side {

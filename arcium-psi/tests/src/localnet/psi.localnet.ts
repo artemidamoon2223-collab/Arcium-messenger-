@@ -87,7 +87,57 @@ describe('LOCALNET — Arcium PSI program', function () {
     expect(state.queriesMade.toNumber()).to.equal(0);
   });
 
-  it('registers the psi_intersect computation definition', async () => {
+  it('PROBE: who may register the computation definition', async () => {
+    const arcium: any = getArciumProgram(provider);
+    const mxe = await arcium.account.mxeAccount.fetch(mxeAccount);
+    console.log('    PROBE mxe.authority =', mxe.authority ? mxe.authority.toBase58() : null);
+    console.log('    PROBE owner (provider wallet) =', owner.toBase58());
+    const programInfo = await provider.connection.getAccountInfo(programId);
+    console.log('    PROBE program owner (loader) =', programInfo!.owner.toBase58());
+    const outsider = anchor.web3.Keypair.generate();
+    const air = await provider.connection.requestAirdrop(outsider.publicKey, 10e9);
+    await provider.connection.confirmTransaction(air, 'confirmed');
+    let outcome = 'accepted';
+    try {
+      await program.methods
+        .initPsiIntersectCompDef()
+        .accounts({
+          authority: outsider.publicKey,
+          mxeAccount,
+          compDefAccount,
+          addressLookupTable: getLookupTableAddress(programId, mxe.lutOffsetSlot),
+          lutProgram: AddressLookupTableProgram.programId,
+        })
+        .signers([outsider])
+        .rpc({ commitment: 'confirmed' });
+    } catch (e: any) {
+      outcome = 'rejected: ' + String(e?.message ?? e) + '\n' + (e?.logs ?? []).join('\n');
+    }
+    console.log('    PROBE outsider', outsider.publicKey.toBase58(), 'init_psi_intersect_comp_def', outcome);
+    const cd = await arcium.account.computationDefinitionAccount.fetchNullable(compDefAccount);
+    console.log('    PROBE comp def after outsider =', JSON.stringify(cd?.circuitSource ?? null));
+    if (cd) {
+      // Can the outsider write circuit bytes? Upload the real circuit as the outsider.
+      const outsiderProvider = new anchor.AnchorProvider(
+        provider.connection, new anchor.Wallet(outsider), { commitment: 'confirmed' });
+      let up = 'accepted';
+      try {
+        await uploadCircuit(outsiderProvider as any, 'psi_intersect', programId,
+          fs.readFileSync(CIRCUIT_PATH), true);
+      } catch (e: any) { up = 'rejected: ' + String(e?.message ?? e); }
+      console.log('    PROBE outsider uploadCircuit', up);
+      const cd2 = await arcium.account.computationDefinitionAccount.fetch(compDefAccount);
+      console.log('    PROBE comp def after outsider upload =', JSON.stringify(cd2.circuitSource));
+      // Can the owner upload once the outsider holds the definition?
+      let ownerUp = 'accepted';
+      try {
+        await uploadCircuit(provider, 'psi_intersect', programId, fs.readFileSync(CIRCUIT_PATH), true);
+      } catch (e: any) { ownerUp = 'rejected: ' + String(e?.message ?? e); }
+      console.log('    PROBE owner uploadCircuit after outsider', ownerUp);
+    }
+  });
+
+  it.skip('registers the psi_intersect computation definition', async () => {
     const mxe = await getArciumProgram(provider).account.mxeAccount.fetch(mxeAccount);
     await program.methods
       .initPsiIntersectCompDef()

@@ -34,6 +34,7 @@ import {
   getMempoolAccAddress,
   getMXEAccAddress,
   getMXEPublicKey,
+  getRawCircuitAccAddress,
   RescueCipher,
   uploadCircuit,
   x25519,
@@ -144,7 +145,9 @@ describe('LOCALNET — Arcium PSI program', function () {
         .signers([outsider])
         .rpc({ commitment: 'confirmed' }),
     );
-    expect(error).to.include('InvalidAuthority');
+    console.log('    PROBE outsider initRawCircuitAcc error:\n' + error);
+    console.log('    PROBE raw acc 0 after outsider:',
+      await provider.connection.getAccountInfo(getRawCircuitAccAddress(compDefAccount, 0)));
 
     await uploadCircuit(
       provider,

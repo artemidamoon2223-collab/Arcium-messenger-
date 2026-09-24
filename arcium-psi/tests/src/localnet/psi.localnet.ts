@@ -109,9 +109,10 @@ describe('LOCALNET — Arcium PSI program', function () {
     );
   });
 
-  it('runs a PSI computation on the MPC cluster and delivers the callback', async () => {
+  // Builds a signed v0 submit_psi_query transaction. `overrides` replaces
+  // accounts, to check that the program rejects substituted ones.
+  async function psiQueryTx(overrides: Record<string, PublicKey> = {}) {
     const mxePublicKey = await mxePublicKeyWithRetry(provider, programId);
-
     const client = encryptSide(
       ['+1234567890', '+0987654321', '+1111111111'].map(hashPhoneWithTruncation),
       mxePublicKey,
@@ -134,6 +135,7 @@ describe('LOCALNET — Arcium PSI program', function () {
         clusterAccount: getClusterAccAddress(clusterOffset),
         poolAccount: getFeePoolAccAddress(),
         clockAccount: getClockAccAddress(),
+        ...overrides,
       })
       .instruction();
 
@@ -152,11 +154,29 @@ describe('LOCALNET — Arcium PSI program', function () {
         instructions: [ix],
       }).compileToV0Message([lut!]),
     );
+    const signed = await provider.wallet.signTransaction(tx);
+    return { raw: signed.serialize(), computationOffset };
+  }
+
+  it('rejects a query whose Arcium account is substituted', async () => {
+    const { raw } = await psiQueryTx({ mempoolAccount: anchor.web3.Keypair.generate().publicKey });
+    let error = '';
+    try {
+      await sendAndCheck(provider, raw);
+    } catch (e: any) {
+      error = String(e?.message ?? e);
+    }
+    expect(error, 'substituted mempool_account was accepted').to.not.equal('');
+    expect(error).to.include('mempool_account');
+    expect(error).to.include('ConstraintAddress');
+  });
+
+  it('runs a PSI computation on the MPC cluster and delivers the callback', async () => {
+    const { raw, computationOffset } = await psiQueryTx();
     // Sent through the connection, not AnchorProvider.sendAndConfirm: on a
     // failed v0 transaction the latter throws "Unknown action 'undefined'"
     // (@anchor-lang/core provider.ts:196) and hides the program error.
-    const signed = await provider.wallet.signTransaction(tx);
-    const queueSig = await sendAndCheck(provider, signed.serialize());
+    const queueSig = await sendAndCheck(provider, raw);
     console.log('    submit_psi_query:', queueSig);
 
     await awaitComputationFinalization(

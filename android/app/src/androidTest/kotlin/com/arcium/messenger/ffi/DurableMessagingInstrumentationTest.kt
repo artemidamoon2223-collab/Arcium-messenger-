@@ -216,9 +216,9 @@ class DurableMessagingInstrumentationTest {
         // The restarted app, unsure whether its send took effect, sends the
         // same logical message again: it gets the stored bytes, not a new
         // ciphertext.
-        val again = alice.sendMessage(p.aliceHandle, bytes("logical-send-1"), bytes("sent before the crash"))
-        assertTrue("a repeated logical send must not encrypt again", again is SendResult.AlreadyPending)
-        assertArrayEquals(published, (again as SendResult.AlreadyPending).message.wire)
+        val repeated = alice.sendMessage(p.aliceHandle, bytes("logical-send-1"), bytes("sent before the crash"))
+        assertTrue("a repeated logical send must not encrypt again", repeated is SendResult.AlreadyPending)
+        assertArrayEquals(published, (repeated as SendResult.AlreadyPending).message.wire)
         assertEquals(1, alice.pendingOutgoing(p.aliceHandle).size)
 
         assertArrayEquals(bytes("sent before the crash"), accepted(bob.receiveMessage(p.bobHandle, published)))

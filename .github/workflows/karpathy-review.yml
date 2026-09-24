@@ -18,45 +18,116 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Self-test the completion gate
+        run: python3 .github/scripts/test_karpathy_review_gate.py
+
+      - name: Run the review agent in default permission mode (this runner only)
+        run: |
+          # The repository's .claude/settings.json sets "defaultMode": "plan" for
+          # interactive sessions. The action runs Claude Code in this checkout, so the
+          # agent inherited plan mode, could not get its plan approved in CI, and ended
+          # without reviewing anything. .claude/settings.local.json takes precedence over
+          # .claude/settings.json; it is written here on the runner only and never
+          # committed, so the repository-wide setting is unchanged.
+          test ! -e .claude/settings.local.json
+          printf '%s\n' '{"permissions":{"defaultMode":"default"}}' > .claude/settings.local.json
+
       - name: Run Karpathy Analysis
         id: claude_run
-        continue-on-error: true
-        uses: anthropics/claude-code-action@beta
+        # Pinned to the commit the `beta` tag pointed to when this workflow was repaired.
+        uses: anthropics/claude-code-action@28f83620103c48a57093dcc2837eec89e036bb9f
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           model: claude-haiku-4-5-20251001
+          max_turns: "40"
+          timeout_minutes: "15"
+          # The action allows file edits and git add/commit/push/rm by default. A review
+          # must not change the repository, so those are denied (a deny rule wins over
+          # the action's allow list). Any other tool that needs approval is refused in
+          # non-interactive mode and shows up as a permission denial, which fails the gate.
+          disallowed_tools: "Edit,MultiEdit,Write,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git rm:*)"
           direct_prompt: |
-            Get the PR diff:
-              git diff origin/${{ github.base_ref }}...HEAD
+            You are reviewing this pull request. You must not change the repository:
+            do not edit or create files, and do not run git add, commit, push or rm.
+            Tools: use only Read, Grep, Glob and LS, and Bash for plain `git diff`,
+            `git log` and `git status` commands. A Bash command must be exactly one
+            git command: no pipes (|), no redirection (> <), no `&&` or `;`, no
+            `$( )` or `<( )`, and no other programs such as wc, head, tail, cat or
+            sed. Anything else is refused, and a refused command fails the review.
 
-            Review every changed file against Andrej Karpathy's 4 principles
-            (https://github.com/forrestchang/andrej-karpathy-skills).
+            1. Read the methodology in full with the Read tool:
+                 .claude/skills/engineering-code-review/references/ci-karpathy-review.md
+               and follow it. The review is not complete without it.
 
-            Score each principle: ✅ Pass | ⚠️ Warning | ❌ Fail — one sentence of evidence.
+            2. List the changed files:
+                 git diff --name-only origin/${{ github.base_ref }}...HEAD
 
-            1. **Think Before Coding** — every choice traces to a real requirement;
-               no speculation, no silent assumptions.
-            2. **Simplicity First** — minimum code that solves the stated problem;
-               no speculative features, unnecessary abstractions, or impossible-case
-               error handling.
-            3. **Surgical Changes** — only the requested lines were touched;
-               no "while I'm here" formatting, refactoring, or adjacent cleanup.
-            4. **Goal-Driven** — the change is verifiable:
-               tests added/updated, `cargo test` / `tsc --noEmit` stays green.
+            3. For every changed file, run its own diff, one command per file:
+                 git diff origin/${{ github.base_ref }}...HEAD -- <path>
+               Issue these in parallel, several in one step, to save turns. Do not
+               rely on a single diff of the whole PR: long output is cut.
 
-            Finish with a 1-2 sentence overall verdict.
+            4. A diff is cut off when its output contains a line like
+               "... [N lines truncated] ...". For every file whose diff is cut
+               off, or whose diff you are not sure you saw in full, Read the file
+               with the Read tool from its first line, not only the part the diff
+               did not show: a cut diff plus a Read of the rest does not count.
+               Read shows at most 2000 lines per call; continue with successive
+               offset and limit chunks, each starting where the previous one
+               ended, until you have seen the file's final line. A deleted file
+               cannot be Read: if its diff is cut off, write "complete: no".
 
-            Post the result as a comment on this PR.
+            5. Before posting, check every changed file: either its own diff
+               was not cut off, or your Read calls together showed every line
+               from line 1 to the last. Do not judge this from memory of what you
+               reviewed; go by the tool output. If any file or line range is
+               still unread, name each file and range in the review and write
+               "complete: no". The completion gate checks coverage against the
+               tool output, not against what you write.
 
-      - name: Fail if review did not run
+            Review every changed file against the four principles in that file:
+            think_before_coding, simplicity_first, surgical_changes, goal_driven.
+            Give each a verdict (pass, warning or fail) with concrete evidence
+            (path:line). You cannot run tests: never report that tests pass or
+            fail, and list claims you could not verify under "unverified".
+            Post the review as a comment on this PR once, when it is finished.
+            Put the result block only in that comment. Do not repeat it in your
+            final answer; if you do, it must be identical, since a differing copy
+            fails the review.
+
+            End the review with this block, one field per line, with the marker
+            lines on their own. Use "|" between each verdict and its evidence;
+            list files separated by commas. The job and branch links may follow
+            the block.
+            KARPATHY_REVIEW_RESULT
+            complete: yes
+            files: <every changed path, exactly as git diff --name-only prints it>
+            think_before_coding: <pass, warning or fail> | <specific evidence>
+            simplicity_first: <pass, warning or fail> | <specific evidence>
+            surgical_changes: <pass, warning or fail> | <specific evidence>
+            goal_driven: <pass, warning or fail> | <specific evidence>
+            unverified: <claims you could not verify, or none>
+            summary: <overall verdict>
+            KARPATHY_REVIEW_END
+            If you could not review every changed file, write "complete: no".
+
+      - name: List the PR's changed files
         if: always()
         run: |
-          # karpathy-review is a real gate — this step fails the job if the review
-          # did not run successfully (e.g. missing/expired key); a swallowed error can no longer
-          # show a false green.
-          if [ "${{ steps.claude_run.outcome }}" != "success" ] || [ "${CLAUDE_SUCCESS:-}" = "false" ]; then
-            echo "::error::Karpathy review did not run successfully (step outcome=${{ steps.claude_run.outcome }}, CLAUDE_SUCCESS=${CLAUDE_SUCCESS:-unset}). Renew ANTHROPIC_API_KEY — do NOT add continue-on-error."
-            exit 1
-          fi
-          echo "Karpathy review ran successfully."
+          git diff --name-only "origin/${{ github.base_ref }}...HEAD" > "$RUNNER_TEMP/karpathy-changed-files.txt"
+          echo "Changed files: $(wc -l < "$RUNNER_TEMP/karpathy-changed-files.txt")"
+
+      - name: Fail unless the review was actually completed
+        if: always()
+        env:
+          REVIEW_OUTCOME: ${{ steps.claude_run.outcome }}
+          EXECUTION_FILE: ${{ steps.claude_run.outputs.execution_file }}
+          CHANGED_FILES: ${{ runner.temp }}/karpathy-changed-files.txt
+        # karpathy-review is a required check. The gate decides it from the execution
+        # record, never from the step outcome or a PR comment alone (in PR #85 the
+        # agent ended in plan mode with outcome=success). Exit 1: the review was not
+        # completed. Exit 2: it was completed and reported a FAIL finding, which
+        # needs the owner's review. Passing does not mean the code is correct or
+        # secure. See .github/scripts/karpathy_review_gate.py.
+        run: python3 .github/scripts/karpathy_review_gate.py

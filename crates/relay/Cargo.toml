@@ -1,0 +1,18 @@
+[package]
+name = "relay"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# An untrusted store-and-forward relay for end-to-end encrypted envelopes, and
+# the blocking client the app uses to reach it. Standard library only, so the
+# client cross-compiles for Android with nothing added.
+[lib]
+name = "relay"
+
+[[bin]]
+name = "arcium-relay"
+path = "src/bin/arcium-relay.rs"
+
+[dependencies]
+thiserror.workspace = true

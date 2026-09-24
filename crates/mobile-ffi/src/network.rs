@@ -24,6 +24,7 @@ use core_storage::StorageError;
 use relay::client::{ClientError, Connection};
 use relay::protocol::MAX_FETCH;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::contacts::{pinned, Card};
 use crate::{unpack_prekey_bundle, ArciumCore, CoreError, ReceiveResult, SendResult, PREKEYS_KEY};
@@ -158,8 +159,11 @@ impl NetworkMessenger {
             return Err(CoreError::PeerIdentityMismatch);
         }
         self.core.establish_session_initiator(handle, bundle)?;
-        self.core
-            .send_message(handle, client_id::OPEN.to_vec(), Payload::Open.encode())?;
+        self.core.send_message(
+            handle,
+            client_id::OPEN.to_vec(),
+            Payload::Open.encode().to_vec(),
+        )?;
         Ok(())
     }
 
@@ -172,13 +176,15 @@ impl NetworkMessenger {
         client_message_id: Vec<u8>,
         text: Vec<u8>,
     ) -> Result<SentText, CoreError> {
+        let text = Zeroizing::new(text);
         let peer = peer_key(&peer)?;
         self.require_contact(&peer)?;
         let handle = handle_of(&peer);
+        // `send_message` wraps its argument in `Zeroizing` on entry.
         let sent = self.core.send_message(
             handle,
             client_id::text(&client_message_id),
-            Payload::Text(text).encode(),
+            Payload::Text(text).encode().to_vec(),
         )?;
         Ok(match sent {
             SendResult::Sent { message } | SendResult::AlreadyPending { message } => SentText {
@@ -206,10 +212,10 @@ impl NetworkMessenger {
             .core
             .pending_incoming(handle)?
             .into_iter()
-            .filter_map(|m| match Payload::decode(&m.plaintext) {
+            .filter_map(|m| match Payload::decode(&Zeroizing::new(m.plaintext)) {
                 Some(Payload::Text(text)) => Some(ReceivedText {
                     message_id: m.message_id,
-                    text,
+                    text: text.to_vec(),
                 }),
                 _ => None,
             })
@@ -447,7 +453,8 @@ impl NetworkMessenger {
                     Ok(ReceiveResult::Accepted { message }) => {
                         report.accepted += 1;
                         crash_point("after_accept");
-                        self.settle(handle, &message.message_id, &message.plaintext, report)?;
+                        let plaintext = Zeroizing::new(message.plaintext);
+                        self.settle(handle, &message.message_id, &plaintext, report)?;
                         crash_point("after_settle");
                         Ok(Fate::Delete)
                     }
@@ -477,7 +484,8 @@ impl NetworkMessenger {
     /// layer, not the application, consumes.
     fn settle_inbox(&self, handle: u64, report: &mut SyncReport) -> Result<(), CoreError> {
         for m in self.core.pending_incoming(handle)? {
-            self.settle(handle, &m.message_id, &m.plaintext, report)?;
+            let plaintext = Zeroizing::new(m.plaintext);
+            self.settle(handle, &m.message_id, &plaintext, report)?;
         }
         Ok(())
     }
@@ -526,7 +534,7 @@ impl NetworkMessenger {
         self.core.send_message(
             handle,
             client_id::receipt(id, round),
-            Payload::Receipt(vec![*id]).encode(),
+            Payload::Receipt(vec![*id]).encode().to_vec(),
         )
     }
 

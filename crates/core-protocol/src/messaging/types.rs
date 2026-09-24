@@ -16,9 +16,36 @@ use crate::Session;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutgoingMessage {
     pub message_id: MessageId,
+    /// The caller's id for this logical message, as given to
+    /// [`Messenger::send`](super::Messenger::send).
+    pub client_message_id: Vec<u8>,
     /// The session generation this message's send committed.
     pub generation: u64,
     pub wire: Vec<u8>,
+}
+
+/// The result of [`Messenger::send`](super::Messenger::send).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendOutcome {
+    /// Newly encrypted and committed with its outbox record.
+    Sent(OutgoingMessage),
+    /// This logical message was sent before and is still pending: the stored
+    /// message, byte for byte. Nothing was encrypted and the ratchet did not
+    /// move.
+    AlreadyPending(OutgoingMessage),
+    /// This logical message was sent before and has been acknowledged.
+    /// Nothing was encrypted.
+    AlreadyAcknowledged { message_id: MessageId },
+}
+
+/// What [`Messenger::remove_session`](super::Messenger::remove_session)
+/// deleted with the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedSession {
+    /// Outgoing messages of the removed session that were never
+    /// acknowledged. They were discarded; the peer can only read them with
+    /// the removed session.
+    pub discarded_outgoing: Vec<OutgoingMessage>,
 }
 
 /// A committed incoming message.
@@ -130,4 +157,13 @@ pub enum MessagingError {
     },
     /// No message with this id is recorded for this session.
     UnknownMessage,
+    /// A caller's logical message id must be 1 to
+    /// [`MAX_CLIENT_MESSAGE_ID_LEN`](super::MAX_CLIENT_MESSAGE_ID_LEN) bytes.
+    InvalidClientMessageId,
+    /// The session still has accepted incoming messages the application has
+    /// not acknowledged; removing it now would lose them. Nothing was
+    /// changed.
+    UndeliveredIncoming {
+        count: usize,
+    },
 }

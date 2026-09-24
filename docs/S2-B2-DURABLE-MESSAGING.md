@@ -35,12 +35,19 @@ here is transmitted.
 | `session:v1/<peer>` | `SESSION_CHECKPOINT_V1` (unchanged, S2-B1) | every transition |
 | `handle:v1/<handle>` | `HANDLE_RECORD_V1`: peer identity key the local handle belongs to | session creation |
 | `hsout:v1/<peer>` | initiator handshake bytes (public) | initiator session creation |
-| `outbox:v1/<peer>/<id>` | `OUTBOX_RECORD_V1`: generation, message id, exact wire bytes | send |
-| `inbox:v1/<peer>/<id>` | `INBOX_RECORD_V1`: generation, message id, state, plaintext while undelivered | receive, acknowledge |
+| `outbox:v1/<peer>/<id>` | `OUTBOX_RECORD_V1`: generation, message id, client message id, exact wire bytes; only while unacknowledged | send |
+| `sendid:v1/<peer>/<client id>` | `SENDID_RECORD_V1`: the message id a logical message produced | send |
+| `inbox:v1/<peer>/<id>` | `INBOX_RECORD_V1`: generation, message id, plaintext; only while undelivered | receive |
+| `seen:v1/<peer>/<id>` | `SEEN_RECORD_V1`: id of an acknowledged incoming message | acknowledge incoming |
 | `prekeys/v2` | unchanged format | responder session creation (same transaction) |
 
 `<peer>` is the peer's X25519 identity key in hex, `<handle>` the local `u64`
-handle in hex, `<id>` a message id in hex.
+handle in hex, `<id>` a message id in hex, `<client id>` the caller's logical
+message id in hex.
+
+Only `outbox:` and `inbox:` are ever listed, and they hold pending entries
+only. What is kept after an acknowledgement (`sendid:`, `seen:`) is read by
+exact key, so listing pending messages does not get slower as history grows.
 
 **Message id** = `SHA-256("ARCIUM-MESSAGE-ID-V1" || wire)`, where `wire` is the
 exact `header || ciphertext` bytes. Both peers compute the same id from the same
@@ -57,10 +64,11 @@ transaction; if any precondition fails, nothing is written.
 |---|---|---|
 | initiator establishment | session gen 0, handle, handshake | session absent, handle absent |
 | responder establishment | session gen 0, handle, rotated prekey record | session absent, handle absent, prekey record byte-identical to the one validated |
-| send | session gen n+1, outbox record | session at gen n, outbox id absent |
-| receive | session gen n+1, inbox record (undelivered) | session at gen n, inbox id absent |
-| acknowledge incoming | inbox record → acknowledged, plaintext removed | record present |
-| acknowledge outgoing | outbox record removed | — (idempotent) |
+| send | session gen n+1, outbox record, send-id record | session at gen n, outbox id absent, send-id absent |
+| receive | session gen n+1, inbox record (undelivered) | session at gen n, inbox id absent, seen id absent |
+| acknowledge incoming | inbox record deleted, seen record written | — (idempotent) |
+| acknowledge outgoing | outbox record deleted (send-id kept) | — (idempotent) |
+| remove session | session, handle, handshake, pending outbox and their send-ids deleted | no undelivered incoming; session record unchanged since read |
 
 Order of every transition:
 
@@ -95,8 +103,16 @@ No output of a transition leaves Rust before its `COMMIT` returned `Ok`.
 
 ## 5. Outgoing messages
 
-- `send_message` commits the new checkpoint and the outbox record together and
-  returns `{message_id, wire}` only after commit.
+- `send_message(client_message_id, plaintext)` takes the caller's own id for
+  the logical message (1–64 bytes, unique per logical message). The first call
+  commits the new checkpoint, the outbox record and the send-id record together
+  and returns `Sent{message_id, wire}` only after commit. Every later call with
+  the same id encrypts nothing: it returns `AlreadyPending` with the stored
+  bytes, or `AlreadyAcknowledged`. A caller that cannot tell whether a send
+  took effect — an unknown commit outcome, a crash, a restart — calls again
+  with the same id. Without this, a repeated send was a second ciphertext of
+  the same logical message, and the peer accepted it twice (reproduced on the
+  first version of this PR).
 - `pending_outgoing` returns every committed, unacknowledged outgoing message in
   generation order, with the stored bytes. Retransmission sends these bytes; it
   never encrypts again, and never advances the ratchet.
@@ -113,9 +129,31 @@ No output of a transition leaves Rust before its `COMMIT` returned `Ok`.
   inbox record are committed together. The plaintext is returned only after
   commit.
 - `pending_incoming` returns committed, undelivered messages in generation order.
-- `acknowledge_incoming(message_id)` marks the record delivered and erases the
-  plaintext; the id stays as a tombstone for duplicate detection. Repeating it is
-  harmless.
+- `acknowledge_incoming(message_id)` deletes the inbox record (and its
+  plaintext) and keeps the id in `seen:` for duplicate detection. Repeating it
+  is harmless. Acknowledgement means **the application has durably processed
+  the message**; acknowledging earlier can lose it.
+- Delivery to the application is **at least once**, not exactly once: a
+  message the application showed but did not acknowledge before a crash is
+  pending again after restart. The `message_id` identifies such a repeat, and
+  the application must treat it idempotently.
+
+The stages are distinct: *accepted* by the ratchet and *persisted* for the
+application happen in one commit; *returned* through the FFI happens after
+that commit; *shown or processed* by Android is outside Rust; *acknowledged*
+is the application's explicit `acknowledge_incoming`.
+
+## 6a. Removing a session
+
+`remove_session(handle)` deletes the session, its handle and handshake records
+and its unacknowledged outgoing messages (returned to the caller as discarded:
+only that session could have been used to read them) in one transaction. It is
+the way out of a session whose handshake the peer refused — without it such a
+session could never be replaced, since a peer has at most one session (also
+reproduced on the first version). It refuses while accepted incoming messages
+are unacknowledged, and refuses if the session changed between its reads and
+its transaction. `seen:` records are kept, so old messages are still
+recognised as duplicates.
 - A forged or undecryptable message stages nothing and writes nothing.
 
 ## 7. Failure and recovery
@@ -164,16 +202,27 @@ What is and is not established:
 | atomicity of each transition | S1 transaction; tested |
 | successful `COMMIT` visible to all connections | tested |
 | process-crash recovery (before/after `COMMIT`) | real process aborts in tests |
-| power-loss durability | **assumed**: requires the device to honour `fsync` on file and directory; not demonstrated |
+| power-loss durability | **assumed**: requires the device to honour `fsync` on file and directory; not demonstrated. The bundled SQLite is built without `SQLITE_DISABLE_DIRSYNC` for every target, Android included (`libsqlite3-sys` 0.28 `build.rs`) |
 | malicious rollback (older database file) | **not provided**; needs an external authority, not in scope |
+
+A restored older database file brings back an older checkpoint *and* its
+generation together, so the generation counter cannot detect it. The sender
+can then re-derive a chain position it already used and emit a different
+ciphertext there (a fork); the receiver rejects the second one only if it
+already consumed that position. Nothing here prevents that.
+
+Retention: `seen:` and `sendid:` records are kept for the life of the session
+and beyond (about 40 bytes of payload plus the store's per-row overhead per
+message). They are never listed, so they cost disk space, not time.
 
 ## 9. Compatibility
 
 `SESSION_CHECKPOINT_V1`, `RATCHET_STATE_V1`, `PREKEY_BUNDLE_V1`,
 `INITIATOR_HANDSHAKE_V1`, `PERSISTED_PREKEY_RECORD_V2` and the message format
 `header(40) || ciphertext` are unchanged. The FFI messaging calls change shape
-(`send_message` / `receive_message` return records instead of bare bytes); the
-bytes on the wire are identical.
+(`send_message` takes a client message id and returns an outcome;
+`receive_message` returns a record) and `remove_session` is new; the bytes on
+the wire are identical.
 
 ## 10. Verification plan
 

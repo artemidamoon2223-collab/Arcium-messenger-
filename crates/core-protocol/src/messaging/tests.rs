@@ -14,6 +14,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+/// A fresh logical message id for each call.
+fn cid() -> Vec<u8> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed).to_be_bytes().to_vec()
+}
+
+/// The message of a first send of a logical message.
+fn new_message(o: SendOutcome) -> OutgoingMessage {
+    match o {
+        SendOutcome::Sent(m) => m,
+        other => panic!("expected a new message, got {other:?}"),
+    }
+}
+
 const KEY: [u8; 32] = [0x24; 32];
 const ALICE_HANDLE: u64 = 0xA11CE;
 const BOB_HANDLE: u64 = 0xB0B;
@@ -109,12 +124,14 @@ fn memory_peers() -> Peers {
 impl Peers {
     fn alice_sends(&mut self, m: &[u8]) -> OutgoingMessage {
         self.am
-            .send(&mut self.a, self.alice_pk, ALICE_HANDLE, m)
+            .send(&mut self.a, self.alice_pk, ALICE_HANDLE, &cid(), m)
+            .map(new_message)
             .unwrap()
     }
     fn bob_sends(&mut self, m: &[u8]) -> OutgoingMessage {
         self.bm
-            .send(&mut self.b, self.bob_pk, BOB_HANDLE, m)
+            .send(&mut self.b, self.bob_pk, BOB_HANDLE, &cid(), m)
+            .map(new_message)
             .unwrap()
     }
     fn bob_receives(&mut self, wire: &[u8]) -> Result<Received, MessagingError> {
@@ -298,7 +315,8 @@ fn the_wire_format_is_unchanged() {
     )
     .unwrap();
     let sent = am
-        .send(&mut a, pr.alice_pk, ALICE_HANDLE, b"compat")
+        .send(&mut a, pr.alice_pk, ALICE_HANDLE, &cid(), b"compat")
+        .map(new_message)
         .unwrap();
     let header = Header::from_bytes(&sent.wire[..HEADER_SIZE]).unwrap();
     assert_eq!(
@@ -376,7 +394,7 @@ fn an_invalid_stored_session_is_reported_and_never_replaced() {
     let key = session_storage_key(&p.bob_pk);
     p.a.put(&key, b"garbage").unwrap();
     assert!(matches!(
-        p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"x"),
+        p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, &cid(), b"x"),
         Err(MessagingError::InvalidSession(
             SessionCheckpointError::Truncated { .. }
         ))
@@ -472,8 +490,8 @@ fn concurrent_instances_never_release_two_messages_for_one_position() {
                 let mut conflicts = 0;
                 barrier.wait();
                 for i in 0..25u8 {
-                    match m.send(&mut db, alice_pk, ALICE_HANDLE, &[t, i]) {
-                        Ok(s) => sent.push(s),
+                    match m.send(&mut db, alice_pk, ALICE_HANDLE, &cid(), &[t, i]) {
+                        Ok(s) => sent.push(new_message(s)),
                         Err(MessagingError::Conflict(_)) => conflicts += 1,
                         // Lock contention beyond the busy timeout: nothing written.
                         Err(MessagingError::NotCommitted(_)) => conflicts += 1,
@@ -516,7 +534,8 @@ fn an_unknown_send_outcome_releases_nothing_until_recovered() {
     for fault in [CommitFault::UnknownStored, CommitFault::UnknownLost] {
         let mut p = memory_peers();
         test_hooks::inject(fault);
-        let r = p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"maybe");
+        let r =
+            p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, &cid(), b"maybe");
         assert!(matches!(
             r,
             Err(MessagingError::OutcomeUnknown {
@@ -525,7 +544,7 @@ fn an_unknown_send_outcome_releases_nothing_until_recovered() {
             })
         ));
         assert!(matches!(
-            p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"next"),
+            p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, &cid(), b"next"),
             Err(MessagingError::Unresolved {
                 attempted_generation: 1
             })
@@ -606,7 +625,7 @@ fn a_failed_commit_leaves_the_session_usable_and_consumes_no_position() {
     let mut p = memory_peers();
     test_hooks::inject(CommitFault::NotCommitted);
     assert!(matches!(
-        p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"lost"),
+        p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, &cid(), b"lost"),
         Err(MessagingError::NotCommitted(_))
     ));
     assert!(p
@@ -623,4 +642,5 @@ fn a_failed_commit_leaves_the_session_usable_and_consumes_no_position() {
     );
 }
 
+mod acceptance;
 mod crash;

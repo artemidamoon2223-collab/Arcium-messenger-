@@ -92,12 +92,13 @@ mod sealed {
         Exactly(&'a [u8]),
     }
 
-    /// One write in a conditional batch: `value` replaces the record at
-    /// `key` only if `expect` holds for it.
+    /// One entry in a conditional batch: `value` replaces the record at
+    /// `key` only if `expect` holds for it. With `value: None` the entry is
+    /// a precondition only and writes nothing.
     pub struct Write<'a> {
         pub key: &'a str,
         pub expect: Expect<'a>,
-        pub value: &'a [u8],
+        pub value: Option<&'a [u8]>,
     }
 
     /// The stored record as seen inside the write transaction.
@@ -191,7 +192,9 @@ impl Store for S1CheckpointStore<'_> {
                 .map_err(|conflict| WriteFailure::Conflict { index, conflict })?;
         }
         for w in writes {
-            tx.put(w.key, w.value).map_err(WriteFailure::NotCommitted)?;
+            if let Some(value) = w.value {
+                tx.put(w.key, value).map_err(WriteFailure::NotCommitted)?;
+            }
         }
         #[cfg(test)]
         {
@@ -350,7 +353,8 @@ pub enum CommitError {
 pub struct SideWrite {
     key: String,
     expect: SideExpect,
-    value: Zeroizing<Vec<u8>>,
+    /// `None`: a precondition only; nothing is written at `key`.
+    value: Option<Zeroizing<Vec<u8>>>,
 }
 
 enum SideExpect {
@@ -372,7 +376,13 @@ const SESSION_NAMESPACE: &str = "session:";
 impl SideWrite {
     /// Writes `value` at `key`, which must not exist yet.
     pub fn insert(key: String, value: Zeroizing<Vec<u8>>) -> Result<Self, SideWriteError> {
-        Self::new(key, SideExpect::Absent, value)
+        Self::new(key, SideExpect::Absent, Some(value))
+    }
+
+    /// Writes nothing, but the transaction commits only if no record exists
+    /// at `key`.
+    pub fn require_absent(key: String) -> Result<Self, SideWriteError> {
+        Self::new(key, SideExpect::Absent, None)
     }
 
     /// Replaces the record at `key`, which must still be exactly `expected`.
@@ -381,13 +391,13 @@ impl SideWrite {
         expected: Zeroizing<Vec<u8>>,
         value: Zeroizing<Vec<u8>>,
     ) -> Result<Self, SideWriteError> {
-        Self::new(key, SideExpect::Exactly(expected), value)
+        Self::new(key, SideExpect::Exactly(expected), Some(value))
     }
 
     fn new(
         key: String,
         expect: SideExpect,
-        value: Zeroizing<Vec<u8>>,
+        value: Option<Zeroizing<Vec<u8>>>,
     ) -> Result<Self, SideWriteError> {
         if key.starts_with(SESSION_NAMESPACE) {
             return Err(SideWriteError::ReservedKey);
@@ -415,7 +425,7 @@ fn batch<'a>(session: Write<'a>, side: &'a [SideWrite]) -> Result<Vec<Write<'a>>
                 SideExpect::Absent => Expect::Absent,
                 SideExpect::Exactly(v) => Expect::Exactly(v),
             },
-            value: &w.value,
+            value: w.value.as_deref().map(|v| v.as_slice()),
         });
     }
     Ok(writes)
@@ -530,7 +540,7 @@ impl DurableSession {
             Write {
                 key: &this.key,
                 expect: Expect::Absent,
-                value: &record,
+                value: Some(&record),
             },
             side,
         )
@@ -708,7 +718,7 @@ impl DurableSession {
                     role: self.role,
                     binding: &binding,
                 },
-                value: &staged.record,
+                value: Some(&staged.record),
             },
             side,
         )
@@ -875,7 +885,9 @@ mod tests {
             }
             let apply = |records: &mut HashMap<String, Vec<u8>>| {
                 for w in writes {
-                    records.insert(w.key.to_string(), w.value.to_vec());
+                    if let Some(value) = w.value {
+                        records.insert(w.key.to_string(), value.to_vec());
+                    }
                 }
             };
             match self.next_write.take() {

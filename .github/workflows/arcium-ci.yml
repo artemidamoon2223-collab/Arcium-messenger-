@@ -111,6 +111,8 @@ jobs:
         run: |
           test -f ~/.config/solana/id.json ||
             solana-keygen new --no-bip39-passphrase --silent --outfile ~/.config/solana/id.json
+      - name: probe — stop docker (Arx nodes cannot start)
+        run: sudo systemctl stop docker.socket docker.service
       - name: arcium test (with open-files limit fix)
         working-directory: arcium-psi
         run: |

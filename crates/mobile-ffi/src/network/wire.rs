@@ -22,6 +22,8 @@
 //! session; a message decrypts only under the session whose keys (and AD,
 //! which binds both identity keys) produced it.
 
+use zeroize::Zeroizing;
+
 pub const MAGIC: &[u8; 4] = b"ARN1";
 const KIND_HANDSHAKE: u8 = 1;
 const KIND_MESSAGE: u8 = 2;
@@ -85,14 +87,15 @@ impl Envelope {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Payload {
-    Text(Vec<u8>),
+    Text(Zeroizing<Vec<u8>>),
     Receipt(Vec<[u8; 32]>),
     Open,
 }
 
 impl Payload {
-    pub fn encode(&self) -> Vec<u8> {
-        match self {
+    /// Zeroized on drop: for a text this is the application's plaintext.
+    pub fn encode(&self) -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(match self {
             Payload::Text(t) => [&[TYPE_TEXT][..], t].concat(),
             Payload::Receipt(ids) => {
                 let mut out = vec![TYPE_RECEIPT];
@@ -103,13 +106,13 @@ impl Payload {
                 out
             }
             Payload::Open => vec![TYPE_OPEN],
-        }
+        })
     }
 
     /// `None` for an unknown type or a malformed receipt.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         match *bytes.first()? {
-            TYPE_TEXT => Some(Payload::Text(bytes[1..].to_vec())),
+            TYPE_TEXT => Some(Payload::Text(Zeroizing::new(bytes[1..].to_vec()))),
             TYPE_RECEIPT => {
                 let count = u16::from_be_bytes(bytes.get(1..3)?.try_into().ok()?) as usize;
                 let ids = bytes.get(3..)?;
@@ -181,8 +184,8 @@ mod tests {
         );
 
         for p in [
-            Payload::Text(b"hi".to_vec()),
-            Payload::Text(vec![]),
+            Payload::Text(Zeroizing::new(b"hi".to_vec())),
+            Payload::Text(Zeroizing::new(vec![])),
             Payload::Receipt(vec![[7; 32], [8; 32]]),
             Payload::Open,
         ] {

@@ -344,7 +344,9 @@ fn forged_and_cross_session_receipts_confirm_nothing() {
         .send_message(
             carol_handle,
             b"rX".to_vec(),
-            Payload::Receipt(vec![id.clone().try_into().unwrap()]).encode(),
+            Payload::Receipt(vec![id.clone().try_into().unwrap()])
+                .encode()
+                .to_vec(),
         )
         .unwrap();
     let SendResult::Sent { message } = receipt else {

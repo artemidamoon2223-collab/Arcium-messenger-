@@ -1,10 +1,13 @@
-use core_crypto::ratchet::{DoubleRatchet, Header, RatchetError, HEADER_SIZE};
+use core_crypto::ratchet::{DoubleRatchet, RatchetError};
 use core_crypto::spk_id::{spk_id, SPK_ID_LEN};
 use core_crypto::x3dh::{
     signed_prekey_object_v1, x3dh_initiate, x3dh_respond, PrekeyBundle, X3dhError, CIPHER_SUITE,
     PROTOCOL_VERSION,
 };
-use core_protocol::{Session, SessionError, SessionManager};
+use core_protocol::checkpoint::SessionRole;
+use core_protocol::durable::SideWrite;
+use core_protocol::messaging::{Messenger, MessagingError, NewSession};
+use core_protocol::Session;
 use core_storage::{EncryptedStore, StorageError};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::{OsRng, RngCore};
@@ -14,6 +17,9 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
 uniffi::setup_scaffolding!();
+
+mod messaging_api;
+pub use messaging_api::{IncomingMessage, OutgoingMessage, ReceiveResult, RecoveryReport, SendResult};
 
 #[derive(Debug, Error, uniffi::Error)]
 pub enum CoreError {
@@ -70,6 +76,43 @@ pub enum CoreError {
     /// bundle predates a rotation; fetching a fresh one resolves it.
     #[error("signed prekey is stale")]
     StaleSignedPrekey,
+    /// Another instance on the same database committed this session first.
+    /// Nothing was written and nothing was released; calling again works
+    /// from the newer state.
+    #[error("session {session_id} was advanced by another instance; nothing was written")]
+    SessionConflict { session_id: u64 },
+    /// The commit of this operation reported an error after which the store
+    /// may or may not hold it. Its output was withheld. The session refuses
+    /// further operations until `recover_session`.
+    #[error("commit outcome unknown for session {session_id} (generation {attempted_generation})")]
+    CommitOutcomeUnknown { session_id: u64, attempted_generation: u64 },
+    /// An earlier commit on this session had an unknown outcome; call
+    /// `recover_session` first.
+    #[error("session {session_id} is unresolved (generation {attempted_generation}); call recover_session")]
+    SessionUnresolved { session_id: u64, attempted_generation: u64 },
+    /// A stored session or message record is corrupt, unsupported or bound to
+    /// other identities. It is left untouched and is never replaced by a new
+    /// session.
+    #[error("stored state for session {session_id} is invalid: {msg}")]
+    InvalidSessionState { session_id: u64, msg: String },
+    /// No message with this id is recorded for this session.
+    #[error("unknown message for session {session_id}")]
+    UnknownMessage { session_id: u64 },
+    /// A client message id must be 1 to 64 bytes.
+    #[error("client message id must be 1 to 64 bytes")]
+    InvalidClientMessageId,
+    /// The session has accepted a message from the peer, so the peer holds
+    /// it too; it cannot be removed locally. Nothing changed.
+    #[error("session {session_id} is established and cannot be removed")]
+    SessionEstablished { session_id: u64 },
+    /// The session has outgoing messages that are neither acknowledged nor
+    /// abandoned (`abandon_outgoing`). Nothing changed.
+    #[error("session {session_id} has {count} pending outgoing messages")]
+    PendingOutgoing { session_id: u64, count: u64 },
+    /// An acknowledgement, abandonment or removal may or may not have taken
+    /// effect. Repeating the same call is safe and reports what is stored.
+    #[error("outcome unknown for an operation on session {session_id}; repeat it")]
+    RepeatableOutcomeUnknown { session_id: u64 },
 }
 
 impl From<StorageError> for CoreError {
@@ -87,22 +130,6 @@ impl From<X3dhError> for CoreError {
 impl From<RatchetError> for CoreError {
     fn from(e: RatchetError) -> Self {
         CoreError::Crypto { msg: e.to_string() }
-    }
-}
-
-impl From<SessionError> for CoreError {
-    /// Kept as two distinct variants rather than one generic failure: "you
-    /// already have this session" and "this id belongs to someone else" call
-    /// for different handling by the platform layer.
-    fn from(e: SessionError) -> Self {
-        match e {
-            SessionError::AlreadyEstablished { contact_id } => {
-                CoreError::SessionAlreadyExists { session_id: contact_id }
-            }
-            SessionError::HandleCollision { contact_id } => {
-                CoreError::SessionIdCollision { session_id: contact_id }
-            }
-        }
     }
 }
 
@@ -485,12 +512,21 @@ fn unpack_initiator_handshake(bytes: &[u8]) -> Result<InitiatorHandshakeV1, Core
     })
 }
 
+/// The encrypted store and the durable messaging state machine over it.
+///
+/// Sessions live only in the store: every messaging call loads the session,
+/// stages its transition, and commits the new state together with the
+/// operation's outbox or inbox record before returning anything
+/// (`core_protocol::messaging`, spec `docs/S2-B2-DURABLE-MESSAGING.md`).
+/// Nothing about a session is cached here, so a second `ArciumCore` on the
+/// same file cannot advance a session from a state it no longer holds.
+///
+/// Lock order: `store`, then `messenger`. `messenger` only records which
+/// sessions have an unresolved commit.
 #[derive(uniffi::Object)]
 pub struct ArciumCore {
     store: Mutex<EncryptedStore>,
-    // D1: in-memory only, deliberately not persisted. Sessions are lost on
-    // process death; that is expected and acceptable for this task.
-    sessions: Mutex<SessionManager>,
+    messenger: Mutex<Messenger>,
 }
 
 #[uniffi::export]
@@ -507,7 +543,7 @@ impl ArciumCore {
         let store = EncryptedStore::open(&storage_path, key)?;
         Ok(Arc::new(Self {
             store: Mutex::new(store),
-            sessions: Mutex::new(SessionManager::new()),
+            messenger: Mutex::new(Messenger::new()),
         }))
     }
 
@@ -636,19 +672,31 @@ impl ArciumCore {
             ad: alice_session.ad.clone(),
             peer_identity_pk: bundle.identity_pk.to_bytes(),
         };
-        self.sessions
-            .lock()
-            .map_err(|_| CoreError::Storage {
-                msg: "mutex poisoned".into(),
-            })?
-            .try_new_session(session_id, session)?;
-
-        Ok(pack_initiator_handshake(
+        let handshake = pack_initiator_handshake(
             &our_identity_pk,
             &alice_session.ephemeral_pk,
             &spk_id(bundle.signed_prekey_pk.as_bytes()),
             bundle.one_time_prekey_id,
-        ))
+        );
+
+        // The session, its handle and the handshake are committed together;
+        // the handshake is returned only after that commit, and can be read
+        // again with `initiator_handshake` if it is lost before being sent.
+        let (mut store, mut messenger) = self.lock()?;
+        messenger
+            .create_session(
+                &mut store,
+                our_identity_pk.to_bytes(),
+                NewSession {
+                    handle: session_id,
+                    session,
+                    role: SessionRole::Initiator,
+                    initial_outbound: Some(handshake.clone()),
+                    extra: Vec::new(),
+                },
+            )
+            .map_err(|e| CoreError::messaging(session_id, e))?;
+        Ok(handshake)
     }
 
     /// Establishes a session as the X3DH responder ("Bob") from the 84-byte
@@ -682,18 +730,17 @@ impl ArciumCore {
     ///
     /// # Atomicity
     ///
-    /// Reading the record, validating it against the handshake, generating the
-    /// replacement and writing it all happen under a single continuous
-    /// `EncryptedStore` guard, so two threads cannot both consume one one-time
-    /// prekey. The write is a single `put`, which is one SQLite statement in
-    /// autocommit and therefore one transaction — that, not the mutex, is what
-    /// makes the transition survive a crash. The mutex only serializes threads.
+    /// The rotated prekey record, the new session and its handle are written in
+    /// one store transaction, and the prekey record is replaced only if it is
+    /// still byte-identical to the one validated here. A crash before that
+    /// commit leaves the one-time prekey unconsumed and no session — the same
+    /// handshake can be answered again; after it, both exist. Nothing is
+    /// consumed without the session that uses it.
     ///
-    /// The store guard is released before the session lock is taken; the two are
-    /// never held together. If anything after the write fails — session insertion
-    /// refusing the handle, or the session mutex being poisoned — the one-time
-    /// prekey stays consumed and is not restored: a prekey that has been handed
-    /// to a handshake must never return to circulation.
+    /// If the session is refused because this peer already has one or the
+    /// handle belongs to another peer, nothing from that transaction is written,
+    /// and the one-time prekey is then consumed on its own: a prekey named by a
+    /// handshake that reached this device never returns to circulation.
     pub fn establish_session_responder(
         &self,
         session_id: u64,
@@ -701,51 +748,40 @@ impl ArciumCore {
     ) -> Result<(), CoreError> {
         let identity = self.require_identity()?;
         let handshake = unpack_initiator_handshake(&initiator_handshake)?;
+        let (mut store, mut messenger) = self.lock()?;
 
-        // ── one continuous store guard: read → validate → rotate → single put ──
-        let (signed_prekey_sk, taken_opk) = {
-            let store = self.store.lock().map_err(|_| CoreError::Storage {
-                msg: "mutex poisoned".into(),
-            })?;
-            let record_bytes = Zeroizing::new(store.get(PREKEYS_KEY)?);
-            let mut record = unpack_prekeys(&record_bytes)?;
-
-            if spk_id(record.signed_prekey_pk().as_bytes()) != handshake.spk_id {
-                return Err(CoreError::StaleSignedPrekey);
+        let record_bytes = Zeroizing::new(store.get(PREKEYS_KEY)?);
+        let mut record = unpack_prekeys(&record_bytes)?;
+        if spk_id(record.signed_prekey_pk().as_bytes()) != handshake.spk_id {
+            return Err(CoreError::StaleSignedPrekey);
+        }
+        // Every rejection below returns before anything is written.
+        let taken = match (record.opk.take(), handshake.opk_id) {
+            (Some((held_id, held_sk)), Some(named)) if held_id == named => {
+                record.opk = Some(new_one_time_prekey());
+                Some(held_sk)
             }
-
-            // Every rejection below returns before the write, leaving the record
-            // exactly as it was found.
-            let taken = match (record.opk.take(), handshake.opk_id) {
-                (Some((held_id, held_sk)), Some(named)) if held_id == named => {
-                    record.opk = Some(new_one_time_prekey());
-                    store.put(PREKEYS_KEY, &pack_prekeys(&record))?;
-                    Some(held_sk)
-                }
-                (Some(_), Some(named)) => {
-                    return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
-                }
-                (Some(_), None) => return Err(CoreError::OneTimePrekeyRequired),
-                (None, Some(named)) => {
-                    return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
-                }
-                (None, None) => None,
-            };
-
-            (record.signed_prekey_sk, taken)
+            (Some(_), Some(named)) => {
+                return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
+            }
+            (Some(_), None) => return Err(CoreError::OneTimePrekeyRequired),
+            (None, Some(named)) => {
+                return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
+            }
+            (None, None) => None,
         };
+        let rotated = taken.is_some().then(|| pack_prekeys(&record));
 
         let our_identity_pk = PublicKey::from(&identity.dh_key);
         let bob_session = x3dh_respond(
             &identity.dh_key,
             our_identity_pk,
-            &signed_prekey_sk,
-            taken_opk.as_ref(),
+            &record.signed_prekey_sk,
+            taken.as_ref(),
             handshake.identity_pk,
             handshake.ephemeral_pk,
         );
-
-        let ratchet = DoubleRatchet::init_bob(bob_session.root_key, signed_prekey_sk);
+        let ratchet = DoubleRatchet::init_bob(bob_session.root_key, record.signed_prekey_sk.clone());
         // Owner is the initiator identity this handshake was actually answered
         // for, not anything the caller asserted separately.
         let session = Session {
@@ -753,62 +789,90 @@ impl ArciumCore {
             ad: bob_session.ad.clone(),
             peer_identity_pk: handshake.identity_pk.to_bytes(),
         };
-        self.sessions
-            .lock()
+        let extra = match &rotated {
+            Some(new_record) => vec![SideWrite::replace(
+                PREKEYS_KEY.into(),
+                record_bytes.clone(),
+                new_record.clone(),
+            )
             .map_err(|_| CoreError::Storage {
-                msg: "mutex poisoned".into(),
-            })?
-            .try_new_session(session_id, session)?;
-        Ok(())
-    }
-
-    /// Encrypts `plaintext` for the given established session. Returns
-    /// `header.to_bytes()(40) || ciphertext`.
-    pub fn encrypt_message(&self, session_id: u64, plaintext: Vec<u8>) -> Result<Vec<u8>, CoreError> {
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?;
-        let session = sessions
-            .get_session(session_id)
-            .ok_or(CoreError::NoSession { session_id })?;
-        let (header, ciphertext) = session.ratchet.encrypt(&plaintext, &session.ad)?;
-
-        let mut out = Vec::with_capacity(HEADER_SIZE + ciphertext.len());
-        out.extend_from_slice(&header.to_bytes());
-        out.extend_from_slice(&ciphertext);
-        Ok(out)
-    }
-
-    /// Decrypts `message` (as produced by `encrypt_message`) for the given
-    /// established session. Preserves the F-1 commit-on-success guarantee:
-    /// `DoubleRatchet::decrypt` internally snapshots and rolls back on any
-    /// authentication failure, so a forged/tampered message leaves the
-    /// session's ratchet state completely unchanged — this wrapper adds no
-    /// extra mutation that could undermine that.
-    pub fn decrypt_message(&self, session_id: u64, message: Vec<u8>) -> Result<Vec<u8>, CoreError> {
-        if message.len() < HEADER_SIZE {
-            return Err(CoreError::Crypto { msg: "message shorter than header".into() });
+                msg: "prekey record key is reserved".into(),
+            })?],
+            None => Vec::new(),
+        };
+        let created = messenger.create_session(
+            &mut store,
+            our_identity_pk.to_bytes(),
+            NewSession {
+                handle: session_id,
+                session,
+                role: SessionRole::Responder,
+                initial_outbound: None,
+                extra,
+            },
+        );
+        match created {
+            Ok(()) => Ok(()),
+            // The prekey record changed since it was validated: another
+            // receipt consumed the one-time prekey first.
+            Err(MessagingError::ExtraConflict { .. }) => Err(CoreError::OneTimePrekeyUnavailable {
+                opk_id: handshake.opk_id.unwrap_or_default(),
+            }),
+            Err(e @ (MessagingError::AlreadyExists { .. } | MessagingError::HandleCollision { .. })) => {
+                if let Some(new_record) = rotated {
+                    // Best effort: the refusal is reported whatever this does.
+                    let _ = consume_prekey(&mut store, &record_bytes, &new_record);
+                }
+                Err(CoreError::messaging(session_id, e))
+            }
+            Err(e) => Err(CoreError::messaging(session_id, e)),
         }
-        let (header_bytes, ciphertext) = message.split_at(HEADER_SIZE);
-        let header = Header::from_bytes(header_bytes)?;
-
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?;
-        let session = sessions
-            .get_session(session_id)
-            .ok_or(CoreError::NoSession { session_id })?;
-        let plaintext = session.ratchet.decrypt(&header, ciphertext, &session.ad)?;
-        Ok(plaintext)
     }
+}
+
+/// Replaces the prekey record with `rotated` if it is still `expected`.
+fn consume_prekey(
+    store: &mut EncryptedStore,
+    expected: &[u8],
+    rotated: &[u8],
+) -> Result<(), StorageError> {
+    let tx = store.transaction()?;
+    if tx.get(PREKEYS_KEY)?.as_slice() == expected {
+        tx.put(PREKEYS_KEY, rotated)?;
+        tx.commit()?;
+    }
+    Ok(())
 }
 
 // Plain (non-exported) impl block: helpers here are NOT visible to UniFFI,
 // unlike methods inside the `#[uniffi::export] impl ArciumCore` block above,
 // where export applies to every method regardless of Rust-level visibility.
 impl ArciumCore {
+    /// Locks the store, then the messenger (the only lock order used).
+    #[allow(clippy::type_complexity)]
+    fn lock(
+        &self,
+    ) -> Result<
+        (
+            std::sync::MutexGuard<'_, EncryptedStore>,
+            std::sync::MutexGuard<'_, Messenger>,
+        ),
+        CoreError,
+    > {
+        let poisoned = |_| CoreError::Storage {
+            msg: "mutex poisoned".into(),
+        };
+        let store = self.store.lock().map_err(poisoned)?;
+        let messenger = self.messenger.lock().map_err(|_| CoreError::Storage {
+            msg: "mutex poisoned".into(),
+        })?;
+        Ok((store, messenger))
+    }
+
+    fn our_identity_pk(&self) -> Result<[u8; 32], CoreError> {
+        Ok(PublicKey::from(&self.require_identity()?.dh_key).to_bytes())
+    }
+
     fn require_identity(&self) -> Result<Arc<Identity>, CoreError> {
         self.load_identity()
             .ok_or_else(|| CoreError::InvalidKey { msg: "no identity saved — call save_identity first".into() })
@@ -820,6 +884,31 @@ impl ArciumCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_crypto::ratchet::HEADER_SIZE;
+
+    /// Test shorthands that keep the pre-S2-B2 tests below unchanged while
+    /// running them on the durable path: `encrypt_message` is the committed
+    /// wire bytes of a `send_message` with a fresh client message id,
+    /// `decrypt_message` the plaintext of a
+    /// newly accepted `receive_message`. Test-only; not part of the FFI.
+    impl ArciumCore {
+        fn encrypt_message(&self, session_id: u64, plaintext: Vec<u8>) -> Result<Vec<u8>, CoreError> {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            let client_id = NEXT.fetch_add(1, Ordering::Relaxed).to_be_bytes().to_vec();
+            match self.send_message(session_id, client_id, plaintext)? {
+                SendResult::Sent { message } => Ok(message.wire),
+                other => panic!("expected a new message, got {other:?}"),
+            }
+        }
+
+        fn decrypt_message(&self, session_id: u64, message: Vec<u8>) -> Result<Vec<u8>, CoreError> {
+            match self.receive_message(session_id, message)? {
+                ReceiveResult::Accepted { message } => Ok(message.plaintext),
+                other => panic!("expected a new message, got {other:?}"),
+            }
+        }
+    }
     use tempfile::tempdir;
 
     fn key32(byte: u8) -> Vec<u8> {
@@ -1781,7 +1870,11 @@ mod tests {
         phantom[2] = FLAG_OTP;
         phantom[164..172].copy_from_slice(&0x5EED_5EED_5EED_5EEDu64.to_be_bytes());
         phantom[172..204].copy_from_slice(&[0x42u8; 32]);
-        let named = alice.establish_session_initiator(2, phantom).unwrap();
+        // A second initiator: Alice already holds her one session with Bob,
+        // and sessions are stored one per peer identity.
+        let dave = fresh_core(232);
+        dave.save_identity(Identity::generate()).unwrap();
+        let named = dave.establish_session_initiator(2, phantom).unwrap();
         assert_eq!(named[2] & FLAG_OTP, FLAG_OTP, "Alice must have set used_otp");
 
         let before = read_record(&bob);
@@ -1893,4 +1986,6 @@ mod tests {
             "the prekey was already consumed and must stay consumed"
         );
     }
+
+    mod durable;
 }

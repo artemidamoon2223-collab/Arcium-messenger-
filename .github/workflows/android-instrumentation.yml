@@ -1,0 +1,117 @@
+name: Android Instrumentation (emulator)
+
+# Runs src/androidTest on an x86_64 emulator: the only place the JNA bridge,
+# the packaged libarcium_core.so and the durable messaging lifecycle (S2-B2,
+# including process death in DurableMessagingInstrumentationTest) execute on an
+# Android runtime. The other Android workflows compile and package only.
+#
+# An emulator is not a phone: this says nothing about a physical device's
+# storage or about power loss.
+
+on:
+  push:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'android/**'
+      - '.github/workflows/android-instrumentation.yml'
+      - '.github/actions/uniffi-android-bridge/**'
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'android/**'
+      - '.github/workflows/android-instrumentation.yml'
+      - '.github/actions/uniffi-android-bridge/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  connected-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Generate UniFFI Kotlin + native bridge inputs
+        uses: ./.github/actions/uniffi-android-bridge
+
+      - name: Write local.properties
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build app and instrumentation APKs
+        working-directory: android
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Run instrumentation tests on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: default
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: cd android && ./gradlew :app:connectedDebugAndroidTest --no-daemon --stacktrace
+
+      # Gradle fails the step above on any failing test. This also refuses a
+      # run where no tests executed or any was skipped, so an empty or ignored
+      # suite cannot pass.
+      - name: Require executed, unskipped tests
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          files=(android/app/build/outputs/androidTest-results/connected/**/*.xml)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no instrumentation result files" >&2
+            exit 1
+          fi
+          python3 - "${files[@]}" <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          tests = failures = errors = skipped = 0
+          for f in sys.argv[1:]:
+              for s in ET.parse(f).getroot().iter("testsuite"):
+                  tests += int(s.get("tests", 0))
+                  failures += int(s.get("failures", 0))
+                  errors += int(s.get("errors", 0))
+                  skipped += int(s.get("skipped", 0))
+              for c in ET.parse(f).getroot().iter("testcase"):
+                  print(f"  {c.get('classname')}.{c.get('name')}")
+          print(f"INSTRUMENTATION tests={tests} failures={failures} errors={errors} skipped={skipped}")
+          if tests == 0 or failures or errors or skipped:
+              sys.exit(1)
+          EOF
+
+      - name: Upload instrumentation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-instrumentation-results
+          path: |
+            android/app/build/outputs/androidTest-results/
+            android/app/build/reports/androidTests/
+          retention-days: 7
+          if-no-files-found: ignore

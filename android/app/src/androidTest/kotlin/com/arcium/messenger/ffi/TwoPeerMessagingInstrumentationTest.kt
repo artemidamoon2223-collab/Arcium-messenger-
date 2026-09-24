@@ -87,6 +87,21 @@ class TwoPeerMessagingInstrumentationTest {
     /** A peer with an identity saved and prekeys published. */
     private class Peer(val core: ArciumCoreWrapper) {
         val repo = MessageRepository(core)
+
+        /** Durable send; the committed wire bytes. */
+        fun encryptFor(peer: ByteArray, plaintext: ByteArray): ByteArray =
+            when (val r = repo.sendToPeer(peer, UUID.randomUUID().toString().toByteArray(), plaintext)) {
+                is uniffi.arcium_core.SendResult.Sent -> r.message.wire
+                else -> throw AssertionError("expected a new message, got $r")
+            }
+
+        /** Durable receive; the plaintext of a newly accepted message. */
+        fun decryptFrom(peer: ByteArray, message: ByteArray): ByteArray =
+            when (val r = repo.receiveFromPeer(peer, message)) {
+                is uniffi.arcium_core.ReceiveResult.Accepted -> r.message.plaintext
+                is uniffi.arcium_core.ReceiveResult.Duplicate ->
+                    throw AssertionError("expected a new message, got a duplicate")
+            }
     }
 
     private fun peer(name: String, keyByte: Byte, withPrekeys: Boolean = false): Peer {
@@ -147,7 +162,7 @@ class TwoPeerMessagingInstrumentationTest {
         val s = establishAliceAndBob()
 
         val toBob = "hello Bob — through JNA and the real ratchet".toByteArray()
-        val ciphertext = s.alice.repo.encryptForPeer(s.bobIdentity, toBob)
+        val ciphertext = s.alice.encryptFor(s.bobIdentity, toBob)
 
         assertTrue("ciphertext must not be empty", ciphertext.isNotEmpty())
         assertNotEquals(
@@ -163,17 +178,17 @@ class TwoPeerMessagingInstrumentationTest {
         assertArrayEqualsBytes(
             "Bob must recover Alice's exact plaintext",
             toBob,
-            s.bob.repo.decryptFromPeer(s.aliceIdentity, ciphertext),
+            s.bob.decryptFrom(s.aliceIdentity, ciphertext),
         )
 
         // Only now can Bob reply: his sending chain is derived by the receiving
         // ratchet step that Alice's first message just triggered.
         val toAlice = "hello Alice — replying after the ratchet step".toByteArray()
-        val reply = s.bob.repo.encryptForPeer(s.aliceIdentity, toAlice)
+        val reply = s.bob.encryptFor(s.aliceIdentity, toAlice)
         assertArrayEqualsBytes(
             "Alice must recover Bob's exact reply",
             toAlice,
-            s.alice.repo.decryptFromPeer(s.bobIdentity, reply),
+            s.alice.decryptFrom(s.bobIdentity, reply),
         )
     }
 
@@ -199,7 +214,7 @@ class TwoPeerMessagingInstrumentationTest {
         assertThrows(
             "the rejected establishment must not have created a session",
             uniffi.arcium_core.CoreException.NoSession::class.java,
-        ) { alice.core.encryptMessage(carolHandle, "x".toByteArray()) }
+        ) { alice.core.sendMessage(carolHandle, "cid".toByteArray(), "x".toByteArray()) }
     }
 
     /** B: an id nobody established must fail as NoSession, never as a fake success. */
@@ -207,7 +222,7 @@ class TwoPeerMessagingInstrumentationTest {
     fun unknownSessionFailsWithNoSession() {
         val alice = peer("alice", 0x41)
         assertThrows(uniffi.arcium_core.CoreException.NoSession::class.java) {
-            alice.core.encryptMessage(918_273_645uL, "x".toByteArray())
+            alice.core.sendMessage(918_273_645uL, "cid".toByteArray(), "x".toByteArray())
         }
     }
 
@@ -225,9 +240,9 @@ class TwoPeerMessagingInstrumentationTest {
         assertArrayEqualsBytes(
             "setup round trip must work before the duplicate attempt",
             first,
-            s.bob.repo.decryptFromPeer(
+            s.bob.decryptFrom(
                 s.aliceIdentity,
-                s.alice.repo.encryptForPeer(s.bobIdentity, first),
+                s.alice.encryptFor(s.bobIdentity, first),
             ),
         )
 
@@ -239,9 +254,9 @@ class TwoPeerMessagingInstrumentationTest {
         assertArrayEqualsBytes(
             "the surviving session must still decrypt on Bob's side",
             after,
-            s.bob.repo.decryptFromPeer(
+            s.bob.decryptFrom(
                 s.aliceIdentity,
-                s.alice.repo.encryptForPeer(s.bobIdentity, after),
+                s.alice.encryptFor(s.bobIdentity, after),
             ),
         )
     }
@@ -269,9 +284,9 @@ class TwoPeerMessagingInstrumentationTest {
         assertArrayEqualsBytes(
             "Bob's session must be untouched by the refused collision",
             after,
-            s.bob.repo.decryptFromPeer(
+            s.bob.decryptFrom(
                 s.aliceIdentity,
-                s.alice.repo.encryptForPeer(s.bobIdentity, after),
+                s.alice.encryptFor(s.bobIdentity, after),
             ),
         )
     }
@@ -298,7 +313,7 @@ class TwoPeerMessagingInstrumentationTest {
         assertThrows(
             "the rejected responder handshake must not have created a session",
             uniffi.arcium_core.CoreException.NoSession::class.java,
-        ) { bob.core.encryptMessage(carolHandle, "x".toByteArray()) }
+        ) { bob.core.sendMessage(carolHandle, "cid".toByteArray(), "x".toByteArray()) }
     }
 
     /**

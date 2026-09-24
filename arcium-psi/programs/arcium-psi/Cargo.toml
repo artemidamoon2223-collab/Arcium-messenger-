@@ -21,7 +21,7 @@ arcium-anchor = "0.10.4"
 # needs this direct dependency. Its default `transactions` feature is off-chain
 # client code (RPC client, keypairs, `x25519-dalek` with `getrandom`), which
 # does not build for SBF; `arcium-anchor` itself uses it with defaults off.
-arcium-client = { version = "0.10.4", default-features = false }
+arcium-client = "0.10.4"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(anchor_debug)', 'cfg(feature, values("anchor-debug"))'] }

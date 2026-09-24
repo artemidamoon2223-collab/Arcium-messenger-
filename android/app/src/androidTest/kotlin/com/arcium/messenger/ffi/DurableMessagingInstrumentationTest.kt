@@ -1,10 +1,6 @@
 package com.arcium.messenger.ffi
 
-import android.app.ActivityManager
 import android.content.Context
-import android.os.Bundle
-import android.os.RemoteException
-import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.arcium.messenger.data.MessageRepository
@@ -45,7 +41,6 @@ class DurableMessagingInstrumentationTest {
         const val IDENTITY_OFFSET = 4
         const val ALICE_KEY: Byte = 0x71
         const val BOB_KEY: Byte = 0x72
-        const val VICTIM_TIMEOUT_MS = 30_000L
     }
 
     private val context: Context =
@@ -120,41 +115,8 @@ class DurableMessagingInstrumentationTest {
             else -> throw AssertionError("expected a new message, got $r")
         }
 
-    /**
-     * Runs [scenario] in the `:victim` process and waits for that process to
-     * be gone. Fails if the victim reported an error.
-     */
-    private fun runVictim(w: Workspace, scenario: String, db: String, key: Byte, session: ULong) {
-        val extras = Bundle().apply {
-            putString(CrashVictimProvider.KEY_DIR, w.dir.absolutePath)
-            putString(CrashVictimProvider.KEY_DB, db)
-            putByte(CrashVictimProvider.KEY_MASTER_BYTE, key)
-            putLong(CrashVictimProvider.KEY_SESSION, session.toLong())
-        }
-        val client = checkNotNull(
-            context.contentResolver.acquireUnstableContentProviderClient(CrashVictimProvider.AUTHORITY),
-        ) { "victim provider not found — is this a debug build?" }
-        try {
-            client.call(CrashVictimProvider.METHOD_RUN, scenario, extras)
-            throw AssertionError("the victim returned instead of dying")
-        } catch (expected: RemoteException) {
-            // The victim process died during the call, as intended
-            // (DeadObjectException). Checked below: it finished its operation
-            // and is gone.
-        } finally {
-            client.close()
-        }
-        val victim = context.packageName + CrashVictimProvider.PROCESS_SUFFIX
-        val am = context.getSystemService(ActivityManager::class.java)
-        val deadline = SystemClock.elapsedRealtime() + VICTIM_TIMEOUT_MS
-        while (am.runningAppProcesses.orEmpty().any { it.processName == victim }) {
-            check(SystemClock.elapsedRealtime() < deadline) { "victim process still alive" }
-            SystemClock.sleep(50)
-        }
-        val error = File(w.dir, "error")
-        check(!error.exists()) { "victim failed: ${error.readText()}" }
-        check(File(w.dir, "done").exists()) { "victim died before finishing its operation" }
-    }
+    private fun runVictim(w: Workspace, scenario: String, db: String, key: Byte, session: ULong) =
+        runInVictimProcess(context, w.dir, scenario, db, key, session)
 
     // ── Reopening ─────────────────────────────────────────────────────────────
 

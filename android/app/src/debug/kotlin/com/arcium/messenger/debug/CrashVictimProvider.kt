@@ -22,7 +22,7 @@ import java.io.File
  * nothing restarts it and replays the operation.
  *
  * Files in the directory named by `dir`:
- * - inputs: `clientId`, `plaintext`, `wire`, `handshake` (as the scenario needs);
+ * - inputs: `clientId`, `plaintext`, `wire`, `handshake`, `peer` (as the scenario needs);
  * - outputs: `published` (send), `received` (receive), then `done`, or
  *   `error` with the exception if the operation failed.
  */
@@ -63,6 +63,13 @@ class CrashVictimProvider : ContentProvider() {
                 SCENARIO_RESPOND ->
                     core.establishSessionResponder(session, File(dir, "handshake").readBytes())
                 SCENARIO_REMOVE -> core.removeSession(session)
+                // Commits a text through the network layer and dies before
+                // any network I/O (the relay address is never contacted).
+                SCENARIO_NET_SEND -> core.networkMessenger("127.0.0.1:9").sendText(
+                    File(dir, "peer").readBytes(),
+                    File(dir, "clientId").readBytes(),
+                    File(dir, "plaintext").readBytes(),
+                )
                 else -> error("unknown scenario $arg")
             }
             File(dir, "done").writeText("ok")
@@ -103,6 +110,7 @@ class CrashVictimProvider : ContentProvider() {
         const val SCENARIO_RECEIVE = "receive"
         const val SCENARIO_RESPOND = "respond"
         const val SCENARIO_REMOVE = "remove"
+        const val SCENARIO_NET_SEND = "netSend"
         const val KEY_DIR = "dir"
         const val KEY_DB = "db"
         const val KEY_MASTER_BYTE = "masterByte"

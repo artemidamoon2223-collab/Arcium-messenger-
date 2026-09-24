@@ -278,6 +278,31 @@ class ArciumCoreWrapper {
      * CoreException (InvalidKey/Storage) propagates — no silent catch, no
      * fake success. Reopening replaces (and disposes) the previous handle.
      */
+    // ── Network messaging (docs/NET-MESSAGING.md) ─────────────────────────────
+
+    /** This device's CONTACT_CARD_V1, to hand to a peer out of band. */
+    fun contactCard(): ByteArray = requireCore().contactCard()
+
+    /**
+     * Pins a peer's card received out of band and returns the peer's 32-byte
+     * identity key. A different card for an identity already pinned throws
+     * CoreException.ContactIdentityChanged and changes nothing.
+     */
+    fun addContact(card: ByteArray): ByteArray = requireCore().addContact(card)
+
+    /**
+     * A messenger that talks to the relay at [relayAddress] (`host:port`)
+     * over this store. Sending and receiving go through the durable outbox
+     * and inbox; [NetworkMessenger.sync] does the network I/O and must not run
+     * on the main thread.
+     */
+    fun networkMessenger(
+        relayAddress: String,
+        retransmitAfterMs: ULong = 5_000u,
+        timeoutMs: ULong = 10_000u,
+    ): uniffi.arcium_core.NetworkMessenger =
+        uniffi.arcium_core.NetworkMessenger(requireCore(), relayAddress, retransmitAfterMs, timeoutMs)
+
     fun openEncryptedDb(storagePath: String, masterKey: ByteArray) {
         val previous = core
         core = uniffi.arcium_core.ArciumCore(storagePath, masterKey)

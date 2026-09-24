@@ -7,6 +7,11 @@ name: Android Instrumentation (emulator)
 #
 # An emulator is not a phone: this says nothing about a physical device's
 # storage or about power loss.
+#
+# NetworkMessagingInstrumentationTest talks to an independent peer on this
+# host through a real relay (docs/NET-MESSAGING.md): both are started below
+# and reached from the emulator at 10.0.2.2. Mixed environment: one emulator,
+# one Linux process.
 
 on:
   push:
@@ -57,6 +62,33 @@ jobs:
         working-directory: android
         run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace
 
+      - name: Build the host relay and peer
+        run: |
+          cargo build -p relay --bin arcium-relay
+          cargo test -p mobile-ffi --lib --no-run
+
+      # The relay alerts if a stored envelope contains the plaintext canary
+      # every test text carries; the check after the tests fails on that.
+      # The peer's card reaches the tests as an instrumentation argument: the
+      # out-of-band channel.
+      - name: Start the relay and the host peer
+        run: |
+          set -euo pipefail
+          mkdir -p net-e2e
+          ./target/debug/arcium-relay --listen 0.0.0.0:7700 --log \
+            --canary CANARY-PLAINTEXT-7f3a > net-e2e/relay.log 2>&1 &
+          ARCIUM_PEER_RELAY=127.0.0.1:7700 \
+          ARCIUM_PEER_DB="$PWD/net-e2e/peer.db" \
+          ARCIUM_PEER_CARD_OUT="$PWD/net-e2e/peer.card" \
+            cargo test -p mobile-ffi --lib -- --exact tests::net_peer::net_peer_bot --nocapture \
+            > net-e2e/peer.log 2>&1 &
+          for _ in $(seq 1 120); do
+            [ -s net-e2e/peer.card ] && break
+            sleep 1
+          done
+          test -s net-e2e/peer.card
+          echo "PEER_CARD=$(cat net-e2e/peer.card)" >> "$GITHUB_ENV"
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -73,7 +105,10 @@ jobs:
           target: default
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
-          script: cd android && ./gradlew :app:connectedDebugAndroidTest --no-daemon --stacktrace
+          script: >-
+            cd android && ./gradlew :app:connectedDebugAndroidTest --no-daemon --stacktrace
+            -Pandroid.testInstrumentationRunnerArguments.relay=10.0.2.2:7700
+            -Pandroid.testInstrumentationRunnerArguments.peerCard=${{ env.PEER_CARD }}
 
       # Gradle fails the step above on any failing test. This also refuses a
       # run where no tests executed or any was skipped, so an empty or ignored
@@ -105,6 +140,23 @@ jobs:
               sys.exit(1)
           EOF
 
+      - name: Require relay traffic and no plaintext on the relay
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "--- relay requests (last 40) ---"
+          grep -E '^relay: ' net-e2e/relay.log | tail -40 || true
+          echo "--- peer (last 60 lines) ---"
+          tail -60 net-e2e/peer.log || true
+          sends=$(grep -c '^relay: SEND' net-e2e/relay.log || true)
+          echo "RELAY SEND requests: ${sends}"
+          if grep -q 'ALERT plaintext canary' net-e2e/relay.log; then
+            echo "::error::plaintext reached the relay" >&2
+            exit 1
+          fi
+          test "${sends}" -gt 0
+
       - name: Upload instrumentation results
         if: always()
         uses: actions/upload-artifact@v4
@@ -113,5 +165,6 @@ jobs:
           path: |
             android/app/build/outputs/androidTest-results/
             android/app/build/reports/androidTests/
+            net-e2e/*.log
           retention-days: 7
           if-no-files-found: ignore

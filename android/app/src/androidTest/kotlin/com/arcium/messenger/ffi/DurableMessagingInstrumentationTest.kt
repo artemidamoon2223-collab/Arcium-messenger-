@@ -17,6 +17,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import uniffi.arcium_core.CoreException
@@ -169,6 +170,7 @@ class DurableMessagingInstrumentationTest {
      * Two wrappers on one store — what reopening without closing produces.
      * Neither caches the session, so alternating between them does not fork it.
      */
+    @Ignore("probe: a skipped test must fail the job")
     @Test
     fun twoHandlesOnOneStoreDoNotForkTheSession() {
         val w = workspace()

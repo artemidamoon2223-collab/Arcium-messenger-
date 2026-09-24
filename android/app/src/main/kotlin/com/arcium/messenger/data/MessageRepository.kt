@@ -195,11 +195,12 @@ class MessageRepository(
 
     /**
      * Deletes the session with [peerIdentityPk] — for example after the peer
-     * refused its handshake — so a new one can be established. Returns the
-     * unacknowledged outgoing messages it discarded.
+     * refused its handshake — so a new one can be established. Refused once
+     * the peer has answered, and while messages to it are pending
+     * (see [abandonUndelivered]).
      */
-    fun removeSessionWith(peerIdentityPk: ByteArray): List<uniffi.arcium_core.OutgoingMessage> {
-        return core.removeSession(handleFor(peerIdentityPk))
+    fun removeSessionWith(peerIdentityPk: ByteArray) {
+        core.removeSession(handleFor(peerIdentityPk))
     }
 
     /** Committed messages to [peerIdentityPk] not yet confirmed delivered, in send order. */
@@ -210,6 +211,11 @@ class MessageRepository(
     /** Called once delivery of [messageId] is confirmed. Idempotent. */
     fun confirmDelivered(peerIdentityPk: ByteArray, messageId: ByteArray): Boolean {
         return core.acknowledgeOutgoing(handleFor(peerIdentityPk), messageId)
+    }
+
+    /** Gives up on [messageId] without a delivery confirmation. Idempotent. */
+    fun abandonUndelivered(peerIdentityPk: ByteArray, messageId: ByteArray): Boolean {
+        return core.abandonOutgoing(handleFor(peerIdentityPk), messageId)
     }
 
     /**

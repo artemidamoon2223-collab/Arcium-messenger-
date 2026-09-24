@@ -423,7 +423,8 @@ fn resending_a_logical_message_after_a_crash_returns_the_same_bytes() {
 
 /// The responder refuses the initiator's handshake (its prekeys rotated
 /// first). Before `remove_session` the initiator could never replace that
-/// session; now it removes it and establishes a working one.
+/// session; now it abandons what it sent, removes it and establishes a
+/// working one.
 #[test]
 fn a_refused_handshake_can_be_replaced_after_removing_the_session() {
     let (pa, pb) = (db_path(), db_path());
@@ -451,9 +452,28 @@ fn a_refused_handshake_can_be_replaced_after_removing_the_session() {
         Err(CoreError::SessionAlreadyExists { session_id: 1 })
     ));
 
-    assert_eq!(alice.remove_session(1).unwrap(), vec![orphan]);
+    assert!(matches!(
+        alice.remove_session(1),
+        Err(CoreError::PendingOutgoing {
+            session_id: 1,
+            count: 1
+        })
+    ));
+    assert!(alice
+        .abandon_outgoing(1, orphan.message_id.clone())
+        .unwrap());
+    alice.remove_session(1).unwrap();
     assert!(!alice.has_session(1).unwrap());
     let hs2 = alice.establish_session_initiator(1, fresh).unwrap();
+    // The abandoned logical message is not encrypted again.
+    assert_eq!(
+        alice
+            .send_message(1, b"o".to_vec(), b"never read".to_vec())
+            .unwrap(),
+        SendResult::Abandoned {
+            message_id: orphan.message_id
+        }
+    );
     bob.establish_session_responder(1, hs2).unwrap();
     let m = alice.encrypt_message(1, b"works now".to_vec()).unwrap();
     assert_eq!(bob.decrypt_message(1, m).unwrap(), b"works now");
@@ -461,25 +481,49 @@ fn a_refused_handshake_can_be_replaced_after_removing_the_session() {
     assert_eq!(alice.decrypt_message(1, r).unwrap(), b"and back");
 }
 
+/// Once a message from the peer was accepted, the peer holds the session
+/// too: it is never removed, whether or not the message was acknowledged.
 #[test]
-fn removal_is_refused_while_incoming_messages_are_unacknowledged() {
+fn an_established_session_is_not_removed() {
     let (pa, pb) = established_pair();
     let m = open_at(&pa, 2)
         .encrypt_message(1, b"unread".to_vec())
         .unwrap();
     let bob = open_at(&pb, 1);
     bob.decrypt_message(1, m).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            bob.remove_session(1),
+            Err(CoreError::SessionEstablished { session_id: 1 })
+        ));
+        assert!(bob.has_session(1).unwrap());
+        if let Some(m) = bob.pending_incoming(1).unwrap().pop() {
+            bob.acknowledge_incoming(1, m.message_id).unwrap();
+        }
+    }
+}
+
+/// The initiator cannot tell a refused handshake from one whose delivery is
+/// unknown. Replacing one the responder did accept forks nothing: the
+/// responder keeps its session and refuses the new handshake.
+#[test]
+fn replacing_a_handshake_the_peer_accepted_is_refused_by_the_peer() {
+    let (pa, pb) = established_pair();
+    let alice = open_at(&pa, 2);
+    let bob = open_at(&pb, 1);
+    alice.remove_session(1).unwrap();
+    let hs2 = alice
+        .establish_session_initiator(1, bob.export_prekey_bundle().unwrap())
+        .unwrap();
     assert!(matches!(
-        bob.remove_session(1),
-        Err(CoreError::UndeliveredIncoming {
-            session_id: 1,
-            count: 1
-        })
+        bob.establish_session_responder(1, hs2),
+        Err(CoreError::SessionAlreadyExists { session_id: 1 })
     ));
-    assert!(bob.has_session(1).unwrap());
-    let id = bob.pending_incoming(1).unwrap()[0].message_id.clone();
-    bob.acknowledge_incoming(1, id).unwrap();
-    assert!(bob.remove_session(1).unwrap().is_empty());
+    let m = alice
+        .encrypt_message(1, b"on the new session".to_vec())
+        .unwrap();
+    assert!(bob.decrypt_message(1, m).is_err());
+    assert!(bob.pending_incoming(1).unwrap().is_empty());
 }
 
 #[test]

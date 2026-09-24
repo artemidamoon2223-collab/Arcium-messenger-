@@ -47,6 +47,7 @@ impl CoreError {
                 msg: "conflicting write".into(),
             },
             M::Store(e) | M::NotCommitted(e) => CoreError::from(e),
+            M::RepeatableOutcomeUnknown(_) => CoreError::RepeatableOutcomeUnknown { session_id },
             M::OutcomeUnknown {
                 attempted_generation,
                 ..
@@ -62,7 +63,8 @@ impl CoreError {
             },
             M::UnknownMessage => CoreError::UnknownMessage { session_id },
             M::InvalidClientMessageId => CoreError::InvalidClientMessageId,
-            M::UndeliveredIncoming { count } => CoreError::UndeliveredIncoming {
+            M::SessionEstablished => CoreError::SessionEstablished { session_id },
+            M::PendingOutgoing { count } => CoreError::PendingOutgoing {
                 session_id,
                 count: count as u64,
             },
@@ -95,6 +97,10 @@ pub enum SendResult {
     /// This logical message was committed earlier and has been acknowledged.
     /// Nothing was encrypted.
     AlreadyAcknowledged { message_id: Vec<u8> },
+    /// This logical message was committed earlier and then abandoned; the
+    /// peer may or may not have it. Nothing was encrypted. Sending the
+    /// content again needs a new client message id.
+    Abandoned { message_id: Vec<u8> },
 }
 
 /// A committed incoming message.
@@ -176,7 +182,8 @@ impl ArciumCore {
     /// The first call encrypts `plaintext` and commits the new session state
     /// and the outbox record together before returning `Sent`. Any later
     /// call with the same `client_message_id` encrypts nothing and returns
-    /// the stored message (`AlreadyPending`) or `AlreadyAcknowledged`; its
+    /// the stored message (`AlreadyPending`), `AlreadyAcknowledged` or
+    /// `Abandoned`; its
     /// `plaintext` is ignored. So after `CommitOutcomeUnknown`, a crash or a
     /// restart, call again with the same id rather than guessing whether the
     /// earlier attempt took effect. To retransmit, send the stored `wire`.
@@ -202,21 +209,31 @@ impl ArciumCore {
             SendOutcome::AlreadyAcknowledged { message_id } => SendResult::AlreadyAcknowledged {
                 message_id: message_id.to_vec(),
             },
+            SendOutcome::Abandoned { message_id } => SendResult::Abandoned {
+                message_id: message_id.to_vec(),
+            },
         })
     }
 
-    /// Deletes the session under `session_id` with its handle, stored
-    /// handshake and unacknowledged outgoing messages, in one transaction,
-    /// so a new session with that peer can be established — for example
-    /// after the peer refused this session's handshake. Returns the discarded
-    /// outgoing messages. Refused with `UndeliveredIncoming` while incoming
-    /// messages are unacknowledged, and with `SessionConflict` if the session
-    /// changed meanwhile; nothing is deleted then.
-    pub fn remove_session(&self, session_id: u64) -> Result<Vec<OutgoingMessage>, CoreError> {
+    /// Deletes the session under `session_id` with its handle and stored
+    /// handshake, in one transaction, so a new session with that peer can be
+    /// established — for example after the peer refused this session's
+    /// handshake. Only a session with nothing left to settle is removed;
+    /// otherwise nothing changes and the call fails with:
+    /// - `SessionUnresolved` until `recover_session`;
+    /// - `SessionEstablished` once a message from the peer was accepted (the
+    ///   peer holds the session too);
+    /// - `PendingOutgoing` while outgoing messages are neither acknowledged
+    ///   nor abandoned;
+    /// - `SessionConflict` if the session changed meanwhile.
+    ///
+    /// Removal says nothing about the peer: a peer that accepted the
+    /// handshake keeps its session and refuses a new one.
+    pub fn remove_session(&self, session_id: u64) -> Result<(), CoreError> {
+        let our = self.our_identity_pk()?;
         let (mut store, mut messenger) = self.lock()?;
         messenger
-            .remove_session(&mut store, session_id)
-            .map(|r| r.discarded_outgoing.into_iter().map(outgoing).collect())
+            .remove_session(&mut store, our, session_id)
             .map_err(|e| CoreError::messaging(session_id, e))
     }
 
@@ -238,9 +255,26 @@ impl ArciumCore {
         message_id: Vec<u8>,
     ) -> Result<bool, CoreError> {
         let id = message_id_arg(session_id, &message_id)?;
-        let (store, messenger) = self.lock()?;
+        let (mut store, messenger) = self.lock()?;
         messenger
-            .acknowledge_outgoing(&store, session_id, &id)
+            .acknowledge_outgoing(&mut store, session_id, &id)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// Stops retransmitting an outgoing message without a delivery
+    /// confirmation. Its logical id is recorded as abandoned, so
+    /// `send_message` with it returns `Abandoned`. The peer may or may not
+    /// have the message. Returns whether it was still pending; repeating it
+    /// is harmless.
+    pub fn abandon_outgoing(
+        &self,
+        session_id: u64,
+        message_id: Vec<u8>,
+    ) -> Result<bool, CoreError> {
+        let id = message_id_arg(session_id, &message_id)?;
+        let (mut store, messenger) = self.lock()?;
+        messenger
+            .abandon_outgoing(&mut store, session_id, &id)
             .map_err(|e| CoreError::messaging(session_id, e))
     }
 

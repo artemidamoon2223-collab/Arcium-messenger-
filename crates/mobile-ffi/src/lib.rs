@@ -101,10 +101,18 @@ pub enum CoreError {
     /// A client message id must be 1 to 64 bytes.
     #[error("client message id must be 1 to 64 bytes")]
     InvalidClientMessageId,
-    /// The session still holds accepted incoming messages the application
-    /// has not acknowledged; removing it would lose them. Nothing changed.
-    #[error("session {session_id} has {count} unacknowledged incoming messages")]
-    UndeliveredIncoming { session_id: u64, count: u64 },
+    /// The session has accepted a message from the peer, so the peer holds
+    /// it too; it cannot be removed locally. Nothing changed.
+    #[error("session {session_id} is established and cannot be removed")]
+    SessionEstablished { session_id: u64 },
+    /// The session has outgoing messages that are neither acknowledged nor
+    /// abandoned (`abandon_outgoing`). Nothing changed.
+    #[error("session {session_id} has {count} pending outgoing messages")]
+    PendingOutgoing { session_id: u64, count: u64 },
+    /// An acknowledgement, abandonment or removal may or may not have taken
+    /// effect. Repeating the same call is safe and reports what is stored.
+    #[error("outcome unknown for an operation on session {session_id}; repeat it")]
+    RepeatableOutcomeUnknown { session_id: u64 },
 }
 
 impl From<StorageError> for CoreError {

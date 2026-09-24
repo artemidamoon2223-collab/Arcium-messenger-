@@ -109,8 +109,13 @@ class DurableMessagingInstrumentationTest {
     private fun bytes(s: String) = s.toByteArray()
 
     /** A first send of a new logical message; its committed outgoing message. */
-    private fun sendNew(core: ArciumCoreWrapper, session: ULong, plaintext: ByteArray) =
-        when (val r = core.sendMessage(session, UUID.randomUUID().toString().toByteArray(), plaintext)) {
+    private fun sendNew(
+        core: ArciumCoreWrapper,
+        session: ULong,
+        plaintext: ByteArray,
+        clientId: ByteArray = UUID.randomUUID().toString().toByteArray(),
+    ) =
+        when (val r = core.sendMessage(session, clientId, plaintext)) {
             is SendResult.Sent -> r.message
             else -> throw AssertionError("expected a new message, got $r")
         }
@@ -303,8 +308,11 @@ class DurableMessagingInstrumentationTest {
 
     /**
      * The responder refuses the initiator's handshake because its prekeys
-     * rotated first. The initiator removes the stranded session and
-     * establishes a working one with the peer's fresh bundle.
+     * rotated first. The initiator abandons what it sent, removes the stranded
+     * session in a process that is then killed, and after the restart
+     * establishes a working one with the peer's fresh bundle. The abandoned
+     * logical message is not encrypted again, and once both sides have
+     * talked neither session can be removed.
      */
     @Test
     fun aRefusedHandshakeIsReplacedAfterRemovingTheSession() {
@@ -320,6 +328,8 @@ class DurableMessagingInstrumentationTest {
         val bobIdentity = identityAt(bundle)
         val handshake = aliceRepo.startSessionAsInitiator(bobIdentity, bundle)
         val aliceIdentity = identityAt(handshake)
+        val aliceHandle = alice.localSessionHandle(bobIdentity)
+        val orphan = sendNew(alice, aliceHandle, bytes("never read"), bytes("orphan"))
         bobRepo.publishOwnPrekeys() // rotation before the handshake arrives
         assertThrows(CoreException.StaleSignedPrekey::class.java) {
             bobRepo.acceptSessionAsResponder(aliceIdentity, handshake)
@@ -328,14 +338,31 @@ class DurableMessagingInstrumentationTest {
         assertThrows(CoreException.SessionAlreadyExists::class.java) {
             aliceRepo.startSessionAsInitiator(bobIdentity, fresh)
         }
+        assertThrows(CoreException.PendingOutgoing::class.java) {
+            aliceRepo.removeSessionWith(bobIdentity)
+        }
+        assertTrue(aliceRepo.abandonUndelivered(bobIdentity, orphan.messageId))
+        alice.closeEncryptedDb()
 
-        assertTrue(aliceRepo.removeSessionWith(bobIdentity).isEmpty())
-        val handshake2 = aliceRepo.startSessionAsInitiator(bobIdentity, fresh)
+        runVictim(w, CrashVictimProvider.SCENARIO_REMOVE, w.aliceDb, ALICE_KEY, aliceHandle)
+
+        val restarted = open(w.aliceDb, ALICE_KEY)
+        assertFalse(restarted.hasSession(aliceHandle))
+        val restartedRepo = MessageRepository(restarted)
+        val handshake2 = restartedRepo.startSessionAsInitiator(bobIdentity, fresh)
         bobRepo.acceptSessionAsResponder(aliceIdentity, handshake2)
-        val m = sendNew(alice, alice.localSessionHandle(bobIdentity), bytes("after replacement"))
-        assertArrayEquals(
-            bytes("after replacement"),
-            accepted(bob.receiveMessage(bob.localSessionHandle(aliceIdentity), m.wire)),
-        )
+        val repeated = restarted.sendMessage(aliceHandle, bytes("orphan"), bytes("never read"))
+        assertTrue("an abandoned logical message must not be encrypted again", repeated is SendResult.Abandoned)
+        val m = sendNew(restarted, aliceHandle, bytes("after replacement"))
+        val bobHandle = bob.localSessionHandle(aliceIdentity)
+        assertArrayEquals(bytes("after replacement"), accepted(bob.receiveMessage(bobHandle, m.wire)))
+        val r = sendNew(bob, bobHandle, bytes("reply"))
+        assertArrayEquals(bytes("reply"), accepted(restarted.receiveMessage(aliceHandle, r.wire)))
+        assertThrows(CoreException.SessionEstablished::class.java) {
+            restartedRepo.removeSessionWith(bobIdentity)
+        }
+        assertThrows(CoreException.SessionEstablished::class.java) {
+            bobRepo.removeSessionWith(aliceIdentity)
+        }
     }
 }

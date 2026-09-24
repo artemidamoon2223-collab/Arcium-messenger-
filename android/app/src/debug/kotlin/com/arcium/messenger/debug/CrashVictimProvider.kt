@@ -62,6 +62,7 @@ class CrashVictimProvider : ContentProvider() {
                 }
                 SCENARIO_RESPOND ->
                     core.establishSessionResponder(session, File(dir, "handshake").readBytes())
+                SCENARIO_REMOVE -> core.removeSession(session)
                 else -> error("unknown scenario $arg")
             }
             File(dir, "done").writeText("ok")
@@ -101,6 +102,7 @@ class CrashVictimProvider : ContentProvider() {
         const val SCENARIO_SEND = "send"
         const val SCENARIO_RECEIVE = "receive"
         const val SCENARIO_RESPOND = "respond"
+        const val SCENARIO_REMOVE = "remove"
         const val KEY_DIR = "dir"
         const val KEY_DB = "db"
         const val KEY_MASTER_BYTE = "masterByte"

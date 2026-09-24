@@ -140,8 +140,9 @@ class ArciumCoreWrapper {
      * [plaintext] and commits it to the outbox before returning `Sent`; its
      * `wire` bytes are what must be sent, now and on every retransmission.
      * Any later call with the same id encrypts nothing and returns the stored
-     * message (`AlreadyPending`) or `AlreadyAcknowledged` — so after a crash
-     * or CoreException.CommitOutcomeUnknown, call again with the same id.
+     * message (`AlreadyPending`), `AlreadyAcknowledged` or `Abandoned` — so
+     * after a crash or CoreException.CommitOutcomeUnknown, call again with
+     * the same id.
      */
     fun sendMessage(
         sessionId: ULong,
@@ -152,12 +153,14 @@ class ArciumCoreWrapper {
     }
 
     /**
-     * Deletes the session under [sessionId] with its unacknowledged outgoing
-     * messages (returned), so a new session with that peer can be
-     * established. Refused while incoming messages are unacknowledged.
+     * Deletes the session under [sessionId], so a new session with that peer
+     * can be established. Only a session with nothing left to settle is
+     * removed: it fails with CoreException.SessionEstablished once a message
+     * from the peer was accepted, and with CoreException.PendingOutgoing
+     * while outgoing messages are neither acknowledged nor abandoned.
      */
-    fun removeSession(sessionId: ULong): List<uniffi.arcium_core.OutgoingMessage> {
-        return requireCore().removeSession(sessionId)
+    fun removeSession(sessionId: ULong) {
+        requireCore().removeSession(sessionId)
     }
 
     /** Committed, unacknowledged outgoing messages for [sessionId], in send order. */
@@ -168,6 +171,15 @@ class ArciumCoreWrapper {
     /** Drops an outgoing message once delivery is confirmed. Idempotent. */
     fun acknowledgeOutgoing(sessionId: ULong, messageId: ByteArray): Boolean {
         return requireCore().acknowledgeOutgoing(sessionId, messageId)
+    }
+
+    /**
+     * Stops retransmitting an outgoing message without a delivery
+     * confirmation; its logical id is then reported as `Abandoned`. The peer
+     * may or may not have it. Idempotent.
+     */
+    fun abandonOutgoing(sessionId: ULong, messageId: ByteArray): Boolean {
+        return requireCore().abandonOutgoing(sessionId, messageId)
     }
 
     /**

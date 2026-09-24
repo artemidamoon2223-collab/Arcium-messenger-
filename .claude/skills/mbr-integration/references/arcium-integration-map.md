@@ -9,28 +9,30 @@ bears on durable state.
 
 ## Re-derive before relying on any of this
 
-Facts below were verified at `99c9f49`. They drift. Commands:
+Facts below were verified at `5faadaf` (they were first recorded at `99c9f49`).
+They drift. Commands:
 
 ```bash
-git rev-parse HEAD                                            # is this still 99c9f49?
+git rev-parse HEAD                                            # is this still 5faadaf?
 grep -n "pub fn " crates/core-storage/src/lib.rs              # does a transaction API exist yet?
-grep -rn "BEGIN\|COMMIT\|\.transaction()" crates/*/src/*.rs   # empty = still no multi-write txn
+grep -rn "BEGIN\|COMMIT\|\.transaction()" crates/*/src/*.rs   # where multi-write txns are used
 grep -n "const [A-Z_]*KEY: &str" crates/mobile-ffi/src/lib.rs # what is actually persisted
 grep -n "serialize\|persist\|save\|load" crates/core-protocol/src/lib.rs
+grep -n "DurableSession\|core_protocol::durable" crates/mobile-ffi/src/lib.rs  # empty = S2-B1 not wired in
 grep -n "MAX_SKIP\|max_skipped\|trim_skipped" crates/core-crypto/src/ratchet.rs
 ```
 
 ## Part 1 — verified state (category 1)
 
-| MBR mechanism | Arcium status | evidence at `99c9f49` |
+| MBR mechanism | Arcium status | evidence at `5faadaf` |
 |---|---|---|
-| encrypted storage | **ALREADY** | XChaCha20-Poly1305 over values *and* key names, `core-storage/src/lib.rs:181-230` |
-| single-write atomicity | **ALREADY** | `put` is one `conn.execute`, `core-storage/src/lib.rs:76-86` |
-| **multi-write transaction** | **NOT** | 6 public methods only; `BEGIN`/`COMMIT`/`transaction()` appear in no crate |
-| durable ratchet state | **NOT** | `core-protocol/src/lib.rs` (224 lines) has no serialize/save/load; sessions are a `HashMap` in memory |
-| rollback on failed auth | **ALREADY** | snapshot/rollback, `core-crypto/src/ratchet.rs:149-172` (finding F-1) |
-| duplicate rejection | **PARTIAL** | ratchet level only — `swap_remove`, `ratchet.rs:182`. No application-level dedup |
-| skipped-key capacity bound | **PARTIAL** | `MAX_SKIP = 1000` (`ratchet.rs:27`), `max_skipped = 2000` (`:107,124`), `trim_skipped` zeroizes (`:292-297`) |
+| encrypted storage | **ALREADY** | XChaCha20-Poly1305 over values *and* key names, `core-storage/src/lib.rs:296-374` |
+| single-write atomicity | **ALREADY** | `put` (`core-storage/src/lib.rs:90`) is one `conn.execute` in `put_row` (`:389-404`) |
+| **multi-write transaction** | **ALREADY** (S1) | `EncryptedStore::transaction()` (`core-storage/src/lib.rs:187`) opens `BEGIN IMMEDIATE` (`:191`); `StoreTransaction` (`:447`) with `put`/`get`/`delete`, `commit` (`:523`), `rollback` (`:538`) |
+| durable ratchet state | **PARTIAL** (S2-B1) | versioned checkpoint `crates/core-crypto/src/ratchet/checkpoint.rs`, session envelope `crates/core-protocol/src/checkpoint.rs`, staged transitions with conditional S1 writes `crates/core-protocol/src/durable.rs`. **Not wired into the app:** `mobile-ffi` keeps sessions in memory (`SessionManager`, `mobile-ffi/src/lib.rs:493`; `HashMap` at `core-protocol/src/lib.rs:63`) and never uses `DurableSession` |
+| rollback on failed auth | **ALREADY** | snapshot/rollback, `core-crypto/src/ratchet.rs:154-172` (finding F-1) |
+| duplicate rejection | **PARTIAL** | ratchet level only — `swap_remove`, `ratchet.rs:187`. No application-level dedup |
+| skipped-key capacity bound | **PARTIAL** | `MAX_SKIP = 1000` (`ratchet.rs:32`), `max_skipped = 2000` (`:112,129`), `trim_skipped` zeroizes (`:297-302`) |
 | skipped-key **age** expiry | **NOT** | no logical-time expiry; MBR uses `SKIP_AGE = 128` receives |
 | immutable outbox / retry | **NOT** | `encrypt_message` (`mobile-ffi/src/lib.rs:767`) mutates and returns; a resend re-encrypts |
 | exact event identity | **NOT** | messages carry only the ratchet header |
@@ -41,19 +43,28 @@ grep -n "MAX_SKIP\|max_skipped\|trim_skipped" crates/core-crypto/src/ratchet.rs
 | hardware-backed key provider | **PARTIAL** | `MasterKeyProvider.kt:77-84` requests only `PURPOSE_ENCRYPT|DECRYPT` + GCM — no StrongBox, no attestation, no user-auth binding. Non-exportable, unverified security level |
 | SOCKS "no direct fallback" rule | **UNKNOWN** | no transport exists: `core-transport` is 101 lines, `onion_address` is the literal `"TODO.onion"` (`:30`), `_state_dir` ignored (`:23`) |
 
-Persisted keys, in full: `identity/v1` (`mobile-ffi/src/lib.rs:168`) and
-`prekeys/v2` (`:174`). Nothing else survives process death.
+Persisted keys written by the app, in full: `identity/v1`
+(`mobile-ffi/src/lib.rs:168`) and `prekeys/v2` (`:174`). Nothing else survives
+process death: the S2-B1 session checkpoint exists only in library code and tests.
 
-Durability PRAGMAs are SQLite defaults — only `secure_delete = ON` is set
-(`core-storage/src/lib.rs:66`).
+Durability PRAGMAs are still SQLite defaults — only `secure_delete = ON` is set
+(`core-storage/src/lib.rs:77`). S1 pins the defaults with the test
+`durability_configuration_is_unchanged` (`:1142`): `journal_mode = delete`,
+`synchronous = 2` (FULL), `busy_timeout = 5000`. That is not a guarantee that the
+last commit survives power loss.
 
 `local_session_handle` is **little-endian** by in-crate convention
 (`core-crypto/src/session_handle.rs:61`) and is local-only; `spk_id` is
 big-endian because it goes on the wire. Never model one on the other.
 
-## Part 2 — proposed staging (category 3 — NOT IMPLEMENTED)
+## Part 2 — proposed staging (category 3 — mostly NOT IMPLEMENTED)
 
 Dependency order, not priority. No stage is authorized by this file.
+
+Status at `5faadaf`: **S1 is implemented** (transactional API; the PRAGMAs were
+pinned by a test, not set explicitly). **S2 is partly implemented**: its
+`core-crypto`/`core-protocol` half is S2-B1 (PR #87); the `mobile-ffi` half is
+not. S3–S8 are not implemented.
 
 | # | stage | modules | prerequisite |
 |---|---|---|---|
@@ -88,7 +99,7 @@ artifact is recoverable from the outbox by event id — never re-encrypted.
    boundary? Both are refusals.
 2. **Un-zeroized secrets.** Serializing ratchet state puts the root key and
    chain keys in a byte buffer. Without `Zeroizing` that is a regression against
-   `ratchet.rs:305`. This exact class of defect (M1) was found in PR #81 by
+   `ratchet.rs:310`. This exact class of defect (M1) was found in PR #81 by
    adversarial review.
 3. **Silent no-op anchor.** A `NullAnchor` must be documented as providing no
    rollback resistance, and the store must record which anchor mode produced a

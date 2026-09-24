@@ -97,6 +97,8 @@ pub mod arcium_psi {
             .encrypted_u64(server_data.ciphertexts[9])
             .build();
 
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
         let callback = PsiIntersectCallback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
@@ -195,7 +197,17 @@ pub struct SubmitPsiQuery<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
     pub mxe_account: Account<'info, MXEAccount>,
-    #[account(mut, seeds = [SIGN_PDA_SEED], bump = sign_pda_account.bump)]
+    // Created on first use, as in the Arcium 0.10.4 examples. Nothing else
+    // initializes this PDA, so requiring it to exist made every query fail
+    // with AccountNotInitialized.
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = user,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
     pub sign_pda_account: Account<'info, ArciumSignerAccount>,
     /// CHECK: Arcium mempool PDA
     #[account(mut)]

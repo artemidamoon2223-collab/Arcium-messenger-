@@ -7,8 +7,9 @@ needs, and passes each step what its user would have: the relay address and
 the contact's card, fingerprint and name as read from the contact's own
 screen. After every step the app is force-stopped (`am force-stop`) and
 checked to be gone, so every later step starts from a new app process (each
-step reports its pid). One step is ended by SIGKILL instead (`kill -9`) while
-a text is on its way. Neither is a power loss.
+step reports its pid). One step ends with SIGKILL instead (the app process
+signals itself, as `kill -9` would) while a text is on its way; the driver
+checks the process is gone. Neither is a power loss.
 
 Bob's network is switched off and on around the offline step with airplane
 mode; the switch is checked in Android's settings and connectivity state,
@@ -84,7 +85,8 @@ class Step:
         self.proc.wait(timeout=timeout)
         self.reader.join(timeout=30)
         if self.expect_kill:
-            ok = not self.results and any("shortMsg=Process crashed" in l for l in self.lines)
+            ok = ("killing" in self.data and not self.results
+                  and any("shortMsg=Process crashed" in l for l in self.lines))
         else:
             ok = self.results == [(self.method, "passed")] and any(
                 l.startswith("INSTRUMENTATION_CODE: -1") for l in self.lines
@@ -117,15 +119,14 @@ class Run:
         if self.adb(who, "shell", "pidof", APP, check=False).stdout.strip():
             raise SystemExit(f"{who}: the app process is still running after force-stop")
 
-    def kill(self, who, pid):
-        """SIGKILL, as the kernel's low-memory killer would; checks the process is gone."""
-        self.adb(who, "shell", "run-as", APP, "kill", "-9", pid)
+    def gone(self, who, pid):
+        """Checks the process `pid` no longer exists."""
         deadline = time.time() + 30
         while pid in self.adb(who, "shell", "pidof", APP, check=False).stdout.split():
             if time.time() > deadline:
-                raise SystemExit(f"{who}: pid {pid} survived kill -9")
+                raise SystemExit(f"{who}: pid {pid} survived SIGKILL")
             time.sleep(1)
-        print(f"  {who}: pid {pid} killed with SIGKILL (kill -9)")
+        print(f"  {who}: pid {pid} ended by SIGKILL")
 
     def peer_args(self, who):
         peer = "bob" if who == "alice" else "alice"
@@ -220,9 +221,10 @@ def main():
     print("6. Alice's process is killed with SIGKILL while her text is on its way")
     alice = r.start("alice", "aliceIsKilledWithATextInFlight")
     alice.expect_kill = True
-    if not alice.ready.wait(timeout=300) or "ready" not in alice.data:
-        r.finish(alice)
-    r.kill("alice", alice.data["pid"])
+    alice.proc.wait(timeout=300)
+    alice.reader.join(timeout=30)
+    if "killing" in alice.data:
+        r.gone("alice", alice.data["pid"])
     r.finish(alice)
     r.together(("alice", "aliceSeesTheTextFromBeforeTheKillDelivered"),
                ("bob", "bobReceivesTheTextFromBeforeTheKill"))

@@ -224,18 +224,20 @@ class TwoDeviceMessengerTest {
     }
 
     /**
-     * Alice's text is encrypted, committed and on the relay when the driver
-     * kills her process with SIGKILL (`kill -9`): no shutdown path runs.
-     * Reaching the end of this step means the kill never came.
+     * Alice's text is encrypted, committed and on the relay when her process
+     * receives SIGKILL (the signal `kill -9` sends): no shutdown path runs.
+     * The driver checks the process is gone. Reaching the end of this step
+     * means the signal did not kill it.
      */
     @Test
     fun aliceIsKilledWithATextInFlight() {
         openChat()
         send(text("before the kill"))
         waitForStatus(text("before the kill"), "Sent to relay")
-        report("ready" to "kill")
-        Thread.sleep(120_000)
-        throw AssertionError("the driver did not kill this process")
+        report("killing" to "SIGKILL")
+        android.os.Process.sendSignal(android.os.Process.myPid(), android.os.Process.SIGNAL_KILL)
+        Thread.sleep(30_000)
+        throw AssertionError("SIGKILL did not end this process")
     }
 
     /** Alice's new process still has the text, once, and Bob's receipt marks it delivered. */

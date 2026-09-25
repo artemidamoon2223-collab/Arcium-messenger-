@@ -688,6 +688,14 @@ impl NetworkMessenger {
 
     /// Moves entry `seq` forward to `state` (never back: a stale caller
     /// cannot undo a receipt) and records its message id if it has none.
+    ///
+    /// Forward is `Queued → Pending → Transmitted → Delivered`, and from any
+    /// of the first three to `NotDelivered`; a step may skip states. Skips
+    /// happen when the stored state lags what the durable layer already
+    /// holds: a `Queued` entry whose commit ran before a crash comes back from
+    /// `send_text` as pending, delivered or abandoned, and a `Pending` one
+    /// whose receipt arrived before the relay's acceptance was seen here goes
+    /// straight to `Delivered`. `Received` entries never change.
     fn advance(
         &self,
         peer: &[u8; 32],

@@ -14,6 +14,7 @@
 //! if one is lost the sender retransmits the text, which is received as a
 //! duplicate and answered with a new receipt.
 
+pub(crate) mod chat;
 pub(crate) mod wire;
 
 use std::collections::HashMap;
@@ -342,6 +343,24 @@ impl NetworkMessenger {
         self.publish_pending(&mut conn, &sessions, report)
     }
 
+    /// Whether the session under `handle` has accepted a message from the
+    /// peer, which then holds it too.
+    fn confirmed(&self, handle: u64) -> Result<bool, CoreError> {
+        let our = self.core.our_identity_pk()?;
+        let (mut store, messenger) = self.core.lock()?;
+        messenger
+            .has_received(&mut store, our, handle)
+            .map_err(|e| CoreError::messaging(handle, e))
+    }
+
+    /// Whether the relay accepted the message `id` in this process's lifetime.
+    fn was_sent(&self, id: &[u8]) -> bool {
+        let Ok(id) = <[u8; 32]>::try_from(id) else {
+            return false;
+        };
+        self.last_sent.lock().expect("last_sent").contains_key(&id)
+    }
+
     fn due(&self, key: &[u8; 32]) -> bool {
         let sent = self.last_sent.lock().expect("last_sent");
         sent.get(key)
@@ -363,13 +382,7 @@ impl NetworkMessenger {
     ) -> Result<(), CoreError> {
         let our = self.core.our_identity_pk()?;
         for (peer, handle) in sessions {
-            let unconfirmed = {
-                let (mut store, messenger) = self.core.lock()?;
-                !messenger
-                    .has_received(&mut store, our, *handle)
-                    .map_err(|e| CoreError::messaging(*handle, e))?
-            };
-            if unconfirmed {
+            if !self.confirmed(*handle)? {
                 if let Some(hs) = self.core.initiator_handshake(*handle)? {
                     let key: [u8; 32] = Sha256::digest(&hs).into();
                     if self.due(&key) {
@@ -424,8 +437,19 @@ impl NetworkMessenger {
                 // what the session is keyed from.
                 if handshake.len() != crate::INITIATOR_HANDSHAKE_V1_LEN
                     || handshake[4..36] != sender
-                    || self.core.has_session(handle)?
                 {
+                    report.dropped += 1;
+                    return Ok(Fate::Delete);
+                }
+                if self.core.has_session(handle)? {
+                    // Dropped: no session is ever replaced. If ours is an
+                    // unconfirmed start of our own, both sides initiated;
+                    // record it so the application can show it (section 8).
+                    if self.core.initiator_handshake(handle)?.is_some()
+                        && !self.confirmed(handle)?
+                    {
+                        chat::set_flag(self, &sender, chat::CONFLICT)?;
+                    }
                     report.dropped += 1;
                     return Ok(Fate::Delete);
                 }
@@ -439,6 +463,7 @@ impl NetworkMessenger {
                         Ok(Fate::Keep)
                     }
                     Err(e) => {
+                        chat::set_flag(self, &sender, chat::HANDSHAKE_REFUSED)?;
                         report.dropped += 1;
                         report.errors.push(format!("handshake refused: {e}"));
                         Ok(Fate::Delete)

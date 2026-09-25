@@ -112,7 +112,7 @@ fun ChatScreen(
             }
             LazyColumn(
                 state = list,
-                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp).testTag("chatList"),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 items(state.entries, key = { it.seq.toLong() }) { entry ->

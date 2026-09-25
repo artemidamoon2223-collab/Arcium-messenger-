@@ -2,6 +2,8 @@ package com.arcium.messenger
 
 import android.app.Application
 import com.arcium.messenger.ffi.ArciumCoreWrapper
+import com.arcium.messenger.messaging.MessengerService
+import com.arcium.messenger.messaging.RelaySettings
 import com.arcium.messenger.security.MasterKeyProvider
 import java.io.File
 
@@ -21,11 +23,16 @@ class ArciumApp : Application() {
             masterKey.fill(0)
         }
         core = wrapper
+        messenger = MessengerService(this, wrapper, RelaySettings(this))
     }
 
     companion object {
         /** Process-wide core handle, initialized in [onCreate]. */
         lateinit var core: ArciumCoreWrapper
+            private set
+
+        /** Process-wide messenger over [core], initialized in [onCreate]. */
+        lateinit var messenger: MessengerService
             private set
     }
 }

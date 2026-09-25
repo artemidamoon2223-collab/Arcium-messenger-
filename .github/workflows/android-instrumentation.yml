@@ -12,6 +12,9 @@ name: Android Instrumentation (emulator)
 # host through a real relay (docs/NET-MESSAGING.md): both are started below
 # and reached from the emulator at 10.0.2.2. Mixed environment: one emulator,
 # one Linux process.
+#
+# The two-device UI steps (package com.arcium.messenger.e2e) need two
+# emulators and run in android-two-device-e2e.yml instead.
 
 on:
   push:
@@ -109,6 +112,7 @@ jobs:
             cd android && ./gradlew :app:connectedDebugAndroidTest --no-daemon --stacktrace
             -Pandroid.testInstrumentationRunnerArguments.relay=10.0.2.2:7700
             -Pandroid.testInstrumentationRunnerArguments.peerCard=${{ env.PEER_CARD }}
+            -Pandroid.testInstrumentationRunnerArguments.notPackage=com.arcium.messenger.e2e
 
       # Gradle fails the step above on any failing test. This also refuses a
       # run where no tests executed or any was skipped, so an empty or ignored

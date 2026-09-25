@@ -5,6 +5,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -32,17 +33,20 @@ fun OnboardingScreen(
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("Anonymous E2E Messenger", style = MaterialTheme.typography.titleLarge)
+            Text("End-to-end encrypted messenger", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Powered by Tor + Double Ratchet + Arcium MPC",
+                "X3DH and the Double Ratchet. Not anonymous: the relay sees who talks to whom.",
                 style = MaterialTheme.typography.bodyLarge,
             )
             Spacer(Modifier.height(32.dp))
             if (state.isLoading) {
                 CircularProgressIndicator()
             } else {
-                Button(onClick = { viewModel.generateIdentity() }) {
+                Button(
+                    onClick = { viewModel.generateIdentity() },
+                    modifier = Modifier.testTag("createIdentity"),
+                ) {
                     Text("Generate Identity Keys")
                 }
             }

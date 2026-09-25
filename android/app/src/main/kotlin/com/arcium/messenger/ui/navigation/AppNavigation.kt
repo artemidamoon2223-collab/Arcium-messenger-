@@ -9,73 +9,65 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.arcium.messenger.data.IdentityRepository
 import com.arcium.messenger.ui.chat.ChatScreen
+import com.arcium.messenger.ui.contacts.AddContactScreen
 import com.arcium.messenger.ui.contacts.ContactsScreen
-import com.arcium.messenger.ui.onboarding.ExistingIdentityScreen
 import com.arcium.messenger.ui.onboarding.OnboardingScreen
 import com.arcium.messenger.ui.settings.SettingsScreen
 
 object Routes {
     const val ONBOARDING = "onboarding"
-    const val IDENTITY_EXISTS = "identity_exists"
     const val CONTACTS = "contacts"
-    const val CHAT = "chat/{peerLabel}"
+    const val ADD_CONTACT = "add_contact"
+    const val CHAT = "chat/{peer}"
     const val SETTINGS = "settings"
 
-    /** [peerLabel] is a display label only — never a session handle or a key. */
-    fun chat(peerLabel: String) = "chat/$peerLabel"
+    /** [peerHex] is the contact's X25519 identity key in hex. */
+    fun chat(peerHex: String) = "chat/$peerHex"
 }
 
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
-    // Startup check, computed once: if a real identity is already persisted
-    // (ArciumApp.core's DB is opened synchronously in Application.onCreate,
-    // before this composable ever runs), Routes.ONBOARDING — and therefore
-    // its "Generate Identity Keys" button — must never be reachable, since
-    // generateAndSaveIdentity() silently overwrites any existing identity.
+    // Computed once. With an identity stored, onboarding — whose button
+    // generates and saves a new identity, replacing the old one — is never
+    // reachable.
     val hasStoredIdentity = remember { IdentityRepository().loadPublicKey() != null }
-    val startDestination = if (hasStoredIdentity) Routes.IDENTITY_EXISTS else Routes.ONBOARDING
+    val startDestination = if (hasStoredIdentity) Routes.CONTACTS else Routes.ONBOARDING
     NavHost(navController = navController, startDestination = startDestination) {
         composable(Routes.ONBOARDING) {
             OnboardingScreen(
                 onIdentityReady = {
-                    navController.navigate(Routes.IDENTITY_EXISTS) {
-                        popUpTo(Routes.ONBOARDING) { inclusive = true }
-                    }
-                },
-            )
-        }
-        composable(Routes.IDENTITY_EXISTS) {
-            // Read back from the encrypted store every time this destination is
-            // composed, so the key shown is the persisted one — on cold start and
-            // immediately after generation alike. Null here means the store holds
-            // no identity although this destination was reached: a real failure,
-            // surfaced loudly instead of being painted as an empty key.
-            val publicKey = remember {
-                IdentityRepository().loadPublicKey()
-                    ?: error("IDENTITY_EXISTS reached but no identity is stored")
-            }
-            ExistingIdentityScreen(
-                publicKey = publicKey,
-                onContinue = {
                     navController.navigate(Routes.CONTACTS) {
-                        popUpTo(Routes.IDENTITY_EXISTS) { inclusive = true }
+                        popUpTo(Routes.ONBOARDING) { inclusive = true }
                     }
                 },
             )
         }
         composable(Routes.CONTACTS) {
             ContactsScreen(
-                onOpenChat = { peerLabel -> navController.navigate(Routes.chat(peerLabel)) },
+                onOpenChat = { peer -> navController.navigate(Routes.chat(peer)) },
+                onAddContact = { navController.navigate(Routes.ADD_CONTACT) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+            )
+        }
+        composable(Routes.ADD_CONTACT) {
+            AddContactScreen(
+                onBack = { navController.popBackStack() },
+                onAdded = { peer ->
+                    navController.navigate(Routes.chat(peer)) {
+                        popUpTo(Routes.ADD_CONTACT) { inclusive = true }
+                    }
+                },
             )
         }
         composable(
             route = Routes.CHAT,
-            arguments = listOf(navArgument("peerLabel") { type = NavType.StringType }),
-        ) { backStack ->
-            val peerLabel = backStack.arguments?.getString("peerLabel") ?: ""
-            ChatScreen(peerLabel = peerLabel, onBack = { navController.popBackStack() })
+            arguments = listOf(navArgument("peer") { type = NavType.StringType }),
+        ) {
+            ChatScreen(
+                onBack = { navController.popBackStack() },
+                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+            )
         }
         composable(Routes.SETTINGS) {
             SettingsScreen(onBack = { navController.popBackStack() })

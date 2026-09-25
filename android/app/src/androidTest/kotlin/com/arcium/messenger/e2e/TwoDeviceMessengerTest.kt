@@ -4,12 +4,15 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
@@ -292,11 +295,33 @@ class TwoDeviceMessengerTest {
 
     private fun tap(tag: String) {
         waitFor(tag)
+        // Inside a scrolling screen the node may be below the fold.
+        try {
+            rule.onNodeWithTag(tag).performScrollTo()
+        } catch (e: AssertionError) {
+            // Not in a scrollable container: already where it is shown.
+        }
         rule.onNodeWithTag(tag).performClick()
     }
 
     private fun waitFor(tag: String, timeoutMs: Long = UI_MS) {
-        rule.waitUntil(timeoutMs) { rule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() }
+        waitUntil("'$tag' on screen", timeoutMs) {
+            rule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
+    /** [rule.waitUntil], failing with what the screen shows instead of a bare timeout. */
+    private fun waitUntil(what: String, timeoutMs: Long, condition: () -> Boolean) {
+        try {
+            rule.waitUntil(timeoutMs, condition)
+        } catch (e: ComposeTimeoutException) {
+            val shown = rule.onAllNodes(isRoot()).fetchSemanticsNodes().flatMap { root ->
+                generateSequence(listOf(root)) { level -> level.flatMap { it.children }.ifEmpty { null } }
+                    .flatten()
+                    .mapNotNull { n -> n.config.getOrNull(SemanticsProperties.Text)?.joinToString(" ") { it.text } }
+            }
+            throw AssertionError("timed out after $timeoutMs ms waiting for $what; screen shows: $shown", e)
+        }
     }
 
     private fun textOf(tag: String): String =
@@ -307,7 +332,7 @@ class TwoDeviceMessengerTest {
 
     /** Waits until some text on screen contains [fragment]. */
     private fun waitForText(fragment: String, timeoutMs: Long) {
-        rule.waitUntil(timeoutMs) {
+        waitUntil("text '$fragment'", timeoutMs) {
             rule.onAllNodes(hasText(fragment, substring = true), useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
         }
@@ -345,11 +370,11 @@ class TwoDeviceMessengerTest {
     }
 
     private fun waitForMessage(message: String) {
-        rule.waitUntil(WAIT_MS) { statusOf(message) != null }
+        waitUntil("message '$message'", WAIT_MS) { statusOf(message) != null }
     }
 
     private fun waitForStatus(message: String, status: String) {
-        rule.waitUntil(WAIT_MS) { statusOf(message) == status }
+        waitUntil("'$message' to be '$status'", WAIT_MS) { statusOf(message) == status }
     }
 
     /** The two relay requests this test needs (`RELAY_PROTOCOL_V1`). */

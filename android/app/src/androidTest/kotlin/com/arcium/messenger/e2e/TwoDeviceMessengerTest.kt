@@ -224,6 +224,37 @@ class TwoDeviceMessengerTest {
     }
 
     /**
+     * Alice's text is encrypted, committed and on the relay when the driver
+     * kills her process with SIGKILL (`kill -9`): no shutdown path runs.
+     * Reaching the end of this step means the kill never came.
+     */
+    @Test
+    fun aliceIsKilledWithATextInFlight() {
+        openChat()
+        send(text("before the kill"))
+        waitForStatus(text("before the kill"), "Sent to relay")
+        report("ready" to "kill")
+        Thread.sleep(120_000)
+        throw AssertionError("the driver did not kill this process")
+    }
+
+    /** Alice's new process still has the text, once, and Bob's receipt marks it delivered. */
+    @Test
+    fun aliceSeesTheTextFromBeforeTheKillDelivered() {
+        openChat()
+        assertEquals(1, stored(text("before the kill"), outgoing = true).size)
+        waitForStatus(text("before the kill"), "Delivered")
+        assertEquals(ChatSessionState.Established, messenger { it.conversation(peerKey) }.session)
+    }
+
+    @Test
+    fun bobReceivesTheTextFromBeforeTheKill() {
+        openChat()
+        waitForMessage(text("before the kill"))
+        assertEquals(1, stored(text("before the kill"), outgoing = false).size)
+    }
+
+    /**
      * Alice loses the network while sending: the text is kept and shown as
      * not sent; when the network returns it goes out and is delivered.
      */

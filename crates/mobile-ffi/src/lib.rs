@@ -135,6 +135,10 @@ pub enum CoreError {
     /// card's. Nothing was created.
     #[error("the published bundle does not match the pinned contact card")]
     PeerIdentityMismatch,
+    /// An argument outside what the call accepts (a name, a text, an id), or
+    /// a request the current state does not allow. Nothing changed.
+    #[error("invalid argument: {msg}")]
+    InvalidArgument { msg: String },
 }
 
 impl From<StorageError> for CoreError {
@@ -2009,6 +2013,7 @@ mod tests {
         );
     }
 
+    mod chat;
     mod durable;
     mod net_harness;
     mod network;

@@ -163,15 +163,62 @@ a peer is offline, not on a new handshake.
 - Simultaneous initiation: if both users start a session with each other
   before either handshake arrives, each device holds an unconfirmed initiator
   session and drops the other's handshake, so neither proceeds (no fork: each
-  side's messages fail to decrypt at the other and write nothing). One user
-  must remove the session (S2-B2 section 6a) and accept the other's. An
-  automatic tie-break would replace a session without the user, which this
-  version does not do.
+  side's messages fail to decrypt at the other and write nothing). Nothing
+  resolves it automatically. The conflict is recorded and shown, and the user
+  of one device resolves it (section 10).
 - Read receipts; multi-device; group messaging; attachments.
 - Envelopes waiting for a missing handshake occupy the first slots of each
   FETCH (at most 256 are returned per round).
 - Everything S2-B2 does not provide: power-loss durability, rollback
   detection, exactly-once delivery to the application.
+
+## 10. Conversations
+
+`network/chat.rs`: what an application shows. The durable layer keeps a text
+only until its receipt (outgoing) or until it is marked read (incoming), so
+the chat layer keeps a history per contact in the same encrypted store: one
+entry per logical message, never written by the ratchet.
+
+| entry state | means |
+|---|---|
+| `Queued` | recorded under the application's id; not encrypted (no session yet) |
+| `Pending` | committed to the outbox (encrypted) |
+| `Transmitted` | the relay accepted it; nothing is known about the peer |
+| `Delivered` | the peer's authenticated receipt arrived (its device committed it); not a read receipt |
+| `NotDelivered` | given up after a conflict resolution; the peer never accepts it |
+| `Received` | a text from the peer |
+
+- **Sending.** `chat_send(peer, app_id, text)` records the entry first, then
+  commits it with `send_text` under the same id when a session exists. Every
+  step repeats with that id, so a retry or a crash between the steps finds
+  the committed message; a text is never encrypted twice. A state only moves
+  forward.
+- **Receiving.** A received text is recorded with an index on its message id
+  in one transaction, then marked read. After a crash between the two it is
+  listed again and skipped: each text appears once in the history. Delivery
+  from the inbox stays at least once; the history deduplicates it.
+- **Delivered.** A committed text leaves the outbox only on the peer's receipt
+  or when abandoned; the chat layer abandons only after marking the entry
+  `NotDelivered`. So, while the session exists, a text that left the outbox is
+  delivered.
+- **Sessions.** `sync_conversations` runs `sync` first, so a waiting handshake
+  from the contact is accepted, and only then starts a session for a contact
+  with queued texts and none yet. A bundle that does not match the pinned
+  card is refused and flagged (`identity_mismatch`); a missing bundle leaves
+  the text queued with a note.
+- **Conflict.** A handshake from a contact whose session here is an
+  unconfirmed start of our own is still dropped, and the conflict is
+  recorded. Only the device with the greater identity key may resolve it
+  (`resolve_session_conflict`), and only when its user asks. That device marks
+  its committed texts `NotDelivered`, abandons them, removes its unconfirmed
+  session (allowed by S2-B2 section 6a: nothing was received on it), and waits
+  for the contact's handshake, which the contact retransmits. The user can
+  send those texts again as new messages. Nothing is removed automatically.
+  A replayed old handshake can raise a false conflict; resolving it then only
+  delays the conversation.
+- **Not provided.** Sync while the application is closed; unread state across
+  devices; a sender timestamp (entries carry the local time they were
+  recorded).
 
 ## 9. Verification
 
@@ -186,3 +233,5 @@ a peer is offline, not on a new handshake.
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |
+| conversation history, states, repeats, replays, forged bundle, conflict | `tests::chat` | runtime |
+| process death while sending from or receiving into the history | `tests::network_crash` (`chat_*` points) | process crash |

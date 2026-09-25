@@ -34,6 +34,17 @@ fn net_crash_child() {
         "sync" => {
             device.sync();
         }
+        "chat_send" => {
+            let peer = std::fs::read(dir.join("peer")).unwrap();
+            let text = format!(
+                "sent from the chat{}",
+                String::from_utf8(CANARY.to_vec()).unwrap()
+            );
+            device.net.chat_send(peer, b"crash".to_vec(), text).unwrap();
+        }
+        "chat_sync" => {
+            device.net.sync_conversations();
+        }
         other => panic!("unknown scenario {other}"),
     }
     std::process::abort();
@@ -150,5 +161,81 @@ fn a_sender_killed_while_taking_a_receipt_applies_it_after_restart() {
     let r = alice.sync();
     assert_eq!(r.delivered, 1, "{r:?}");
     assert_eq!(alice.undelivered(&bob), 0);
+    relay.stop();
+}
+
+/// Every chat round of `devices`, in turn, `n` times; no errors allowed.
+fn chat_rounds(devices: &[&Device], n: usize) {
+    for _ in 0..n {
+        for d in devices {
+            let r = d.net.sync_conversations();
+            assert!(r.errors.is_empty(), "{:?}", r.errors);
+        }
+    }
+}
+
+/// The sender dies while sending from the chat: after recording the text,
+/// after committing it to the outbox, and after the call returned. After the
+/// restart it is committed once, recorded once and delivered once.
+#[cfg(unix)]
+#[test]
+fn a_sender_killed_while_sending_from_the_chat_sends_the_text_once() {
+    use crate::network::chat::ChatEntryState;
+    for point in [Some("chat_after_queue"), Some("chat_after_outbox"), None] {
+        let relay = start_relay();
+        let addr = relay.addr().to_string();
+        let (alice, bob) = connected(&addr);
+        run_child(&alice, &addr, "chat_send", point, &bob.pk);
+
+        let alice = alice.restart(&addr);
+        let entries = alice.net.chat_entries(bob.pk.clone()).unwrap();
+        assert_eq!(entries.len(), 1, "{point:?}: recorded once");
+        assert_eq!(alice.undelivered(&bob), 1, "{point:?}: one ciphertext");
+        chat_rounds(&[&alice, &bob, &alice], 2);
+        let received = bob.net.chat_entries(alice.pk.clone()).unwrap();
+        assert_eq!(received.len(), 1, "{point:?}: received once");
+        assert!(received[0].text.starts_with("sent from the chat"));
+        assert_eq!(
+            alice.net.chat_entries(bob.pk.clone()).unwrap()[0].state,
+            ChatEntryState::Delivered,
+            "{point:?}"
+        );
+        assert_eq!(relay.canary_hits(), 0);
+        relay.stop();
+    }
+}
+
+/// The recipient dies after recording a received text in the history and
+/// before marking it read, so the inbox lists it again after the restart.
+/// The history shows it once.
+#[cfg(unix)]
+#[test]
+fn a_recipient_killed_before_marking_a_recorded_text_read_shows_it_once() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    alice
+        .net
+        .chat_send(bob.pk.clone(), b"r".to_vec(), "recorded".into())
+        .unwrap();
+    chat_rounds(&[&alice], 1);
+    run_child(
+        &bob,
+        &addr,
+        "chat_sync",
+        Some("chat_after_record"),
+        &alice.pk,
+    );
+
+    let bob = bob.restart(&addr);
+    assert_eq!(
+        bob.net.received_texts(alice.pk.clone()).unwrap().len(),
+        1,
+        "the crash came before it was marked read"
+    );
+    let entries = bob.net.chat_entries(alice.pk.clone()).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].text, "recorded");
+    assert!(bob.net.received_texts(alice.pk.clone()).unwrap().is_empty());
     relay.stop();
 }

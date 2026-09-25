@@ -5,8 +5,9 @@ Runs the steps of TwoDeviceMessengerTest with `am instrument`, one step per
 run, on Alice's and Bob's emulators, in order or side by side as the scenario
 needs, and passes each step what its user would have: the relay address and
 the contact's card, fingerprint and name as read from the contact's own
-screen. Between steps the app process ends (instrumentation stops it), so
-every step after the first starts from a restarted app.
+screen. After every step the app is force-stopped and checked to be gone,
+so every later step starts from a new app process (each step reports its
+pid).
 
 Bob's network is switched off and on around the offline step with airplane
 mode; the switch is checked in Android's settings and connectivity state,
@@ -40,6 +41,7 @@ class Step:
 
     def __init__(self, out, serial, who, method, args):
         self.who, self.method = who, method
+        self.started = time.time()
         self.log = out / f"{len(list(out.glob('*.log'))):02d}-{who}-{method}.log"
         self.data, self.results, self.lines = {}, [], []
         self.ready = threading.Event()
@@ -80,7 +82,9 @@ class Step:
         ok = self.results == [(self.method, "passed")] and any(
             l.startswith("INSTRUMENTATION_CODE: -1") for l in self.lines
         )
-        print(f"  {self.who:5} {self.method}: {self.results or 'no result'} -> {'OK' if ok else 'FAILED'}")
+        took = time.time() - self.started
+        print(f"  {self.who:5} {self.method}: {self.results or 'no result'} "
+              f"(pid {self.data.get('pid', '?')}, {took:.0f} s) -> {'OK' if ok else 'FAILED'}")
         if not ok:
             print("\n".join("    | " + l for l in self.lines[-60:]))
         return ok
@@ -93,11 +97,18 @@ class Run:
         self.serial = {"alice": a.alice, "bob": a.bob}
         self.relay = a.relay
         self.cards = {}
+        self.last_pid = {}
         self.passed = self.failed = 0
 
     def adb(self, who, *command, check=True):
         return subprocess.run(["adb", "-s", self.serial[who], *command],
                               capture_output=True, text=True, check=check)
+
+    def stop_app(self, who):
+        """Kills the app as a user swiping it away would, and checks it is gone."""
+        self.adb(who, "shell", "am", "force-stop", APP)
+        if self.adb(who, "shell", "pidof", APP, check=False).stdout.strip():
+            raise SystemExit(f"{who}: the app process is still running after force-stop")
 
     def peer_args(self, who):
         peer = "bob" if who == "alice" else "alice"
@@ -111,6 +122,12 @@ class Run:
 
     def finish(self, *steps):
         results = [s.wait() for s in steps]
+        for s in steps:
+            self.stop_app(s.who)
+            pid = s.data.get("pid")
+            if pid is None or pid == self.last_pid.get(s.who):
+                raise SystemExit(f"{s.who}: {s.method} did not report a new app process (pid {pid})")
+            self.last_pid[s.who] = pid
         self.passed += sum(results)
         self.failed += len(results) - sum(results)
         if not all(results):
@@ -144,6 +161,7 @@ class Run:
 
 
 def main():
+    sys.stdout.reconfigure(line_buffering=True)
     p = argparse.ArgumentParser()
     p.add_argument("--alice", required=True)
     p.add_argument("--bob", required=True)

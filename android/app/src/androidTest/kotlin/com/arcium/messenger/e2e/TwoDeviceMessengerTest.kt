@@ -28,6 +28,7 @@ import java.security.SecureRandom
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -73,6 +74,10 @@ class TwoDeviceMessengerTest {
     private val peerKey get() = peerCard.copyOfRange(1, 33)
 
     private fun text(s: String) = "$s $CANARY"
+
+    /** Every step starts in a new app process; its pid goes to the driver's log. */
+    @Before
+    fun reportProcess() = report()
 
     // ── Steps ───────────────────────────────────────────────────────────────
 

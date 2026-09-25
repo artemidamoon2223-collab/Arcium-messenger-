@@ -35,6 +35,8 @@ jobs:
     timeout-minutes: 90
     env:
       SYSTEM_IMAGE: "system-images;android-30;default;x86_64"
+      # One place for avdmanager to write and the emulator to read AVDs.
+      ANDROID_AVD_HOME: /home/runner/.android/avd
 
     steps:
       - name: Checkout
@@ -92,13 +94,21 @@ jobs:
         run: |
           set -euo pipefail
           AVDM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager"
+          mkdir -p "$ANDROID_AVD_HOME"
           for who in alice bob; do
             echo no | "$AVDM" create avd --force -n "$who" -k "$SYSTEM_IMAGE" -d pixel_2
           done
+          echo "AVDs: $(emulator -list-avds | tr '\n' ' ')"
           emulator -avd alice -port 5554 -no-window -gpu swiftshader_indirect -noaudio \
             -no-boot-anim -no-snapshot -memory 2048 > e2e-out/emulator-alice.log 2>&1 &
           emulator -avd bob -port 5556 -no-window -gpu swiftshader_indirect -noaudio \
             -no-boot-anim -no-snapshot -memory 2048 > e2e-out/emulator-bob.log 2>&1 &
+          sleep 20
+          for who in alice bob; do
+            echo "--- emulator-$who.log (head) ---"
+            head -40 "e2e-out/emulator-$who.log" || true
+          done
+          pgrep -a qemu || { echo "::error::no emulator process is running" >&2; exit 1; }
           for serial in emulator-5554 emulator-5556; do
             timeout 600 adb -s "$serial" wait-for-device
             timeout 600 bash -c "until [ \"\$(adb -s $serial shell getprop sys.boot_completed | tr -d '\r')\" = 1 ]; do sleep 5; done"

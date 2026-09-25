@@ -25,7 +25,13 @@ android {
     }
 
     buildTypes {
+        // The only relay that exists is the development relay: no TLS, no
+        // authentication. Only debug builds may be pointed at one.
+        debug {
+            buildConfigField("boolean", "DEV_RELAY_ALLOWED", "true")
+        }
         release {
+            buildConfigField("boolean", "DEV_RELAY_ALLOWED", "false")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -83,11 +89,15 @@ dependencies {
     // reaching JNA belongs in src/androidTest instead.
     testImplementation(libs.junit)
 
-    // Instrumentation tests only (src/androidTest): the AndroidJUnitRunner and
-    // the JUnit4 Android bridge. Deliberately nothing else — no Espresso, no
-    // Compose UI testing, no mocking framework. This suite exercises the real
-    // FFI chain, so a mock would defeat its purpose.
+    // Instrumentation tests only (src/androidTest): the AndroidJUnitRunner, the
+    // JUnit4 Android bridge, and Compose UI testing, which drives the real
+    // screens in the two-device end-to-end tests (src/androidTest/.../e2e). No
+    // mocking framework: these suites exercise the real FFI chain, so a mock
+    // would defeat their purpose.
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.ui.test.junit4)
+    debugImplementation(libs.androidx.ui.test.manifest)
 }

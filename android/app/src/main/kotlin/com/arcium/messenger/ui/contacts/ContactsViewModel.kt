@@ -2,38 +2,41 @@ package com.arcium.messenger.ui.contacts
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.arcium.messenger.data.Contact
-import com.arcium.messenger.data.ContactRepository
+import com.arcium.messenger.ArciumApp
+import com.arcium.messenger.messaging.MessengerService
+import com.arcium.messenger.messaging.RelayLink
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import uniffi.arcium_core.CoreException
+import uniffi.arcium_core.Conversation
 
 data class ContactsState(
-    val contacts: List<Contact> = emptyList(),
-    val isDiscovering: Boolean = false,
+    val conversations: List<Conversation> = emptyList(),
+    val link: RelayLink = RelayLink.NotConfigured,
     val error: String? = null,
 )
 
+/** The contact list: every pinned contact with its conversation state, from Rust. */
 class ContactsViewModel(
-    private val contactRepo: ContactRepository = ContactRepository(),
+    private val service: MessengerService = ArciumApp.messenger,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ContactsState())
     val state: StateFlow<ContactsState> = _state
 
     init {
-        _state.value = _state.value.copy(contacts = contactRepo.getAllContacts())
-    }
-
-    fun discoverContacts(phoneNumbers: List<String>) {
         viewModelScope.launch {
-            _state.value = _state.value.copy(isDiscovering = true, error = null)
-            try {
-                val found = contactRepo.discoverContacts(phoneNumbers)
-                _state.value = _state.value.copy(isDiscovering = false, contacts = found)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(isDiscovering = false, error = e.message)
+            service.revision.collect {
+                _state.value = try {
+                    _state.value.copy(conversations = service.call { it.conversations() }, error = null)
+                } catch (e: CoreException) {
+                    _state.value.copy(error = "Could not read contacts: ${e.message}")
+                }
             }
+        }
+        viewModelScope.launch {
+            service.link.collect { _state.value = _state.value.copy(link = it) }
         }
     }
 }

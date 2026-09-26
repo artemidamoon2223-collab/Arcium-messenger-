@@ -11,6 +11,8 @@ verification step — "it looks right" is not one.
 ☐ tsc --noEmit                              →  0 ошибок  (если трогал TS)
 ☐ grep на висячие ссылки                    →  нет
 ☐ diff затрагивает ТОЛЬКО запрошенное       →  да
+☐ инженерное ревью (karpathy-review.md)     →  блок результата в отчёте
+☐ security-ревью, если diff чувствителен    →  блок arcium-security-review в отчёте
 ```
 
 The first three commands are the ones `.github/workflows/arcium-ci.yml` runs;

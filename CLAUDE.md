@@ -76,14 +76,21 @@ Little-endian, первые 8 байт.
 - Собственный пересказ ранее сделанной работы доказательством не является.
   Claim подкрепляется путём с номером строки, SHA коммита или именем
   прошедшего теста. Перепроверяй номера строк перед цитированием.
+- Метки в отчётах и ревью: `SOURCE_VERIFIED` — прочитано в исходнике
+  (путь:строка); `RUNTIME_VERIFIED` — наблюдалось при запуске (команда, тест
+  или строка лога); `INFERRED` — выведено, но не наблюдалось (из чего);
+  `NOT_VERIFIED` — не проверено (почему и что проверило бы).
 
 ---
 
 ## Анализ безопасности
 
 Использовать ТОЛЬКО признанные классы угроз: timing/cache/power/EM
-side-channel, X3DH/replay/OPK protocol bugs, PSI/MPC correctness, on-chain
-access control, traffic analysis, FFI boundary, supply chain.
+side-channel, X3DH/replay/OPK protocol bugs, key/nonce misuse и zeroization,
+согласованность durable-состояния (crash, rollback, дубликаты), PSI/MPC
+correctness, on-chain access control, traffic analysis, FFI boundary, supply
+chain, CI integrity (ложно-зелёные проверки). Процедура — навык
+`arcium-security-review`.
 
 ❌ НЕ добавлять псевдонаучные модели
 (phase/frequency/Fibonacci/Mishin/quasicrystal/PhaseSCA).
@@ -117,6 +124,24 @@ cd arcium-psi/tests && npx mocha --require ts-node/register 'src/crypto.test.ts'
 
 ---
 
+## Ревью и CI
+
+- GitHub CI только детерминированный: тесты, сборки, анализаторы. ❌ Никаких
+  вызовов LLM-провайдеров и их API-ключей в воркфлоу; вернуть такое — только
+  по отдельному явному указанию владельца.
+- ❌ НИКОГДА не превращай блокирующую проверку в advisory
+  (`continue-on-error: true`, `|| true`, проглоченный код возврата).
+- Перед приёмкой владельцем: нетривиальное изменение проходит инженерное
+  ревью (`engineering-code-review`, `references/karpathy-review.md`);
+  изменение, чувствительное к безопасности (крипто, протокол, durable-
+  состояние, идентичность, сеть, FFI/Android, PSI/on-chain, CI, зависимости,
+  секреты), — ещё и `arcium-security-review`. Оба ревью выполняются локально
+  в сессии Claude Code, без API-ключа.
+- Модельное ревью — анализ, а не доказательство. Тесты и runtime-
+  доказательства по-прежнему обязательны, решение о мёрдже — за владельцем.
+
+---
+
 ## Версии — не менять без причины
 
 - arcium-client 0.10.4; arcium-anchor 0.10.4 требует anchor-lang `=1.0.2`
@@ -132,13 +157,6 @@ cd arcium-psi/tests && npx mocha --require ts-node/register 'src/crypto.test.ts'
 
 - Мёрдж: обычный merge commit (НЕ squash) и только по отдельному явному
   указанию владельца. Зелёный CI указанием не является.
-- ❌ НИКОГДА не добавляй `continue-on-error: true` в шаги AI-review
-  (`security-review`, `karpathy-review`): это превращает блокирующий гейт в
-  advisory. Вместо этого обнови `ANTHROPIC_API_KEY`.
-- `ANTHROPIC_API_KEY` требует биллинга на console.anthropic.com (отдельно от
-  подписки claude.ai). Проверка ключа перед вставкой:
-  `curl -s https://api.anthropic.com/v1/models -H "x-api-key: KEY" -H "anthropic-version: 2023-06-01"`
-  → должен вернуть `{"data":[`
 - Branch protection на main — owner-only. Состав required status checks
   доступными инструментами не читается; не выводи его по косвенным признакам.
 - M-3 (NO-GO): RescueCipher stub в Rust остаётся — настоящий Rescue есть только
@@ -155,7 +173,11 @@ cd arcium-psi/tests && npx mocha --require ts-node/register 'src/crypto.test.ts'
   дисциплина объёма, стандарты доказательств, построение PR, механика мёрджа,
   разделение фикса и обновления трекера. Ничего не авторизует.
 - **engineering-code-review** — конкретные инженерные требования к правкам и
-  ревью, чеклист сдачи, карта репозитория.
+  ревью, локальное ревью по четырём принципам Karpathy, чеклист сдачи, карта
+  репозитория.
+- **arcium-security-review** — security-ревью изменения по модели угроз
+  проекта: полный diff и окружающий код, метки доказательств, формат отчёта.
+  Анализ, а не доказательство. Ничего не авторизует.
 - **android-uniffi-bridge** — генерация UniFFI-биндингов, кросс-сборка `.so`,
   упаковка в APK и граница между compile/package и runtime-доказательством.
 - **mbr-integration** — что исследование MBR доказало, что осталось

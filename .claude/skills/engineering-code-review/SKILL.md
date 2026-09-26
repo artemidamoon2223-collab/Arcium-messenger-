@@ -1,6 +1,6 @@
 ---
 name: engineering-code-review
-description: "Concrete engineering requirements for making and reviewing changes in this repository: scope discipline, the pre-delivery verification checklist, how claims must be worded, and where things live. Use when writing a non-trivial change, reviewing a diff, or preparing to report a task as done. Describes engineering practice only — it is not a security or cryptographic review, and it authorizes nothing."
+description: "Concrete engineering requirements for making and reviewing changes in this repository: scope discipline, the pre-delivery verification checklist, the local Karpathy-style review of a change (four principles, every changed file read in full), how claims must be worded, and where things live. Use when writing a non-trivial change, reviewing a diff, or preparing to report a task as done. Describes engineering practice only — it is not a security or cryptographic review, and it authorizes nothing."
 ---
 
 # engineering-code-review
@@ -11,9 +11,10 @@ Normative for engineering practice in this repository. Does not authorize any
 action: writing, installing, or touching git still requires the owner's
 instruction, and `repo-change-protocol` describes how such work is carried out.
 
-This skill does **not** cover cryptographic or protocol review. The permanent
-crypto rules live in `CLAUDE.md`; changing crypto logic is always a separate
-task with its own explicit instruction.
+This skill does **not** cover security, cryptographic or protocol review —
+that is `arcium-security-review`. The permanent crypto rules live in
+`CLAUDE.md`; changing crypto logic is always a separate task with its own
+explicit instruction.
 
 ## Purpose
 
@@ -31,13 +32,13 @@ guards against, all of which have actually occurred in this repository:
 - Reviewing a diff, your own or someone else's.
 - About to report a task complete.
 - Deciding whether a claim in a PR body or report is supportable.
-- Running as the `karpathy-review` CI agent — read
-  `references/ci-karpathy-review.md` first.
+- Reviewing a change before owner acceptance — follow
+  `references/karpathy-review.md`.
 
 ## Do not use when
 
-- The task is a cryptographic or protocol review — that requires the threat
-  classes and constraints in `CLAUDE.md`, and a separate explicit instruction.
+- The task is a security, cryptographic or protocol review — that is
+  `arcium-security-review`. On a security-sensitive change run both reviews.
 - The question is procedural (clone, branch, PR, merge mechanics) — that is
   `repo-change-protocol`.
 - The task is the Android UniFFI bridge — that is `android-uniffi-bridge`.
@@ -85,7 +86,7 @@ guards against, all of which have actually occurred in this repository:
   task done.
 - `references/repo-map.md` — where things live, and how to re-derive the map
   instead of trusting it.
-- `references/ci-karpathy-review.md` — how the `karpathy-review` CI job
-  reviews a pull request. Its result block is defined in the workflow.
+- `references/karpathy-review.md` — how to review a change against the four
+  principles, reading every changed file in full, and the result block.
 - `references/karpathy-origin.md` — the original external principles this
   skill was derived from. Optional background, non-normative.

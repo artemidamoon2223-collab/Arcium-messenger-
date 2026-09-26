@@ -41,11 +41,10 @@ scoring rubric style ("оцени каждый принцип ✅/⚠️/❌") w
 always-loaded context. They are motivational rather than testable, and the
 concrete requirements above stand on their own without the branding.
 
-Note that a CI job, `karpathy-review`, still scores pull requests against these
-four principles and remains a blocking gate. Its methodology is
-`ci-karpathy-review.md`; its result block and completion gate are
-`.github/workflows/karpathy-review.yml` and
-`.github/scripts/karpathy_review_gate.py`. This file does not alter them.
+The four principles are still scored per change, by a local review in a
+Claude Code session: `karpathy-review.md`. A GitHub Actions job,
+`karpathy-review`, used to do this; it was removed because it called the paid
+Anthropic API on every pull-request push.
 
 ## Subagent guidance — preserved, and in tension with session policy
 

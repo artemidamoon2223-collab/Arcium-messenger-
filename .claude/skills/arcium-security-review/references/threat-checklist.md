@@ -16,12 +16,14 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
 - **Layer separation.** Messages use XChaCha20-Poly1305 and the Double Ratchet;
   PSI uses only RescueCipher (`CLAUDE.md`). Any use of `rescue` on the message
   path, or of a message AEAD in PSI code, is a finding.
-- **X3DH.** Is the signed prekey still verified over its domain-separated
-  object? Is the associated data still initiator identity key then responder
-  identity key? The Ed25519 signing key is bound to the X25519 identity key by
-  the pinned contact card, not by the bundle (F-2); one-time prekeys are not
-  enforced single-use (F-13). A change to the AD, a KDF `info` string, a
-  version or cipher-suite byte, or the handshake layout is a protocol change.
+- **X3DH.** Is the signed prekey still verified strictly over its
+  domain-separated signed-prekey object, which is what binds the X25519
+  identity key to the Ed25519 signing key (the F-2 binding)? Is the associated
+  data still initiator identity key then responder identity key? Is each
+  one-time prekey consumed at most once (F-13)? Read the tracker entries for
+  F-2 and F-13 against the code before citing them: tracker status can lag. A
+  change to the AD, a KDF `info` string, a version or cipher-suite byte, or the
+  handshake layout is a protocol change.
 - **KDF and domain separation.** Every HKDF `info` label and domain constant
   serves one purpose; a new derivation reuses none. Truncation width and byte
   order are deliberate — see the module notes in `session_handle.rs` and
@@ -122,9 +124,9 @@ Where: `crates/mobile-ffi/src/network.rs`, `network/wire.rs`,
   delay, and sees metadata. Confidentiality, integrity and delivery status must
   not depend on its honesty.
 - **Metadata exposure.** What new metadata does the change show the relay or
-  the network: sizes, timing, recipient keys, the sender field? The
-  development relay has no TLS and no Tor, so nothing may claim anonymity for
-  it (F-15).
+  the network: sizes, timing, recipient keys, the sender field? The relay path
+  provides no anonymity, metadata protection or Tor (`NET-MESSAGING.md` §8),
+  so nothing may claim them for it.
 - **Retransmission identity.** A retransmission carries identical bytes and so
   the same message id.
 - **Offline and recovery.** After lost network, lost relay or process death:
@@ -166,7 +168,7 @@ Where: `arcium-psi/programs/arcium-psi/src/lib.rs`,
 - **Contact hash.** Both sides must compute the canonical form in `CLAUDE.md`,
   and the cross-language parity test must still cover it.
 - **Account authorization.** Signer checks, `has_one`, owner-derived PDA seeds
-  and the monotonic nonce hold for every instruction.
+  and the monotonic query nonce hold wherever they apply.
 - **PDA and account substitution.** Every account's address or seeds are
   constrained; each `UncheckedAccount` has a stated reason.
 - **Callback authorization.** Only the Arcium computation callback can invoke

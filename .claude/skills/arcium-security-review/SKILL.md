@@ -41,9 +41,9 @@ holds the evidence base for commit boundaries, outbox, ACK and rollback.
 
 ### 1. Fix the exact target
 
-Record base and head as commit SHAs and review `BASE...HEAD` (the merge base,
-not the moving tip of `main`). A review of a moving branch reviews nothing in
-particular.
+Record base and head as commit SHAs and review `BASE...HEAD`. With three dots
+the diff starts at the merge base, so later commits on `main` do not appear in
+it. A review of a moving branch reviews nothing in particular.
 
 ### 2. Read the complete change
 

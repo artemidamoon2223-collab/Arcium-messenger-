@@ -448,6 +448,10 @@ fn a_side_write_cannot_touch_a_session_record() {
         SideWrite::insert("session:v1/00".into(), Zeroizing::new(vec![1])).err(),
         Some(SideWriteError::ReservedKey)
     );
+    assert_eq!(
+        SideWrite::remove("session:v1/00".into(), Zeroizing::new(vec![1])).err(),
+        Some(SideWriteError::ReservedKey)
+    );
 }
 
 #[test]

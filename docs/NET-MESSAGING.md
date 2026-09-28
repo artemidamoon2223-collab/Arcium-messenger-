@@ -117,7 +117,8 @@ made room for. The capacity can be set lower (`--max-mailbox N`,
 `RelayConfig::max_mailbox`), never higher: 4096 is what one round's scan
 covers (`MAX_SCAN_ENVELOPES`), and `serve` refuses 0 or more than 4096 with
 `InvalidInput` before starting anything, so no configuration of this relay
-holds entries a round cannot reach. Identical bytes still stored are not stored twice.
+holds entries a round cannot reach. Identical bytes still stored are not
+stored twice.
 
 **Delivery does not depend on retention.** The sender keeps every text until
 the recipient's receipt arrives, and sends it again after

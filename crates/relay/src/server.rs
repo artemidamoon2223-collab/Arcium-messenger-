@@ -10,8 +10,8 @@
 //! reader's scan of one round covers that many, so a larger mailbox could hide
 //! entries behind the ones it keeps (`serve` refuses such a configuration). A
 //! SEND to a full mailbox is refused with `FULL`, never by dropping an older
-//! envelope. A SEND of bytes identical
-//! to an envelope still stored returns the stored sequence number.
+//! envelope. A SEND of bytes identical to an envelope still stored returns the
+//! stored sequence number.
 //!
 //! A full mailbox is a denial of service anyone who can reach the relay can
 //! cause, since SEND is not authenticated. Paging with FETCH_AFTER does not

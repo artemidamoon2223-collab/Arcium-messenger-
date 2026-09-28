@@ -306,7 +306,7 @@ mod tests {
     fn initiator_session(our: &[u8; 32], peer: &[u8; 32]) -> Session {
         let spk = PublicKey::from(&StaticSecret::random_from_rng(OsRng));
         Session {
-            ratchet: DoubleRatchet::init_alice([3u8; 32], spk),
+            ratchet: DoubleRatchet::init_alice(&[3u8; 32], spk),
             ad: SessionRole::Initiator.expected_ad(our, peer).to_vec(),
             peer_identity_pk: *peer,
         }
@@ -346,7 +346,7 @@ mod tests {
         let (our, peer) = (identity(), identity());
         let spk = StaticSecret::random_from_rng(OsRng);
         let s = Session {
-            ratchet: DoubleRatchet::init_bob([4u8; 32], spk),
+            ratchet: DoubleRatchet::init_bob(&[4u8; 32], spk),
             ad: SessionRole::Responder.expected_ad(&our, &peer).to_vec(),
             peer_identity_pk: peer,
         };

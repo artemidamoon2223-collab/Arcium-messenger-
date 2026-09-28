@@ -250,8 +250,8 @@ mod tests {
         );
 
         // Alice uses Bob's signed prekey as the initial DH public key.
-        let alice_r = DoubleRatchet::init_alice(alice_x3dh.root_key, b_spk_pk);
-        let bob_r = DoubleRatchet::init_bob(bob_x3dh.root_key, b_spk_sk);
+        let alice_r = DoubleRatchet::init_alice(&alice_x3dh.root_key, b_spk_pk);
+        let bob_r = DoubleRatchet::init_bob(&bob_x3dh.root_key, b_spk_sk);
         (alice_r, bob_r)
     }
 

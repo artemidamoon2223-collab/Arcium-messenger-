@@ -51,12 +51,12 @@ fn pair() -> Pair {
     let root = [9u8; 32];
     Pair {
         alice: Session {
-            ratchet: DoubleRatchet::init_alice(root, PublicKey::from(&spk)),
+            ratchet: DoubleRatchet::init_alice(&root, PublicKey::from(&spk)),
             ad: ad.clone(),
             peer_identity_pk: bob_pk,
         },
         bob: Session {
-            ratchet: DoubleRatchet::init_bob(root, spk),
+            ratchet: DoubleRatchet::init_bob(&root, spk),
             ad,
             peer_identity_pk: alice_pk,
         },

@@ -1151,12 +1151,12 @@ mod tests {
         let root = [5u8; 32];
         Pair {
             alice: Session {
-                ratchet: DoubleRatchet::init_alice(root, PublicKey::from(&spk)),
+                ratchet: DoubleRatchet::init_alice(&root, PublicKey::from(&spk)),
                 ad: ad.clone(),
                 peer_identity_pk: bob_pk,
             },
             bob: Session {
-                ratchet: DoubleRatchet::init_bob(root, spk),
+                ratchet: DoubleRatchet::init_bob(&root, spk),
                 ad,
                 peer_identity_pk: alice_pk,
             },
@@ -1171,7 +1171,7 @@ mod tests {
         ad.extend_from_slice(&p.bob_pk);
         let spk = PublicKey::from(&StaticSecret::random_from_rng(OsRng));
         Session {
-            ratchet: DoubleRatchet::init_alice([6u8; 32], spk),
+            ratchet: DoubleRatchet::init_alice(&[6u8; 32], spk),
             ad,
             peer_identity_pk: p.bob_pk,
         }
@@ -1486,7 +1486,7 @@ mod tests {
         ad.extend_from_slice(&p.bob_pk);
         let foreign = Session {
             ratchet: DoubleRatchet::init_alice(
-                [1; 32],
+                &[1; 32],
                 PublicKey::from(&StaticSecret::random_from_rng(OsRng)),
             ),
             ad,
@@ -1503,7 +1503,7 @@ mod tests {
         let mut ad = p.bob_pk.to_vec();
         ad.extend_from_slice(&p.alice_pk);
         let responder = Session {
-            ratchet: DoubleRatchet::init_bob([1; 32], StaticSecret::random_from_rng(OsRng)),
+            ratchet: DoubleRatchet::init_bob(&[1; 32], StaticSecret::random_from_rng(OsRng)),
             ad,
             peer_identity_pk: p.bob_pk,
         };

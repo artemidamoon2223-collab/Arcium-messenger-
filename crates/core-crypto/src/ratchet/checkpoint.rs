@@ -91,9 +91,8 @@
 use indexmap::IndexMap;
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::{Zeroize, Zeroizing};
 
-use super::{DoubleRatchet, MAX_SKIP};
+use super::{DoubleRatchet, Zeroizing, MAX_SKIP};
 
 /// Current `RATCHET_STATE_V1` format version.
 pub const RATCHET_CHECKPOINT_VERSION: u8 = 1;
@@ -233,9 +232,9 @@ impl DoubleRatchet {
         out.push(flags);
         out.extend_from_slice(self.dhs.as_bytes());
         out.extend_from_slice(self.dhr.as_ref().map_or(&[0u8; 32], |pk| pk.as_bytes()));
-        out.extend_from_slice(&self.rk);
-        out.extend_from_slice(self.cks.as_ref().unwrap_or(&[0u8; 32]));
-        out.extend_from_slice(self.ckr.as_ref().unwrap_or(&[0u8; 32]));
+        out.extend_from_slice(&*self.rk);
+        out.extend_from_slice(self.cks.as_ref().map_or(&[0u8; 32], |k| &**k));
+        out.extend_from_slice(self.ckr.as_ref().map_or(&[0u8; 32], |k| &**k));
         out.extend_from_slice(&self.ns.to_be_bytes());
         out.extend_from_slice(&self.nr.to_be_bytes());
         out.extend_from_slice(&self.pn.to_be_bytes());
@@ -245,7 +244,7 @@ impl DoubleRatchet {
         for ((dh, n), mk) in &self.skipped {
             out.extend_from_slice(dh);
             out.extend_from_slice(&n.to_be_bytes());
-            out.extend_from_slice(mk);
+            out.extend_from_slice(&**mk);
         }
         debug_assert_eq!(out.len(), len);
         debug_assert_eq!(out.capacity(), len);
@@ -319,16 +318,16 @@ impl DoubleRatchet {
         }
 
         // All structural checks are done; from here on secrets are copied into
-        // the ratchet, whose Drop wipes them if a skipped-key check fails.
-        let mut dhs_bytes = read_32(record, 2);
-        let dhs = StaticSecret::from(dhs_bytes);
-        dhs_bytes.zeroize();
+        // the ratchet, whose fields wipe themselves if it is dropped because a
+        // skipped-key check fails.
+        let dhs_bytes = Zeroizing::new(read_32(record, 2));
+        let dhs = StaticSecret::from(*dhs_bytes);
         let mut ratchet = DoubleRatchet {
             dhs,
             dhr: has_dhr.then(|| PublicKey::from(read_32(record, 34))),
-            rk: read_32(record, 66),
-            cks: has_cks.then(|| read_32(record, 98)),
-            ckr: has_ckr.then(|| read_32(record, 130)),
+            rk: Zeroizing::new(read_32(record, 66)),
+            cks: has_cks.then(|| Zeroizing::new(read_32(record, 98))),
+            ckr: has_ckr.then(|| Zeroizing::new(read_32(record, 130))),
             ns,
             nr,
             pn,
@@ -350,7 +349,9 @@ impl DoubleRatchet {
             if ratchet.skipped.contains_key(&(dh, n)) {
                 return Err(CheckpointError::DuplicateSkippedKey);
             }
-            ratchet.skipped.insert((dh, n), read_32(entry, 36));
+            ratchet
+                .skipped
+                .insert((dh, n), Zeroizing::new(read_32(entry, 36)));
         }
         Ok(ratchet)
     }
@@ -370,9 +371,9 @@ impl DoubleRatchet {
         DoubleRatchet {
             dhs: self.dhs.clone(),
             dhr: self.dhr,
-            rk: self.rk,
-            cks: self.cks,
-            ckr: self.ckr,
+            rk: self.rk.clone(),
+            cks: self.cks.clone(),
+            ckr: self.ckr.clone(),
             ns: self.ns,
             nr: self.nr,
             pn: self.pn,
@@ -401,8 +402,8 @@ mod tests {
     fn pair() -> (DoubleRatchet, DoubleRatchet) {
         let root = [9u8; 32];
         let bob_spk = StaticSecret::random_from_rng(OsRng);
-        let alice = DoubleRatchet::init_alice(root, PublicKey::from(&bob_spk));
-        let bob = DoubleRatchet::init_bob(root, bob_spk);
+        let alice = DoubleRatchet::init_alice(&root, PublicKey::from(&bob_spk));
+        let bob = DoubleRatchet::init_bob(&root, bob_spk);
         (alice, bob)
     }
 
@@ -515,13 +516,15 @@ mod tests {
         // Fill to capacity so the next insert evicts.
         let dh = [0x55u8; 32];
         for n in 0..(MAX_SKIPPED_KEYS - original.skipped.len()) as u32 {
-            original.skipped.insert((dh, n), [n as u8; 32]);
+            original
+                .skipped
+                .insert((dh, n), Zeroizing::new([n as u8; 32]));
         }
         let mut restored = restore(&original);
         assert_same_state(&original, &restored);
         for r in [&mut original, &mut restored] {
-            r.skipped.insert(([0x66; 32], 0), [1; 32]);
-            r.skipped.insert(([0x66; 32], 1), [2; 32]);
+            r.skipped.insert(([0x66; 32], 0), Zeroizing::new([1; 32]));
+            r.skipped.insert(([0x66; 32], 1), Zeroizing::new([2; 32]));
             r.trim_skipped();
         }
         assert_same_state(&original, &restored);
@@ -533,14 +536,14 @@ mod tests {
         let dh = [0x77u8; 32];
         let mut n = 0u32;
         while bob.skipped.len() < MAX_SKIPPED_KEYS {
-            bob.skipped.insert((dh, n), [1; 32]);
+            bob.skipped.insert((dh, n), Zeroizing::new([1; 32]));
             n += 1;
         }
         let rec = bob.to_checkpoint().unwrap();
         assert_eq!(rec.len(), RATCHET_CHECKPOINT_MAX_LEN);
         assert_same_state(&bob, &DoubleRatchet::from_checkpoint(&rec).unwrap());
 
-        bob.skipped.insert((dh, n), [1; 32]);
+        bob.skipped.insert((dh, n), Zeroizing::new([1; 32]));
         assert_eq!(
             bob.to_checkpoint().unwrap_err(),
             CheckpointError::TooManySkippedKeys(MAX_SKIPPED_KEYS as u32 + 1)

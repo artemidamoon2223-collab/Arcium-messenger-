@@ -186,7 +186,13 @@ the peer's slot: later handshakes from the peer were refused.
   can retire such a session, exactly as they can replace a provisional record;
   the session had no more authority than one. If the old handshake's own first
   message arrives before any retirement, it authenticates on the old session,
-  which then continues as an ordinary session.
+  which then continues as an ordinary session. If a retirement comes first,
+  that old handshake cannot be answered again — its one-time prekey was
+  consumed by the earlier build and is never restored — so its initiator's
+  session stays unconfirmed until one side starts a new one (for example
+  through the conflict resolution of `NET-MESSAGING.md` section 10). Unlike a
+  replaced provisional record, which the genuine handshake's retransmission
+  restores, this is not undone by retransmission.
 
 ## 5. Outgoing messages
 

@@ -175,7 +175,8 @@ pub(super) fn retired_since(
     artifact_keys: &[String],
 ) -> Result<bool, MessagingError> {
     let tx = store.transaction().map_err(MessagingError::Store)?;
-    let absent = |key: &str| match tx.get(key) {
+    // A session record holds secret keys: wiped as soon as it is dropped.
+    let absent = |key: &str| match tx.get(key).map(Zeroizing::new) {
         Err(StorageError::NotFound) => Ok(true),
         Ok(_) | Err(StorageError::Decryption) => Ok(false),
         Err(e) => Err(MessagingError::Store(e)),

@@ -143,7 +143,12 @@ provisional (a repeat changes nothing; a different handshake for that contact
 replaces it, since neither has authority) and creates the session when the
 first message authenticates under it. A handshake from a peer it already has
 a session with is dropped. No session is ever replaced automatically: not on
-timeouts, not when a peer is offline, not on a new handshake.
+timeouts, not when a peer is offline, not on a new handshake. The one
+exception is a responder session an earlier build stored on receipt of a
+handshake and nothing has happened to since (S2-B2 section 4b): the network
+layer only checks that shape, read-only, and passes the handshake to
+`establish_session_responder`, which alone decides whether to retire it. A
+refusal there is a drop, as for any existing session.
 
 A message with no session yet either creates it (it authenticates under the
 recorded handshake), is deleted (it does not), or waits on the relay (no
@@ -201,7 +206,7 @@ entry per logical message, never written by the ratchet.
 
 | entry state | means |
 |---|---|
-| `Queued` | recorded under the application's id; not encrypted (no session yet) |
+| `Queued` | recorded under the application's id; not encrypted (no session that can send yet) |
 | `Pending` | committed to the outbox (encrypted) |
 | `Transmitted` | the relay accepted it; nothing is known about the peer |
 | `Delivered` | the peer's authenticated receipt arrived (its device committed it); not a read receipt |
@@ -209,7 +214,9 @@ entry per logical message, never written by the ratchet.
 | `Received` | a text from the peer |
 
 - **Sending.** `chat_send(peer, app_id, text)` records the entry first, then
-  commits it with `send_text` under the same id when a session exists. Every
+  commits it with `send_text` under the same id when a session exists that
+  can send (a responder session of S2-B2 section 4b cannot; the text waits,
+  and the round goes on to fetch). Every
   step repeats with that id, so a retry or a crash between the steps finds
   the committed message; a text is never encrypted twice. A state only moves
   forward.

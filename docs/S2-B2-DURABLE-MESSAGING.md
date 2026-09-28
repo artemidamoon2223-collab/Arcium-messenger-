@@ -141,6 +141,53 @@ No output of a transition leaves Rust before its `COMMIT` returned `Ok`.
 - An existing record that cannot be decoded, has another binding or another
   role is an explicit error. It is never replaced by a new session.
 
+## 4b. Responder sessions stored by earlier builds
+
+Builds up to `590c936e` stored a responder session on receipt of a handshake:
+`session:v1/<peer>` at generation 0 with the ratchet exactly as `init_bob`
+creates it, and `handle:v1/<handle>`; the one-time prekey was consumed. Until
+a message from the peer authenticated under it, such a session carried no
+authenticated evidence and could not encrypt (`NotInitialized`), yet it held
+the peer's slot: later handshakes from the peer were refused.
+
+- **Classifier** (`DurableSession::is_legacy_unconfirmed`): the record decodes
+  for the expected identities, role responder, generation 0, and the ratchet
+  is in its initial responder state
+  (`DoubleRatchet::is_initial_responder_state`: no `dhr`, no sending or
+  receiving chain, `ns = nr = pn = 0`, no skipped keys). A record that does
+  not decode is never eligible. Current code never stores this shape on the
+  production path (responder sessions are stored at generation 1).
+- **Retirement.** `record_provisional_handshake` for the same peer under the
+  same handle retires such a session: one S1 transaction deletes the session
+  and handle records and records the new handshake as provisional. From then
+  on section 4 applies unchanged. The transaction requires: the session record
+  byte-identical (SHA-256) to the one classified, the handle record still
+  naming the peer, no `hsout` and no `hsin` record, and the prekey record still
+  exactly the one the new handshake passed the prekey rules against. Before
+  it, no outbox or inbox record may exist for the peer; these can only be
+  added by a transition of the session record itself (`send`, `receive`), so
+  the record check covers them at commit. Nothing is retired while this
+  instance has an unresolved commit on the handle.
+- **Untouched:** `prekeys/v2` (the one-time prekey the old session consumed
+  stays consumed; the new handshake's is consumed by its promotion, as in
+  section 4), `seen:`, `sendid:`, chat history and every other peer.
+- **Never retired:** a session that authenticated a message from the peer, an
+  initiator session, anything at another generation or in another ratchet
+  shape, anything with pending messages or a stored handshake beside it, an
+  unreadable record. The handshake is then refused as in section 4.
+- **Unknown outcome** of the retirement: repeating the call completes it or
+  finds it complete. Process death before `COMMIT` leaves the old session;
+  after it, exactly the new provisional record.
+- **Competing instances.** A receive committed on the old session by another
+  instance changes its record, so a retirement classified before it fails
+  (`Conflict`). A receive staged on the old session before a retirement
+  commits fails its predecessor check and releases nothing.
+- **Liveness.** Anyone able to deliver a handshake that passes the prekey rules
+  can retire such a session, exactly as they can replace a provisional record;
+  the session had no more authority than one. If the old handshake's own first
+  message arrives before any retirement, it authenticates on the old session,
+  which then continues as an ordinary session.
+
 ## 5. Outgoing messages
 
 - `send_message(client_message_id, plaintext)` takes the caller's own id for
@@ -258,6 +305,15 @@ released*. Reading the store says nothing about power loss or a database file
 replaced by an older copy. The flag lives in memory; a restart reaches the same
 point by loading from the store.
 
+One case of a missing session is recovered: a receive staged on a session of
+section 4b whose outcome is unknown, after another instance retired that
+session. `recover_session` clears it only if one read shows no session record,
+no handle record, a provisional record from the same peer under the handle,
+and neither the inbox nor the seen record of the unknown receive (had it
+committed, the session would have a receiving chain and could not have been
+retired). Otherwise the handle stays unresolved; a missing session alone is
+never read as a rollback.
+
 ## 8. Storage durability
 
 Configuration, set explicitly at open (`core-storage`):
@@ -300,7 +356,9 @@ message). They are never listed, so they cost disk space, not time.
 (`hsin:`) is new and local. A responder session stored by an earlier build at
 generation 0, before any message authenticated, is still loaded as a session;
 it reads as `AwaitingPeer`, not `Established`, until a message from the peer
-is accepted on it. It is not migrated. The FFI messaging calls change shape
+is accepted on it. It is not migrated in place: it is retired when a new
+handshake from the same peer is recorded (section 4b), and otherwise stays
+until a message authenticates on it. The FFI messaging calls change shape
 (`send_message` takes a client message id and returns an outcome;
 `receive_message` returns a record) and `remove_session` and `abandon_outgoing` are new; the bytes on
 the wire are identical.

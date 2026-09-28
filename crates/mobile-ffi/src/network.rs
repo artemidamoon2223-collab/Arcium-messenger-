@@ -446,8 +446,8 @@ impl NetworkMessenger {
                 // A responder session an older build stored on receipt of a
                 // handshake, untouched since, does not stop the handshake
                 // here: `establish_session_responder` alone decides whether
-                // it retires that session (section 4b). Nothing is decided
-                // or changed here.
+                // it retires that session (docs/S2-B2-DURABLE-MESSAGING.md,
+                // section 4b). Nothing is decided or changed here.
                 let legacy = has_session && self.core.is_legacy_unconfirmed(handle)?;
                 if has_session && !legacy {
                     // Dropped: no session is ever replaced. If ours is an

@@ -797,8 +797,9 @@ impl NetworkMessenger {
         };
         // A responder session an older build stored on receipt of a
         // handshake cannot encrypt until the peer's first message arrives,
-        // and may yet be retired for a newer handshake (section 4b). Texts
-        // wait for a session that can send them, as with no session.
+        // and may yet be retired for a newer handshake
+        // (docs/S2-B2-DURABLE-MESSAGING.md, section 4b). Texts wait for a
+        // session that can send them, as with no session.
         let can_send = has_session && !self.core.is_legacy_unconfirmed(handle)?;
         for e in self.entries(peer)? {
             if !e.outgoing {

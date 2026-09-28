@@ -12,8 +12,30 @@
 //! 3 SEND recipient(32) envelope             0 OK seq(8)
 //! 4 FETCH recipient(32) max(2)              0 OK count(2) {seq(8) len(4) envelope}*
 //! 5 DELETE recipient(32) count(2) seq(8)*   0 OK
+//! 6 FETCH_AFTER recipient(32) after(8) max(2)
+//!                                           0 OK count(2) {seq(8) len(4) envelope}*
 //!                                           2 BAD_REQUEST | 3 TOO_LARGE | 4 FULL
 //! ```
+//!
+//! FETCH returns the first `max` (at most [`MAX_FETCH`]) envelopes of the
+//! mailbox in ascending sequence order, fewer if they would not fit in one
+//! frame (never fewer than [`MIN_PAGE`] while more follow). FETCH_AFTER
+//! returns, in the same order and under the same limits, only envelopes whose
+//! sequence number is greater than `after`: a reader pages forward through a
+//! mailbox whose first entries it leaves in place by passing the last sequence
+//! number it received.
+//! Entries deleted or expired between requests are simply absent, and entries
+//! appended meanwhile have larger numbers. FETCH is FETCH_AFTER with
+//! `after = 0`.
+//!
+//! Sequence numbers are assigned by one relay, start at 1 and only grow; a
+//! relay that has used `u64::MAX` refuses further SENDs with FULL rather than
+//! wrap. They are transport positions only: they say nothing about who sent
+//! an envelope, whether it is authentic, or whether it was delivered.
+//!
+//! FETCH_AFTER was added after FETCH. A relay that predates it answers it
+//! with BAD_REQUEST, as it answers every operation byte it does not know;
+//! there is no fallback in the client.
 //!
 //! Nothing here is secret or authenticated: the relay is untrusted, and every
 //! envelope it carries is end-to-end encrypted by the endpoints.
@@ -24,21 +46,48 @@ use std::io::{self, Read, Write};
 pub const MAX_FRAME: usize = 1 << 20;
 /// Largest envelope a relay stores.
 pub const MAX_ENVELOPE: usize = 64 * 1024;
+/// Fewest envelopes a FETCH or FETCH_AFTER page holds when more follow: a page
+/// stops before the envelope that would not fit in one frame, and that many of
+/// the largest envelopes always fit.
+pub const MIN_PAGE: usize = (MAX_FRAME - 3) / (12 + MAX_ENVELOPE);
+const _: () = assert!(MIN_PAGE >= 1);
 /// Largest prekey bundle a relay stores.
 pub const MAX_BUNDLE: usize = 1024;
-/// Most envelopes one FETCH returns.
+/// Most envelopes one FETCH or FETCH_AFTER returns.
 pub const MAX_FETCH: u16 = 256;
+/// Most envelopes a mailbox of this repository's relay holds by default
+/// (`RelayConfig::max_mailbox`). Readers size their paging budget from it.
+pub const DEFAULT_MAX_MAILBOX: usize = 4096;
 
 /// A mailbox or bundle owner: an X25519 identity public key.
 pub type Key = [u8; 32];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
-    PutBundle { owner: Key, bundle: Vec<u8> },
-    GetBundle { owner: Key },
-    Send { recipient: Key, envelope: Vec<u8> },
-    Fetch { recipient: Key, max: u16 },
-    Delete { recipient: Key, seqs: Vec<u64> },
+    PutBundle {
+        owner: Key,
+        bundle: Vec<u8>,
+    },
+    GetBundle {
+        owner: Key,
+    },
+    Send {
+        recipient: Key,
+        envelope: Vec<u8>,
+    },
+    Fetch {
+        recipient: Key,
+        max: u16,
+    },
+    Delete {
+        recipient: Key,
+        seqs: Vec<u64>,
+    },
+    FetchAfter {
+        recipient: Key,
+        after: u64,
+        max: u16,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +224,16 @@ impl Request {
                     out.extend_from_slice(&s.to_be_bytes());
                 }
             }
+            Request::FetchAfter {
+                recipient,
+                after,
+                max,
+            } => {
+                out.push(6);
+                out.extend_from_slice(recipient);
+                out.extend_from_slice(&after.to_be_bytes());
+                out.extend_from_slice(&max.to_be_bytes());
+            }
         }
         out
     }
@@ -201,6 +260,11 @@ impl Request {
                 let seqs = (0..n).map(|_| c.u64()).collect::<Result<_, _>>()?;
                 Request::Delete { recipient, seqs }
             }
+            6 => Request::FetchAfter {
+                recipient: c.key()?,
+                after: c.u64()?,
+                max: c.u16()?,
+            },
             _ => return Err(ProtocolError::Malformed),
         };
         c.end()?;
@@ -248,7 +312,7 @@ impl Response {
                 Request::PutBundle { .. } | Request::Delete { .. } => Response::Ok,
                 Request::GetBundle { .. } => Response::Bundle(c.rest().to_vec()),
                 Request::Send { .. } => Response::Accepted { seq: c.u64()? },
-                Request::Fetch { .. } => {
+                Request::Fetch { .. } | Request::FetchAfter { .. } => {
                     let n = c.u16()?;
                     let mut items = Vec::with_capacity(n as usize);
                     for _ in 0..n {
@@ -294,6 +358,11 @@ mod tests {
                 recipient: [5; 32],
                 seqs: vec![1, 2, u64::MAX],
             },
+            Request::FetchAfter {
+                recipient: [6; 32],
+                after: u64::MAX - 1,
+                max: 3,
+            },
         ];
         for r in &reqs {
             assert_eq!(&Request::decode(&r.encode()).unwrap(), r);
@@ -301,6 +370,7 @@ mod tests {
         let fetch = &reqs[3];
         let items = Response::Items(vec![(1, vec![1, 2]), (9, vec![])]);
         assert_eq!(Response::decode(fetch, &items.encode()).unwrap(), items);
+        assert_eq!(Response::decode(&reqs[5], &items.encode()).unwrap(), items);
         let acc = Response::Accepted { seq: 42 };
         assert_eq!(Response::decode(&reqs[2], &acc.encode()).unwrap(), acc);
         assert_eq!(
@@ -314,9 +384,13 @@ mod tests {
         for body in [
             vec![],
             vec![9],
-            vec![2; 10],                                             // short key
-            [vec![2], vec![0; 33]].concat(),                         // trailing byte
-            [vec![5], vec![0; 32], vec![0, 2], vec![0; 8]].concat(), // missing seq
+            vec![2; 10],                                                // short key
+            [vec![2], vec![0; 33]].concat(),                            // trailing byte
+            [vec![5], vec![0; 32], vec![0, 2], vec![0; 8]].concat(),    // missing seq
+            [vec![6], vec![0; 32], vec![0; 8], vec![0]].concat(),       // short max
+            [vec![6], vec![0; 32], vec![0; 8], vec![0, 1, 0]].concat(), // trailing byte
+            [vec![6], vec![0; 32], vec![0; 7]].concat(),                // short cursor
+            vec![7],                                                    // unknown op
         ] {
             assert!(Request::decode(&body).is_err(), "{body:?}");
         }

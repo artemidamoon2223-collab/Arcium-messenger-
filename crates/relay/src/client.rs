@@ -93,6 +93,25 @@ impl Connection {
         }
     }
 
+    /// The envelopes after sequence number `after`, in ascending order, at
+    /// most `max` (FETCH_AFTER). As returned by the relay, which is not
+    /// trusted to honour the order or the bound; callers check both.
+    pub fn fetch_after(
+        &mut self,
+        recipient: Key,
+        after: u64,
+        max: u16,
+    ) -> Result<Vec<(u64, Vec<u8>)>, ClientError> {
+        match self.call(&Request::FetchAfter {
+            recipient,
+            after,
+            max,
+        })? {
+            Response::Items(items) => Ok(items),
+            _ => Err(ClientError::Unexpected),
+        }
+    }
+
     pub fn delete(&mut self, recipient: Key, seqs: Vec<u64>) -> Result<(), ClientError> {
         match self.call(&Request::Delete { recipient, seqs })? {
             Response::Ok => Ok(()),

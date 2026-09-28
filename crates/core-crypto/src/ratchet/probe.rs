@@ -12,7 +12,9 @@
 //! - the 64-byte block a root KDF expands into is dropped when the KDF returns.
 //!
 //! It shows where the code drops a key container. It does not show that the
-//! bytes are gone from memory: that rests on `zeroize` itself.
+//! bytes are gone from memory: that rests on `zeroize` itself. Because unit
+//! tests run the ratchet with this type, the real `zeroize::Zeroizing` is
+//! pinned separately by `the_production_container_wipes_on_drop`.
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};

@@ -894,6 +894,31 @@ mod tests {
         assert_eq!(ckr, Some(Zeroizing::new([0u8; 32])), "ckr wiped");
     }
 
+    /// These unit tests run the ratchet with the stand-in in `probe`, so the
+    /// tests above never touch the container production code uses. This one
+    /// does: `zeroize::Zeroizing<[u8; 32]>` is a wiping type and zeroes its
+    /// bytes when dropped, observed the same way as above (inline array, still
+    /// allocated, no freed memory read). It pins the crate version in use, not
+    /// anything this crate wrote.
+    #[test]
+    fn the_production_container_wipes_on_drop() {
+        use std::mem::MaybeUninit;
+        use std::ptr::{drop_in_place, read};
+
+        let key = zeroize::Zeroizing::new([0xB1u8; 32]);
+        is_wiping(&key);
+
+        let mut slot = MaybeUninit::new(key);
+        let p = slot.as_mut_ptr();
+        // SAFETY: `slot` holds an initialised value, dropped exactly once here.
+        unsafe { drop_in_place(p) };
+        // SAFETY: `slot` is a live local, so its storage is allocated; the
+        // value is an inline array that dropping only overwrites with zeroes,
+        // so what is read is a valid, initialised `[u8; 32]`.
+        let after = unsafe { read(p) };
+        assert_eq!(*after, [0u8; 32], "the drop of the real container wipes");
+    }
+
     /// A skipped key is used once: consuming it removes the entry, its key is
     /// wiped as the removed value is dropped, and the same message cannot be
     /// decrypted a second time.

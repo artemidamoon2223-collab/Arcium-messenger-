@@ -231,7 +231,7 @@ fn broken_connections_at_each_step_recover_without_double_acceptance() {
     let (alice, bob) = connected(&proxy.addr);
     let steps = [
         (3u8, Cut::Response, "alice"), // SEND: stored, answer lost
-        (4, Cut::Response, "bob"),     // FETCH: answer lost
+        (6, Cut::Response, "bob"),     // FETCH_AFTER: answer lost
         (5, Cut::Request, "bob"),      // DELETE: never arrives
         (3, Cut::Response, "bob"),     // SEND of the receipt: answer lost
     ];

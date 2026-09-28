@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use core_storage::StorageError;
 use relay::client::{ClientError, Connection};
-use relay::protocol::MAX_FETCH;
+use relay::protocol::{DEFAULT_MAX_MAILBOX, MAX_FETCH, MIN_PAGE};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -37,6 +37,8 @@ use wire::{client_id, Envelope, Payload};
 pub struct SyncReport {
     /// Envelopes the relay accepted (handshakes, texts, receipts, retries).
     pub published: u32,
+    /// Envelopes in the part of the mailbox this round scanned (each counted
+    /// once, however many passes read it).
     pub fetched: u32,
     /// Messages newly accepted by the ratchet and committed.
     pub accepted: u32,
@@ -108,6 +110,26 @@ fn network(e: ClientError) -> CoreError {
 enum Fate {
     Delete,
     Keep,
+}
+
+/// Most envelopes one pass over the mailbox considers: a whole mailbox of this
+/// repository's relay. A relay holding more than that for one recipient
+/// (entries appended faster than they are read, or a larger mailbox) can
+/// keep the rest out of this round's reach, as it can by withholding them.
+pub(crate) const MAX_SCAN_ENVELOPES: usize = DEFAULT_MAX_MAILBOX;
+
+/// Most pages one pass reads: enough for [`MAX_SCAN_ENVELOPES`] in pages of
+/// [`MIN_PAGE`], the fewest a relay returns while more follow (4096 / 15,
+/// rounded up: 274). With two passes, a round makes at most
+/// `2 * MAX_SCAN_PAGES` FETCH_AFTER requests.
+pub(crate) const MAX_SCAN_PAGES: usize = MAX_SCAN_ENVELOPES.div_ceil(MIN_PAGE);
+
+/// Which envelopes a pass over the mailbox processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pass {
+    Handshakes,
+    /// Everything that is not a handshake.
+    Messages,
 }
 
 #[uniffi::export]
@@ -311,37 +333,105 @@ impl NetworkMessenger {
         self.publish_pending(&mut conn, &sessions, report)?;
 
         let our = self.core.our_identity_pk()?;
-        let mut items = conn.fetch(our, MAX_FETCH).map_err(network)?;
-        report.fetched = items.len() as u32;
-        let decoded: Vec<_> = items
-            .drain(..)
-            .map(|(seq, bytes)| (seq, Envelope::decode(&bytes)))
-            .collect();
-        // Handshakes before messages, so a session exists for what follows.
-        let (handshakes, messages): (Vec<_>, Vec<_>) = decoded
-            .into_iter()
-            .partition(|(_, e)| matches!(e, Some(Envelope::Handshake { .. })));
-        let mut delete = Vec::new();
-        for (seq, env) in handshakes.into_iter().chain(messages) {
-            let fate = match env {
-                None => {
-                    report.dropped += 1;
-                    Fate::Delete
-                }
-                Some(env) => self.process(env, report)?,
-            };
-            match fate {
-                Fate::Delete => delete.push(seq),
-                Fate::Keep => report.deferred += 1,
-            }
-        }
-        if !delete.is_empty() {
-            conn.delete(our, delete).map_err(network)?;
-            crash_point("after_delete");
+        // Handshakes before messages, so a session exists for what follows:
+        // first every handshake in the part of the mailbox scanned, then
+        // everything else in that same part.
+        if let Some(end) = self.scan(&mut conn, our, Pass::Handshakes, u64::MAX, report)? {
+            self.scan(&mut conn, our, Pass::Messages, end, report)?;
         }
         // Receipts produced above, and the first messages of new sessions.
         let sessions = self.sessions()?;
         self.publish_pending(&mut conn, &sessions, report)
+    }
+
+    /// One pass over this device's mailbox: pages through it in ascending
+    /// relay order with FETCH_AFTER, processes the envelopes `pass` selects
+    /// among those numbered up to `until`, and deletes from the relay exactly
+    /// those whose fate is [`Fate::Delete`]. Envelopes kept, and envelopes the
+    /// pass does not select, stay on the relay, and paging moves past them:
+    /// a retained prefix cannot hide what follows it.
+    ///
+    /// At most [`MAX_SCAN_PAGES`] pages and [`MAX_SCAN_ENVELOPES`] envelopes;
+    /// the pass ends early on a page shorter than [`MIN_PAGE`], which the relay
+    /// only returns when nothing follows, and on reaching `until`. The cursor
+    /// exists only in this call:
+    /// sequence numbers are transport positions chosen by the untrusted relay,
+    /// never evidence of anything, and a new round starts from the beginning.
+    /// A relay that does not return strictly increasing numbers after the
+    /// cursor ends the round with an error.
+    ///
+    /// Returns the last sequence number this pass reached, if any.
+    fn scan(
+        &self,
+        conn: &mut Connection,
+        our: [u8; 32],
+        pass: Pass,
+        until: u64,
+        report: &mut SyncReport,
+    ) -> Result<Option<u64>, CoreError> {
+        let mut after = 0u64;
+        let mut seen = 0usize;
+        let mut delete = Vec::new();
+        'pages: for _page in 0..MAX_SCAN_PAGES {
+            let items = conn.fetch_after(our, after, MAX_FETCH).map_err(network)?;
+            if items.len() > MAX_FETCH as usize {
+                return Err(CoreError::Network {
+                    msg: "relay returned more envelopes than asked for".into(),
+                });
+            }
+            if items.is_empty() {
+                break;
+            }
+            #[cfg(test)]
+            scan_hook::run(pass, _page);
+            let last = items.len() < MIN_PAGE;
+            for (seq, bytes) in items {
+                if seq <= after {
+                    return Err(CoreError::Network {
+                        msg: "relay returned envelopes out of order".into(),
+                    });
+                }
+                if seq > until {
+                    break 'pages;
+                }
+                after = seq;
+                seen += 1;
+                if pass == Pass::Handshakes {
+                    report.fetched += 1;
+                }
+                let env = Envelope::decode(&bytes);
+                let handshake = matches!(env, Some(Envelope::Handshake { .. }));
+                if handshake == (pass == Pass::Handshakes) {
+                    let fate = match env {
+                        None => {
+                            report.dropped += 1;
+                            Fate::Delete
+                        }
+                        Some(env) => self.process(env, report)?,
+                    };
+                    match fate {
+                        Fate::Delete => delete.push(seq),
+                        Fate::Keep => report.deferred += 1,
+                    }
+                }
+                if seen == MAX_SCAN_ENVELOPES || seq == until {
+                    break 'pages;
+                }
+            }
+            if pass == Pass::Messages {
+                crash_point("after_page");
+            }
+            if last {
+                break;
+            }
+        }
+        if !delete.is_empty() {
+            conn.delete(our, delete).map_err(network)?;
+            if pass == Pass::Messages {
+                crash_point("after_delete");
+            }
+        }
+        Ok((after > 0).then_some(after))
     }
 
     /// Whether the session under `handle` has accepted a message from the
@@ -634,4 +724,34 @@ fn transient(e: &CoreError) -> bool {
             | CoreError::RepeatableOutcomeUnknown { .. }
             | CoreError::SessionUnresolved { .. }
     )
+}
+
+/// Lets a test act on the relay between the pages of a scan: after each
+/// FETCH_AFTER, before its envelopes are processed.
+#[cfg(test)]
+pub(crate) mod scan_hook {
+    use super::Pass;
+    use std::cell::RefCell;
+
+    type Hook = Box<dyn FnMut(Pass, usize)>;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = RefCell::new(None);
+    }
+
+    pub(crate) fn set(f: impl FnMut(Pass, usize) + 'static) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(crate) fn clear() {
+        HOOK.with(|h| *h.borrow_mut() = None);
+    }
+
+    pub(super) fn run(pass: Pass, page: usize) {
+        HOOK.with(|h| {
+            if let Some(f) = h.borrow_mut().as_mut() {
+                f(pass, page);
+            }
+        });
+    }
 }

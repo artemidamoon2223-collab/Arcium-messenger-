@@ -53,7 +53,13 @@ fn net_crash_child() {
 /// Runs `scenario` for `device` in a child that dies at `point` inside
 /// `sync`, or after the step returned when `point` is `None`.
 #[cfg(unix)]
-fn run_child(device: &Device, relay: &str, scenario: &str, point: Option<&str>, peer: &[u8]) {
+pub(super) fn run_child(
+    device: &Device,
+    relay: &str,
+    scenario: &str,
+    point: Option<&str>,
+    peer: &[u8],
+) {
     use std::os::unix::process::ExitStatusExt;
     let dir = tempdir().unwrap().keep();
     std::fs::write(dir.join("path"), &device.path).unwrap();

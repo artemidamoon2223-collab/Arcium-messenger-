@@ -2114,4 +2114,5 @@ mod tests {
     mod network_crash;
     mod net_peer;
     mod legacy_upgrade;
+    mod mailbox_scan;
 }

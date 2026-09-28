@@ -152,9 +152,13 @@ class MessageRepository(
     }
 
     /**
-     * Opens a session with [peerIdentityPk] as the X3DH responder, from the
-     * 84-byte [initiatorHandshake] that peer's [startSessionAsInitiator]
-     * produced. Requires [publishOwnPrekeys] to have run here first.
+     * Accepts [peerIdentityPk]'s 84-byte [initiatorHandshake] (what that peer's
+     * [startSessionAsInitiator] produced) as the X3DH responder. Requires
+     * [publishOwnPrekeys] to have run here first.
+     *
+     * The handshake is only recorded: the session is created when the peer's
+     * first message arrives through [receiveFromPeer] and authenticates in
+     * Rust. Until then no session exists with this peer.
      *
      * [peerIdentityPk] must equal the identity the handshake carries, or this
      * throws IllegalStateException having created no session — otherwise a

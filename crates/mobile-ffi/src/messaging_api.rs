@@ -4,11 +4,12 @@
 //! state together with the operation's record before anything is returned.
 //! Specification: `docs/S2-B2-DURABLE-MESSAGING.md`.
 
+use x25519_dalek::PublicKey;
 use zeroize::Zeroizing;
 
 use core_protocol::messaging::{self, MessagingError, Received, SendOutcome};
 
-use crate::{ArciumCore, CoreError};
+use crate::{accept_first_message, ArciumCore, CoreError};
 
 impl CoreError {
     /// Maps a messaging failure on `session_id` onto the FFI error surface.
@@ -284,16 +285,42 @@ impl ArciumCore {
     /// before its plaintext is returned; it stays in `pending_incoming` until
     /// `acknowledge_incoming`. A message received before returns `Duplicate`
     /// and advances nothing. A forged message fails and writes nothing (F-1).
+    ///
+    /// With no session under `session_id` but a handshake recorded by
+    /// `establish_session_responder`, this is the initiator's first message:
+    /// the session is created from that handshake if, and only if, `message`
+    /// authenticates under it — in the same transaction that commits the
+    /// message and consumes the one-time prekey. A message that does not
+    /// authenticate (`Crypto`) creates nothing and leaves the handshake
+    /// recorded.
     pub fn receive_message(
         &self,
         session_id: u64,
         message: Vec<u8>,
     ) -> Result<ReceiveResult, CoreError> {
-        let our = self.our_identity_pk()?;
+        let identity = self.require_identity()?;
+        let our = PublicKey::from(&identity.dh_key).to_bytes();
         let (mut store, mut messenger) = self.lock()?;
-        let received = messenger
-            .receive(&mut store, our, session_id, &message)
-            .map_err(|e| CoreError::messaging(session_id, e))?;
+        let map = |e| CoreError::messaging(session_id, e);
+        let provisional = match messenger.peer_of(&store, session_id).map_err(map)? {
+            Some(_) => None,
+            None => messenger
+                .provisional_handshake(&store, session_id)
+                .map_err(map)?,
+        };
+        let received = match provisional {
+            Some(p) => accept_first_message(
+                &identity,
+                &mut store,
+                &mut messenger,
+                session_id,
+                p,
+                &message,
+            )?,
+            None => messenger
+                .receive(&mut store, our, session_id, &message)
+                .map_err(map)?,
+        };
         Ok(match received {
             Received::Accepted(m) => ReceiveResult::Accepted {
                 message: incoming(m),

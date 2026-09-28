@@ -67,6 +67,14 @@ pub enum Received {
 }
 
 /// A new session to store, from X3DH.
+///
+/// [`Messenger::create_session`](super::Messenger::create_session) stores it
+/// before any message from the peer has authenticated. That is right for an
+/// initiator, which derived the session from the peer's signed bundle. A
+/// responder has only an unauthenticated handshake at that point, and
+/// creates its session through
+/// [`Messenger::accept_first_message`](super::Messenger::accept_first_message)
+/// instead.
 pub struct NewSession {
     pub handle: u64,
     pub session: Session,
@@ -76,6 +84,37 @@ pub struct NewSession {
     pub initial_outbound: Option<Vec<u8>>,
     /// Further records to write in the same transaction, e.g. the rotated
     /// prekey record of a responder.
+    pub extra: Vec<SideWrite>,
+}
+
+/// A handshake a responder received and has not seen authenticated yet:
+/// the peer it names and its bytes, which are public and opaque here.
+///
+/// Recording one
+/// ([`record_provisional_handshake`](super::Messenger::record_provisional_handshake))
+/// creates no session and has no authority: it can be replaced by a later
+/// handshake, and it becomes a session only when a message from the peer
+/// authenticates under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisionalHandshake {
+    pub peer_identity_pk: [u8; 32],
+    pub handshake: Vec<u8>,
+}
+
+/// A responder session derived from `provisional`, to be stored only if the
+/// peer's first message authenticates under it
+/// ([`Messenger::accept_first_message`](super::Messenger::accept_first_message)).
+pub struct FirstContact {
+    pub handle: u64,
+    /// The responder's X3DH result for `provisional`. Its peer must be the
+    /// peer `provisional` names.
+    pub session: Session,
+    /// The provisional handshake exactly as read from the store. It is
+    /// deleted in the transaction that creates the session, and only if it
+    /// is still exactly this.
+    pub provisional: ProvisionalHandshake,
+    /// Further records to write in the same transaction, e.g. the rotated
+    /// prekey record.
     pub extra: Vec<SideWrite>,
 }
 

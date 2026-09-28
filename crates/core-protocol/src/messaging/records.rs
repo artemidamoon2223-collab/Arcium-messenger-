@@ -1,5 +1,5 @@
-//! Store keys and the fixed-layout records of [`super`]: handle, outbox,
-//! inbox, send-id and seen entries.
+//! Store keys and the fixed-layout records of [`super`]: handle, provisional
+//! handshake, outbox, inbox, send-id and seen entries.
 //!
 //! Only the `outbox:` and `inbox:` namespaces are ever listed, and they hold
 //! only pending entries; everything kept after an acknowledgement lives in
@@ -8,7 +8,9 @@
 
 use zeroize::Zeroizing;
 
-use super::{message_id, IncomingMessage, MessageId, MessagingError, OutgoingMessage};
+use super::{
+    message_id, IncomingMessage, MessageId, MessagingError, OutgoingMessage, ProvisionalHandshake,
+};
 
 // ── Store keys ────────────────────────────────────────────────────────────────
 
@@ -22,6 +24,12 @@ pub(super) fn handle_key(handle: u64) -> String {
 
 pub(super) fn handshake_key(peer: &[u8; 32]) -> String {
     format!("hsout:v1/{}", hex(peer))
+}
+
+/// The handshake a responder received for `handle` and has not yet seen
+/// authenticated.
+pub(super) fn provisional_key(handle: u64) -> String {
+    format!("hsin:v1/{handle:016x}")
 }
 
 pub(super) const OUTBOX_NAMESPACE: &str = "outbox:";
@@ -59,6 +67,7 @@ pub(super) fn sendid_key(peer: &[u8; 32], client_id: &[u8]) -> String {
 // integrity come from the encrypted store.
 
 pub(super) const HANDLE_MAGIC: &[u8; 7] = b"ARCHNDL";
+pub(super) const PROVISIONAL_MAGIC: &[u8; 7] = b"ARCHSIN";
 pub(super) const OUTBOX_MAGIC: &[u8; 7] = b"ARCOUTB";
 pub(super) const INBOX_MAGIC: &[u8; 7] = b"ARCINBX";
 pub(super) const SEEN_MAGIC: &[u8; 7] = b"ARCSEEN";
@@ -66,6 +75,8 @@ pub(super) const SENDID_MAGIC: &[u8; 7] = b"ARCSNDI";
 /// A send-id record whose message the caller abandoned.
 pub(super) const ABANDONED_MAGIC: &[u8; 7] = b"ARCSNDX";
 
+/// Longest handshake a provisional record holds, in bytes.
+pub const MAX_PROVISIONAL_HANDSHAKE_LEN: usize = 1024;
 /// Longest caller-supplied logical message id, in bytes.
 pub const MAX_CLIENT_MESSAGE_ID_LEN: usize = 64;
 pub(super) const RECORD_VERSION: u8 = 1;
@@ -84,6 +95,38 @@ pub(super) fn decode_handle(bytes: &[u8]) -> Result<[u8; 32], MessagingError> {
         return Err(MessagingError::InvalidRecord("handle"));
     }
     Ok(bytes[8..40].try_into().expect("32 bytes"))
+}
+
+/// `PROVISIONAL_HANDSHAKE_RECORD_V1`: magic(7) version(1) peer_identity_pk(32)
+/// len(2) handshake. The handshake bytes are opaque here and public.
+pub(super) fn encode_provisional(
+    p: &ProvisionalHandshake,
+) -> Result<Zeroizing<Vec<u8>>, MessagingError> {
+    if p.handshake.is_empty() || p.handshake.len() > MAX_PROVISIONAL_HANDSHAKE_LEN {
+        return Err(MessagingError::InvalidRecord("provisional handshake"));
+    }
+    let mut out = Zeroizing::new(Vec::with_capacity(42 + p.handshake.len()));
+    out.extend_from_slice(PROVISIONAL_MAGIC);
+    out.push(RECORD_VERSION);
+    out.extend_from_slice(&p.peer_identity_pk);
+    out.extend_from_slice(&(p.handshake.len() as u16).to_be_bytes());
+    out.extend_from_slice(&p.handshake);
+    Ok(out)
+}
+
+pub(super) fn decode_provisional(bytes: &[u8]) -> Result<ProvisionalHandshake, MessagingError> {
+    let bad = MessagingError::InvalidRecord("provisional handshake");
+    if bytes.len() < 42 || &bytes[..7] != PROVISIONAL_MAGIC || bytes[7] != RECORD_VERSION {
+        return Err(bad);
+    }
+    let len = u16::from_be_bytes([bytes[40], bytes[41]]) as usize;
+    if len == 0 || len > MAX_PROVISIONAL_HANDSHAKE_LEN || bytes.len() != 42 + len {
+        return Err(bad);
+    }
+    Ok(ProvisionalHandshake {
+        peer_identity_pk: bytes[8..40].try_into().expect("32 bytes"),
+        handshake: bytes[42..].to_vec(),
+    })
 }
 
 /// `OUTBOX_RECORD_V1`: magic(7) version(1) generation(8) id(32)

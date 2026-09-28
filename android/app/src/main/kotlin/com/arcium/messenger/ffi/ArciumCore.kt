@@ -112,15 +112,18 @@ class ArciumCoreWrapper {
     }
 
     /**
-     * Opens a session as the X3DH responder ("Bob") from the initiator's
-     * identity and ephemeral public keys — the two halves of the byte string
-     * [establishSessionInitiator] returned on the other device — registering
-     * it under the local handle [sessionId].
+     * Records, as the X3DH responder ("Bob"), the handshake
+     * [establishSessionInitiator] returned on the other device, under the local
+     * handle [sessionId]. **This creates no session**: a received handshake is
+     * not authentication, so [hasSession] stays false and nothing is consumed.
+     * The session is created by [receiveMessage] when the initiator's first
+     * message authenticates under this handshake — Rust decides that, never
+     * Kotlin.
      *
      * Requires [establishPrekeys] to have run here first; CoreException
-     * propagates otherwise. An occupied handle is refused here too. Initiator
-     * and responder are separate, non-interchangeable roles — neither call
-     * substitutes for the other.
+     * propagates otherwise. Once a session exists for the handle or the peer,
+     * the handshake is refused. Initiator and responder are separate,
+     * non-interchangeable roles — neither call substitutes for the other.
      */
     fun establishSessionResponder(sessionId: ULong, initiatorHandshake: ByteArray) {
         requireCore().establishSessionResponder(sessionId, initiatorHandshake)

@@ -109,19 +109,21 @@ pub struct ChatEntry {
 /// The session with a contact, as the application should present it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ChatSessionState {
-    /// No session. The first queued text starts one.
+    /// No session. The first queued text starts one. A handshake from the
+    /// contact that no message has authenticated yet is not a session.
     None,
-    /// This device started the session; the peer has not answered yet.
+    /// A session exists here, but no message from the peer has authenticated
+    /// under it yet: this device started it and the peer has not answered.
     AwaitingPeer,
     /// This device resolved a conflict and waits for the peer's handshake.
     AwaitingPeerSession,
+    /// A message from the peer authenticated under this session and was
+    /// committed here — the only thing that establishes a session.
     Established,
     /// Both devices started a session with each other. Nothing is replaced
     /// automatically; `can_resolve` is true on the one device that may
     /// resolve it with `resolve_session_conflict`.
-    Conflict {
-        can_resolve: bool,
-    },
+    Conflict { can_resolve: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -589,11 +591,11 @@ impl NetworkMessenger {
             let refresh = self.refresh(peer)?;
             let handle = handle_of(peer);
             if self.core.has_session(handle)? {
-                // The peer's session (accepted here, or confirmed by the peer)
-                // ends a conflict and the wait for it. Our own unconfirmed
-                // one does not: `resolve_session_conflict` may be removing it.
-                let peers_session =
-                    self.confirmed(handle)? || self.core.initiator_handshake(handle)?.is_none();
+                // A session the peer has authenticated a message on (the
+                // peer's, accepted here, or ours, confirmed by the peer) ends a
+                // conflict and the wait for it. Our own unconfirmed one does
+                // not: `resolve_session_conflict` may be removing it.
+                let peers_session = self.confirmed(handle)?;
                 self.update_meta(peer, |m| {
                     m.flags &= !(FLAG_IDENTITY_MISMATCH | FLAG_HANDSHAKE_REFUSED);
                     if peers_session {
@@ -834,7 +836,9 @@ impl NetworkMessenger {
                 ChatSessionState::None
             });
         }
-        if self.confirmed(handle)? || self.core.initiator_handshake(handle)?.is_none() {
+        // Established only by a message from the peer that authenticated
+        // and was committed here — never by a received handshake alone.
+        if self.confirmed(handle)? {
             return Ok(ChatSessionState::Established);
         }
         if meta.flags & FLAG_CONFLICT != 0 {

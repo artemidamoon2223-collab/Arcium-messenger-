@@ -78,7 +78,7 @@ use crate::checkpoint::{
 };
 use crate::Session;
 
-use sealed::{Current, Expect, Store, Write, WriteFailure};
+use sealed::{Action, Current, Expect, Store, Write, WriteFailure};
 
 mod sealed {
     use super::*;
@@ -99,13 +99,23 @@ mod sealed {
         Exactly(&'a [u8]),
     }
 
-    /// One entry in a conditional batch: `value` replaces the record at
-    /// `key` only if `expect` holds for it. With `value: None` the entry is
-    /// a precondition only and writes nothing.
+    /// What one entry of a conditional batch does once every precondition
+    /// in the batch holds.
+    pub enum Action<'a> {
+        /// Store these bytes at the key.
+        Put(&'a [u8]),
+        /// Remove the record at the key.
+        Delete,
+        /// Nothing: the entry is a precondition only.
+        Check,
+    }
+
+    /// One entry in a conditional batch: `action` is applied to the record
+    /// at `key` only if `expect` holds for it.
     pub struct Write<'a> {
         pub key: &'a str,
         pub expect: Expect<'a>,
-        pub value: Option<&'a [u8]>,
+        pub action: Action<'a>,
     }
 
     /// The stored record as seen inside the write transaction.
@@ -199,8 +209,10 @@ impl Store for S1CheckpointStore<'_> {
                 .map_err(|conflict| WriteFailure::Conflict { index, conflict })?;
         }
         for w in writes {
-            if let Some(value) = w.value {
-                tx.put(w.key, value).map_err(WriteFailure::NotCommitted)?;
+            match w.action {
+                Action::Put(value) => tx.put(w.key, value).map_err(WriteFailure::NotCommitted)?,
+                Action::Delete => tx.delete(w.key).map_err(WriteFailure::NotCommitted)?,
+                Action::Check => {}
             }
         }
         #[cfg(test)]
@@ -317,6 +329,9 @@ pub enum OpenError {
     OutcomeUnknown(StorageError),
     /// The side writes were not usable; nothing was written.
     SideWrite(SideWriteError),
+    /// A [`ProvisionalSession`] was handed a transition staged by another
+    /// instance; nothing was written.
+    StaleTransition,
 }
 
 /// Why a transition could not be staged. The installed state is unchanged.
@@ -372,13 +387,19 @@ pub enum CommitError {
 pub struct SideWrite {
     key: String,
     expect: SideExpect,
-    /// `None`: a precondition only; nothing is written at `key`.
-    value: Option<Zeroizing<Vec<u8>>>,
+    action: SideAction,
 }
 
 enum SideExpect {
     Absent,
     Exactly(Zeroizing<Vec<u8>>),
+}
+
+enum SideAction {
+    Put(Zeroizing<Vec<u8>>),
+    Delete,
+    /// A precondition only; nothing is written at the key.
+    Check,
 }
 
 /// Why a [`SideWrite`] could not be built, or a batch of them used.
@@ -395,13 +416,13 @@ const SESSION_NAMESPACE: &str = "session:";
 impl SideWrite {
     /// Writes `value` at `key`, which must not exist yet.
     pub fn insert(key: String, value: Zeroizing<Vec<u8>>) -> Result<Self, SideWriteError> {
-        Self::new(key, SideExpect::Absent, Some(value))
+        Self::new(key, SideExpect::Absent, SideAction::Put(value))
     }
 
     /// Writes nothing, but the transaction commits only if no record exists
     /// at `key`.
     pub fn require_absent(key: String) -> Result<Self, SideWriteError> {
-        Self::new(key, SideExpect::Absent, None)
+        Self::new(key, SideExpect::Absent, SideAction::Check)
     }
 
     /// Replaces the record at `key`, which must still be exactly `expected`.
@@ -410,18 +431,23 @@ impl SideWrite {
         expected: Zeroizing<Vec<u8>>,
         value: Zeroizing<Vec<u8>>,
     ) -> Result<Self, SideWriteError> {
-        Self::new(key, SideExpect::Exactly(expected), Some(value))
+        Self::new(key, SideExpect::Exactly(expected), SideAction::Put(value))
     }
 
-    fn new(
-        key: String,
-        expect: SideExpect,
-        value: Option<Zeroizing<Vec<u8>>>,
-    ) -> Result<Self, SideWriteError> {
+    /// Deletes the record at `key`, which must still be exactly `expected`.
+    pub fn remove(key: String, expected: Zeroizing<Vec<u8>>) -> Result<Self, SideWriteError> {
+        Self::new(key, SideExpect::Exactly(expected), SideAction::Delete)
+    }
+
+    fn new(key: String, expect: SideExpect, action: SideAction) -> Result<Self, SideWriteError> {
         if key.starts_with(SESSION_NAMESPACE) {
             return Err(SideWriteError::ReservedKey);
         }
-        Ok(Self { key, expect, value })
+        Ok(Self {
+            key,
+            expect,
+            action,
+        })
     }
 
     pub fn key(&self) -> &str {
@@ -444,7 +470,11 @@ fn batch<'a>(session: Write<'a>, side: &'a [SideWrite]) -> Result<Vec<Write<'a>>
                 SideExpect::Absent => Expect::Absent,
                 SideExpect::Exactly(v) => Expect::Exactly(v),
             },
-            value: w.value.as_deref().map(|v| v.as_slice()),
+            action: match &w.action {
+                SideAction::Put(v) => Action::Put(v),
+                SideAction::Delete => Action::Delete,
+                SideAction::Check => Action::Check,
+            },
         });
     }
     Ok(writes)
@@ -563,7 +593,7 @@ impl DurableSession {
             Write {
                 key: &this.key,
                 expect: Expect::Absent,
-                value: Some(&record),
+                action: Action::Put(&record),
             },
             side,
         )
@@ -754,7 +784,7 @@ impl DurableSession {
                     binding: &binding,
                     digest: &self.record_digest,
                 },
-                value: Some(&staged.record),
+                action: Action::Put(&staged.record),
             },
             side,
         )
@@ -790,6 +820,114 @@ impl DurableSession {
                 };
                 Err(CommitError::OutcomeUnknown(e))
             }
+        }
+    }
+}
+
+/// What a responder derives from a received handshake before any message
+/// from the peer has authenticated under it.
+///
+/// It has none of a [`DurableSession`]'s authority. It exists only in
+/// memory: it is never stored and never loaded, it cannot encrypt, and it
+/// cannot be committed over any stored record. The one thing it can do is
+/// decrypt the peer's first message. Only if that message authenticates
+/// (AEAD under keys derived from the handshake) is the result stored, as a
+/// new session at generation 1 and only if no record exists for the peer
+/// ([`promote_with`](Self::promote_with)). A session created this way has a
+/// receiving chain from its first stored state, so
+/// [`DurableSession::has_received`] holds for it from the start.
+///
+/// It cannot encrypt:
+///
+/// ```compile_fail,E0599
+/// fn send(p: &core_protocol::durable::ProvisionalSession) {
+///     let _ = p.stage_encrypt(b"x");
+/// }
+/// ```
+pub struct ProvisionalSession {
+    inner: DurableSession,
+}
+
+impl ProvisionalSession {
+    /// Refuses a session whose AD is not the X3DH AD for `role` and the two
+    /// identities, as [`DurableSession::create`] does.
+    pub fn new(
+        session: Session,
+        role: SessionRole,
+        our_identity_pk: [u8; 32],
+    ) -> Result<Self, SessionCheckpointError> {
+        let record = encode_session_checkpoint(&session, role, &our_identity_pk, 0)?;
+        Ok(Self {
+            inner: DurableSession::new(session, role, our_identity_pk, 0, &record),
+        })
+    }
+
+    pub fn peer_identity_pk(&self) -> [u8; 32] {
+        self.inner.peer_identity_pk()
+    }
+
+    /// Stages decrypting the peer's first message. The plaintext is released
+    /// only by a successful [`promote_with`](Self::promote_with).
+    pub fn stage_first_decrypt(
+        &self,
+        header: &Header,
+        ciphertext: &[u8],
+    ) -> Result<StagedTransition<Vec<u8>>, StageError> {
+        self.inner.stage_decrypt(header, ciphertext)
+    }
+
+    /// Stores the state `staged` produced as a new session at generation 1,
+    /// together with `side`, in one conditional write that requires that no
+    /// record exists for this peer. Returns the stored session and the
+    /// plaintext of the first message only if every write committed.
+    ///
+    /// [`OpenError::AlreadyExists`] means the peer already has a session
+    /// record (valid or not): it is left in place and nothing is written.
+    pub fn promote_with<S: CheckpointStore>(
+        self,
+        store: &mut S,
+        staged: StagedTransition<Vec<u8>>,
+        side: &[SideWrite],
+    ) -> Result<(DurableSession, Vec<u8>), OpenError> {
+        let mut inner = self.inner;
+        if staged.instance != inner.instance || staged.base_generation != 0 {
+            return Err(OpenError::StaleTransition);
+        }
+        // A responder ratchet gains its receiving chain only through a DH
+        // ratchet step inside a decrypt that authenticated (F-1).
+        debug_assert!(staged.ratchet.has_receiving_chain());
+        let writes = batch(
+            Write {
+                key: &inner.key,
+                expect: Expect::Absent,
+                action: Action::Put(&staged.record),
+            },
+            side,
+        )
+        .map_err(OpenError::SideWrite)?;
+        let result = store.write_conditional(&writes);
+        drop(writes);
+        match result {
+            Ok(()) => {
+                let StagedTransition {
+                    ratchet,
+                    record,
+                    output,
+                    generation,
+                    ..
+                } = staged;
+                inner.session.ratchet = ratchet;
+                inner.generation = generation;
+                inner.record_digest = record_digest(&record);
+                Ok((inner, output))
+            }
+            Err(WriteFailure::Conflict { index: 0, .. }) => Err(OpenError::AlreadyExists),
+            Err(WriteFailure::Conflict { index, conflict }) => Err(OpenError::SideConflict {
+                index: index - 1,
+                conflict,
+            }),
+            Err(WriteFailure::NotCommitted(e)) => Err(OpenError::NotCommitted(e)),
+            Err(WriteFailure::OutcomeUnknown(e)) => Err(OpenError::OutcomeUnknown(e)),
         }
     }
 }
@@ -938,8 +1076,14 @@ mod tests {
             }
             let apply = |records: &mut HashMap<String, Vec<u8>>| {
                 for w in writes {
-                    if let Some(value) = w.value {
-                        records.insert(w.key.to_string(), value.to_vec());
+                    match w.action {
+                        Action::Put(value) => {
+                            records.insert(w.key.to_string(), value.to_vec());
+                        }
+                        Action::Delete => {
+                            records.remove(w.key);
+                        }
+                        Action::Check => {}
                     }
                 }
             };

@@ -12,7 +12,7 @@ Code: `crates/relay` (relay, protocol, client), `crates/mobile-ffi/src/network.r
 
 ```
  device A                        relay (untrusted)                  device B
- NetworkMessenger ──TCP── SEND ──▶ mailbox[B] ──FETCH/DELETE── NetworkMessenger
+ NetworkMessenger ──TCP── SEND ──▶ mailbox[B] ──FETCH_AFTER/DELETE── NetworkMessenger
    │ outbox (S2-B2)             bundles[A], bundles[B]            │ inbox (S2-B2)
    └ ArciumCore ─ X3DH, Double Ratchet, encrypted store            └ ArciumCore
 ```
@@ -59,8 +59,56 @@ There is no trust on first use in the application. (The CI peer in
 ## 3. Transport: the relay
 
 `RELAY_PROTOCOL_V1` (`crates/relay/src/protocol.rs`): length-prefixed frames,
-five operations — PUT_BUNDLE, GET_BUNDLE, SEND, FETCH, DELETE. Exact decoding;
-frames up to 1 MiB, envelopes up to 64 KiB, bundles up to 1 KiB.
+six operations — PUT_BUNDLE, GET_BUNDLE, SEND, FETCH, DELETE, FETCH_AFTER.
+Exact decoding; frames up to 1 MiB, envelopes up to 64 KiB, bundles up to
+1 KiB.
+
+**Paging.** Each stored envelope gets a sequence number from one relay-wide
+counter: it starts at 1, only grows, and a relay that has used `u64::MAX`
+refuses SENDs with FULL instead of wrapping. `FETCH_AFTER(recipient, after,
+max)` returns the unexpired envelopes numbered above `after` in ascending
+order: at most `max` and 256 (`MAX_FETCH`) of them, and no more than fit in
+one frame, so at least 15 (`MIN_PAGE`, the number of 64 KiB envelopes that
+fit) while more follow. FETCH is FETCH_AFTER with `after = 0`. Entries deleted
+or expired between requests are absent; entries appended meanwhile have
+larger numbers. Sequence numbers are transport positions: they are not
+authenticated, say nothing about sender or delivery, and are never stored by
+the client. A relay built before FETCH_AFTER answers it with BAD_REQUEST, as
+it answers every operation byte it does not know; the client reports that as
+a failed sync and has no fallback to FETCH.
+
+**Reading a mailbox (one sync round).** Two passes over the mailbox, each
+paging forward from the start with FETCH_AFTER:
+
+1. handshakes: every handshake is processed, everything else is skipped;
+2. everything else, up to the last sequence number pass 1 reached (envelopes
+   appended after that wait for the next round).
+
+Handshakes go first so that a message whose handshake sits later in the
+mailbox (a newer handshake behind an older first message, or behind many
+kept envelopes) finds it recorded. After each pass the client deletes exactly
+the envelopes that pass processed to completion (accepted, duplicate, or
+dropped); envelopes kept for a missing handshake and envelopes of the other
+kind stay, and paging moves past them. The cursor lives only in that call; a
+new round starts again from the beginning.
+
+Bounds per round, whatever the relay does: each pass reads at most 4096
+envelopes (`MAX_SCAN_ENVELOPES`, a whole mailbox) and at most 274 pages
+(`MAX_SCAN_PAGES` = 4096 / 15 rounded up); so at most 548 FETCH_AFTER and 2
+DELETE requests, at most one page (one 1 MiB frame) in memory, and at most
+4096 envelopes decrypted or verified per pass. An honest relay stores an
+envelope's bytes unchanged, so each is processed in one pass only: at most
+4096 per round (8192 if the relay swaps an envelope's kind between the
+passes). A pass also ends early on a page shorter than 15 or on reaching its
+upper bound, so a mailbox of fewer than 15 envelopes costs two FETCH_AFTER
+requests (one if it is empty). A relay that
+returns more than asked for, or numbers that do not increase past the cursor,
+ends the round with an error.
+
+The price: kept envelopes are read again in both passes of every round, so a
+round transfers up to twice the scanned part of the mailbox (at most
+2 × 4096 × 64 KiB with the largest envelopes), where a single FETCH read at
+most one page. Keeping a round bounded, not cheap, is what this provides.
 
 **Retention.** An envelope stays in the recipient's mailbox until the recipient
 deletes it, it is 7 days old, or the relay stops (nothing is on disk). A
@@ -133,7 +181,9 @@ the same app id never encrypts again (S2-B2).
 
 Incoming envelope: fetched → `accepted (inbox committed, receipt committed)` →
 deleted from the relay → shown → `mark_read (seen)`. A message whose session
-does not exist yet stays on the relay until its handshake arrives. A message
+does not exist yet stays on the relay until its handshake arrives; it is not
+copied, acknowledged or counted as delivered meanwhile, and it does not hide
+the envelopes behind it (section 3, reading a mailbox). A message
 that does not decrypt, is malformed or comes from an unknown sender is
 deleted from the relay and changes nothing.
 
@@ -162,7 +212,9 @@ deleted and the handshake flagged as refused.
 |---|---|
 | relay unreachable, connection lost | `sync` reports it; nothing local changes; next sync repeats |
 | SEND answer lost | the envelope may be stored; it is sent again (the relay stores it once, or the recipient sees a duplicate) |
-| FETCH answer lost | nothing processed; next fetch returns the same |
+| FETCH_AFTER answer lost (any page), connection lost between pages | the round stops; what the current pass processed is committed but not yet deleted, and comes back next round as a duplicate |
+| process death between pages | same as above: committed acceptances are duplicates next round, nothing is shown twice |
+| relay restarts (empty) mid-round | the round fails; senders retransmit what has no receipt |
 | DELETE lost | the envelope comes back as a duplicate: no second acceptance, a new receipt |
 | crash after a text is committed | the stored bytes are sent after restart |
 | crash after acceptance / receipt commit / delete | the inbox holds the message once; its receipt is committed or re-derived from the inbox |
@@ -192,8 +244,12 @@ deleted and the handshake flagged as refused.
   resolves it automatically. The conflict is recorded and shown, and the user
   of one device resolves it (section 10).
 - Read receipts; multi-device; group messaging; attachments.
-- Envelopes waiting for a missing handshake occupy the first slots of each
-  FETCH (at most 256 are returned per round).
+- Protection against a full mailbox. Paging (section 3) only stops kept
+  envelopes from hiding later ones. Anyone who can reach the relay can still
+  fill a mailbox to its 4096 entries (SEND is then refused) or delete from
+  it, and a relay that keeps appending can keep a round busy up to its bound
+  with the rest of the mailbox out of reach until the next round. No relay
+  availability or denial-of-service resistance is claimed.
 - Everything S2-B2 does not provide: power-loss durability, rollback
   detection, exactly-once delivery to the application.
 
@@ -259,6 +315,7 @@ entry per logical message, never written by the ratchet.
 | a handshake alone is not a session; its first message creates it; a recorded handshake does not block simultaneous initiation | `tests::responder` | runtime, local relay over TCP |
 | both directions, restarts, consistent histories | `both_directions_and_both_histories_survive_restarts` | runtime |
 | offline recipient | `messages_to_an_offline_recipient_wait_on_the_relay` | runtime |
+| kept envelopes never hide later ones: prefixes of 0–4095 entries, large envelopes, handshakes behind or after the prefix, mixed kept and deleted, deletes, appends and expiry between pages, a mailbox that never runs dry, a relay that breaks paging, lost answers, a stopped relay, process death between pages | `tests::mailbox_scan`; relay paging in `crates/relay` tests | runtime, local relay over TCP; process crash |
 | relay outage; broken SEND/FETCH/DELETE/receipt | `a_relay_outage…`, `broken_connections_at_each_step…` (TCP proxy) | runtime; faults injected at the socket |
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt | `tests::network` V6 tests | runtime |

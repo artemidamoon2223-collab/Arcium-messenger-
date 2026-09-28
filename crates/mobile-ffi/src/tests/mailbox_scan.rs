@@ -149,10 +149,13 @@ impl World {
 }
 
 /// Carol's messages, generated once for the whole file: producing 4095 real
-/// envelopes takes a while, and every test only reads them.
-fn big_world() -> &'static std::sync::Mutex<World> {
+/// envelopes takes a while, and every test only reads them. One test at a
+/// time; a test that fails does not fail the others through a poisoned lock.
+fn big_world() -> std::sync::MutexGuard<'static, World> {
     static W: OnceLock<std::sync::Mutex<World>> = OnceLock::new();
     W.get_or_init(|| std::sync::Mutex::new(world(DEFAULT_MAX_MAILBOX - 1)))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 use relay::protocol::DEFAULT_MAX_MAILBOX;
@@ -172,7 +175,7 @@ fn count_pages() -> Rc<RefCell<[usize; 2]>> {
 /// nothing about Carol moved. `MAX_FETCH` and more used to hide it for good.
 #[test]
 fn a_retained_prefix_of_any_length_no_longer_hides_a_later_message() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     let mut prev_gen = w.bob.generation_with(&w.alice);
     let m = MAX_FETCH as usize;
     for k in [
@@ -234,7 +237,7 @@ fn a_retained_prefix_of_any_length_no_longer_hides_a_later_message() {
 /// processed ones leave the relay.
 #[test]
 fn kept_and_deleted_envelopes_mixed_across_pages() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     let stranger = [0x5Au8; 32];
     let mut envs = Vec::new();
     let mut want_kept = Vec::new();
@@ -305,7 +308,7 @@ fn dave_starts(w: &World, byte: u8) -> (Device, Vec<u8>, Vec<u8>) {
 /// then authenticates the message; nothing is deleted for lack of it.
 #[test]
 fn a_handshake_behind_a_retained_prefix_still_opens_its_session() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     let prefix = &w.carol_msgs[..300];
     type Order = fn(&[Vec<u8>], Vec<u8>, Vec<u8>) -> Vec<Vec<u8>>;
     let orders: [(&str, Order); 3] = [
@@ -344,7 +347,7 @@ fn a_handshake_behind_a_retained_prefix_still_opens_its_session() {
 /// the newer handshake is recorded first and the message authenticates.
 #[test]
 fn a_first_message_a_page_ahead_of_its_handshake_is_not_lost() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     let (dave, old_hs, _) = dave_starts(&w, 30);
     let (r_old, addr_old) = mailbox(&[old_hs], &w.bob);
     let r = w.bob_on(&addr_old).sync();
@@ -418,7 +421,7 @@ fn a_late_handshake_releases_every_message_kept_for_it() {
 
 #[test]
 fn entries_deleted_or_appended_between_pages_neither_break_nor_repeat_a_round() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     let first = w.alice_text("d1", "on the last page");
     let appended = w.alice_text("d2", "appended during the round");
     let mut envs = w.carol_msgs[..600].to_vec();
@@ -455,7 +458,7 @@ fn entries_deleted_or_appended_between_pages_neither_break_nor_repeat_a_round() 
 /// make a round go on for ever: each pass stops after `MAX_SCAN_ENVELOPES`.
 #[test]
 fn a_mailbox_that_never_runs_dry_is_scanned_a_bounded_amount() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     let (r2, addr) = mailbox_with(
         &[],
         &w.bob,
@@ -504,7 +507,7 @@ fn a_mailbox_that_never_runs_dry_is_scanned_a_bounded_amount() {
 /// arrives meanwhile: the next page skips the expired entries and reaches it.
 #[test]
 fn entries_that_expire_during_a_round_are_skipped() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     let ttl = std::time::Duration::from_millis(1000);
     let (r2, addr) = mailbox_with(
         &w.carol_msgs[..300],
@@ -550,7 +553,7 @@ fn entries_that_expire_during_a_round_are_skipped() {
 /// completes, the later message is accepted once and the prefix stays.
 #[test]
 fn failures_between_pages_leave_the_next_round_safe() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     let prefix = &w.carol_msgs[..600];
     for step in ["fetch answer lost", "delete lost", "relay stopped"] {
         let text = format!("through: {step}");
@@ -683,7 +686,7 @@ fn a_retained_prefix_of_large_texts_no_longer_hides_a_later_message() {
 #[cfg(unix)]
 #[test]
 fn a_device_killed_between_pages_shows_each_message_once() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     let first = w.alice_text("k1", "on the first page");
     let second = w.alice_text("k2", "behind the prefix");
     let prefix = &w.carol_msgs[..300];
@@ -766,7 +769,7 @@ fn junk(from: u64, n: u64) -> Vec<(u64, Vec<u8>)> {
 /// `MAX_SCAN_ENVELOPES` envelopes a pass.
 #[test]
 fn endless_minimal_pages_are_read_a_bounded_amount() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     let (addr, fetches) = fake_relay(|after| junk(after + 1, MIN_PAGE as u64));
     let r = w.bob_on(&addr).sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
@@ -782,7 +785,7 @@ fn endless_minimal_pages_are_read_a_bounded_amount() {
 /// round with an error at once: the cursor cannot be made to loop.
 #[test]
 fn a_relay_that_breaks_paging_ends_the_round() {
-    let w = big_world().lock().unwrap();
+    let w = big_world();
     type Page = fn(u64) -> Vec<(u64, Vec<u8>)>;
     let cases: [(&str, Page, usize); 3] = [
         ("out of order", |_| junk(1, MIN_PAGE as u64), 2),

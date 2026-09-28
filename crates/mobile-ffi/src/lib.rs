@@ -8,6 +8,7 @@ use core_protocol::checkpoint::SessionRole;
 use core_protocol::durable::SideWrite;
 use core_protocol::messaging::{
     FirstContact, Messenger, MessagingError, NewSession, ProvisionalHandshake, Received,
+    ValidatedRecord,
 };
 use core_protocol::Session;
 use core_storage::{EncryptedStore, StorageError};
@@ -771,12 +772,26 @@ impl ArciumCore {
     /// a handshake never replaces it: `SessionAlreadyExists` for this peer,
     /// `SessionIdCollision` if the handle belongs to another peer. Nothing is
     /// written and nothing is consumed.
+    ///
+    /// # Sessions stored by older builds
+    ///
+    /// Builds before this one stored a responder session on receipt of a
+    /// handshake. If this peer's session under `session_id` is exactly such a
+    /// session with nothing done to it since — no message from the peer
+    /// authenticated, nothing sent, nothing pending — it has no more
+    /// authority than a recorded handshake: it is deleted with its handle
+    /// and this handshake recorded in its place, in one transaction, only
+    /// after this handshake passed the prekey rules above and only while the
+    /// prekey record is still the one it passed them against. The one-time
+    /// prekey the old session consumed stays consumed. Any other session is
+    /// refused as above.
     pub fn establish_session_responder(
         &self,
         session_id: u64,
         initiator_handshake: Vec<u8>,
     ) -> Result<(), CoreError> {
-        self.require_identity()?;
+        let identity = self.require_identity()?;
+        let our_identity_pk = PublicKey::from(&identity.dh_key).to_bytes();
         let handshake = unpack_initiator_handshake(&initiator_handshake)?;
         let (mut store, messenger) = self.lock()?;
         let record_bytes = Zeroizing::new(store.get(PREKEYS_KEY)?);
@@ -784,10 +799,15 @@ impl ArciumCore {
         messenger
             .record_provisional_handshake(
                 &mut store,
+                our_identity_pk,
                 session_id,
                 &ProvisionalHandshake {
                     peer_identity_pk: handshake.identity_pk.to_bytes(),
                     handshake: initiator_handshake,
+                },
+                &ValidatedRecord {
+                    key: PREKEYS_KEY.into(),
+                    value: record_bytes,
                 },
             )
             .map_err(|e| CoreError::messaging(session_id, e))
@@ -923,6 +943,19 @@ impl ArciumCore {
             msg: "mutex poisoned".into(),
         })?;
         Ok((store, messenger))
+    }
+
+    /// Whether the session under `session_id` is a responder session an
+    /// older build stored on receipt of a handshake, untouched since
+    /// (`Messenger::is_legacy_unconfirmed`). Read-only: it decides nothing
+    /// and changes nothing; `establish_session_responder` is what may retire
+    /// such a session, after its own checks.
+    pub(crate) fn is_legacy_unconfirmed(&self, session_id: u64) -> Result<bool, CoreError> {
+        let our = self.our_identity_pk()?;
+        let (mut store, messenger) = self.lock()?;
+        messenger
+            .is_legacy_unconfirmed(&mut store, our, session_id)
+            .map_err(|e| CoreError::messaging(session_id, e))
     }
 
     fn our_identity_pk(&self) -> Result<[u8; 32], CoreError> {
@@ -2080,4 +2113,5 @@ mod tests {
     mod network;
     mod network_crash;
     mod net_peer;
+    mod legacy_upgrade;
 }

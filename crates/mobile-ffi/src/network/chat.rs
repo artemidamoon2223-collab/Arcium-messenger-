@@ -336,7 +336,8 @@ fn get_opt(result: Result<Vec<u8>, StorageError>) -> Result<Option<Vec<u8>>, Cor
 struct Refresh {
     /// Queued texts committed to the outbox now.
     committed: u32,
-    /// Queued texts that cannot be committed because there is no session.
+    /// Queued texts that cannot be committed because there is no session
+    /// that can send them.
     waiting: u32,
 }
 
@@ -794,12 +795,17 @@ impl NetworkMessenger {
         } else {
             HashSet::new()
         };
+        // A responder session an older build stored on receipt of a
+        // handshake cannot encrypt until the peer's first message arrives,
+        // and may yet be retired for a newer handshake (section 4b). Texts
+        // wait for a session that can send them, as with no session.
+        let can_send = has_session && !self.core.is_legacy_unconfirmed(handle)?;
         for e in self.entries(peer)? {
             if !e.outgoing {
                 continue;
             }
             match e.state {
-                ChatEntryState::Queued if has_session => {
+                ChatEntryState::Queued if can_send => {
                     // Same id as recorded: returns the committed message if
                     // an earlier attempt got this far.
                     let sent = self.send_text(peer.to_vec(), e.app_id.clone(), e.text.to_vec())?;

@@ -623,14 +623,25 @@ impl DurableSession {
         let Some(record) = store.read(&key).map_err(OpenError::Store)? else {
             return Ok(None);
         };
-        let restored = decode_session_checkpoint(&record, binding).map_err(OpenError::Invalid)?;
-        Ok(Some(Self::new(
+        Self::from_record(&record, binding)
+            .map(Some)
+            .map_err(OpenError::Invalid)
+    }
+
+    /// The session stored as `record` for `binding`, as [`load`](Self::load)
+    /// would return it. For reading a record inside a store transaction.
+    pub(crate) fn from_record(
+        record: &[u8],
+        binding: &SessionBinding,
+    ) -> Result<Self, SessionCheckpointError> {
+        let restored = decode_session_checkpoint(record, binding)?;
+        Ok(Self::new(
             restored.session,
             restored.role,
             binding.our_identity_pk,
             restored.generation,
-            &record,
-        )))
+            record,
+        ))
     }
 
     pub fn role(&self) -> SessionRole {
@@ -653,6 +664,26 @@ impl DurableSession {
     /// peer is known to hold it.
     pub fn has_received(&self) -> bool {
         self.session.ratchet.has_receiving_chain()
+    }
+
+    /// Whether this is a responder session exactly as a build before
+    /// ARCIUM-SESSION-CONFIRMATION-001 stored it on receiving a handshake,
+    /// with nothing having happened to it since: role responder, generation
+    /// 0, and a ratchet in its initial responder state
+    /// ([`DoubleRatchet::is_initial_responder_state`]).
+    ///
+    /// Such a session holds nothing but an unauthenticated handshake's
+    /// result: no message from the peer has authenticated under it and it
+    /// has encrypted nothing. The production path no longer stores one
+    /// (`mobile-ffi` stores a responder session only through
+    /// [`ProvisionalSession::promote_with`], at generation 1), but
+    /// [`create`](Self::create) with a responder role still can. The identity binding is checked
+    /// when the record is decoded; a record that does not decode never
+    /// reaches this question.
+    pub fn is_legacy_unconfirmed(&self) -> bool {
+        self.role == SessionRole::Responder
+            && self.generation == 0
+            && self.session.ratchet.is_initial_responder_state()
     }
 
     /// Whether `record` is the record this instance last loaded or committed.

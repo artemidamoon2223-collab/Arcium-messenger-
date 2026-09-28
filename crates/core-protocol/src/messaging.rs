@@ -52,6 +52,7 @@ pub fn message_id(wire: &[u8]) -> MessageId {
 }
 
 mod helpers;
+mod legacy;
 mod records;
 mod removal;
 use helpers::*;
@@ -68,6 +69,12 @@ struct Unresolved {
     /// The operation would have created the session, so finding none means
     /// it did not take effect.
     creates_session: bool,
+    /// `Some(peer)` when the operation was a receive staged on a legacy
+    /// unconfirmed responder session of `peer`
+    /// ([`DurableSession::is_legacy_unconfirmed`]). Only this case may be
+    /// recovered after the session was retired meanwhile; see
+    /// [`recover`](Messenger::recover).
+    staged_on_legacy: Option<[u8; 32]>,
 }
 
 /// Durable messaging over an S1 [`EncryptedStore`]. Holds no session state;
@@ -149,6 +156,7 @@ impl Messenger {
                         attempted_generation: 0,
                         artifact_keys: vec![handle_key(handle)],
                         creates_session: true,
+                        staged_on_legacy: None,
                     },
                 );
                 Err(MessagingError::OutcomeUnknown {
@@ -176,11 +184,23 @@ impl Messenger {
     /// ([`MessagingError::HandleCollision`]). Both checks and the write are one
     /// transaction. Recording the same handshake again changes nothing; after
     /// [`MessagingError::RepeatableOutcomeUnknown`] the call can be repeated.
+    ///
+    /// The one exception is a session with this peer under `handle` that a
+    /// build before ARCIUM-SESSION-CONFIRMATION-001 stored on receiving a
+    /// handshake and that nothing has happened to since
+    /// ([`DurableSession::is_legacy_unconfirmed`]): it holds no more
+    /// authority than a provisional record, so it is retired and
+    /// `provisional` recorded in its place, in one transaction — see
+    /// `legacy.rs`. `validated_against` is the record (the prekeys) the caller
+    /// checked `provisional` against; the retirement commits only while it
+    /// is unchanged. It is not consulted otherwise.
     pub fn record_provisional_handshake(
         &self,
         store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
         handle: u64,
         provisional: &ProvisionalHandshake,
+        validated_against: &ValidatedRecord,
     ) -> Result<(), MessagingError> {
         let key = provisional_key(handle);
         let record = encode_provisional(provisional)?;
@@ -188,7 +208,14 @@ impl Messenger {
         let tx = store.transaction().map_err(MessagingError::NotCommitted)?;
         match tx.get(&handle_key(handle)) {
             Ok(bytes) if decode_handle(&bytes)? == peer => {
-                return Err(MessagingError::AlreadyExists { handle })
+                drop(tx);
+                return self.retire_legacy(
+                    store,
+                    our_identity_pk,
+                    handle,
+                    &record,
+                    validated_against,
+                );
             }
             Ok(_) => return Err(MessagingError::HandleCollision { handle }),
             Err(StorageError::NotFound) => {}
@@ -334,6 +361,7 @@ impl Messenger {
                         attempted_generation: generation,
                         artifact_keys: vec![inbox, seen],
                         creates_session: true,
+                        staged_on_legacy: None,
                     },
                 );
                 Err(MessagingError::OutcomeUnknown {
@@ -442,7 +470,7 @@ impl Messenger {
                 generation,
                 wire,
             })),
-            Err(e) => Err(self.commit_error(handle, generation, vec![index_key], e)),
+            Err(e) => Err(self.commit_error(handle, generation, vec![index_key], None, e)),
         }
     }
 
@@ -475,6 +503,9 @@ impl Messenger {
             .map_err(stage_error)?;
         let generation = staged.generation();
         let record = encode_inbox(generation, &id, staged.output());
+        let staged_on_legacy = session.is_legacy_unconfirmed().then_some(peer);
+        #[cfg(test)]
+        race_hook::run();
         let side = [
             SideWrite::insert(key.clone(), record).map_err(MessagingError::SideWrite)?,
             SideWrite::require_absent(seen.clone()).map_err(MessagingError::SideWrite)?,
@@ -492,7 +523,13 @@ impl Messenger {
                 ..
             }) => read_duplicate(store, &key, &seen, id)?
                 .ok_or(MessagingError::InconsistentStore("inbox record vanished")),
-            Err(e) => Err(self.commit_error(handle, generation, vec![key, seen], e)),
+            Err(e) => Err(self.commit_error(
+                handle,
+                generation,
+                vec![key, seen],
+                staged_on_legacy,
+                e,
+            )),
         }
     }
 
@@ -616,6 +653,7 @@ impl Messenger {
         };
         let attempted_generation = unresolved.attempted_generation;
         let creates_session = unresolved.creates_session;
+        let staged_on_legacy = unresolved.staged_on_legacy;
         let mut artifact_committed = false;
         for key in &unresolved.artifact_keys {
             match store.get(key) {
@@ -628,6 +666,26 @@ impl Messenger {
             Ok((session, _)) => session.generation(),
             // An unresolved creation that did not take effect.
             Err(MessagingError::NoSession { .. }) if creates_session => {
+                self.unresolved.remove(&handle);
+                return Ok(Some(Recovery {
+                    attempted_generation,
+                    stored_generation: 0,
+                    artifact_committed: false,
+                }));
+            }
+            // A receive staged on a legacy session that was retired since
+            // (by another instance): recoverable only if one read shows the
+            // retirement and none of the receive's records. The session
+            // being gone alone proves nothing; anything else stays
+            // unresolved.
+            Err(e @ MessagingError::NoSession { .. }) => {
+                let Some(peer) = staged_on_legacy else {
+                    return Err(e);
+                };
+                let keys = &self.unresolved[&handle].artifact_keys;
+                if !legacy::retired_since(store, handle, &peer, keys)? {
+                    return Err(e);
+                }
                 self.unresolved.remove(&handle);
                 return Ok(Some(Recovery {
                     attempted_generation,
@@ -690,6 +748,7 @@ impl Messenger {
         handle: u64,
         attempted_generation: u64,
         artifact_keys: Vec<String>,
+        staged_on_legacy: Option<[u8; 32]>,
         e: CommitError,
     ) -> MessagingError {
         match e {
@@ -700,6 +759,7 @@ impl Messenger {
                         attempted_generation,
                         artifact_keys,
                         creates_session: false,
+                        staged_on_legacy,
                     },
                 );
                 MessagingError::OutcomeUnknown {
@@ -723,8 +783,9 @@ impl Messenger {
 }
 
 /// Lets a test act between an operation's reads and its transaction: after
-/// `send` or `accept_first_message` has staged its transition, and after
-/// `remove_session` has checked the session.
+/// `send`, `receive` or `accept_first_message` has staged its transition,
+/// after `remove_session` has checked the session, and after a legacy
+/// retirement has inspected it.
 #[cfg(test)]
 mod race_hook {
     use std::cell::RefCell;

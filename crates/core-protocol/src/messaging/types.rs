@@ -101,6 +101,16 @@ pub struct ProvisionalHandshake {
     pub handshake: Vec<u8>,
 }
 
+/// A record a handshake was validated against (the prekey record), required
+/// to be exactly `value` still when recording that handshake retires a
+/// legacy session
+/// ([`Messenger::record_provisional_handshake`](super::Messenger::record_provisional_handshake)).
+/// Only read; never written.
+pub struct ValidatedRecord {
+    pub key: String,
+    pub value: Zeroizing<Vec<u8>>,
+}
+
 /// A responder session derived from `provisional`, to be stored only if the
 /// peer's first message authenticates under it
 /// ([`Messenger::accept_first_message`](super::Messenger::accept_first_message)).
@@ -206,4 +216,8 @@ pub enum MessagingError {
     PendingOutgoing {
         count: usize,
     },
+    /// The peer's session has the shape of a legacy unconfirmed responder
+    /// session, but durable state beside it (the reason given) means it is
+    /// not retired for a new handshake. Nothing was changed.
+    SessionNotRetirable(&'static str),
 }

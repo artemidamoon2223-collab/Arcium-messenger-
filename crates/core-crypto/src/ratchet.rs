@@ -141,6 +141,25 @@ impl DoubleRatchet {
         self.ckr.is_some()
     }
 
+    /// Whether this is exactly the state [`init_bob`](Self::init_bob) creates
+    /// and nothing has happened to since: no peer ratchet key, no sending or
+    /// receiving chain, all counters zero, no skipped keys.
+    ///
+    /// Such a ratchet has authenticated nothing (a receiving chain appears
+    /// only through a decrypt that authenticated) and cannot encrypt
+    /// ([`encrypt`](Self::encrypt) returns [`RatchetError::NotInitialized`]),
+    /// so it has produced no ciphertext either. Read-only; it says nothing
+    /// about the root key or `dhs`, which it does not inspect.
+    pub fn is_initial_responder_state(&self) -> bool {
+        self.dhr.is_none()
+            && self.cks.is_none()
+            && self.ckr.is_none()
+            && self.ns == 0
+            && self.nr == 0
+            && self.pn == 0
+            && self.skipped.is_empty()
+    }
+
     pub fn encrypt(&mut self, plaintext: &[u8], ad: &[u8]) -> Result<(Header, Vec<u8>), RatchetError> {
         let cks = self.cks.ok_or(RatchetError::NotInitialized)?;
         let (new_cks, mk) = kdf_ck(&cks);
@@ -627,6 +646,43 @@ mod tests {
         // The genuine delayed message must still decrypt using the untouched key.
         let pt0 = bob.decrypt(&hdr0, &ct0, ad).unwrap();
         assert_eq!(pt0, b"zero");
+    }
+
+    #[test]
+    fn only_an_untouched_responder_is_in_the_initial_responder_state() {
+        let (mut alice, mut bob) = established_pair();
+        assert!(bob.is_initial_responder_state());
+        assert!(!alice.is_initial_responder_state(), "initiator has dhr and cks");
+
+        // A refused encrypt and a forged message leave it untouched.
+        assert!(matches!(bob.encrypt(b"x", b"ad"), Err(RatchetError::NotInitialized)));
+        let forged = Header { dh: [7u8; 32], pn: 0, n: 0 };
+        assert!(bob.decrypt(&forged, &[0u8; NONCE_SIZE + 16], b"ad").is_err());
+        assert!(bob.is_initial_responder_state());
+
+        // One authenticated message ends it for good.
+        let (h, c) = alice.encrypt(b"hi", b"ad").unwrap();
+        bob.decrypt(&h, &c, b"ad").unwrap();
+        assert!(!bob.is_initial_responder_state());
+
+        // Each field on its own disqualifies an otherwise initial state.
+        type Mutate = fn(&mut DoubleRatchet);
+        let cases: [(&str, Mutate); 7] = [
+            ("dhr", |r| r.dhr = Some(PublicKey::from([9u8; 32]))),
+            ("cks", |r| r.cks = Some([1u8; 32])),
+            ("ckr", |r| r.ckr = Some([1u8; 32])),
+            ("ns", |r| r.ns = 1),
+            ("nr", |r| r.nr = 1),
+            ("pn", |r| r.pn = 1),
+            ("skipped", |r| {
+                r.skipped.insert(([0u8; 32], 0), [0u8; 32]);
+            }),
+        ];
+        for (field, mutate) in cases {
+            let mut r = DoubleRatchet::init_bob([3u8; 32], StaticSecret::random_from_rng(OsRng));
+            mutate(&mut r);
+            assert!(!r.is_initial_responder_state(), "{field} set");
+        }
     }
 
     #[test]

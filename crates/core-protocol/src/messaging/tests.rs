@@ -649,4 +649,5 @@ fn a_failed_commit_leaves_the_session_usable_and_consumes_no_position() {
 mod acceptance;
 mod crash;
 mod first_contact;
+mod legacy;
 mod lifecycle;

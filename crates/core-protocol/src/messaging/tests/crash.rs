@@ -84,6 +84,19 @@ fn crash_child() {
             p.am.remove_session(&mut p.a, p.alice_pk, ALICE_HANDLE)
                 .unwrap()
         }
+        // Bob's session is the old build's responder session (`setup`).
+        "retire" => {
+            let validated = ValidatedRecord {
+                key: "prekeys/v2".into(),
+                value: Zeroizing::new(b"current".to_vec()),
+            };
+            let h = ProvisionalHandshake {
+                peer_identity_pk: p.alice_pk,
+                handshake: b"hs2".to_vec(),
+            };
+            p.bm.record_provisional_handshake(&mut p.b, p.bob_pk, BOB_HANDLE, &h, &validated)
+                .unwrap()
+        }
         other => panic!("unknown scenario {other}"),
     }
     // Died after the operation returned, before acknowledging anything.
@@ -433,5 +446,53 @@ fn process_killed_around_a_removal_loses_no_obligation() {
                 message_id: m.message_id
             }
         );
+    }
+}
+
+/// A process death inside the retirement of an old build's responder
+/// session: before its commit the old session and handle are there and no
+/// provisional record is; after it the old records are gone and exactly the
+/// new handshake is recorded. Nothing in between.
+#[cfg(unix)]
+#[test]
+fn process_killed_around_a_legacy_retirement_leaves_it_whole_or_absent() {
+    for point in [
+        "retire_before_commit",
+        "retire_after_commit",
+        "after_return",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = fixture(dir.path());
+        let p = fx.peers();
+        p.b.put("prekeys/v2", b"current").unwrap();
+        let old_session = p.b.get(&session_storage_key(&p.alice_pk)).unwrap();
+        drop(p);
+        run_child(&fx, "retire", point);
+        let mut p = fx.peers();
+        let session = p.b.get(&session_storage_key(&p.alice_pk)).ok();
+        let handle = p.bm.peer_of(&p.b, BOB_HANDLE).unwrap();
+        let recorded = p.bm.provisional_handshake(&p.b, BOB_HANDLE).unwrap();
+        if point == "retire_before_commit" {
+            assert_eq!(session, Some(old_session), "{point}");
+            assert_eq!(handle, Some(p.alice_pk), "{point}");
+            assert_eq!(recorded, None, "{point}");
+        } else {
+            assert_eq!((session, handle), (None, None), "{point}");
+            assert_eq!(recorded.unwrap().handshake, b"hs2", "{point}");
+        }
+        assert_eq!(p.b.get("prekeys/v2").unwrap(), b"current", "{point}");
+        // Repeating the call completes it or finds it complete.
+        let validated = ValidatedRecord {
+            key: "prekeys/v2".into(),
+            value: Zeroizing::new(b"current".to_vec()),
+        };
+        let h = ProvisionalHandshake {
+            peer_identity_pk: p.alice_pk,
+            handshake: b"hs2".to_vec(),
+        };
+        p.bm.record_provisional_handshake(&mut p.b, p.bob_pk, BOB_HANDLE, &h, &validated)
+            .unwrap();
+        assert_eq!(p.bm.peer_of(&p.b, BOB_HANDLE).unwrap(), None);
+        assert!(p.b.list_keys_with_prefix("session:").unwrap().is_empty());
     }
 }

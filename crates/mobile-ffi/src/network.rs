@@ -442,7 +442,14 @@ impl NetworkMessenger {
                     report.dropped += 1;
                     return Ok(Fate::Delete);
                 }
-                if self.core.has_session(handle)? {
+                let has_session = self.core.has_session(handle)?;
+                // A responder session an older build stored on receipt of a
+                // handshake, untouched since, does not stop the handshake
+                // here: `establish_session_responder` alone decides whether
+                // it retires that session (section 4b). Nothing is decided
+                // or changed here.
+                let legacy = has_session && self.core.is_legacy_unconfirmed(handle)?;
+                if has_session && !legacy {
                     // Dropped: no session is ever replaced. If ours is an
                     // unconfirmed start of our own, both sides initiated;
                     // record it so the application can show it (section 8).
@@ -463,6 +470,16 @@ impl NetworkMessenger {
                     Err(e) if transient(&e) => {
                         report.errors.push(e.to_string());
                         Ok(Fate::Keep)
+                    }
+                    // Refused, so the older session stays (something is
+                    // pending on it, it changed meanwhile into a session that
+                    // is never replaced, or this handshake cannot be
+                    // answered — such as a retransmission of the handshake
+                    // that session came from): dropped, as for any other
+                    // session.
+                    Err(_) if legacy => {
+                        report.dropped += 1;
+                        Ok(Fate::Delete)
                     }
                     Err(e) => {
                         chat::set_flag(self, &sender, chat::HANDSHAKE_REFUSED)?;

@@ -17,7 +17,9 @@ impl CoreError {
         use MessagingError as M;
         match e {
             M::NoSession { .. } => CoreError::NoSession { session_id },
-            M::AlreadyExists { .. } => CoreError::SessionAlreadyExists { session_id },
+            M::AlreadyExists { .. } | M::SessionNotRetirable(_) => {
+                CoreError::SessionAlreadyExists { session_id }
+            }
             M::HandleCollision { .. } => CoreError::SessionIdCollision { session_id },
             M::MissingSession { .. } => CoreError::InvalidSessionState {
                 session_id,

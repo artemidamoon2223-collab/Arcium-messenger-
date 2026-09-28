@@ -21,6 +21,22 @@ fn provisional(peer: &[u8; 32], bytes: &[u8]) -> ProvisionalHandshake {
     }
 }
 
+/// Records `p` as `mobile-ffi` does, naming the prekey record as it stands.
+fn record_hs(
+    m: &Messenger,
+    db: &mut EncryptedStore,
+    our: [u8; 32],
+    handle: u64,
+    p: &ProvisionalHandshake,
+) -> Result<(), MessagingError> {
+    let value = Zeroizing::new(db.get(PREKEYS).unwrap_or_default());
+    let validated = ValidatedRecord {
+        key: PREKEYS.into(),
+        value,
+    };
+    m.record_provisional_handshake(db, our, handle, p, &validated)
+}
+
 fn keys(store: &EncryptedStore, namespace: &str) -> usize {
     store.list_keys_with_prefix(namespace).unwrap().len()
 }
@@ -51,7 +67,7 @@ fn first_contact(mut a: EncryptedStore, mut b: EncryptedStore) -> Fc {
     .unwrap();
     b.put(PREKEYS, b"old").unwrap();
     let bm = Messenger::new();
-    bm.record_provisional_handshake(&mut b, BOB_HANDLE, &provisional(&p.alice_pk, b"hs1"))
+    record_hs(&bm, &mut b, p.bob_pk, BOB_HANDLE, &provisional(&p.alice_pk, b"hs1"))
         .unwrap();
     Fc {
         a,
@@ -211,17 +227,17 @@ fn recording_is_refused_once_a_session_exists_and_changes_nothing() {
     accepted(f.accept(&m1.wire).unwrap());
     let record = f.session_record();
     assert!(matches!(
-        f.bm.record_provisional_handshake(&mut f.b, BOB_HANDLE, &provisional(&f.alice_pk, b"hs2")),
+        record_hs(&f.bm, &mut f.b, f.bob_pk, BOB_HANDLE, &provisional(&f.alice_pk, b"hs2")),
         Err(MessagingError::AlreadyExists { .. })
     ));
     // The peer's session under another handle refuses it too.
     assert!(matches!(
-        f.bm.record_provisional_handshake(&mut f.b, 7, &provisional(&f.alice_pk, b"hs2")),
+        record_hs(&f.bm, &mut f.b, f.bob_pk, 7, &provisional(&f.alice_pk, b"hs2")),
         Err(MessagingError::AlreadyExists { .. })
     ));
     let carol = pair().alice_pk;
     assert!(matches!(
-        f.bm.record_provisional_handshake(&mut f.b, BOB_HANDLE, &provisional(&carol, b"hs3")),
+        record_hs(&f.bm, &mut f.b, f.bob_pk, BOB_HANDLE, &provisional(&carol, b"hs3")),
         Err(MessagingError::HandleCollision { .. })
     ));
     assert_eq!(f.session_record(), record);
@@ -232,7 +248,7 @@ fn recording_is_refused_once_a_session_exists_and_changes_nothing() {
     let dave = pair().alice_pk;
     g.b.put(&session_storage_key(&dave), b"corrupt").unwrap();
     assert!(matches!(
-        g.bm.record_provisional_handshake(&mut g.b, 9, &provisional(&dave, b"hs")),
+        record_hs(&g.bm, &mut g.b, g.bob_pk, 9, &provisional(&dave, b"hs")),
         Err(MessagingError::AlreadyExists { .. })
     ));
     assert_eq!(keys(&g.b, "hsin:"), 1, "only Alice's");
@@ -241,10 +257,10 @@ fn recording_is_refused_once_a_session_exists_and_changes_nothing() {
 #[test]
 fn a_provisional_handshake_is_replaced_by_a_newer_one_and_repeats_change_nothing() {
     let mut f = memory_first_contact();
-    f.bm.record_provisional_handshake(&mut f.b, BOB_HANDLE, &provisional(&f.alice_pk, b"hs1"))
+    record_hs(&f.bm, &mut f.b, f.bob_pk, BOB_HANDLE, &provisional(&f.alice_pk, b"hs1"))
         .unwrap();
     f.assert_provisional_only(b"hs1");
-    f.bm.record_provisional_handshake(&mut f.b, BOB_HANDLE, &provisional(&f.alice_pk, b"hs2"))
+    record_hs(&f.bm, &mut f.b, f.bob_pk, BOB_HANDLE, &provisional(&f.alice_pk, b"hs2"))
         .unwrap();
     f.assert_provisional_only(b"hs2");
 
@@ -343,12 +359,11 @@ fn a_handshake_replaced_while_accepting_makes_the_acceptance_write_nothing() {
         EncryptedStore::open_in_memory(KEY).unwrap(),
         EncryptedStore::open(&path, KEY).unwrap(),
     );
-    let alice_pk = f.alice_pk;
+    let (alice_pk, bob_pk) = (f.alice_pk, f.bob_pk);
     crate::messaging::race_hook::set(move || {
         let mut db = EncryptedStore::open(&path, KEY).unwrap();
-        Messenger::new()
-            .record_provisional_handshake(&mut db, BOB_HANDLE, &provisional(&alice_pk, b"hs2"))
-            .unwrap();
+        let hs2 = provisional(&alice_pk, b"hs2");
+        record_hs(&Messenger::new(), &mut db, bob_pk, BOB_HANDLE, &hs2).unwrap();
     });
     let m1 = f.alice_sends(b"first");
     assert!(matches!(

@@ -6,9 +6,17 @@
 //! An envelope stays in its recipient's mailbox until the recipient deletes it,
 //! it is older than [`RelayConfig::ttl`], or the relay stops: nothing is
 //! written to disk, so a restart loses every mailbox. A mailbox holds at most
-//! [`RelayConfig::max_mailbox`] envelopes; a SEND to a full mailbox is refused
-//! with `FULL`, never by dropping an older envelope. A SEND of bytes identical
-//! to an envelope still stored returns the stored sequence number.
+//! [`RelayConfig::max_mailbox`] envelopes, at most [`DEFAULT_MAX_MAILBOX`]: a
+//! reader's scan of one round covers that many, so a larger mailbox could hide
+//! entries behind the ones it keeps (`serve` refuses such a configuration). A
+//! SEND to a full mailbox is refused with `FULL`, never by dropping an older
+//! envelope. A SEND of bytes identical to an envelope still stored returns the
+//! stored sequence number.
+//!
+//! A full mailbox is a denial of service anyone who can reach the relay can
+//! cause, since SEND is not authenticated. Paging with FETCH_AFTER does not
+//! change that: it lets a reader get past envelopes it leaves in place, not
+//! receive envelopes the relay refused to store.
 //!
 //! Delivery does not depend on the relay keeping anything: senders keep every
 //! message until the recipient's end-to-end receipt arrives, and retransmit.
@@ -24,6 +32,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::ops::Bound;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -33,6 +42,8 @@ use crate::protocol::*;
 
 #[derive(Debug, Clone)]
 pub struct RelayConfig {
+    /// Envelopes one mailbox holds: 1 to [`DEFAULT_MAX_MAILBOX`] (the
+    /// default). [`serve`] refuses any other value.
     pub max_mailbox: usize,
     pub ttl: Duration,
     /// Test aid: log an alert if a stored envelope contains these bytes, so a
@@ -45,7 +56,7 @@ pub struct RelayConfig {
 impl Default for RelayConfig {
     fn default() -> Self {
         Self {
-            max_mailbox: 4096,
+            max_mailbox: DEFAULT_MAX_MAILBOX,
             ttl: Duration::from_secs(7 * 24 * 3600),
             canary: None,
             log: false,
@@ -104,7 +115,20 @@ impl RelayHandle {
 }
 
 /// Serves `listener` on a background thread, one thread per connection.
+///
+/// Refuses, with [`io::ErrorKind::InvalidInput`] and without starting
+/// anything, a `max_mailbox` outside 1 to [`DEFAULT_MAX_MAILBOX`]. Nothing is
+/// clamped.
 pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHandle> {
+    if !(1..=DEFAULT_MAX_MAILBOX).contains(&config.max_mailbox) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "max_mailbox must be between 1 and {DEFAULT_MAX_MAILBOX}, got {}",
+                config.max_mailbox
+            ),
+        ));
+    }
     let addr = listener.local_addr()?;
     let stop = Arc::new(AtomicBool::new(false));
     let conns = Arc::new(Mutex::new(Vec::new()));
@@ -145,6 +169,9 @@ fn connection(
     stop: &AtomicBool,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+    // A response is written as length, then body; without this the body waits
+    // for the client's delayed ACK of the length (tens of ms per request).
+    let _ = stream.set_nodelay(true);
     while !stop.load(Ordering::SeqCst) {
         let body = match read_frame(&mut stream) {
             Ok(Some(b)) => b,
@@ -158,6 +185,36 @@ fn connection(
             return;
         }
     }
+}
+
+/// The unexpired envelopes of `recipient`'s mailbox with a sequence number
+/// greater than `after`, in ascending order, at most `max` (and
+/// [`MAX_FETCH`]) of them, and no more than fit in one response frame: the
+/// page stops before the first envelope that would not fit, so it holds at
+/// least [`MIN_PAGE`] when more follow.
+fn fetch_after(
+    s: &mut State,
+    recipient: &Key,
+    after: u64,
+    max: u16,
+    now: Instant,
+    config: &RelayConfig,
+) -> Vec<(u64, Vec<u8>)> {
+    let max = max.min(MAX_FETCH) as usize;
+    let Some(m) = s.mailboxes.get_mut(recipient) else {
+        return Vec::new();
+    };
+    m.retain(|_, (t, _)| now.duration_since(*t) < config.ttl);
+    // status(1) count(2), then seq(8) len(4) envelope per entry.
+    let mut size = 3;
+    m.range((Bound::Excluded(after), Bound::Unbounded))
+        .take(max)
+        .take_while(|(_, (_, v))| {
+            size += 12 + v.len();
+            size <= MAX_FRAME
+        })
+        .map(|(k, (_, v))| (*k, v.clone()))
+        .collect()
 }
 
 fn short(k: &Key) -> String {
@@ -219,29 +276,37 @@ fn handle(req: Request, state: &Mutex<State>, config: &RelayConfig) -> Response 
             if mailbox.len() >= config.max_mailbox {
                 return Response::Error(ErrorCode::Full);
             }
+            // Sequence numbers never wrap: a relay that has used them all
+            // stores nothing more.
+            let Some(next) = seq.checked_add(1) else {
+                return Response::Error(ErrorCode::Full);
+            };
             log(format!(
                 "SEND to={} len={} seq={seq}",
                 short(&recipient),
                 envelope.len()
             ));
             mailbox.insert(seq, (now, envelope));
-            s.next_seq += 1;
+            s.next_seq = next;
             Response::Accepted { seq }
         }
         Request::Fetch { recipient, max } => {
-            let max = max.min(MAX_FETCH) as usize;
-            let items: Vec<_> = match s.mailboxes.get_mut(&recipient) {
-                Some(m) => {
-                    m.retain(|_, (t, _)| now.duration_since(*t) < config.ttl);
-                    m.iter()
-                        .take(max)
-                        .map(|(k, (_, v))| (*k, v.clone()))
-                        .collect()
-                }
-                None => Vec::new(),
-            };
+            let items = fetch_after(&mut s, &recipient, 0, max, now, config);
             log(format!(
                 "FETCH for={} returned={}",
+                short(&recipient),
+                items.len()
+            ));
+            Response::Items(items)
+        }
+        Request::FetchAfter {
+            recipient,
+            after,
+            max,
+        } => {
+            let items = fetch_after(&mut s, &recipient, after, max, now, config);
+            log(format!(
+                "FETCH_AFTER for={} after={after} returned={}",
                 short(&recipient),
                 items.len()
             ));
@@ -260,5 +325,39 @@ fn handle(req: Request, state: &Mutex<State>, config: &RelayConfig) -> Response 
             ));
             Response::Ok
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sequence_numbers_never_wrap() {
+        let state = Mutex::new(State {
+            next_seq: u64::MAX,
+            ..State::default()
+        });
+        let config = RelayConfig::default();
+        let send = |e: u8| {
+            handle(
+                Request::Send {
+                    recipient: [1; 32],
+                    envelope: vec![e],
+                },
+                &state,
+                &config,
+            )
+        };
+        assert_eq!(send(1), Response::Error(ErrorCode::Full));
+        assert!(state.lock().unwrap().mailboxes[&[1u8; 32]].is_empty());
+        state.lock().unwrap().next_seq = u64::MAX - 1;
+        assert_eq!(send(2), Response::Accepted { seq: u64::MAX - 1 });
+        assert_eq!(send(3), Response::Error(ErrorCode::Full));
+        assert_eq!(
+            send(2),
+            Response::Accepted { seq: u64::MAX - 1 },
+            "duplicate"
+        );
     }
 }

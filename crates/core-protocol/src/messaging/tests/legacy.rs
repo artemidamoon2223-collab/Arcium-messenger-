@@ -128,12 +128,12 @@ fn second_pair(alice_pk: [u8; 32], bob_pk: [u8; 32]) -> (Session, Session) {
     let root = [0x5A; 32];
     (
         Session {
-            ratchet: DoubleRatchet::init_alice(root, PublicKey::from(&spk)),
+            ratchet: DoubleRatchet::init_alice(&root, PublicKey::from(&spk)),
             ad: ad.clone(),
             peer_identity_pk: bob_pk,
         },
         Session {
-            ratchet: DoubleRatchet::init_bob(root, spk),
+            ratchet: DoubleRatchet::init_bob(&root, spk),
             ad,
             peer_identity_pk: alice_pk,
         },

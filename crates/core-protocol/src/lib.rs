@@ -122,7 +122,7 @@ mod tests {
         let root_key = [0u8; 32];
         let their_sk = StaticSecret::random_from_rng(OsRng);
         Session {
-            ratchet: DoubleRatchet::init_alice(root_key, PublicKey::from(&their_sk)),
+            ratchet: DoubleRatchet::init_alice(&root_key, PublicKey::from(&their_sk)),
             ad: b"test-ad".to_vec(),
             peer_identity_pk: [peer; 32],
         }

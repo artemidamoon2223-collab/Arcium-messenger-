@@ -75,7 +75,7 @@ pub fn hybrid_keygen() -> (HybridPublicKey, HybridSecretKey) {
 /// `pk.ml_kem` is peer-supplied (attacker-controlled length/content), so a
 /// wrong-length or otherwise invalid encapsulation key returns `Err(HybridError)`
 /// rather than panicking — mirroring `hybrid_decaps`.
-pub fn hybrid_encaps(pk: &HybridPublicKey) -> Result<(Vec<u8>, [u8; 64]), HybridError> {
+pub fn hybrid_encaps(pk: &HybridPublicKey) -> Result<(Vec<u8>, Zeroizing<[u8; 64]>), HybridError> {
     // X25519 ephemeral encapsulation
     let eph_sk = StaticSecret::random_from_rng(OsRng);
     let eph_pk = PublicKey::from(&eph_sk);
@@ -89,6 +89,7 @@ pub fn hybrid_encaps(pk: &HybridPublicKey) -> Result<(Vec<u8>, [u8; 64]), Hybrid
         .map_err(|_| HybridError)?;
     let ek = EncapsulationKey768::new(&ek_key).map_err(|_| HybridError)?;
     let (ml_ct, ml_ss) = ek.encapsulate();
+    let ml_ss = Zeroizing::new(ml_ss);
 
     // Combine: HKDF-SHA256(x25519_ss || ml_kem_ss || eph_pk || ml_ct ||
     // recipient_x25519_pk || recipient_ml_kem_pk) → 64 bytes (F-7: bind the
@@ -110,7 +111,7 @@ pub fn hybrid_encaps(pk: &HybridPublicKey) -> Result<(Vec<u8>, [u8; 64]), Hybrid
     Ok((ct, shared))
 }
 
-pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<[u8; 64], HybridError> {
+pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<Zeroizing<[u8; 64]>, HybridError> {
     if ct.len() < X25519_LEN {
         return Err(HybridError);
     }
@@ -135,7 +136,7 @@ pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<[u8; 64], Hybrid
     let ml_ct: Ciphertext<MlKem768> = ct[X25519_LEN..]
         .try_into()
         .map_err(|_| HybridError)?;
-    let ml_ss = dk.decapsulate(&ml_ct);
+    let ml_ss = Zeroizing::new(dk.decapsulate(&ml_ct));
 
     Ok(combine_secrets(
         x25519_ss.as_bytes(),
@@ -161,7 +162,7 @@ fn combine_secrets(
     ml_ct: &[u8],
     recipient_x25519_pk: &[u8],
     recipient_ml_kem_pk: &[u8],
-) -> [u8; 64] {
+) -> Zeroizing<[u8; 64]> {
     let mut ikm = Zeroizing::new(Vec::with_capacity(
         x25519_ss.len()
             + ml_kem_ss.len()
@@ -176,9 +177,13 @@ fn combine_secrets(
     ikm.extend_from_slice(ml_ct);
     ikm.extend_from_slice(recipient_x25519_pk);
     ikm.extend_from_slice(recipient_ml_kem_pk);
-    let hk = Hkdf::<Sha256>::new(None, &ikm);
-    let mut out = [0u8; 64];
-    hk.expand(b"HybridKEM/v1", &mut out).expect("hkdf expand");
+    // The HKDF pseudorandom key is secret; `Hkdf::new` drops it unwiped, so it
+    // is taken from `extract` and wiped here.
+    let (mut prk, hk) = Hkdf::<Sha256>::extract(None, &ikm);
+    prk.as_mut_slice().zeroize();
+    let mut out = Zeroizing::new([0u8; 64]);
+    hk.expand(b"HybridKEM/v1", &mut out[..])
+        .expect("hkdf expand");
     out
 }
 
@@ -330,5 +335,36 @@ mod tests {
         // Must not panic; either a clean Err or (if these bytes happen to be an
         // acceptable key) a normal Ok — the invariant under test is "no panic".
         let _ = hybrid_encaps(&pk);
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// Vector produced by the code at `ef6426d`, before the shared secret moved
+    /// into a wiping type: the derivation is unchanged, byte for byte.
+    #[test]
+    fn combine_secrets_matches_the_previous_implementation() {
+        let out = combine_secrets(
+            &[1u8; 32], &[2u8; 32], &[3u8; 32], &[4u8; 64], &[5u8; 32], &[6u8; 48],
+        );
+        assert_eq!(
+            hex(&*out),
+            concat!(
+                "479b97c80d68a0b0cc06205518620e6ac13533c854b37b6e6c5dcf99528189c7",
+                "5550bac370ffea3bd44c3ec2e29d043fb8ef54a6d0ad29cfa166bf1a1220d5ae"
+            )
+        );
+    }
+
+    /// Compile-time pin: the shared secrets are returned in wiping types.
+    #[test]
+    fn shared_secrets_are_wiping_types() {
+        fn is_wiping<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        let (pk, sk) = hybrid_keygen();
+        let (_, sent) = hybrid_encaps(&pk).unwrap();
+        is_wiping(&sent);
+        let received = hybrid_decaps(&sk, &hybrid_encaps(&pk).unwrap().0).unwrap();
+        is_wiping(&received);
     }
 }

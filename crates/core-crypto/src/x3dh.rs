@@ -6,7 +6,7 @@ use rand_core::OsRng;
 use sha2::Sha256;
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Protocol version carried by `ARCIUM_X3DH_FORMAT_V1` structures.
 pub const PROTOCOL_VERSION: u8 = 0x01;
@@ -102,7 +102,8 @@ pub fn verify_signed_prekey_v1(bundle: &PrekeyBundle) -> Result<(), X3dhError> {
 
 #[derive(Debug)]
 pub struct AliceSession {
-    pub root_key: [u8; 32],
+    /// Wiped when the session value is dropped.
+    pub root_key: Zeroizing<[u8; 32]>,
     pub ephemeral_pk: PublicKey,
     pub their_signed_prekey_pk: PublicKey,
     pub ad: Vec<u8>,
@@ -146,7 +147,8 @@ pub fn x3dh_initiate(
 }
 
 pub struct BobSession {
-    pub root_key: [u8; 32],
+    /// Wiped when the session value is dropped.
+    pub root_key: Zeroizing<[u8; 32]>,
     pub their_ephemeral_pk: PublicKey,
     pub ad: Vec<u8>,
 }
@@ -182,7 +184,12 @@ pub fn x3dh_respond(
     }
 }
 
-fn derive_root<T: AsRef<[u8]>>(dh1: &[u8], dh2: &[u8], dh3: &[u8], dh4: Option<T>) -> [u8; 32] {
+fn derive_root<T: AsRef<[u8]>>(
+    dh1: &[u8],
+    dh2: &[u8],
+    dh3: &[u8],
+    dh4: Option<T>,
+) -> Zeroizing<[u8; 32]> {
     // ikm concatenates every DH output — the handshake's master secret material —
     // so it must not outlive its use unzeroized (F-8).
     let mut ikm = Zeroizing::new(Vec::with_capacity(32 * 5));
@@ -193,9 +200,12 @@ fn derive_root<T: AsRef<[u8]>>(dh1: &[u8], dh2: &[u8], dh3: &[u8], dh4: Option<T
     if let Some(d) = dh4 {
         ikm.extend_from_slice(d.as_ref());
     }
-    let hk = Hkdf::<Sha256>::new(Some(&[0u8; 32]), &ikm);
-    let mut rk = [0u8; 32];
-    hk.expand(b"X3DH/v1", &mut rk).expect("hkdf expand");
+    // The HKDF pseudorandom key is secret; `Hkdf::new` drops it unwiped, so it
+    // is taken from `extract` and wiped here.
+    let (mut prk, hk) = Hkdf::<Sha256>::extract(Some(&[0u8; 32]), &ikm);
+    prk.as_mut_slice().zeroize();
+    let mut rk = Zeroizing::new([0u8; 32]);
+    hk.expand(b"X3DH/v1", &mut rk[..]).expect("hkdf expand");
     rk
 }
 
@@ -400,5 +410,48 @@ mod v1_signed_prekey_tests {
             weak.is_weak(),
             "test vector must actually be a weak key, or it proves nothing"
         );
+    }
+}
+
+#[cfg(test)]
+mod key_lifetime_tests {
+    use super::*;
+    use zeroize::ZeroizeOnDrop;
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    fn is_wiping<T: ZeroizeOnDrop>(_: &T) {}
+
+    /// Vectors produced by the code at `ef6426d`, before the root key moved
+    /// into a wiping type: the derivation is unchanged, byte for byte.
+    #[test]
+    fn root_key_derivation_matches_the_previous_implementation() {
+        let d = |v: u8| [v; 32];
+        let without = derive_root(&d(1), &d(2), &d(3), None::<&[u8]>);
+        assert_eq!(
+            hex(&*without),
+            "57f1d15cd4a8739d08be45de76fc2fcfb51151cef20f5897a8d3623e2ff8f096"
+        );
+        let with = derive_root(&d(1), &d(2), &d(3), Some(&d(4)[..]));
+        assert_eq!(
+            hex(&*with),
+            "31897bb11a282586a7f179ddbf8464a8c1cece1e061f0d8f337525fd52bb0efc"
+        );
+    }
+
+    /// Compile-time pin: the root key an X3DH session carries is held in a type
+    /// that wipes itself when the session value is dropped.
+    #[test]
+    fn session_root_keys_are_wiping_types() {
+        let root = derive_root(&[1; 32], &[2; 32], &[3; 32], None::<&[u8]>);
+        is_wiping(&root);
+        let session = BobSession {
+            root_key: root,
+            their_ephemeral_pk: PublicKey::from([9u8; 32]),
+            ad: Vec::new(),
+        };
+        is_wiping(&session.root_key);
     }
 }

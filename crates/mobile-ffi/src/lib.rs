@@ -17,7 +17,7 @@ use rand_core::{OsRng, RngCore};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 uniffi::setup_scaffolding!();
 
@@ -336,12 +336,12 @@ impl PrekeyRecordV2 {
 fn pack_prekeys(record: &PrekeyRecordV2) -> Zeroizing<Vec<u8>> {
     let mut out = Zeroizing::new(vec![0u8; PREKEY_RECORD_V2_LEN]);
     out[0] = RECORD_VERSION;
-    out[1..33].copy_from_slice(&record.signed_prekey_sk.to_bytes());
+    out[1..33].copy_from_slice(record.signed_prekey_sk.as_bytes());
     out[33..97].copy_from_slice(&record.signature.to_bytes());
     if let Some((id, sk)) = &record.opk {
         out[97] = FLAG_OTP;
         out[98..106].copy_from_slice(&id.to_be_bytes());
-        out[106..138].copy_from_slice(&sk.to_bytes());
+        out[106..138].copy_from_slice(sk.as_bytes());
     }
     // When absent, bytes 98..138 stay zero from the initial fill.
     out
@@ -361,7 +361,8 @@ fn unpack_prekeys(bytes: &[u8]) -> Result<PrekeyRecordV2, CoreError> {
             bytes[0]
         )));
     }
-    let signed_sk_bytes: [u8; 32] = bytes[1..33].try_into().expect("checked length");
+    let signed_sk_bytes: Zeroizing<[u8; 32]> =
+        Zeroizing::new(bytes[1..33].try_into().expect("checked length"));
     let sig_bytes: [u8; 64] = bytes[33..97].try_into().expect("checked length");
     let flags = bytes[97];
     if flags & !FLAG_OTP != 0 {
@@ -371,8 +372,9 @@ fn unpack_prekeys(bytes: &[u8]) -> Result<PrekeyRecordV2, CoreError> {
     }
     let opk = if flags & FLAG_OTP != 0 {
         let id = u64::from_be_bytes(bytes[98..106].try_into().expect("checked length"));
-        let sk_bytes: [u8; 32] = bytes[106..138].try_into().expect("checked length");
-        Some((id, StaticSecret::from(sk_bytes)))
+        let sk_bytes: Zeroizing<[u8; 32]> =
+            Zeroizing::new(bytes[106..138].try_into().expect("checked length"));
+        Some((id, StaticSecret::from(*sk_bytes)))
     } else {
         if bytes[98..138].iter().any(|b| *b != 0) {
             return Err(corrupt(
@@ -382,7 +384,7 @@ fn unpack_prekeys(bytes: &[u8]) -> Result<PrekeyRecordV2, CoreError> {
         None
     };
     Ok(PrekeyRecordV2 {
-        signed_prekey_sk: StaticSecret::from(signed_sk_bytes),
+        signed_prekey_sk: StaticSecret::from(*signed_sk_bytes),
         signature: Signature::from_bytes(&sig_bytes),
         opk,
     })
@@ -579,7 +581,7 @@ impl ArciumCore {
     pub fn save_identity(&self, identity: Arc<Identity>) -> Result<(), CoreError> {
         let mut bytes = Zeroizing::new(Vec::with_capacity(64));
         bytes.extend_from_slice(identity.signing_key.as_bytes());
-        bytes.extend_from_slice(&identity.dh_key.to_bytes());
+        bytes.extend_from_slice(identity.dh_key.as_bytes());
         self.store
             .lock()
             .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?
@@ -601,11 +603,11 @@ impl ArciumCore {
         if bytes.len() != 64 {
             return None;
         }
-        let sk_bytes: [u8; 32] = bytes[..32].try_into().ok()?;
-        let dh_bytes: [u8; 32] = bytes[32..].try_into().ok()?;
+        let sk_bytes: Zeroizing<[u8; 32]> = Zeroizing::new(bytes[..32].try_into().ok()?);
+        let dh_bytes: Zeroizing<[u8; 32]> = Zeroizing::new(bytes[32..].try_into().ok()?);
         Some(Arc::new(Identity {
             signing_key: SigningKey::from_bytes(&sk_bytes),
-            dh_key: StaticSecret::from(dh_bytes),
+            dh_key: StaticSecret::from(*dh_bytes),
         }))
     }
 
@@ -690,9 +692,12 @@ impl ArciumCore {
             .map_err(|X3dhError::BadSignature| CoreError::BadSignedPrekeySignature)?;
 
         let ratchet = DoubleRatchet::init_alice(
-            alice_session.root_key,
+            &alice_session.root_key,
             alice_session.their_signed_prekey_pk,
         );
+        // The root key's useful life ended with the ratchet; it is wiped here,
+        // not at the end of the function, which commits to the store below.
+        drop(alice_session.root_key);
         // The peer recorded as owner is the identity taken from the bundle —
         // the same key X3DH just ran against — so ownership cannot disagree
         // with the cryptography.
@@ -877,7 +882,7 @@ fn accept_first_message(
         pack_prekeys(&record)
     });
 
-    let mut bob_session = x3dh_respond(
+    let bob_session = x3dh_respond(
         &identity.dh_key,
         our_identity_pk,
         &record.signed_prekey_sk,
@@ -885,10 +890,11 @@ fn accept_first_message(
         handshake.identity_pk,
         handshake.ephemeral_pk,
     );
-    let ratchet = DoubleRatchet::init_bob(bob_session.root_key, record.signed_prekey_sk.clone());
+    let ratchet = DoubleRatchet::init_bob(&bob_session.root_key, record.signed_prekey_sk.clone());
     // This runs for every candidate first message, including ones that will
-    // not authenticate; the ratchet holds its own copy and wipes it on drop.
-    bob_session.root_key.zeroize();
+    // not authenticate. The ratchet holds its own copy and wipes it on drop;
+    // this one is wiped now rather than after the store commit below.
+    drop(bob_session.root_key);
     // Owner is the initiator identity this handshake was answered for, not
     // anything the caller asserted separately.
     let session = Session {

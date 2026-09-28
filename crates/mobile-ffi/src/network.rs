@@ -41,7 +41,8 @@ pub struct SyncReport {
     /// Messages newly accepted by the ratchet and committed.
     pub accepted: u32,
     pub duplicates: u32,
-    /// Handshakes answered, creating a session.
+    /// Sessions created as responder: a recorded handshake whose first
+    /// message authenticated in this round. A handshake alone creates none.
     pub sessions_accepted: u32,
     /// Own texts confirmed by the peer's receipt in this round.
     pub delivered: u32,
@@ -441,10 +442,19 @@ impl NetworkMessenger {
                     report.dropped += 1;
                     return Ok(Fate::Delete);
                 }
-                if self.core.has_session(handle)? {
+                let has_session = self.core.has_session(handle)?;
+                // A responder session an older build stored on receipt of a
+                // handshake, untouched since, does not stop the handshake
+                // here: `establish_session_responder` alone decides whether
+                // it retires that session (docs/S2-B2-DURABLE-MESSAGING.md,
+                // section 4b). Nothing is decided or changed here.
+                let legacy = has_session && self.core.is_legacy_unconfirmed(handle)?;
+                if has_session && !legacy {
                     // Dropped: no session is ever replaced. If ours is an
                     // unconfirmed start of our own, both sides initiated;
                     // record it so the application can show it (section 8).
+                    // (A handshake only recorded here is not a session and
+                    // does not reach this branch: it may be replaced.)
                     if self.core.initiator_handshake(handle)?.is_some()
                         && !self.confirmed(handle)?
                     {
@@ -453,14 +463,23 @@ impl NetworkMessenger {
                     report.dropped += 1;
                     return Ok(Fate::Delete);
                 }
+                // Recorded as provisional only: the session is created when
+                // the initiator's first message authenticates under it.
                 match self.core.establish_session_responder(handle, handshake) {
-                    Ok(()) => {
-                        report.sessions_accepted += 1;
-                        Ok(Fate::Delete)
-                    }
+                    Ok(()) => Ok(Fate::Delete),
                     Err(e) if transient(&e) => {
                         report.errors.push(e.to_string());
                         Ok(Fate::Keep)
+                    }
+                    // Refused, so the older session stays (something is
+                    // pending on it, it changed meanwhile into a session that
+                    // is never replaced, or this handshake cannot be
+                    // answered — such as a retransmission of the handshake
+                    // that session came from): dropped, as for any other
+                    // session.
+                    Err(_) if legacy => {
+                        report.dropped += 1;
+                        Ok(Fate::Delete)
                     }
                     Err(e) => {
                         chat::set_flag(self, &sender, chat::HANDSHAKE_REFUSED)?;
@@ -471,12 +490,16 @@ impl NetworkMessenger {
                 }
             }
             Envelope::Message { wire, .. } => {
-                if !self.core.has_session(handle)? {
-                    return Ok(Fate::Keep);
-                }
+                // Without a session, the message is either the first one of a
+                // recorded handshake — which creates the session if it
+                // authenticates — or waits for its handshake (`NoSession`).
+                let first = !self.core.has_session(handle)?;
                 match self.core.receive_message(handle, wire) {
                     Ok(ReceiveResult::Accepted { message }) => {
                         report.accepted += 1;
+                        if first {
+                            report.sessions_accepted += 1;
+                        }
                         crash_point("after_accept");
                         let plaintext = Zeroizing::new(message.plaintext);
                         self.settle(handle, &message.message_id, &plaintext, report)?;
@@ -488,8 +511,21 @@ impl NetworkMessenger {
                         self.receipt_again(handle, &message_id)?;
                         Ok(Fate::Delete)
                     }
+                    Err(CoreError::NoSession { .. }) => Ok(Fate::Keep),
                     Err(CoreError::Crypto { .. }) => {
                         report.dropped += 1;
+                        Ok(Fate::Delete)
+                    }
+                    // The recorded handshake can no longer be answered: the
+                    // prekeys it names rotated or were consumed since.
+                    Err(
+                        e @ (CoreError::StaleSignedPrekey
+                        | CoreError::OneTimePrekeyUnavailable { .. }
+                        | CoreError::OneTimePrekeyRequired),
+                    ) => {
+                        chat::set_flag(self, &sender, chat::HANDSHAKE_REFUSED)?;
+                        report.dropped += 1;
+                        report.errors.push(format!("handshake refused: {e}"));
                         Ok(Fate::Delete)
                     }
                     Err(CoreError::SessionUnresolved { .. }) => {

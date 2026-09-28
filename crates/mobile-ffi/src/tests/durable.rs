@@ -29,7 +29,9 @@ fn open_at(path: &str, byte: u8) -> Arc<ArciumCore> {
 }
 
 /// Alice and Bob with an established session (handle 1 on both sides), each
-/// in a file database. Returns the two paths.
+/// in a file database. Bob's session is created by Alice's first message —
+/// a handshake alone creates none — which both sides then acknowledge, so
+/// nothing is left pending. Returns the two paths.
 fn established_pair() -> (String, String) {
     let (pa, pb) = (db_path(), db_path());
     let bob = open_at(&pb, 1);
@@ -41,6 +43,19 @@ fn established_pair() -> (String, String) {
         .establish_session_initiator(1, bob.export_prekey_bundle().unwrap())
         .unwrap();
     bob.establish_session_responder(1, hs).unwrap();
+    let first = sent_new(
+        alice
+            .send_message(1, b"first".to_vec(), b"first".to_vec())
+            .unwrap(),
+    );
+    assert!(matches!(
+        bob.receive_message(1, first.wire).unwrap(),
+        ReceiveResult::Accepted { .. }
+    ));
+    assert!(bob
+        .acknowledge_incoming(1, first.message_id.clone())
+        .unwrap());
+    assert!(alice.acknowledge_outgoing(1, first.message_id).unwrap());
     (pa, pb)
 }
 
@@ -74,9 +89,12 @@ fn the_initiator_handshake_can_be_read_again_after_reopening() {
         .unwrap();
     drop(alice);
     // Lost before sending: read it back from the reopened store.
-    let again = open_at(&pa, 4).initiator_handshake(9).unwrap();
+    let alice = open_at(&pa, 4);
+    let again = alice.initiator_handshake(9).unwrap();
     assert_eq!(again, Some(hs.clone()));
     bob.establish_session_responder(9, again.unwrap()).unwrap();
+    let m = alice.encrypt_message(9, b"first".to_vec()).unwrap();
+    assert_eq!(bob.decrypt_message(9, m).unwrap(), b"first");
     assert_eq!(bob.initiator_handshake(9).unwrap(), None);
 }
 
@@ -286,6 +304,10 @@ fn ffi_crash_child() {
                 .establish_session_responder(5, hs)
                 .unwrap();
         }
+        "first" => {
+            let wire = std::fs::read(dir.join("wire")).unwrap();
+            open_at(&read("b"), 1).decrypt_message(5, wire).unwrap();
+        }
         other => panic!("unknown scenario {other}"),
     }
     std::process::abort();
@@ -362,11 +384,14 @@ fn killed_before_delivering_the_message_it_is_still_pending() {
         .unwrap());
 }
 
-/// The responder's prekey rotation and session are committed together,
-/// so after a kill right after the call both are there.
+/// Killed right after recording a handshake. After the restart the handshake
+/// is still recorded but is not a session: nothing was consumed and nothing
+/// reads as established. The initiator's first message then creates the
+/// session and consumes the prekey, after which the same handshake cannot be
+/// answered again.
 #[cfg(unix)]
 #[test]
-fn killed_after_answering_a_handshake_the_session_and_rotation_both_persist() {
+fn killed_after_recording_a_handshake_it_stays_provisional_until_the_first_message() {
     let pb = db_path();
     let bob = open_at(&pb, 1);
     bob.save_identity(Identity::generate()).unwrap();
@@ -383,6 +408,11 @@ fn killed_after_answering_a_handshake_the_session_and_rotation_both_persist() {
     run_ffi_child(&dir, "respond");
 
     let bob = open_at(&pb, 1);
+    assert!(!bob.has_session(5).unwrap(), "a handshake is not a session");
+    assert!(has_provisional(&bob, 5), "the recorded handshake survived");
+    assert_eq!(current_opk_id(&bob).unwrap(), published, "nothing consumed");
+    let m = alice.encrypt_message(5, b"after restart".to_vec()).unwrap();
+    assert_eq!(bob.decrypt_message(5, m).unwrap(), b"after restart");
     assert!(bob.has_session(5).unwrap());
     assert_ne!(current_opk_id(&bob).unwrap(), published, "prekey consumed");
     // The same handshake cannot be answered twice.
@@ -390,8 +420,51 @@ fn killed_after_answering_a_handshake_the_session_and_rotation_both_persist() {
         bob.establish_session_responder(6, hs),
         Err(CoreError::OneTimePrekeyUnavailable { .. })
     ));
-    let m = alice.encrypt_message(5, b"after restart".to_vec()).unwrap();
-    assert_eq!(bob.decrypt_message(5, m).unwrap(), b"after restart");
+    let r = bob.encrypt_message(5, b"reply".to_vec()).unwrap();
+    assert_eq!(alice.decrypt_message(5, r).unwrap(), b"reply");
+}
+
+/// Killed right after the first message created the session: the session,
+/// the message, the consumed prekey and the deleted handshake were one
+/// transaction, so after the restart all of them are there, and the same
+/// message is a duplicate. (Deaths inside that transaction are covered in
+/// `core_protocol::messaging`.)
+#[cfg(unix)]
+#[test]
+fn killed_after_the_first_message_the_session_is_complete() {
+    let pb = db_path();
+    let bob = open_at(&pb, 1);
+    bob.save_identity(Identity::generate()).unwrap();
+    bob.establish_prekeys().unwrap();
+    let published = current_opk_id(&bob).unwrap();
+    let alice = fresh_core(7);
+    alice.save_identity(Identity::generate()).unwrap();
+    let hs = alice
+        .establish_session_initiator(5, bob.export_prekey_bundle().unwrap())
+        .unwrap();
+    bob.establish_session_responder(5, hs).unwrap();
+    drop(bob);
+    let wire = alice.encrypt_message(5, b"first".to_vec()).unwrap();
+    let dir = crash_dir("", &pb);
+    std::fs::write(dir.join("wire"), &wire).unwrap();
+    run_ffi_child(&dir, "first");
+
+    let bob = open_at(&pb, 1);
+    assert!(bob.has_session(5).unwrap());
+    assert!(!has_provisional(&bob, 5));
+    assert_ne!(current_opk_id(&bob).unwrap(), published, "prekey consumed");
+    let pending = bob.pending_incoming(5).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].plaintext, b"first");
+    assert!(matches!(
+        bob.receive_message(5, wire).unwrap(),
+        ReceiveResult::Duplicate {
+            undelivered: Some(_),
+            ..
+        }
+    ));
+    let r = bob.encrypt_message(5, b"reply".to_vec()).unwrap();
+    assert_eq!(alice.decrypt_message(5, r).unwrap(), b"reply");
 }
 
 // ── Acceptance: idempotent sends and session removal through the FFI ─────────
@@ -519,6 +592,7 @@ fn replacing_a_handshake_the_peer_accepted_is_refused_by_the_peer() {
         bob.establish_session_responder(1, hs2),
         Err(CoreError::SessionAlreadyExists { session_id: 1 })
     ));
+    assert!(!has_provisional(&bob, 1), "nothing recorded for it either");
     let m = alice
         .encrypt_message(1, b"on the new session".to_vec())
         .unwrap();

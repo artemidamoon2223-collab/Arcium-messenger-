@@ -6,7 +6,10 @@ use core_crypto::x3dh::{
 };
 use core_protocol::checkpoint::SessionRole;
 use core_protocol::durable::SideWrite;
-use core_protocol::messaging::{Messenger, MessagingError, NewSession};
+use core_protocol::messaging::{
+    FirstContact, Messenger, MessagingError, NewSession, ProvisionalHandshake, Received,
+    ValidatedRecord,
+};
 use core_protocol::Session;
 use core_storage::{EncryptedStore, StorageError};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
@@ -14,7 +17,7 @@ use rand_core::{OsRng, RngCore};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 uniffi::setup_scaffolding!();
 
@@ -725,149 +728,196 @@ impl ArciumCore {
         Ok(handshake)
     }
 
-    /// Establishes a session as the X3DH responder ("Bob") from the 84-byte
-    /// `INITIATOR_HANDSHAKE_V1` the initiator produced.
+    /// Records the 84-byte `INITIATOR_HANDSHAKE_V1` an initiator ("Alice")
+    /// produced, as the X3DH responder ("Bob"). **This creates no session.**
     ///
-    /// # Prekey state transition
+    /// Receiving a handshake is not authentication: its bytes are public and
+    /// anyone can send them. So the handshake is only validated against this
+    /// device's prekeys and recorded as *provisional* under `session_id`.
+    /// Nothing is consumed, no handle is taken, `has_session` stays false, and
+    /// a later handshake for this handle replaces it. The session is created
+    /// by `receive_message(session_id, …)` when the initiator's first message
+    /// authenticates under the keys this handshake derives — only that proves
+    /// the initiator holds the secret of the identity key the handshake names.
+    /// That same transaction consumes the one-time prekey.
     ///
-    /// The handshake names which signed prekey and which one-time prekey it used.
-    /// This device answers from its own record, never from what the handshake
-    /// asserts, so the six outcomes are decided by comparing the two:
+    /// # Prekey rules
+    ///
+    /// The handshake names which signed prekey and which one-time prekey it
+    /// used. This device answers from its own record, never from what the
+    /// handshake asserts:
     ///
     /// | stored state | `used_otp` | named `opk_id` | outcome |
     /// |---|---|---|---|
     /// | any | any | any | `StaleSignedPrekey` if `spk_id` differs |
-    /// | one-time prekey held | yes | matches | accept, consume it, publish a replacement |
+    /// | one-time prekey held | yes | matches | recorded; consumed when the first message authenticates |
     /// | one-time prekey held | yes | differs | `OneTimePrekeyUnavailable` |
     /// | one-time prekey held | no | — | `OneTimePrekeyRequired` |
-    /// | none held | no | — | accept without `dh4` |
+    /// | none held | no | — | recorded; answered without `dh4` |
     /// | none held | yes | any | `OneTimePrekeyUnavailable` |
     ///
     /// A one-time prekey error never falls back to the weaker no-`dh4` path: that
     /// would let anyone who can edit bytes in flight choose the weaker handshake.
+    /// The same rules are checked again when the first message arrives, against
+    /// the prekeys held then.
     ///
-    /// Because a consumed identifier is replaced rather than remembered, replaying
-    /// a handshake this device already accepted names an identifier that is no
-    /// longer current and is refused. That is the whole of the replay property
-    /// claimed here — it holds for every state reachable through
-    /// `establish_prekeys` and this method, which always keep a one-time prekey
-    /// published. It is not a general anti-replay mechanism, and the no-one-time-
-    /// prekey branch above has none.
+    /// Because a consumed identifier is replaced rather than remembered,
+    /// replaying a handshake whose session was created names an identifier
+    /// that is no longer current and is refused. That is the whole of the
+    /// replay property claimed here; the no-one-time-prekey branch has none.
     ///
-    /// # Atomicity
+    /// # Refusals
     ///
-    /// The rotated prekey record, the new session and its handle are written in
-    /// one store transaction, and the prekey record is replaced only if it is
-    /// still byte-identical to the one validated here. A crash before that
-    /// commit leaves the one-time prekey unconsumed and no session — the same
-    /// handshake can be answered again; after it, both exist. Nothing is
-    /// consumed without the session that uses it.
+    /// Once a session exists — authenticated, or started here as initiator —
+    /// a handshake never replaces it: `SessionAlreadyExists` for this peer,
+    /// `SessionIdCollision` if the handle belongs to another peer. Nothing is
+    /// written and nothing is consumed.
     ///
-    /// If the session is refused because this peer already has one or the
-    /// handle belongs to another peer, nothing from that transaction is written,
-    /// and the one-time prekey is then consumed on its own: a prekey named by a
-    /// handshake that reached this device never returns to circulation.
+    /// # Sessions stored by older builds
+    ///
+    /// Builds before this one stored a responder session on receipt of a
+    /// handshake. If this peer's session under `session_id` is exactly such a
+    /// session with nothing done to it since — no message from the peer
+    /// authenticated, nothing sent, nothing pending — it has no more
+    /// authority than a recorded handshake: it is deleted with its handle
+    /// and this handshake recorded in its place, in one transaction, only
+    /// after this handshake passed the prekey rules above and only while the
+    /// prekey record is still the one it passed them against. The one-time
+    /// prekey the old session consumed stays consumed. Any other session is
+    /// refused as above.
     pub fn establish_session_responder(
         &self,
         session_id: u64,
         initiator_handshake: Vec<u8>,
     ) -> Result<(), CoreError> {
         let identity = self.require_identity()?;
+        let our_identity_pk = PublicKey::from(&identity.dh_key).to_bytes();
         let handshake = unpack_initiator_handshake(&initiator_handshake)?;
-        let (mut store, mut messenger) = self.lock()?;
-
+        let (mut store, messenger) = self.lock()?;
         let record_bytes = Zeroizing::new(store.get(PREKEYS_KEY)?);
-        let mut record = unpack_prekeys(&record_bytes)?;
-        if spk_id(record.signed_prekey_pk().as_bytes()) != handshake.spk_id {
-            return Err(CoreError::StaleSignedPrekey);
-        }
-        // Every rejection below returns before anything is written.
-        let taken = match (record.opk.take(), handshake.opk_id) {
-            (Some((held_id, held_sk)), Some(named)) if held_id == named => {
-                record.opk = Some(new_one_time_prekey());
-                Some(held_sk)
-            }
-            (Some(_), Some(named)) => {
-                return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
-            }
-            (Some(_), None) => return Err(CoreError::OneTimePrekeyRequired),
-            (None, Some(named)) => {
-                return Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
-            }
-            (None, None) => None,
-        };
-        let rotated = taken.is_some().then(|| pack_prekeys(&record));
-
-        let our_identity_pk = PublicKey::from(&identity.dh_key);
-        let bob_session = x3dh_respond(
-            &identity.dh_key,
-            our_identity_pk,
-            &record.signed_prekey_sk,
-            taken.as_ref(),
-            handshake.identity_pk,
-            handshake.ephemeral_pk,
-        );
-        let ratchet = DoubleRatchet::init_bob(bob_session.root_key, record.signed_prekey_sk.clone());
-        // Owner is the initiator identity this handshake was actually answered
-        // for, not anything the caller asserted separately.
-        let session = Session {
-            ratchet,
-            ad: bob_session.ad.clone(),
-            peer_identity_pk: handshake.identity_pk.to_bytes(),
-        };
-        let extra = match &rotated {
-            Some(new_record) => vec![SideWrite::replace(
-                PREKEYS_KEY.into(),
-                record_bytes.clone(),
-                new_record.clone(),
+        check_answerable(&unpack_prekeys(&record_bytes)?, &handshake)?;
+        messenger
+            .record_provisional_handshake(
+                &mut store,
+                our_identity_pk,
+                session_id,
+                &ProvisionalHandshake {
+                    peer_identity_pk: handshake.identity_pk.to_bytes(),
+                    handshake: initiator_handshake,
+                },
+                &ValidatedRecord {
+                    key: PREKEYS_KEY.into(),
+                    value: record_bytes,
+                },
             )
-            .map_err(|_| CoreError::Storage {
-                msg: "prekey record key is reserved".into(),
-            })?],
-            None => Vec::new(),
-        };
-        let created = messenger.create_session(
-            &mut store,
-            our_identity_pk.to_bytes(),
-            NewSession {
-                handle: session_id,
-                session,
-                role: SessionRole::Responder,
-                initial_outbound: None,
-                extra,
-            },
-        );
-        match created {
-            Ok(()) => Ok(()),
-            // The prekey record changed since it was validated: another
-            // receipt consumed the one-time prekey first.
-            Err(MessagingError::ExtraConflict { .. }) => Err(CoreError::OneTimePrekeyUnavailable {
-                opk_id: handshake.opk_id.unwrap_or_default(),
-            }),
-            Err(e @ (MessagingError::AlreadyExists { .. } | MessagingError::HandleCollision { .. })) => {
-                if let Some(new_record) = rotated {
-                    // Best effort: the refusal is reported whatever this does.
-                    let _ = consume_prekey(&mut store, &record_bytes, &new_record);
-                }
-                Err(CoreError::messaging(session_id, e))
-            }
-            Err(e) => Err(CoreError::messaging(session_id, e)),
-        }
+            .map_err(|e| CoreError::messaging(session_id, e))
     }
 }
 
-/// Replaces the prekey record with `rotated` if it is still `expected`.
-fn consume_prekey(
-    store: &mut EncryptedStore,
-    expected: &[u8],
-    rotated: &[u8],
-) -> Result<(), StorageError> {
-    let tx = store.transaction()?;
-    if tx.get(PREKEYS_KEY)?.as_slice() == expected {
-        tx.put(PREKEYS_KEY, rotated)?;
-        tx.commit()?;
+/// Whether this device can answer `handshake` from its prekey `record` (the
+/// table on `establish_session_responder`). Consumes nothing.
+fn check_answerable(
+    record: &PrekeyRecordV2,
+    handshake: &InitiatorHandshakeV1,
+) -> Result<(), CoreError> {
+    if spk_id(record.signed_prekey_pk().as_bytes()) != handshake.spk_id {
+        return Err(CoreError::StaleSignedPrekey);
     }
-    Ok(())
+    match (record.opk.as_ref().map(|(id, _)| *id), handshake.opk_id) {
+        (Some(held), Some(named)) if held == named => Ok(()),
+        (Some(_), Some(named)) | (None, Some(named)) => {
+            Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
+        }
+        (Some(_), None) => Err(CoreError::OneTimePrekeyRequired),
+        (None, None) => Ok(()),
+    }
+}
+
+/// Creates the responder session for `provisional` from the initiator's
+/// first message `wire`, if it authenticates (see `establish_session_responder`).
+///
+/// X3DH runs again from the provisional handshake against the prekeys held
+/// now, which are checked again first. The session is stored — together with
+/// the prekey record rotated past the one-time prekey it used, only if that
+/// record is still byte-identical to the one read here — only if `wire`
+/// decrypts under it; otherwise nothing is written.
+fn accept_first_message(
+    identity: &Identity,
+    store: &mut EncryptedStore,
+    messenger: &mut Messenger,
+    session_id: u64,
+    provisional: ProvisionalHandshake,
+    wire: &[u8],
+) -> Result<Received, CoreError> {
+    let handshake = unpack_initiator_handshake(&provisional.handshake)?;
+    if handshake.identity_pk.to_bytes() != provisional.peer_identity_pk {
+        return Err(CoreError::InvalidSessionState {
+            session_id,
+            msg: "provisional handshake does not match its peer".into(),
+        });
+    }
+    let record_bytes = Zeroizing::new(store.get(PREKEYS_KEY)?);
+    let mut record = unpack_prekeys(&record_bytes)?;
+    let our_identity_pk = PublicKey::from(&identity.dh_key);
+    if let Err(refused) = check_answerable(&record, &handshake) {
+        // Another instance on this database may have created the session
+        // from this handshake since it was read here, consuming its prekey.
+        // The message then belongs to that session.
+        return match messenger.peer_of(store, session_id) {
+            Ok(Some(_)) => messenger
+                .receive(store, our_identity_pk.to_bytes(), session_id, wire)
+                .map_err(|e| CoreError::messaging(session_id, e)),
+            Ok(None) => Err(refused),
+            Err(e) => Err(CoreError::messaging(session_id, e)),
+        };
+    }
+    let taken = record.opk.take().map(|(_, sk)| sk);
+    let rotated = taken.is_some().then(|| {
+        record.opk = Some(new_one_time_prekey());
+        pack_prekeys(&record)
+    });
+
+    let mut bob_session = x3dh_respond(
+        &identity.dh_key,
+        our_identity_pk,
+        &record.signed_prekey_sk,
+        taken.as_ref(),
+        handshake.identity_pk,
+        handshake.ephemeral_pk,
+    );
+    let ratchet = DoubleRatchet::init_bob(bob_session.root_key, record.signed_prekey_sk.clone());
+    // This runs for every candidate first message, including ones that will
+    // not authenticate; the ratchet holds its own copy and wipes it on drop.
+    bob_session.root_key.zeroize();
+    // Owner is the initiator identity this handshake was answered for, not
+    // anything the caller asserted separately.
+    let session = Session {
+        ratchet,
+        ad: bob_session.ad.clone(),
+        peer_identity_pk: handshake.identity_pk.to_bytes(),
+    };
+    let extra = match rotated {
+        Some(new_record) => vec![SideWrite::replace(PREKEYS_KEY.into(), record_bytes, new_record)
+            .map_err(|_| CoreError::Storage {
+                msg: "prekey record key is reserved".into(),
+            })?],
+        None => Vec::new(),
+    };
+    let first = FirstContact {
+        handle: session_id,
+        session,
+        provisional,
+        extra,
+    };
+    match messenger.accept_first_message(store, our_identity_pk.to_bytes(), first, wire) {
+        Ok(received) => Ok(received),
+        // The prekey record changed since it was read: another first message
+        // consumed the one-time prekey first.
+        Err(MessagingError::ExtraConflict { .. }) => Err(CoreError::OneTimePrekeyUnavailable {
+            opk_id: handshake.opk_id.unwrap_or_default(),
+        }),
+        Err(e) => Err(CoreError::messaging(session_id, e)),
+    }
 }
 
 // Plain (non-exported) impl block: helpers here are NOT visible to UniFFI,
@@ -893,6 +943,19 @@ impl ArciumCore {
             msg: "mutex poisoned".into(),
         })?;
         Ok((store, messenger))
+    }
+
+    /// Whether the session under `session_id` is a responder session an
+    /// older build stored on receipt of a handshake, untouched since
+    /// (`Messenger::is_legacy_unconfirmed`). Read-only: it decides nothing
+    /// and changes nothing; `establish_session_responder` is what may retire
+    /// such a session, after its own checks.
+    pub(crate) fn is_legacy_unconfirmed(&self, session_id: u64) -> Result<bool, CoreError> {
+        let our = self.our_identity_pk()?;
+        let (mut store, messenger) = self.lock()?;
+        messenger
+            .is_legacy_unconfirmed(&mut store, our, session_id)
+            .map_err(|e| CoreError::messaging(session_id, e))
     }
 
     fn our_identity_pk(&self) -> Result<[u8; 32], CoreError> {
@@ -1549,6 +1612,12 @@ mod tests {
         unpack_prekeys(&read_record(core)).unwrap().opk.map(|(id, _)| id)
     }
 
+    /// Whether a handshake is recorded, unauthenticated, under `handle`.
+    fn has_provisional(core: &ArciumCore, handle: u64) -> bool {
+        let (store, messenger) = core.lock().unwrap();
+        messenger.provisional_handshake(&store, handle).unwrap().is_some()
+    }
+
     // ── Parsing ──────────────────────────────────────────────────────────────
 
     #[test]
@@ -1715,8 +1784,9 @@ mod tests {
 
     // ── One-time prekey state machine ────────────────────────────────────────
 
-    /// The accepted path: the named prekey is consumed exactly once and a fresh
-    /// one takes its place, so the record advances by one durable write.
+    /// The accepted path: recording the handshake consumes nothing; the
+    /// initiator's first message consumes the named prekey exactly once and a
+    /// fresh one takes its place, in the transaction that creates the session.
     #[test]
     fn matching_one_time_prekey_is_consumed_and_replaced() {
         let (bob, bob_bundle) = peer_with_prekeys(220);
@@ -1731,20 +1801,26 @@ mod tests {
         );
 
         let handshake = alice.establish_session_initiator(1, bob_bundle).unwrap();
+        let before = read_record(&bob);
         bob.establish_session_responder(1, handshake).unwrap();
-
-        let replacement = current_opk_id(&bob).expect("a replacement must be published");
-        assert_ne!(replacement, published, "the consumed prekey must be replaced");
+        assert_eq!(
+            read_record(&bob),
+            before,
+            "an unauthenticated handshake must not consume the prekey"
+        );
 
         // Round trip proves dh4 was actually included on both sides.
         let msg = b"through a one-time prekey".to_vec();
         let ct = alice.encrypt_message(1, msg.clone()).unwrap();
         assert_eq!(bob.decrypt_message(1, ct).unwrap(), msg);
+
+        let replacement = current_opk_id(&bob).expect("a replacement must be published");
+        assert_ne!(replacement, published, "the consumed prekey must be replaced");
     }
 
-    /// Replay. The one property claimed: a handshake this device already accepted
-    /// names an identifier that is no longer current, so it is refused — and the
-    /// refusal happens before any state changes.
+    /// Replay. The one property claimed: a handshake whose session was
+    /// created here names an identifier that is no longer current, so it is
+    /// refused — and the refusal happens before any state changes.
     #[test]
     fn replaying_an_accepted_handshake_is_rejected_and_changes_nothing() {
         let (bob, bob_bundle) = peer_with_prekeys(222);
@@ -1753,6 +1829,8 @@ mod tests {
 
         let handshake = alice.establish_session_initiator(1, bob_bundle).unwrap();
         bob.establish_session_responder(1, handshake.clone()).unwrap();
+        let first = alice.encrypt_message(1, b"first".to_vec()).unwrap();
+        bob.decrypt_message(1, first).unwrap();
 
         let before = read_record(&bob);
         let err = bob
@@ -1763,6 +1841,10 @@ mod tests {
             "expected OneTimePrekeyUnavailable, got {err:?}"
         );
         assert_eq!(read_record(&bob), before, "a refused replay must not touch the record");
+        assert!(
+            !has_provisional(&bob, 2),
+            "a refused replay must not even be recorded"
+        );
 
         assert!(
             matches!(
@@ -1920,38 +2002,42 @@ mod tests {
 
     // ── Atomicity ────────────────────────────────────────────────────────────
 
-    /// Two threads presenting the same valid handshake must not both consume the
-    /// one-time prekey it names. The transition is read-validate-rotate-write
-    /// under one continuous store guard, so the loser sees the replacement and is
-    /// refused — leaving exactly one accepted session and one durable advance.
+    /// Two cores on one database receive the same valid first message at
+    /// the same time, for one recorded handshake. The session is created once,
+    /// the one-time prekey is consumed once, and the loser reports the
+    /// winner's acceptance as a duplicate instead of creating a second session
+    /// or a second acceptance.
     #[test]
-    fn concurrent_receipt_of_one_handshake_consumes_the_prekey_once() {
+    fn concurrent_first_messages_create_one_session_and_consume_the_prekey_once() {
         use std::sync::mpsc;
         use std::thread;
 
-        let (bob, bob_bundle) = peer_with_prekeys(240);
+        let path = tempdir().unwrap().keep().join("db").to_str().unwrap().to_string();
+        let bob = ArciumCore::new(path.clone(), key32(240)).unwrap();
+        bob.save_identity(Identity::generate()).unwrap();
+        bob.establish_prekeys().unwrap();
         let alice = fresh_core(241);
         alice.save_identity(Identity::generate()).unwrap();
 
         let published = current_opk_id(&bob).unwrap();
-        let handshake = alice.establish_session_initiator(1, bob_bundle).unwrap();
+        let handshake = alice
+            .establish_session_initiator(1, bob.export_prekey_bundle().unwrap())
+            .unwrap();
+        bob.establish_session_responder(10, handshake).unwrap();
+        let first = alice.encrypt_message(1, b"first".to_vec()).unwrap();
 
-        // Both threads block on the barrier and are released together, so they
-        // enter establish_session_responder as close to simultaneously as the
-        // scheduler allows. Without this the second thread would usually start
-        // after the first had already finished and the test would only be
-        // checking the sequential state machine.
+        // Separate connections, released together by the barrier, so each
+        // reads the provisional handshake and the prekeys before either
+        // commits.
         let gate = Arc::new(std::sync::Barrier::new(2));
         let (tx, rx) = mpsc::channel();
         let mut joins = Vec::new();
-        for handle in [10u64, 11u64] {
-            let core = Arc::clone(&bob);
-            let hs = handshake.clone();
-            let tx = tx.clone();
-            let gate = Arc::clone(&gate);
+        for _ in 0..2 {
+            let core = ArciumCore::new(path.clone(), key32(240)).unwrap();
+            let (wire, tx, gate) = (first.clone(), tx.clone(), Arc::clone(&gate));
             joins.push(thread::spawn(move || {
                 gate.wait();
-                tx.send(core.establish_session_responder(handle, hs)).unwrap();
+                tx.send(core.receive_message(10, wire)).unwrap();
             }));
         }
         drop(tx);
@@ -1960,36 +2046,47 @@ mod tests {
         }
 
         let results: Vec<_> = rx.iter().collect();
-        assert_eq!(results.len(), 2);
-        assert_eq!(
-            results.iter().filter(|r| r.is_ok()).count(),
-            1,
-            "exactly one receipt may consume the prekey: {results:?}"
-        );
-        assert!(
-            results.iter().any(|r| matches!(
-                r,
-                Err(CoreError::OneTimePrekeyUnavailable { opk_id }) if *opk_id == published
-            )),
-            "the loser must be refused as unavailable, not silently accepted: {results:?}"
-        );
-
+        let accepted = results
+            .iter()
+            .filter(|r| matches!(r, Ok(ReceiveResult::Accepted { .. })))
+            .count();
+        assert_eq!(accepted, 1, "exactly one acceptance: {results:?}");
+        for r in &results {
+            assert!(
+                matches!(
+                    r,
+                    Ok(ReceiveResult::Accepted { .. } | ReceiveResult::Duplicate { .. })
+                        | Err(CoreError::Storage { .. })
+                ),
+                "the loser is a duplicate or a busy store, never a second session: {results:?}"
+            );
+        }
         let after = current_opk_id(&bob).unwrap();
-        assert_ne!(after, published, "the durable state must have advanced once");
+        assert_ne!(after, published, "the durable state must have advanced");
+        assert_eq!(bob.pending_incoming(10).unwrap().len(), 1, "accepted once");
+        assert!(!has_provisional(&bob, 10));
+        // A retry of a busy loser is a duplicate too, and changes nothing more.
+        assert!(matches!(
+            bob.receive_message(10, first).unwrap(),
+            ReceiveResult::Duplicate { .. }
+        ));
+        assert_eq!(current_opk_id(&bob).unwrap(), after);
     }
 
-    /// Session insertion failing after the prekey was durably consumed must not
-    /// put it back. A prekey handed to a handshake never returns to circulation,
-    /// even when nothing was built from it (T1).
+    /// A handshake refused because the handle already belongs to another
+    /// peer's authenticated session consumes nothing and records nothing:
+    /// only an authenticated first message spends a one-time prekey.
     #[test]
-    fn a_consumed_prekey_is_not_restored_when_session_insertion_fails() {
+    fn a_refused_handshake_consumes_no_prekey() {
         let (bob, first_bundle) = peer_with_prekeys(242);
         let alice = fresh_core(243);
         alice.save_identity(Identity::generate()).unwrap();
 
-        // Occupy the handle with a real session first.
+        // Occupy the handle with an authenticated session first.
         let hs1 = alice.establish_session_initiator(1, first_bundle).unwrap();
         bob.establish_session_responder(7, hs1).unwrap();
+        let m = alice.encrypt_message(1, b"first".to_vec()).unwrap();
+        bob.decrypt_message(7, m).unwrap();
 
         // A second, different initiator aims at the same handle.
         let second_bundle = bob.export_prekey_bundle().unwrap();
@@ -1997,7 +2094,7 @@ mod tests {
         carol.save_identity(Identity::generate()).unwrap();
         let hs2 = carol.establish_session_initiator(1, second_bundle).unwrap();
 
-        let consumed = current_opk_id(&bob).unwrap();
+        let before = read_record(&bob);
         let err = bob
             .establish_session_responder(7, hs2)
             .expect_err("the handle is taken by a different peer");
@@ -2005,18 +2102,16 @@ mod tests {
             matches!(err, CoreError::SessionIdCollision { session_id: 7 }),
             "expected SessionIdCollision, got {err:?}"
         );
-
-        let after = current_opk_id(&bob).unwrap();
-        assert_ne!(
-            after, consumed,
-            "the prekey was already consumed and must stay consumed"
-        );
+        assert_eq!(read_record(&bob), before, "nothing was consumed");
+        assert!(!has_provisional(&bob, 7), "nothing was recorded");
     }
 
+    mod responder;
     mod chat;
     mod durable;
     mod net_harness;
     mod network;
     mod network_crash;
     mod net_peer;
+    mod legacy_upgrade;
 }

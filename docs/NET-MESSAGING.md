@@ -43,9 +43,15 @@ Ed25519 (signs its prekeys; the signed object binds the X25519 key, F-2).
 - **Initiator.** `start_session(peer)` fetches the peer's bundle from the relay
   and refuses it (`PeerIdentityMismatch`) unless both keys equal the pinned
   card. X3DH then checks the prekey signature under that pinned Ed25519 key.
-- **Responder.** A handshake is answered only if its sender is a pinned
+- **Responder.** A handshake is considered only if its sender is a pinned
   contact and the initiator key inside the handshake equals that contact's
-  X25519 key. Anything from an unknown sender is dropped.
+  X25519 key. Anything from an unknown sender is dropped. Both keys are
+  public and the sender field is unauthenticated, so this only picks the
+  contact: the handshake is recorded as provisional and creates no session.
+  The session is created when the initiator's first message (OPEN)
+  authenticates under the keys the handshake derives — which requires the
+  secret of the pinned identity key (S2-B2 section 4). The relay and Kotlin
+  never decide that.
 
 There is no trust on first use in the application. (The CI peer in
 `tests/net_peer.rs` pins on first use; it is a test harness.)
@@ -132,10 +138,23 @@ that does not decrypt, is malformed or comes from an unknown sender is
 deleted from the relay and changes nothing.
 
 Handshake: retransmitted by the initiator until the session has received a
-message from the peer (its receipt of OPEN). The responder answers it once; a
-repeat, or any handshake from a peer it already has a session with, is
-dropped. No session is ever replaced automatically: not on timeouts, not when
-a peer is offline, not on a new handshake.
+message from the peer (its receipt of OPEN). The responder records it as
+provisional (a repeat changes nothing; a different handshake for that contact
+replaces it, since neither has authority) and creates the session when the
+first message authenticates under it. A handshake from a peer it already has
+a session with is dropped. No session is ever replaced automatically: not on
+timeouts, not when a peer is offline, not on a new handshake. The one
+exception is a responder session an earlier build stored on receipt of a
+handshake and nothing has happened to since (S2-B2 section 4b): the network
+layer only checks that shape, read-only, and passes the handshake to
+`establish_session_responder`, which alone decides whether to retire it. A
+refusal there is a drop, as for any existing session.
+
+A message with no session yet either creates it (it authenticates under the
+recorded handshake), is deleted (it does not), or waits on the relay (no
+handshake recorded). If the prekeys the recorded handshake names rotated or
+were consumed by another contact's first message since, the message is
+deleted and the handshake flagged as refused.
 
 ## 7. Failure handling
 
@@ -159,6 +178,12 @@ a peer is offline, not on a new handshake.
 - Refusal feedback for handshakes: a responder that refuses a handshake
   (stale prekey) tells nobody; the initiator keeps retrying until the user
   removes the session (S2-B2 section 6a).
+- One provisional handshake per contact. Whoever can put envelopes in the
+  mailbox (the relay has no authentication) can keep replacing a contact's
+  recorded handshake before its first message arrives; the genuine one is then
+  retransmitted and takes over. That delays first contact; it creates no
+  session and consumes no prekey. Each such first message costs the responder
+  one X3DH and one ratchet step.
 - A second initiator racing for the same one-time prekey fails the same way.
 - Simultaneous initiation: if both users start a session with each other
   before either handshake arrives, each device holds an unconfirmed initiator
@@ -181,7 +206,7 @@ entry per logical message, never written by the ratchet.
 
 | entry state | means |
 |---|---|
-| `Queued` | recorded under the application's id; not encrypted (no session yet) |
+| `Queued` | recorded under the application's id; not encrypted (no session that can send yet) |
 | `Pending` | committed to the outbox (encrypted) |
 | `Transmitted` | the relay accepted it; nothing is known about the peer |
 | `Delivered` | the peer's authenticated receipt arrived (its device committed it); not a read receipt |
@@ -189,7 +214,9 @@ entry per logical message, never written by the ratchet.
 | `Received` | a text from the peer |
 
 - **Sending.** `chat_send(peer, app_id, text)` records the entry first, then
-  commits it with `send_text` under the same id when a session exists. Every
+  commits it with `send_text` under the same id when a session exists that
+  can send (a responder session of S2-B2 section 4b cannot; the text waits,
+  and the round goes on to fetch). Every
   step repeats with that id, so a retry or a crash between the steps finds
   the committed message; a text is never encrypted twice. A state only moves
   forward.
@@ -202,8 +229,12 @@ entry per logical message, never written by the ratchet.
   `NotDelivered`. So, while the session exists, a text that left the outbox is
   delivered.
 - **Sessions.** `sync_conversations` runs `sync` first, so a waiting handshake
-  from the contact is accepted, and only then starts a session for a contact
-  with queued texts and none yet. A bundle that does not match the pinned
+  from the contact and its first message are accepted, and only then starts a
+  session for a contact with queued texts and none yet. A recorded handshake
+  whose first message has not arrived is not a session and does not stop that
+  (both sides then hold their own unconfirmed session: the conflict below).
+  `Established` means a message from the contact authenticated under the
+  session here, and nothing else. A bundle that does not match the pinned
   card is refused and flagged (`identity_mismatch`); a missing bundle leaves
   the text queued with a note.
 - **Conflict.** A handshake from a contact whose session here is an
@@ -225,6 +256,7 @@ entry per logical message, never written by the ratchet.
 | property | test | evidence class |
 |---|---|---|
 | first contact, identity binding, stranger drop | `tests::network` V1 tests | runtime, local relay over TCP |
+| a handshake alone is not a session; its first message creates it; a recorded handshake does not block simultaneous initiation | `tests::responder` | runtime, local relay over TCP |
 | both directions, restarts, consistent histories | `both_directions_and_both_histories_survive_restarts` | runtime |
 | offline recipient | `messages_to_an_offline_recipient_wait_on_the_relay` | runtime |
 | relay outage; broken SEND/FETCH/DELETE/receipt | `a_relay_outage…`, `broken_connections_at_each_step…` (TCP proxy) | runtime; faults injected at the socket |

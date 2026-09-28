@@ -35,11 +35,12 @@ here is transmitted.
 | `session:v1/<peer>` | `SESSION_CHECKPOINT_V1` (unchanged, S2-B1) | every transition |
 | `handle:v1/<handle>` | `HANDLE_RECORD_V1`: peer identity key the local handle belongs to | session creation |
 | `hsout:v1/<peer>` | initiator handshake bytes (public) | initiator session creation |
+| `hsin:v1/<handle>` | `PROVISIONAL_HANDSHAKE_RECORD_V1`: peer identity key and the handshake a responder received (public), not yet authenticated | responder: handshake receipt; deleted by the first authenticated message |
 | `outbox:v1/<peer>/<id>` | `OUTBOX_RECORD_V1`: generation, message id, client message id, exact wire bytes; only while unacknowledged | send |
 | `sendid:v1/<peer>/<client id>` | `SENDID_RECORD_V1`: the message id a logical message produced, sent or abandoned | send, abandon outgoing |
 | `inbox:v1/<peer>/<id>` | `INBOX_RECORD_V1`: generation, message id, plaintext; only while undelivered | receive |
 | `seen:v1/<peer>/<id>` | `SEEN_RECORD_V1`: id of an acknowledged incoming message | acknowledge incoming |
-| `prekeys/v2` | unchanged format | responder session creation (same transaction) |
+| `prekeys/v2` | unchanged format | responder session creation from the first authenticated message (same transaction) |
 
 `<peer>` is the peer's X25519 identity key in hex, `<handle>` the local `u64`
 handle in hex, `<id>` a message id in hex, `<client id>` the caller's logical
@@ -63,7 +64,8 @@ transaction; if any precondition fails, nothing is written.
 | operation | writes in one transaction | preconditions |
 |---|---|---|
 | initiator establishment | session gen 0, handle, handshake | session absent, handle absent |
-| responder establishment | session gen 0, handle, rotated prekey record | session absent, handle absent, prekey record byte-identical to the one validated |
+| responder: handshake received | provisional handshake record only | handle absent, session absent (read in the same transaction) |
+| responder: first message authenticated | session gen 1, handle, inbox record (undelivered), rotated prekey record, provisional record deleted | session absent, handle absent, provisional record byte-identical to the one the session was derived from, inbox id absent, seen id absent, prekey record byte-identical to the one validated |
 | send | session gen n+1, outbox record, send-id record | session is the record loaded (gen n, same SHA-256), outbox id absent, send-id absent |
 | receive | session gen n+1, inbox record (undelivered) | session is the record loaded, inbox id absent, seen id absent |
 | acknowledge incoming | inbox record deleted, seen record written | inbox record present, else no-op (idempotent) |
@@ -97,21 +99,100 @@ No output of a transition leaves Rust before its `COMMIT` returned `Ok`.
   the handshake. The handshake is returned only after commit and can be read
   again later (`Messenger::initial_outbound`; `initiator_handshake` over the
   FFI) if the process dies before sending it.
-- **Responder.** The prekey record is read and validated against the handshake
-  (unchanged rules), X3DH runs, then one transaction stores the session and the
-  handle and replaces the prekey record with the rotated one — only if the
-  prekey record is still byte-identical to what was validated. A crash before
-  `COMMIT` leaves the one-time prekey unconsumed and no session; the same
-  handshake can be answered again. A crash after `COMMIT` leaves both.
-  A concurrent consumer changes the record and turns the precondition into
-  `OneTimePrekeyUnavailable`.
-- **Refused establishment.** If the session or handle already exists (valid or
-  not), nothing in that transaction is written. The one-time prekey the
-  handshake named is then consumed in a separate transaction, as before
-  (a handshake that reached the responder never returns its prekey to
-  circulation). If that second write fails, the refusal is still reported.
+- **Responder.** A received handshake is not authentication: its bytes are
+  public and anyone can send them. So receiving one never creates a session.
+  The handshake is validated against the prekey record (unchanged rules) and
+  stored as a *provisional* record under the handle — nothing else: no
+  session, no handle, no consumed prekey. It has no authority. `has_session`
+  is false, nothing can be sent or removed on it, and a later handshake for the
+  handle replaces it. It is refused, with nothing written, once a session with
+  that peer exists or the handle belongs to another peer.
+- **Promotion.** The session is created by the initiator's first message, and
+  only if it authenticates. X3DH runs again from the provisional handshake
+  against the prekeys held now (checked again), and the message is decrypted
+  on that result held in memory (`durable::ProvisionalSession`, which cannot
+  encrypt and is never stored). Only if the AEAD verifies — which requires the
+  keys X3DH derived, and so the initiator's identity secret — does one
+  transaction store the advanced session at generation 1 (it already has its
+  receiving chain), its handle, the message as an undelivered inbox record,
+  the prekey record rotated past the one-time prekey, and delete the
+  provisional record. Preconditions: no session record for the peer, the
+  handle free, the provisional record exactly the one used, the message never
+  accepted, the prekey record byte-identical to what was validated. The
+  plaintext is returned only after that commit.
+- **Promotion happens once.** A second attempt finds the session record and
+  receives the message on that session instead: the same message is a
+  duplicate. A message that does not authenticate writes nothing and leaves
+  the provisional record as it is.
+- **Crash boundaries.** Dying after the handshake was recorded leaves the
+  provisional record: after a restart it is still not a session, and its first
+  message still creates one. Dying inside the promotion's transaction leaves
+  all of it or none of it. An unknown `COMMIT` outcome makes the handle
+  unresolved like an unknown creation; `recover_session` reports whether the
+  session exists.
+- **One-time prekeys** are consumed only by the promotion's transaction, never
+  by an unauthenticated handshake. A one-time prekey contributes to at most one
+  session: two provisional handshakes naming it cannot both be promoted,
+  because the promotion requires the prekey record it validated to be
+  unchanged. Until a promotion consumes it, the one-time prekey stays
+  published, exactly as before any handshake arrived.
+- **Refused handshakes** (a session exists, or the handle belongs to another
+  peer) write nothing and consume nothing.
 - An existing record that cannot be decoded, has another binding or another
   role is an explicit error. It is never replaced by a new session.
+
+## 4b. Responder sessions stored by earlier builds
+
+Builds up to `590c936e` stored a responder session on receipt of a handshake:
+`session:v1/<peer>` at generation 0 with the ratchet exactly as `init_bob`
+creates it, and `handle:v1/<handle>`; the one-time prekey was consumed. Until
+a message from the peer authenticated under it, such a session carried no
+authenticated evidence and could not encrypt (`NotInitialized`), yet it held
+the peer's slot: later handshakes from the peer were refused.
+
+- **Classifier** (`DurableSession::is_legacy_unconfirmed`): the record decodes
+  for the expected identities, role responder, generation 0, and the ratchet
+  is in its initial responder state
+  (`DoubleRatchet::is_initial_responder_state`: no `dhr`, no sending or
+  receiving chain, `ns = nr = pn = 0`, no skipped keys). A record that does
+  not decode is never eligible. Current code never stores this shape on the
+  production path (responder sessions are stored at generation 1).
+- **Retirement.** `record_provisional_handshake` for the same peer under the
+  same handle retires such a session: one S1 transaction deletes the session
+  and handle records and records the new handshake as provisional. From then
+  on section 4 applies unchanged. The transaction requires: the session record
+  byte-identical (SHA-256) to the one classified, the handle record still
+  naming the peer, no `hsout` and no `hsin` record, and the prekey record still
+  exactly the one the new handshake passed the prekey rules against. Before
+  it, no outbox or inbox record may exist for the peer; these can only be
+  added by a transition of the session record itself (`send`, `receive`), so
+  the record check covers them at commit. Nothing is retired while this
+  instance has an unresolved commit on the handle.
+- **Untouched:** `prekeys/v2` (the one-time prekey the old session consumed
+  stays consumed; the new handshake's is consumed by its promotion, as in
+  section 4), `seen:`, `sendid:`, chat history and every other peer.
+- **Never retired:** a session that authenticated a message from the peer, an
+  initiator session, anything at another generation or in another ratchet
+  shape, anything with pending messages or a stored handshake beside it, an
+  unreadable record. The handshake is then refused as in section 4.
+- **Unknown outcome** of the retirement: repeating the call completes it or
+  finds it complete. Process death before `COMMIT` leaves the old session;
+  after it, exactly the new provisional record.
+- **Competing instances.** A receive committed on the old session by another
+  instance changes its record, so a retirement classified before it fails
+  (`Conflict`). A receive staged on the old session before a retirement
+  commits fails its predecessor check and releases nothing.
+- **Liveness.** Anyone able to deliver a handshake that passes the prekey rules
+  can retire such a session, exactly as they can replace a provisional record;
+  the session had no more authority than one. If the old handshake's own first
+  message arrives before any retirement, it authenticates on the old session,
+  which then continues as an ordinary session. If a retirement comes first,
+  that old handshake cannot be answered again — its one-time prekey was
+  consumed by the earlier build and is never restored — so its initiator's
+  session stays unconfirmed until one side starts a new one (for example
+  through the conflict resolution of `NET-MESSAGING.md` section 10). Unlike a
+  replaced provisional record, which the genuine handshake's retransmission
+  restores, this is not undone by retransmission.
 
 ## 5. Outgoing messages
 
@@ -193,10 +274,12 @@ already seen is still a duplicate, and a logical id keeps its outcome
 nothing is encrypted twice for one logical id. A new session inherits no
 pending message: removal requires that there is none.
 
-Replacing a handshake whose delivery was unknown forks nothing: a peer that did
-accept it keeps its session and refuses the new handshake (`AlreadyExists`),
-and messages of either session fail to decrypt under the other and write
-nothing. What that costs is liveness: those two peers stay unable to talk until
+Replacing a handshake whose delivery was unknown forks nothing. A peer that
+created its session from it (a message of that session authenticated there)
+keeps that session and refuses the new handshake (`AlreadyExists`), and
+messages of either session fail to decrypt under the other and write nothing.
+A peer that had only recorded it takes the new handshake in its place: a
+provisional record has no authority to keep. What that costs is liveness: those two peers stay unable to talk until
 the peer's session can be reset, which needs a peer-authenticated reset
 protocol that is out of scope. Local removal proves nothing about the peer.
 
@@ -227,6 +310,15 @@ Continuing from the stored state is then safe *with respect to what was
 released*. Reading the store says nothing about power loss or a database file
 replaced by an older copy. The flag lives in memory; a restart reaches the same
 point by loading from the store.
+
+One case of a missing session is recovered: a receive staged on a session of
+section 4b whose outcome is unknown, after another instance retired that
+session. `recover_session` clears it only if one read shows no session record,
+no handle record, a provisional record from the same peer under the handle,
+and neither the inbox nor the seen record of the unknown receive (had it
+committed, the session would have a receiving chain and could not have been
+retired). Otherwise the handle stays unresolved; a missing session alone is
+never read as a rollback.
 
 ## 8. Storage durability
 
@@ -266,7 +358,13 @@ message). They are never listed, so they cost disk space, not time.
 
 `SESSION_CHECKPOINT_V1`, `RATCHET_STATE_V1`, `PREKEY_BUNDLE_V1`,
 `INITIATOR_HANDSHAKE_V1`, `PERSISTED_PREKEY_RECORD_V2` and the message format
-`header(40) || ciphertext` are unchanged. The FFI messaging calls change shape
+`header(40) || ciphertext` are unchanged. `PROVISIONAL_HANDSHAKE_RECORD_V1`
+(`hsin:`) is new and local. A responder session stored by an earlier build at
+generation 0, before any message authenticated, is still loaded as a session;
+it reads as `AwaitingPeer`, not `Established`, until a message from the peer
+is accepted on it. It is not migrated in place: it is retired when a new
+handshake from the same peer is recorded (section 4b), and otherwise stays
+until a message authenticates on it. The FFI messaging calls change shape
 (`send_message` takes a client message id and returns an outcome;
 `receive_message` returns a record) and `remove_session` and `abandon_outgoing` are new; the bytes on
 the wire are identical.
@@ -279,7 +377,7 @@ the wire are identical.
 | outbox bytes identical across retries and restarts | core-protocol + mobile-ffi | runtime |
 | duplicate ciphertext: no second acceptance, no ratchet step | core-protocol + mobile-ffi | runtime |
 | stale / competing instances cannot both publish | two connections, two threads, two `ArciumCore` | runtime |
-| responder prekey + session atomic | conditional batch; process abort before/after commit | process crash |
+| responder: a handshake creates only a provisional record; the first authenticated message creates the session with its prekey rotation, once, atomically | `messaging/tests/first_contact.rs`, `mobile-ffi` `tests::responder`; process abort before/after the promotion's commit; race hook on a second connection | runtime; process crash; unknown outcomes simulated |
 | crash before / after `COMMIT`, before publication, before delivery | child process `abort()` at each point | process crash |
 | ambiguous `COMMIT` → unresolved, nothing released | scripted store failures | simulated |
 | invalid checkpoint never overwritten | corrupt record + create / receive / remove | runtime |

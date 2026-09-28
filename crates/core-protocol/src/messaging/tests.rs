@@ -448,6 +448,10 @@ fn a_side_write_cannot_touch_a_session_record() {
         SideWrite::insert("session:v1/00".into(), Zeroizing::new(vec![1])).err(),
         Some(SideWriteError::ReservedKey)
     );
+    assert_eq!(
+        SideWrite::remove("session:v1/00".into(), Zeroizing::new(vec![1])).err(),
+        Some(SideWriteError::ReservedKey)
+    );
 }
 
 #[test]
@@ -644,4 +648,6 @@ fn a_failed_commit_leaves_the_session_usable_and_consumes_no_position() {
 
 mod acceptance;
 mod crash;
+mod first_contact;
+mod legacy;
 mod lifecycle;

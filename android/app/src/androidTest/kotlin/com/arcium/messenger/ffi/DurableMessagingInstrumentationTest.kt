@@ -72,7 +72,12 @@ class DurableMessagingInstrumentationTest {
         val bobHandle: ULong,   // Bob's handle for Alice
     )
 
-    /** Creates both identities and the session, then closes both stores. */
+    /**
+     * Creates both identities and the session, then closes both stores. A
+     * handshake alone creates no session on Bob's side: Alice's first message
+     * does, once it authenticates there. It is settled on both sides, so
+     * nothing is left pending.
+     */
     private fun establish(w: Workspace): Pair {
         val alice = open(w.aliceDb, ALICE_KEY)
         val bob = open(w.bobDb, BOB_KEY)
@@ -91,6 +96,10 @@ class DurableMessagingInstrumentationTest {
             alice.localSessionHandle(bobIdentity),
             bob.localSessionHandle(aliceIdentity),
         )
+        val first = sendNew(alice, pair.aliceHandle, bytes("first"))
+        assertArrayEquals(bytes("first"), accepted(bob.receiveMessage(pair.bobHandle, first.wire)))
+        assertTrue(bob.acknowledgeIncoming(pair.bobHandle, first.messageId))
+        assertTrue(alice.acknowledgeOutgoing(pair.aliceHandle, first.messageId))
         alice.closeEncryptedDb()
         bob.closeEncryptedDb()
         return pair
@@ -232,12 +241,13 @@ class DurableMessagingInstrumentationTest {
     }
 
     /**
-     * Killed right after answering a handshake. After restart the responder
-     * session exists and works, and the consumed one-time prekey is not
-     * available to the same handshake again.
+     * Killed right after recording a handshake. After restart there is still
+     * no session — receiving a handshake is not authentication — and the
+     * initiator's first message then creates it. Once it exists, the same
+     * handshake cannot be answered again: its one-time prekey was consumed.
      */
     @Test
-    fun killedAfterAnsweringAHandshakeTheSessionIsRestored() {
+    fun killedAfterRecordingAHandshakeTheFirstMessageCreatesTheSession() {
         val w = workspace()
         val alice = open(w.aliceDb, ALICE_KEY)
         val bob = open(w.bobDb, BOB_KEY)
@@ -257,13 +267,14 @@ class DurableMessagingInstrumentationTest {
         runVictim(w, CrashVictimProvider.SCENARIO_RESPOND, w.bobDb, BOB_KEY, bobHandle)
 
         val restarted = open(w.bobDb, BOB_KEY)
+        assertFalse("a handshake alone is not a session", restarted.hasSession(bobHandle))
+        val m = sendNew(alice, aliceHandle, bytes("first after restart"))
+        assertArrayEquals(bytes("first after restart"), accepted(restarted.receiveMessage(bobHandle, m.wire)))
         assertTrue(restarted.hasSession(bobHandle))
         assertNull("a responder stores no handshake to resend", restarted.initiatorHandshake(bobHandle))
         assertThrows(CoreException.OneTimePrekeyUnavailable::class.java) {
             restarted.establishSessionResponder(bobHandle + 1uL, handshake)
         }
-        val m = sendNew(alice, aliceHandle, bytes("first after restart"))
-        assertArrayEquals(bytes("first after restart"), accepted(restarted.receiveMessage(bobHandle, m.wire)))
         val r = sendNew(restarted, bobHandle, bytes("responder replies"))
         assertArrayEquals(bytes("responder replies"), accepted(alice.receiveMessage(aliceHandle, r.wire)))
     }

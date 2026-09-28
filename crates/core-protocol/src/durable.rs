@@ -862,10 +862,6 @@ impl ProvisionalSession {
         })
     }
 
-    pub fn peer_identity_pk(&self) -> [u8; 32] {
-        self.inner.peer_identity_pk()
-    }
-
     /// Stages decrypting the peer's first message. The plaintext is released
     /// only by a successful [`promote_with`](Self::promote_with).
     pub fn stage_first_decrypt(

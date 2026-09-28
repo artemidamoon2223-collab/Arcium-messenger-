@@ -123,7 +123,9 @@ pub enum ChatSessionState {
     /// Both devices started a session with each other. Nothing is replaced
     /// automatically; `can_resolve` is true on the one device that may
     /// resolve it with `resolve_session_conflict`.
-    Conflict { can_resolve: bool },
+    Conflict {
+        can_resolve: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]

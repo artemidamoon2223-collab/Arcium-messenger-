@@ -16,7 +16,7 @@ use rand_core::{OsRng, RngCore};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 uniffi::setup_scaffolding!();
 
@@ -857,7 +857,7 @@ fn accept_first_message(
         pack_prekeys(&record)
     });
 
-    let bob_session = x3dh_respond(
+    let mut bob_session = x3dh_respond(
         &identity.dh_key,
         our_identity_pk,
         &record.signed_prekey_sk,
@@ -866,6 +866,9 @@ fn accept_first_message(
         handshake.ephemeral_pk,
     );
     let ratchet = DoubleRatchet::init_bob(bob_session.root_key, record.signed_prekey_sk.clone());
+    // This runs for every candidate first message, including ones that will
+    // not authenticate; the ratchet holds its own copy and wipes it on drop.
+    bob_session.root_key.zeroize();
     // Owner is the initiator identity this handshake was answered for, not
     // anything the caller asserted separately.
     let session = Session {

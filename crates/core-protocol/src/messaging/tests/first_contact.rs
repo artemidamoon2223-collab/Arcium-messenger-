@@ -358,6 +358,47 @@ fn a_handshake_replaced_while_accepting_makes_the_acceptance_write_nothing() {
     f.assert_provisional_only(b"hs2");
 }
 
+/// A prekey record that changed after it was validated — another peer's
+/// first message consumed the one-time prekey between staging and commit —
+/// makes the acceptance write nothing: a one-time prekey contributes to one
+/// stored session only.
+#[test]
+fn a_prekey_record_changed_while_accepting_makes_the_acceptance_write_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.db");
+    let mut f = first_contact(
+        EncryptedStore::open_in_memory(KEY).unwrap(),
+        EncryptedStore::open(&path, KEY).unwrap(),
+    );
+    crate::messaging::race_hook::set(move || {
+        EncryptedStore::open(&path, KEY)
+            .unwrap()
+            .put(PREKEYS, b"rotated by another first contact")
+            .unwrap();
+    });
+    let m1 = f.alice_sends(b"first");
+    assert!(matches!(
+        f.accept(&m1.wire),
+        Err(MessagingError::ExtraConflict {
+            index: 0,
+            conflict: Conflict::RecordChanged
+        })
+    ));
+    assert_eq!(
+        (
+            keys(&f.b, "session:"),
+            keys(&f.b, "handle:"),
+            keys(&f.b, "inbox:")
+        ),
+        (0, 0, 0)
+    );
+    assert!(f
+        .bm
+        .provisional_handshake(&f.b, BOB_HANDLE)
+        .unwrap()
+        .is_some());
+}
+
 /// 8 (simulated): an unknown commit outcome of the acceptance is resolved as
 /// an unknown creation; a definite failure writes nothing.
 #[test]

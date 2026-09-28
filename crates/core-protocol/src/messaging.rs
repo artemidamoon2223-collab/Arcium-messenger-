@@ -315,13 +315,11 @@ impl Messenger {
                     refused => Err(refused),
                 }
             }
-            // The provisional handshake was replaced or consumed meanwhile.
-            Err(OpenError::SideConflict { index: 1, conflict }) => {
+            // The provisional handshake was replaced or consumed meanwhile
+            // (or, with no session, the message's records exist: never
+            // written without one). Nothing was written.
+            Err(OpenError::SideConflict { index, conflict }) if index < offset => {
                 Err(MessagingError::Conflict(conflict))
-            }
-            Err(OpenError::SideConflict { index: 2 | 3, .. }) => {
-                read_duplicate(store, &inbox, &seen, id)?
-                    .ok_or(MessagingError::InconsistentStore("inbox record vanished"))
             }
             Err(OpenError::SideConflict { index, conflict }) => {
                 Err(MessagingError::ExtraConflict {

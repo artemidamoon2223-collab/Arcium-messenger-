@@ -203,6 +203,59 @@ mod tests {
         relay.stop();
     }
 
+    /// A mailbox holds 1 to `DEFAULT_MAX_MAILBOX` envelopes, the most a
+    /// reader's scan covers in one round. Any other capacity is refused as
+    /// invalid input before anything starts; nothing is clamped.
+    #[test]
+    fn a_mailbox_capacity_outside_the_supported_range_is_refused() {
+        for ok in [DEFAULT_MAX_MAILBOX, 100, 1] {
+            let relay = start(RelayConfig {
+                max_mailbox: ok,
+                ..RelayConfig::default()
+            });
+            assert!(conn(&relay).fetch([2; 32], 1).unwrap().is_empty(), "{ok}");
+            relay.stop();
+        }
+        for bad in [0, DEFAULT_MAX_MAILBOX + 1, 100_000, usize::MAX] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let config = RelayConfig {
+                max_mailbox: bad,
+                ..RelayConfig::default()
+            };
+            let Err(e) = serve(listener, config) else {
+                panic!("max_mailbox {bad} was accepted");
+            };
+            assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{bad}");
+            assert!(e.to_string().contains(&bad.to_string()), "{e}");
+            // Nothing was started: the listener is gone with the refusal.
+            assert!(
+                std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_err(),
+                "{bad}: something is listening"
+            );
+        }
+    }
+
+    /// The largest supported mailbox fills as before: 4096 envelopes are
+    /// stored, the next one is refused with FULL, and a repeat of a stored one
+    /// still names it.
+    #[test]
+    fn a_mailbox_of_the_largest_supported_capacity_refuses_the_next_envelope() {
+        let relay = start(RelayConfig::default());
+        let mut c = conn(&relay);
+        let first = c.send([2; 32], 0u32.to_be_bytes().to_vec()).unwrap();
+        for i in 1..DEFAULT_MAX_MAILBOX as u32 {
+            c.send([2; 32], i.to_be_bytes().to_vec()).unwrap();
+        }
+        assert!(matches!(
+            c.send([2; 32], vec![0xff; 5]),
+            Err(super::client::ClientError::Refused(ErrorCode::Full))
+        ));
+        assert_eq!(relay.stored(&[2; 32]).len(), DEFAULT_MAX_MAILBOX);
+        assert_eq!(c.send([2; 32], 0u32.to_be_bytes().to_vec()).unwrap(), first);
+        relay.stop();
+    }
+
     /// A relay that predates FETCH_AFTER answers it as it answers any
     /// operation it does not know: BAD_REQUEST, and the client reports that.
     #[test]

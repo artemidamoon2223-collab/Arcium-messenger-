@@ -55,8 +55,9 @@ const _: () = assert!(MIN_PAGE >= 1);
 pub const MAX_BUNDLE: usize = 1024;
 /// Most envelopes one FETCH or FETCH_AFTER returns.
 pub const MAX_FETCH: u16 = 256;
-/// Most envelopes a mailbox of this repository's relay holds by default
-/// (`RelayConfig::max_mailbox`). Readers size their paging budget from it.
+/// Most envelopes a mailbox of this repository's relay holds: the default and
+/// the largest supported `RelayConfig::max_mailbox`. Readers size their paging
+/// budget from it.
 pub const DEFAULT_MAX_MAILBOX: usize = 4096;
 
 /// A mailbox or bundle owner: an X25519 identity public key.

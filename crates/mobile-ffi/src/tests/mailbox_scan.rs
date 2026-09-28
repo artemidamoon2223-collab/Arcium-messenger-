@@ -454,19 +454,15 @@ fn entries_deleted_or_appended_between_pages_neither_break_nor_repeat_a_round() 
     r2.stop();
 }
 
-/// A relay (or a flood of senders) that keeps the mailbox non-empty cannot
-/// make a round go on for ever: each pass stops after `MAX_SCAN_ENVELOPES`.
+/// Senders that keep the mailbox non-empty cannot make a round go on for
+/// ever. The relay has no authentication, so they can delete what the round
+/// already read and append as much again: the mailbox never runs dry and
+/// never exceeds its capacity, and the first pass still stops at
+/// `MAX_SCAN_ENVELOPES`.
 #[test]
 fn a_mailbox_that_never_runs_dry_is_scanned_a_bounded_amount() {
     let w = big_world();
-    let (r2, addr) = mailbox_with(
-        &[],
-        &w.bob,
-        RelayConfig {
-            max_mailbox: 100_000,
-            ..RelayConfig::default()
-        },
-    );
+    let (r2, addr) = mailbox(&[], &w.bob);
     let bob = w.bob_on(&addr);
     let pages = Rc::new(RefCell::new([0usize; 2]));
     let (p, hook_addr, bob_key) = (pages.clone(), addr.clone(), key(&bob));
@@ -480,6 +476,14 @@ fn a_mailbox_that_never_runs_dry_is_scanned_a_bounded_amount() {
     scan_hook::set(move |pass, _| {
         p.borrow_mut()[(pass == Pass::Messages) as usize] += 1;
         let mut c = conn(&hook_addr);
+        // The oldest page is the one the round just read.
+        let read: Vec<u64> = c
+            .fetch(bob_key, MAX_FETCH)
+            .unwrap()
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect();
+        c.delete(bob_key, read).unwrap();
         for _ in 0..MAX_FETCH {
             n += 1;
             c.send(bob_key, format!("junk {n}").into_bytes()).unwrap();
@@ -489,17 +493,16 @@ fn a_mailbox_that_never_runs_dry_is_scanned_a_bounded_amount() {
     scan_hook::clear();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
     let [a, b] = *pages.borrow();
-    let full = MAX_SCAN_ENVELOPES / MAX_FETCH as usize;
     assert_eq!(
-        (a, b),
-        (full, full),
-        "each pass stops at its envelope budget"
+        a,
+        MAX_SCAN_ENVELOPES / MAX_FETCH as usize,
+        "the first pass stops at its envelope budget"
     );
     assert_eq!(r.fetched as usize, MAX_SCAN_ENVELOPES);
-    assert_eq!(
-        r.dropped as usize, MAX_SCAN_ENVELOPES,
-        "each junk entry once"
-    );
+    // Everything the first pass reached was deleted meanwhile; the second
+    // pass finds only entries past it and stops at once.
+    assert_eq!(b, 1);
+    assert!(r2.stored(&bob_key).len() <= 2 * MAX_FETCH as usize);
     r2.stop();
 }
 

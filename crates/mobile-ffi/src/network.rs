@@ -113,9 +113,10 @@ enum Fate {
 }
 
 /// Most envelopes one pass over the mailbox considers: a whole mailbox of this
-/// repository's relay. A relay holding more than that for one recipient
-/// (entries appended faster than they are read, or a larger mailbox) can
-/// keep the rest out of this round's reach, as it can by withholding them.
+/// repository's relay, whose capacity is at most this (`serve` refuses more).
+/// Senders that delete what a round read and append as fast as it reads, or
+/// a relay that is not this one, can keep the rest out of this round's reach,
+/// as a relay can by withholding them.
 pub(crate) const MAX_SCAN_ENVELOPES: usize = DEFAULT_MAX_MAILBOX;
 
 /// Most pages one pass reads: enough for [`MAX_SCAN_ENVELOPES`] in pages of

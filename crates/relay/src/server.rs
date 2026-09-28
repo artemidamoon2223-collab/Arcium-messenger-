@@ -6,8 +6,11 @@
 //! An envelope stays in its recipient's mailbox until the recipient deletes it,
 //! it is older than [`RelayConfig::ttl`], or the relay stops: nothing is
 //! written to disk, so a restart loses every mailbox. A mailbox holds at most
-//! [`RelayConfig::max_mailbox`] envelopes; a SEND to a full mailbox is refused
-//! with `FULL`, never by dropping an older envelope. A SEND of bytes identical
+//! [`RelayConfig::max_mailbox`] envelopes, at most [`DEFAULT_MAX_MAILBOX`]: a
+//! reader's scan of one round covers that many, so a larger mailbox could hide
+//! entries behind the ones it keeps (`serve` refuses such a configuration). A
+//! SEND to a full mailbox is refused with `FULL`, never by dropping an older
+//! envelope. A SEND of bytes identical
 //! to an envelope still stored returns the stored sequence number.
 //!
 //! A full mailbox is a denial of service anyone who can reach the relay can
@@ -39,6 +42,8 @@ use crate::protocol::*;
 
 #[derive(Debug, Clone)]
 pub struct RelayConfig {
+    /// Envelopes one mailbox holds: 1 to [`DEFAULT_MAX_MAILBOX`] (the
+    /// default). [`serve`] refuses any other value.
     pub max_mailbox: usize,
     pub ttl: Duration,
     /// Test aid: log an alert if a stored envelope contains these bytes, so a
@@ -110,7 +115,20 @@ impl RelayHandle {
 }
 
 /// Serves `listener` on a background thread, one thread per connection.
+///
+/// Refuses, with [`io::ErrorKind::InvalidInput`] and without starting
+/// anything, a `max_mailbox` outside 1 to [`DEFAULT_MAX_MAILBOX`]. Nothing is
+/// clamped.
 pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHandle> {
+    if !(1..=DEFAULT_MAX_MAILBOX).contains(&config.max_mailbox) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "max_mailbox must be between 1 and {DEFAULT_MAX_MAILBOX}, got {}",
+                config.max_mailbox
+            ),
+        ));
+    }
     let addr = listener.local_addr()?;
     let stop = Arc::new(AtomicBool::new(false));
     let conns = Arc::new(Mutex::new(Vec::new()));

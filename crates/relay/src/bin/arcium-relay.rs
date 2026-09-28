@@ -1,11 +1,15 @@
 //! `arcium-relay --listen HOST:PORT [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N]`
 //!
+//! `--max-mailbox` is 1 to 4096 (`DEFAULT_MAX_MAILBOX`, the default); any
+//! other value is refused.
+//!
 //! Runs the untrusted store-and-forward relay until killed. For development
 //! and tests only: no TLS, no authentication, nothing persisted.
 
 use std::net::TcpListener;
 use std::time::Duration;
 
+use relay::protocol::DEFAULT_MAX_MAILBOX;
 use relay::server::{serve, RelayConfig};
 
 fn main() {
@@ -32,7 +36,10 @@ fn main() {
         eprintln!("arcium-relay: cannot listen on {listen}: {e}");
         std::process::exit(1);
     });
-    let handle = serve(listener, config).expect("relay");
+    let handle = serve(listener, config).unwrap_or_else(|e| {
+        eprintln!("arcium-relay: {e}");
+        std::process::exit(2);
+    });
     eprintln!("arcium-relay: listening on {}", handle.addr());
     loop {
         std::thread::park();
@@ -42,7 +49,8 @@ fn main() {
 fn usage(bad: &str) -> ! {
     eprintln!(
         "arcium-relay: bad argument {bad}\n\
-         usage: arcium-relay --listen HOST:PORT [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N]"
+         usage: arcium-relay --listen HOST:PORT [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N]\n\
+         --max-mailbox N  envelopes per mailbox, 1 to {DEFAULT_MAX_MAILBOX} (default {DEFAULT_MAX_MAILBOX})"
     );
     std::process::exit(2);
 }

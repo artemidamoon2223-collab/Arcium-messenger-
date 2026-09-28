@@ -113,7 +113,11 @@ most one page. Keeping a round bounded, not cheap, is what this provides.
 **Retention.** An envelope stays in the recipient's mailbox until the recipient
 deletes it, it is 7 days old, or the relay stops (nothing is on disk). A
 mailbox holds at most 4096 envelopes; a SEND beyond that is refused, never
-made room for. Identical bytes still stored are not stored twice.
+made room for. The capacity can be set lower (`--max-mailbox N`,
+`RelayConfig::max_mailbox`), never higher: 4096 is what one round's scan
+covers (`MAX_SCAN_ENVELOPES`), and `serve` refuses 0 or more than 4096 with
+`InvalidInput` before starting anything, so no configuration of this relay
+holds entries a round cannot reach. Identical bytes still stored are not stored twice.
 
 **Delivery does not depend on retention.** The sender keeps every text until
 the recipient's receipt arrives, and sends it again after
@@ -315,7 +319,7 @@ entry per logical message, never written by the ratchet.
 | a handshake alone is not a session; its first message creates it; a recorded handshake does not block simultaneous initiation | `tests::responder` | runtime, local relay over TCP |
 | both directions, restarts, consistent histories | `both_directions_and_both_histories_survive_restarts` | runtime |
 | offline recipient | `messages_to_an_offline_recipient_wait_on_the_relay` | runtime |
-| kept envelopes never hide later ones: prefixes of 0–4095 entries, large envelopes, handshakes behind or after the prefix, mixed kept and deleted, deletes, appends and expiry between pages, a mailbox that never runs dry, a relay that breaks paging, lost answers, a stopped relay, process death between pages | `tests::mailbox_scan`; relay paging in `crates/relay` tests | runtime, local relay over TCP; process crash |
+| kept envelopes never hide later ones: prefixes of 0–4095 entries, large envelopes, handshakes behind or after the prefix, mixed kept and deleted, deletes, appends and expiry between pages, a mailbox that never runs dry, a relay that breaks paging, lost answers, a stopped relay, process death between pages | `tests::mailbox_scan`; relay paging and the refusal of a capacity above 4096 in `crates/relay` tests | runtime, local relay over TCP; process crash |
 | relay outage; broken SEND/FETCH/DELETE/receipt | `a_relay_outage…`, `broken_connections_at_each_step…` (TCP proxy) | runtime; faults injected at the socket |
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt | `tests::network` V6 tests | runtime |

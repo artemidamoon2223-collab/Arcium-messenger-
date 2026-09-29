@@ -44,12 +44,25 @@ pub enum SendOutcome {
 }
 
 /// A committed incoming message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct IncomingMessage {
     pub message_id: MessageId,
     /// The session generation this message's receipt committed.
     pub generation: u64,
     pub plaintext: Zeroizing<Vec<u8>>,
+}
+
+/// `Zeroizing` derives `Debug` over its contents, so a derived `Debug` here
+/// would print the message. Formatting shows the ids and hides the text; this
+/// guards against accidental formatting and logging only.
+impl std::fmt::Debug for IncomingMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IncomingMessage")
+            .field("message_id", &self.message_id)
+            .field("generation", &self.generation)
+            .field("plaintext", &"<redacted>")
+            .finish()
+    }
 }
 
 /// The result of [`Messenger::receive`].

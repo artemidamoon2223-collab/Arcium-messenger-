@@ -320,7 +320,7 @@ fn the_wire_format_is_unchanged() {
         .unwrap();
     let header = Header::from_bytes(&sent.wire[..HEADER_SIZE]).unwrap();
     assert_eq!(
-        bob.decrypt(&header, &sent.wire[HEADER_SIZE..], &bob_ad)
+        *bob.decrypt(&header, &sent.wire[HEADER_SIZE..], &bob_ad)
             .unwrap(),
         b"compat"
     );
@@ -643,6 +643,58 @@ fn a_failed_commit_leaves_the_session_usable_and_consumes_no_position() {
     assert_eq!(
         *accepted(p.bob_receives(&sent.wire).unwrap()).plaintext,
         b"kept"
+    );
+}
+
+/// Accidental `Debug` formatting of a committed incoming message, or of the
+/// result that carries one, must not print the plaintext. `Zeroizing` derives
+/// `Debug` over its contents, so a derived `Debug` on `IncomingMessage` would.
+/// This is about formatting and logging only.
+#[test]
+fn a_committed_incoming_message_does_not_print_its_plaintext() {
+    const CANARY: &[u8] = b"ARCIUM-PLAINTEXT-CANARY-7c1e";
+    let message = IncomingMessage {
+        message_id: [0x11; MESSAGE_ID_LEN],
+        generation: 9,
+        plaintext: Zeroizing::new(CANARY.to_vec()),
+    };
+    let list = CANARY
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let hex: String = CANARY.iter().map(|b| format!("{b:02x}")).collect();
+    let needles = [
+        String::from_utf8(CANARY.to_vec()).unwrap(),
+        list,
+        hex.to_uppercase(),
+        hex,
+    ];
+    let values = [
+        format!("{message:?}"),
+        format!("{message:#?}"),
+        format!("{:?}", Received::Accepted(message.clone())),
+        format!(
+            "{:#?}",
+            Received::Duplicate {
+                message_id: message.message_id,
+                undelivered: Some(message.clone()),
+            }
+        ),
+    ];
+    for text in &values {
+        for needle in &needles {
+            assert!(!text.contains(needle), "{needle:?} found in {text}");
+        }
+    }
+    // The ids and the generation stay visible; the redaction is explicit.
+    assert!(values[0].contains("generation: 9"), "{}", values[0]);
+    assert!(values[0].contains("message_id"), "{}", values[0]);
+    assert!(values[0].contains("<redacted>"), "{}", values[0]);
+    assert_eq!(
+        message.plaintext.as_slice(),
+        CANARY,
+        "the value itself is intact"
     );
 }
 

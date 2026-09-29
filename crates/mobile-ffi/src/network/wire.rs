@@ -85,11 +85,24 @@ impl Envelope {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Payload {
     Text(Zeroizing<Vec<u8>>),
     Receipt(Vec<[u8; 32]>),
     Open,
+}
+
+/// A text is the application's plaintext, and `Zeroizing` derives `Debug` over
+/// its contents: the variant is shown, the text is not. Accidental formatting
+/// and logging only.
+impl std::fmt::Debug for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Payload::Text(_) => f.debug_tuple("Text").field(&"<redacted>").finish(),
+            Payload::Receipt(ids) => f.debug_tuple("Receipt").field(ids).finish(),
+            Payload::Open => f.write_str("Open"),
+        }
+    }
 }
 
 impl Payload {

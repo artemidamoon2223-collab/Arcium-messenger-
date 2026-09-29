@@ -28,7 +28,9 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::contacts::{pinned, Card};
-use crate::{unpack_prekey_bundle, ArciumCore, CoreError, ReceiveResult, SendResult, PREKEYS_KEY};
+use core_protocol::messaging::{MessageId, Received};
+
+use crate::{unpack_prekey_bundle, ArciumCore, CoreError, SendResult, PREKEYS_KEY};
 use wire::{client_id, Envelope, Payload};
 
 /// What one [`NetworkMessenger::sync`] did. Counters only; nothing here is a
@@ -58,11 +60,21 @@ pub struct SyncReport {
     pub errors: Vec<String>,
 }
 
-/// A received text not yet marked read.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+/// A received text not yet marked read. `text` is the application's copy.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ReceivedText {
     pub message_id: Vec<u8>,
     pub text: Vec<u8>,
+}
+
+/// Shows the id and hides the text: accidental formatting and logging only.
+impl std::fmt::Debug for ReceivedText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReceivedText")
+            .field("message_id", &self.message_id)
+            .field("text", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Where an outgoing text stands.
@@ -92,6 +104,9 @@ pub struct NetworkMessenger {
     /// memory only: after a restart everything pending is sent once more.
     last_sent: Mutex<HashMap<[u8; 32], Instant>>,
 }
+
+/// A received text and its message id, the text in a wiping owner.
+pub(crate) type PendingText = (MessageId, Zeroizing<Vec<u8>>);
 
 fn peer_key(peer: &[u8]) -> Result<[u8; 32], CoreError> {
     peer.try_into().map_err(|_| CoreError::InvalidKey {
@@ -232,17 +247,14 @@ impl NetworkMessenger {
     /// delivery to the application is at least once, and `message_id`
     /// identifies a repeat.
     pub fn received_texts(&self, peer: Vec<u8>) -> Result<Vec<ReceivedText>, CoreError> {
-        let handle = handle_of(&peer_key(&peer)?);
+        // The application's copy of each text is made here, at the boundary,
+        // and nowhere earlier.
         Ok(self
-            .core
-            .pending_incoming(handle)?
+            .pending_texts(&peer_key(&peer)?)?
             .into_iter()
-            .filter_map(|m| match Payload::decode(&Zeroizing::new(m.plaintext)) {
-                Some(Payload::Text(text)) => Some(ReceivedText {
-                    message_id: m.message_id,
-                    text: text.to_vec(),
-                }),
-                _ => None,
+            .map(|(message_id, text)| ReceivedText {
+                message_id: message_id.to_vec(),
+                text: text.to_vec(),
             })
             .collect())
     }
@@ -585,19 +597,18 @@ impl NetworkMessenger {
                 // recorded handshake — which creates the session if it
                 // authenticates — or waits for its handshake (`NoSession`).
                 let first = !self.core.has_session(handle)?;
-                match self.core.receive_message(handle, wire) {
-                    Ok(ReceiveResult::Accepted { message }) => {
+                match self.core.receive_committed(handle, &wire) {
+                    Ok(Received::Accepted(message)) => {
                         report.accepted += 1;
                         if first {
                             report.sessions_accepted += 1;
                         }
                         crash_point("after_accept");
-                        let plaintext = Zeroizing::new(message.plaintext);
-                        self.settle(handle, &message.message_id, &plaintext, report)?;
+                        self.settle(handle, &message.message_id, &message.plaintext, report)?;
                         crash_point("after_settle");
                         Ok(Fate::Delete)
                     }
-                    Ok(ReceiveResult::Duplicate { message_id, .. }) => {
+                    Ok(Received::Duplicate { message_id, .. }) => {
                         report.duplicates += 1;
                         self.receipt_again(handle, &message_id)?;
                         Ok(Fate::Delete)
@@ -635,11 +646,23 @@ impl NetworkMessenger {
     /// Applies every accepted message still in the inbox that the network
     /// layer, not the application, consumes.
     fn settle_inbox(&self, handle: u64, report: &mut SyncReport) -> Result<(), CoreError> {
-        for m in self.core.pending_incoming(handle)? {
-            let plaintext = Zeroizing::new(m.plaintext);
-            self.settle(handle, &m.message_id, &plaintext, report)?;
+        for m in self.core.pending_committed(handle)? {
+            self.settle(handle, &m.message_id, &m.plaintext, report)?;
         }
         Ok(())
+    }
+
+    /// Texts from `peer` accepted and not yet marked read, in order, each in
+    /// a wiping owner. What [`received_texts`](Self::received_texts) returns
+    /// to the application, before the copy that leaves Rust ownership.
+    pub(crate) fn pending_texts(&self, peer: &[u8; 32]) -> Result<Vec<PendingText>, CoreError> {
+        let mut texts = Vec::new();
+        for m in self.core.pending_committed(handle_of(peer))? {
+            if let Some(Payload::Text(text)) = Payload::decode(&m.plaintext) {
+                texts.push((m.message_id, text));
+            }
+        }
+        Ok(texts)
     }
 
     /// Acts on one accepted message. Idempotent: it runs again for anything

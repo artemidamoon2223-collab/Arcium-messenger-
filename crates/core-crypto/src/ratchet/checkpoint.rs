@@ -442,7 +442,7 @@ mod tests {
         alice.decrypt(&h, &c, AD).unwrap();
         let held: Vec<_> = (0..4).map(|i| alice.encrypt(&[i], AD).unwrap()).collect();
         let (h, c) = alice.encrypt(b"latest", AD).unwrap();
-        assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), b"latest");
+        assert_eq!(*bob.decrypt(&h, &c, AD).unwrap(), b"latest");
         assert_eq!(bob.skipped.len(), 4);
         (alice, bob, held)
     }
@@ -475,17 +475,17 @@ mod tests {
 
         // Late messages from before the checkpoint use the restored skipped keys.
         for (i, (h, c)) in held.iter().enumerate().rev() {
-            assert_eq!(bob.decrypt(h, c, AD).unwrap(), [i as u8]);
+            assert_eq!(*bob.decrypt(h, c, AD).unwrap(), [i as u8]);
         }
         assert!(bob.skipped.is_empty());
 
         // Several DH steps after restoring, each side restored again midway.
         for round in 0u8..3 {
             let (h, c) = bob.encrypt(&[round], AD).unwrap();
-            assert_eq!(alice.decrypt(&h, &c, AD).unwrap(), [round]);
+            assert_eq!(*alice.decrypt(&h, &c, AD).unwrap(), [round]);
             alice = restore(&alice);
             let (h, c) = alice.encrypt(&[round, 1], AD).unwrap();
-            assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), [round, 1]);
+            assert_eq!(*bob.decrypt(&h, &c, AD).unwrap(), [round, 1]);
             bob = restore(&bob);
         }
     }
@@ -495,7 +495,7 @@ mod tests {
         let (mut alice, bob) = pair();
         let mut bob = restore(&bob);
         let (h, c) = alice.encrypt(b"hi", AD).unwrap();
-        assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), b"hi");
+        assert_eq!(*bob.decrypt(&h, &c, AD).unwrap(), b"hi");
     }
 
     #[test]
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(c.len(), NONCE_SIZE + 3 + 16);
         assert_eq!(h.n, 0);
         assert_eq!(h.dh, alice.our_dh_public().to_bytes());
-        assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), b"abc");
+        assert_eq!(*bob.decrypt(&h, &c, AD).unwrap(), b"abc");
     }
 
     #[test]
@@ -781,7 +781,7 @@ mod tests {
         }
         let (h, c) = last.unwrap();
         assert_eq!(h.n, u32::MAX - 1);
-        assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), b"top");
+        assert_eq!(*bob.decrypt(&h, &c, AD).unwrap(), b"top");
         assert_eq!(bob.nr, u32::MAX);
         assert_eq!(
             bob.to_checkpoint().unwrap_err(),
@@ -797,13 +797,13 @@ mod tests {
         let mut bob = restore(&bob);
         for expected_nr in [MAX_RESUMABLE_NR - 1, MAX_RESUMABLE_NR] {
             let (h, c) = alice.encrypt(b"m", AD).unwrap();
-            assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), b"m");
+            assert_eq!(*bob.decrypt(&h, &c, AD).unwrap(), b"m");
             assert_eq!(bob.nr, expected_nr);
             bob = restore(&bob);
         }
         // One more is a valid receive whose state can no longer be persisted.
         let (h, c) = alice.encrypt(b"m", AD).unwrap();
-        assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), b"m");
+        assert_eq!(*bob.decrypt(&h, &c, AD).unwrap(), b"m");
         assert_eq!(
             bob.to_checkpoint().unwrap_err(),
             CheckpointError::CounterExhausted("nr")
@@ -827,6 +827,6 @@ mod tests {
         drop(staged);
         let (h, c) = alice.encrypt(b"real", AD).unwrap();
         assert_eq!(h.n, h_staged.n);
-        assert_eq!(bob.decrypt(&h, &c, AD).unwrap(), b"real");
+        assert_eq!(*bob.decrypt(&h, &c, AD).unwrap(), b"real");
     }
 }

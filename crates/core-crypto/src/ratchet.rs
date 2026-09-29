@@ -202,12 +202,17 @@ impl DoubleRatchet {
     /// unknown-DH message that fails authentication must not desync the session, so
     /// we snapshot all mutable state up front and roll it back on any error. State is
     /// only kept when authentication succeeds.
+    ///
+    /// The plaintext is owned by a wiping type from the moment the AEAD returns
+    /// it (`aead_decrypt`), on the in-order, skipped-key and DH-ratchet paths
+    /// alike. The real `zeroize::Zeroizing` is named in full: the unit tests
+    /// of this module swap in a stand-in for the 32-byte key containers only.
     pub fn decrypt(
         &mut self,
         header: &Header,
         ciphertext: &[u8],
         ad: &[u8],
-    ) -> Result<Vec<u8>, RatchetError> {
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, RatchetError> {
         let snapshot = self.snapshot();
         match self.decrypt_inner(header, ciphertext, ad) {
             // `snapshot` falls out of scope here; the key fields of the unused
@@ -226,7 +231,7 @@ impl DoubleRatchet {
         header: &Header,
         ciphertext: &[u8],
         ad: &[u8],
-    ) -> Result<Vec<u8>, RatchetError> {
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, RatchetError> {
         let full_ad = concat_ad(ad, &header.to_bytes());
 
         // 1. Check skipped keys first (handles out-of-order and across-chain late arrivals).
@@ -423,7 +428,15 @@ fn aead_encrypt(key: &[u8; 32], plaintext: &[u8], ad: &[u8]) -> Result<Vec<u8>, 
     Ok(out)
 }
 
-fn aead_decrypt(key: &[u8; 32], ct_with_nonce: &[u8], ad: &[u8]) -> Result<Vec<u8>, RatchetError> {
+/// The single place the ratchet turns ciphertext into plaintext. The `Vec` the
+/// AEAD returns is wrapped at once, so no ordinary owner of the plaintext
+/// exists in this crate. On an authentication failure there is no plaintext:
+/// the AEAD checks the tag before it applies the keystream.
+fn aead_decrypt(
+    key: &[u8; 32],
+    ct_with_nonce: &[u8],
+    ad: &[u8],
+) -> Result<zeroize::Zeroizing<Vec<u8>>, RatchetError> {
     if ct_with_nonce.len() < NONCE_SIZE {
         return Err(RatchetError::Decryption);
     }
@@ -431,6 +444,7 @@ fn aead_decrypt(key: &[u8; 32], ct_with_nonce: &[u8], ad: &[u8]) -> Result<Vec<u
     let cipher = XChaCha20Poly1305::new(key.into());
     cipher
         .decrypt(nonce.into(), Payload { msg: ct, aad: ad })
+        .map(zeroize::Zeroizing::new)
         .map_err(|_| RatchetError::Decryption)
 }
 
@@ -560,13 +574,13 @@ mod tests {
 
         // The genuine message still decrypts — proof the session was not desynced.
         let pt = bob.decrypt(&hdr1, &ct1, ad).unwrap();
-        assert_eq!(pt, b"hello");
+        assert_eq!(*pt, b"hello");
 
         // Bidirectional check: the forged attempt left the session fully usable in
         // the *other* direction too — Bob can reply and Alice can decrypt it.
         let (hdr2, ct2) = bob.encrypt(b"hi alice", ad).unwrap();
         let pt2 = alice.decrypt(&hdr2, &ct2, ad).unwrap();
-        assert_eq!(pt2, b"hi alice");
+        assert_eq!(*pt2, b"hi alice");
     }
 
     /// F-1 regression: the early skipped-key lookup (`skipped.swap_remove`) mutates
@@ -586,7 +600,7 @@ mod tests {
         let (hdr2, ct2) = alice.encrypt(b"two", ad).unwrap();
 
         let pt2 = bob.decrypt(&hdr2, &ct2, ad).unwrap();
-        assert_eq!(pt2, b"two");
+        assert_eq!(*pt2, b"two");
         assert!(
             bob.skipped.contains_key(&(hdr0.dh, hdr0.n)),
             "message 0's key must have been stored as skipped"
@@ -612,7 +626,81 @@ mod tests {
 
         // The genuine delayed message must still decrypt using the untouched key.
         let pt0 = bob.decrypt(&hdr0, &ct0, ad).unwrap();
-        assert_eq!(pt0, b"zero");
+        assert_eq!(*pt0, b"zero");
+    }
+
+    /// Compile-time pin, one call per decrypt path: what `decrypt` returns is a
+    /// wiping owner, so the first owner of the plaintext under this crate's
+    /// control wipes it on drop. Returning a plain `Vec<u8>` again stops this
+    /// test compiling.
+    #[test]
+    fn decrypt_returns_a_wiping_owner_on_every_path() {
+        fn wiping<T: ZeroizeOnDrop>(_: &T) {}
+        let (mut alice, mut bob) = established_pair();
+        let ad = b"assoc";
+
+        // In order: the first message of a chain, which also takes Bob through
+        // his first DH-ratchet step.
+        let (h0, c0) = alice.encrypt(b"in order", ad).unwrap();
+        let pt = bob.decrypt(&h0, &c0, ad).unwrap();
+        wiping(&pt);
+        assert_eq!(*pt, b"in order");
+
+        // Skipped-key path: messages 1 and 2 arrive as 2, then 1. The second
+        // decrypt takes its key from the skipped store.
+        let (h1, c1) = alice.encrypt(b"late", ad).unwrap();
+        let (h2, c2) = alice.encrypt(b"early", ad).unwrap();
+        let early = bob.decrypt(&h2, &c2, ad).unwrap();
+        wiping(&early);
+        assert_eq!(*early, b"early");
+        assert!(bob.skipped.contains_key(&(h1.dh, h1.n)));
+        let late = bob.decrypt(&h1, &c1, ad).unwrap();
+        wiping(&late);
+        assert_eq!(*late, b"late");
+        assert!(
+            !bob.skipped.contains_key(&(h1.dh, h1.n)),
+            "the key was used"
+        );
+
+        // DH-ratchet path: Bob answers, and Alice's decrypt performs a receiving
+        // DH step.
+        let (hb, cb) = bob.encrypt(b"reply", ad).unwrap();
+        let reply = alice.decrypt(&hb, &cb, ad).unwrap();
+        wiping(&reply);
+        assert_eq!(*reply, b"reply");
+
+        // A second round trip, so the DH step above is not the only one.
+        let (h3, c3) = alice.encrypt(b"again", ad).unwrap();
+        let again = bob.decrypt(&h3, &c3, ad).unwrap();
+        wiping(&again);
+        assert_eq!(*again, b"again");
+    }
+
+    /// No plaintext owner exists on a failed decrypt: the result is an error
+    /// and carries no buffer, for a forged ciphertext, a truncated one, and a
+    /// replay of a message already accepted.
+    #[test]
+    fn a_failed_decrypt_returns_no_plaintext() {
+        let (mut alice, mut bob) = established_pair();
+        let ad = b"assoc";
+        let (h0, c0) = alice.encrypt(b"once", ad).unwrap();
+        assert_eq!(*bob.decrypt(&h0, &c0, ad).unwrap(), b"once");
+
+        let forged = vec![0u8; c0.len()];
+        assert!(matches!(
+            bob.decrypt(&h0, &forged, ad),
+            Err(RatchetError::Decryption)
+        ));
+        assert!(matches!(
+            bob.decrypt(&h0, &c0[..NONCE_SIZE - 1], ad),
+            Err(RatchetError::Decryption)
+        ));
+        // A replay: the message key was consumed, so it cannot authenticate.
+        assert!(bob.decrypt(&h0, &c0, ad).is_err());
+
+        // None of it desynchronised the session.
+        let (h1, c1) = alice.encrypt(b"next", ad).unwrap();
+        assert_eq!(*bob.decrypt(&h1, &c1, ad).unwrap(), b"next");
     }
 
     #[test]
@@ -810,11 +898,11 @@ mod tests {
         let mut alice = DoubleRatchet::from_checkpoint(&unhex(ALICE_CHECKPOINT)).unwrap();
         let mut bob = DoubleRatchet::from_checkpoint(&unhex(BOB_CHECKPOINT)).unwrap();
         let (h0, c0) = fixture_message(MSG0_HEADER, MSG0_CIPHERTEXT);
-        assert_eq!(bob.decrypt(&h0, &c0, &ad).unwrap(), b"m0");
+        assert_eq!(*bob.decrypt(&h0, &c0, &ad).unwrap(), b"m0");
         let (h, c) = bob.encrypt(b"reply", &ad).unwrap();
-        assert_eq!(alice.decrypt(&h, &c, &ad).unwrap(), b"reply");
+        assert_eq!(*alice.decrypt(&h, &c, &ad).unwrap(), b"reply");
         let (h, c) = alice.encrypt(b"again", &ad).unwrap();
-        assert_eq!(bob.decrypt(&h, &c, &ad).unwrap(), b"again");
+        assert_eq!(*bob.decrypt(&h, &c, &ad).unwrap(), b"again");
     }
 
     // ── Secrets are held in wiping types ─────────────────────────────────────
@@ -928,13 +1016,13 @@ mod tests {
         let ad = b"assoc";
         let (h0, c0) = alice.encrypt(b"zero", ad).unwrap();
         let (h1, c1) = alice.encrypt(b"one", ad).unwrap();
-        assert_eq!(bob.decrypt(&h1, &c1, ad).unwrap(), b"one");
+        assert_eq!(*bob.decrypt(&h1, &c1, ad).unwrap(), b"one");
         assert!(
             bob.skipped.contains_key(&(h0.dh, h0.n)),
             "message 0 was skipped"
         );
 
-        assert_eq!(bob.decrypt(&h0, &c0, ad).unwrap(), b"zero");
+        assert_eq!(*bob.decrypt(&h0, &c0, ad).unwrap(), b"zero");
         assert!(bob.skipped.is_empty(), "the consumed key is removed");
         assert!(
             bob.decrypt(&h0, &c0, ad).is_err(),
@@ -993,20 +1081,20 @@ mod tests {
         // First receive: a DH ratchet step and two skipped keys.
         let (h2, c2) = &sent[2];
         no_leftover(&mut bob, "decrypt with a DH step and skipped keys", |r| {
-            assert_eq!(r.decrypt(h2, c2, ad).unwrap(), [2]);
+            assert_eq!(*r.decrypt(h2, c2, ad).unwrap(), [2]);
         });
         assert_eq!(bob.skipped.len(), 2);
         // A skipped key is consumed.
         let (h0, c0) = &sent[0];
         no_leftover(&mut bob, "decrypt consuming a skipped key", |r| {
-            assert_eq!(r.decrypt(h0, c0, ad).unwrap(), [0]);
+            assert_eq!(*r.decrypt(h0, c0, ad).unwrap(), [0]);
         });
         // Bob replies, and Alice takes a DH step of her own.
         let (hr, cr) = no_leftover(&mut bob, "encrypt after a DH step", |r| {
             r.encrypt(b"r", ad).unwrap()
         });
         no_leftover(&mut alice, "decrypt with a DH step", |r| {
-            assert_eq!(r.decrypt(&hr, &cr, ad).unwrap(), b"r");
+            assert_eq!(*r.decrypt(&hr, &cr, ad).unwrap(), b"r");
         });
 
         // Failures roll back and leave nothing behind.
@@ -1165,7 +1253,7 @@ mod tests {
         let sent: Vec<_> = (0..4u8).map(|i| alice.encrypt(&[i], ad).unwrap()).collect();
 
         start_log();
-        assert_eq!(bob.decrypt(&sent[3].0, &sent[3].1, ad).unwrap(), [3]);
+        assert_eq!(*bob.decrypt(&sent[3].0, &sent[3].1, ad).unwrap(), [3]);
         let log = take_log();
         let times = |k: &[u8; 32]| log.iter().filter(|x| *x == k).count();
 

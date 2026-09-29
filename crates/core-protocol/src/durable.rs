@@ -720,8 +720,9 @@ impl DurableSession {
 
     /// Stages decrypting a message. Returns the plaintext on commit.
     ///
-    /// The plaintext is held in a wiping owner from the moment the ratchet
-    /// returns it, so a transition that is dropped, rejected or never
+    /// The plaintext is held in a wiping owner from the moment the AEAD returns
+    /// it — the ratchet's own return type — and moved, never copied, into the
+    /// transition, so a transition that is dropped, rejected or never
     /// committed wipes it, on `?` and early returns as much as on the normal
     /// path.
     pub fn stage_decrypt(
@@ -729,7 +730,7 @@ impl DurableSession {
         header: &Header,
         ciphertext: &[u8],
     ) -> Result<StagedTransition<Zeroizing<Vec<u8>>>, StageError> {
-        self.stage(|r, ad| r.decrypt(header, ciphertext, ad).map(Zeroizing::new))
+        self.stage(|r, ad| r.decrypt(header, ciphertext, ad))
     }
 
     fn stage<T>(
@@ -1841,6 +1842,56 @@ mod tests {
                 .map(|_| DropProbe(std::rc::Rc::clone(count)))
         })
         .unwrap()
+    }
+
+    /// The plaintext a commit releases is the buffer the staged transition
+    /// held: it was moved, not copied, so no second owner was made between
+    /// staging and release. Compared by heap address, which a move of a `Vec`
+    /// does not change and a copy always does. This does not cover the step
+    /// before staging (the ratchet's buffer into the transition), which no test
+    /// observes.
+    #[test]
+    fn the_released_plaintext_is_the_staged_buffer_not_a_copy() {
+        let p = pair();
+        let mut a_store = FakeStore::default();
+        let mut b_store = FakeStore::default();
+        let mut alice =
+            DurableSession::create(&mut a_store, p.alice, SessionRole::Initiator, p.alice_pk)
+                .unwrap();
+        let first = send(
+            &mut alice,
+            &mut a_store,
+            b"a message long enough to allocate",
+        );
+
+        // Established-session path.
+        let mut bob =
+            DurableSession::create(&mut b_store, p.bob, SessionRole::Responder, p.bob_pk).unwrap();
+        let staged = bob.stage_decrypt(&first.0, &first.1).unwrap();
+        let staged_at = staged.output().as_ptr();
+        let released = bob.commit(&mut b_store, staged).unwrap();
+        assert_eq!(released.as_ptr(), staged_at, "commit released a copy");
+        assert_eq!(released.as_slice(), b"a message long enough to allocate");
+
+        // First-message path: a provisional responder promoted by its first
+        // message.
+        let mut c_store = FakeStore::default();
+        let other = pair();
+        let mut sender = DurableSession::create(
+            &mut c_store,
+            other.alice,
+            SessionRole::Initiator,
+            other.alice_pk,
+        )
+        .unwrap();
+        let msg = send(&mut sender, &mut c_store, b"the first message, long enough");
+        let provisional =
+            ProvisionalSession::new(other.bob, SessionRole::Responder, other.bob_pk).unwrap();
+        let staged = provisional.stage_first_decrypt(&msg.0, &msg.1).unwrap();
+        let staged_at = staged.output().as_ptr();
+        let mut d_store = FakeStore::default();
+        let (_, released) = provisional.promote_with(&mut d_store, staged, &[]).unwrap();
+        assert_eq!(released.as_ptr(), staged_at, "promotion released a copy");
     }
 
     /// STAGE -> COMMIT -> SUCCESS: the output is not dropped by the commit; it

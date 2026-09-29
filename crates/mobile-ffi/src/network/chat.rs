@@ -92,7 +92,7 @@ impl ChatEntryState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ChatEntry {
     /// Position in this conversation, starting at 1.
     pub seq: u64,
@@ -102,8 +102,24 @@ pub struct ChatEntry {
     pub timestamp_ms: u64,
     /// The application's id for an outgoing text; empty for incoming ones.
     pub app_id: Vec<u8>,
-    /// Invalid UTF-8 from a peer is shown with replacement characters.
+    /// Invalid UTF-8 from a peer is shown with replacement characters. The
+    /// application's copy of the text.
     pub text: String,
+}
+
+/// Shows the metadata and hides the text: accidental formatting and logging
+/// only. `Conversation::last` holds a `ChatEntry`, so it is covered too.
+impl std::fmt::Debug for ChatEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChatEntry")
+            .field("seq", &self.seq)
+            .field("outgoing", &self.outgoing)
+            .field("state", &self.state)
+            .field("timestamp_ms", &self.timestamp_ms)
+            .field("app_id", &self.app_id)
+            .field("text", &"<redacted>")
+            .finish()
+    }
 }
 
 /// The session with a contact, as the application should present it.
@@ -780,10 +796,10 @@ impl NetworkMessenger {
         let has_session = self.core.has_session(handle)?;
         if has_session {
             // Received texts: into the history, then marked read.
-            for text in self.received_texts(peer.to_vec())? {
-                self.record_incoming(peer, &text.message_id, Zeroizing::new(text.text))?;
+            for (message_id, text) in self.pending_texts(peer)? {
+                self.record_incoming(peer, &message_id, text)?;
                 crash_point("chat_after_record");
-                self.mark_read(peer.to_vec(), text.message_id)?;
+                self.mark_read(peer.to_vec(), message_id.to_vec())?;
             }
         }
         let pending: HashSet<Vec<u8>> = if has_session {

@@ -824,8 +824,9 @@ impl NetworkMessenger {
             match e.state {
                 ChatEntryState::Queued if can_send => {
                     // Same id as recorded: returns the committed message if
-                    // an earlier attempt got this far.
-                    let sent = self.send_text(peer.to_vec(), e.app_id.clone(), e.text.to_vec())?;
+                    // an earlier attempt got this far. The text moves out of
+                    // the entry, still in its wiping owner.
+                    let sent = self.send_committed_text(peer, &e.app_id, e.text)?;
                     crash_point("chat_after_outbox");
                     let state = match sent.state {
                         TextState::Pending => ChatEntryState::Pending,

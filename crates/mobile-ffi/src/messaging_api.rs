@@ -171,10 +171,40 @@ fn message_id_arg(session_id: u64, id: &[u8]) -> Result<messaging::MessageId, Co
 
 /// What the network layer needs from the messaging surface without leaving
 /// Rust ownership. These are not exported through UniFFI (an `impl` block
-/// marked `#[uniffi::export]` exports every method in it): they return the
-/// messenger's own types, so a plaintext stays in its wiping owner instead of
-/// being copied into the application's plain `Vec<u8>` record first.
+/// marked `#[uniffi::export]` exports every method in it): they take and return
+/// the messenger's own types, so a plaintext stays in its wiping owner instead
+/// of being copied into, or out of, an ordinary `Vec<u8>`.
 impl ArciumCore {
+    /// [`send_message`](Self::send_message) for a plaintext already held in a
+    /// wiping owner: it is borrowed from that owner, not copied. The exported
+    /// method wraps its argument and calls this, so there is one send path.
+    pub(crate) fn send_committed(
+        &self,
+        session_id: u64,
+        client_message_id: &[u8],
+        plaintext: &Zeroizing<Vec<u8>>,
+    ) -> Result<SendResult, CoreError> {
+        let our = self.our_identity_pk()?;
+        let (mut store, mut messenger) = self.lock()?;
+        let outcome = messenger
+            .send(&mut store, our, session_id, client_message_id, plaintext)
+            .map_err(|e| CoreError::messaging(session_id, e))?;
+        Ok(match outcome {
+            SendOutcome::Sent(m) => SendResult::Sent {
+                message: outgoing(m),
+            },
+            SendOutcome::AlreadyPending(m) => SendResult::AlreadyPending {
+                message: outgoing(m),
+            },
+            SendOutcome::AlreadyAcknowledged { message_id } => SendResult::AlreadyAcknowledged {
+                message_id: message_id.to_vec(),
+            },
+            SendOutcome::Abandoned { message_id } => SendResult::Abandoned {
+                message_id: message_id.to_vec(),
+            },
+        })
+    }
+
     /// [`receive_message`](Self::receive_message), without converting the
     /// result into the application's record.
     pub(crate) fn receive_committed(
@@ -258,26 +288,8 @@ impl ArciumCore {
         client_message_id: Vec<u8>,
         plaintext: Vec<u8>,
     ) -> Result<SendResult, CoreError> {
-        let our = self.our_identity_pk()?;
         let plaintext = Zeroizing::new(plaintext);
-        let (mut store, mut messenger) = self.lock()?;
-        let outcome = messenger
-            .send(&mut store, our, session_id, &client_message_id, &plaintext)
-            .map_err(|e| CoreError::messaging(session_id, e))?;
-        Ok(match outcome {
-            SendOutcome::Sent(m) => SendResult::Sent {
-                message: outgoing(m),
-            },
-            SendOutcome::AlreadyPending(m) => SendResult::AlreadyPending {
-                message: outgoing(m),
-            },
-            SendOutcome::AlreadyAcknowledged { message_id } => SendResult::AlreadyAcknowledged {
-                message_id: message_id.to_vec(),
-            },
-            SendOutcome::Abandoned { message_id } => SendResult::Abandoned {
-                message_id: message_id.to_vec(),
-            },
-        })
+        self.send_committed(session_id, &client_message_id, &plaintext)
     }
 
     /// Deletes the session under `session_id` with its handle and stored

@@ -518,7 +518,10 @@ pub struct DurableSession {
 /// A prepared transition: the advanced ratchet, the record describing it, and
 /// the output that is released only by a successful
 /// [`commit`](DurableSession::commit). Dropping it abandons the transition and
-/// wipes its key material.
+/// wipes its key material — and its output, when the output type wipes itself,
+/// as a staged plaintext does ([`stage_decrypt`](DurableSession::stage_decrypt)).
+/// A commit that succeeds moves the output to the caller, so nothing is wiped
+/// before the caller has it; a commit that fails drops it with the transition.
 pub struct StagedTransition<T> {
     ratchet: DoubleRatchet,
     record: Zeroizing<Vec<u8>>,
@@ -716,12 +719,17 @@ impl DurableSession {
     }
 
     /// Stages decrypting a message. Returns the plaintext on commit.
+    ///
+    /// The plaintext is held in a wiping owner from the moment the ratchet
+    /// returns it, so a transition that is dropped, rejected or never
+    /// committed wipes it, on `?` and early returns as much as on the normal
+    /// path.
     pub fn stage_decrypt(
         &self,
         header: &Header,
         ciphertext: &[u8],
-    ) -> Result<StagedTransition<Vec<u8>>, StageError> {
-        self.stage(|r, ad| r.decrypt(header, ciphertext, ad))
+    ) -> Result<StagedTransition<Zeroizing<Vec<u8>>>, StageError> {
+        self.stage(|r, ad| r.decrypt(header, ciphertext, ad).map(Zeroizing::new))
     }
 
     fn stage<T>(
@@ -899,7 +907,7 @@ impl ProvisionalSession {
         &self,
         header: &Header,
         ciphertext: &[u8],
-    ) -> Result<StagedTransition<Vec<u8>>, StageError> {
+    ) -> Result<StagedTransition<Zeroizing<Vec<u8>>>, StageError> {
         self.inner.stage_decrypt(header, ciphertext)
     }
 
@@ -913,9 +921,9 @@ impl ProvisionalSession {
     pub fn promote_with<S: CheckpointStore>(
         self,
         store: &mut S,
-        staged: StagedTransition<Vec<u8>>,
+        staged: StagedTransition<Zeroizing<Vec<u8>>>,
         side: &[SideWrite],
-    ) -> Result<(DurableSession, Vec<u8>), OpenError> {
+    ) -> Result<(DurableSession, Zeroizing<Vec<u8>>), OpenError> {
         let mut inner = self.inner;
         if staged.instance != inner.instance || staged.base_generation != 0 {
             return Err(OpenError::StaleTransition);
@@ -1207,7 +1215,7 @@ mod tests {
         m: &(Header, Vec<u8>),
     ) -> Vec<u8> {
         let staged = s.stage_decrypt(&m.0, &m.1).unwrap();
-        s.commit(store, staged).unwrap()
+        s.commit(store, staged).unwrap().to_vec()
     }
 
     // ── Loading and creation ──────────────────────────────────────────────────
@@ -1765,6 +1773,304 @@ mod tests {
             Err(StageError::Ratchet(RatchetError::Decryption))
         ));
         assert_eq!(*installed(&s), *mem);
+    }
+
+    // ── Staged output: who owns it, and when it is destroyed ─────────────────
+    //
+    // A staged decrypt owns the plaintext until a commit hands it to the
+    // caller. These tests pin two things without reading freed memory: the
+    // plaintext is held in a wiping type, and the transition drops its output
+    // exactly when the ownership rules say — never before a successful commit
+    // has returned it, and no later than the end of a commit that fails.
+
+    fn is_wiping<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+
+    /// Compile-time pin: the output of a staged decrypt is a wiping type, on
+    /// both the established-session and the first-message paths.
+    #[test]
+    fn staged_plaintext_is_held_in_a_wiping_type() {
+        let p = pair();
+        let mut a_store = FakeStore::default();
+        let mut b_store = FakeStore::default();
+        let mut alice =
+            DurableSession::create(&mut a_store, p.alice, SessionRole::Initiator, p.alice_pk)
+                .unwrap();
+        let msg = send(&mut alice, &mut a_store, b"first");
+
+        let provisional = ProvisionalSession::new(
+            Session {
+                ratchet: p.bob.ratchet.staged_copy(),
+                ad: p.bob.ad.clone(),
+                peer_identity_pk: p.bob.peer_identity_pk,
+            },
+            SessionRole::Responder,
+            p.bob_pk,
+        )
+        .unwrap();
+        let first = provisional.stage_first_decrypt(&msg.0, &msg.1).unwrap();
+        is_wiping(first.output());
+
+        let bob =
+            DurableSession::create(&mut b_store, p.bob, SessionRole::Responder, p.bob_pk).unwrap();
+        let staged = bob.stage_decrypt(&msg.0, &msg.1).unwrap();
+        is_wiping(staged.output());
+        assert_eq!(staged.output().as_slice(), b"first");
+    }
+
+    /// Records how often, and therefore when, its owner is dropped.
+    struct DropProbe(std::rc::Rc<std::cell::Cell<u32>>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    fn drops() -> std::rc::Rc<std::cell::Cell<u32>> {
+        std::rc::Rc::new(std::cell::Cell::new(0))
+    }
+
+    /// A staged transition whose output is a probe instead of plaintext: the
+    /// ownership of the output is the same whatever its type.
+    fn staged_probe(
+        s: &DurableSession,
+        count: &std::rc::Rc<std::cell::Cell<u32>>,
+    ) -> StagedTransition<DropProbe> {
+        s.stage(|r, ad| {
+            r.encrypt(b"probe", ad)
+                .map(|_| DropProbe(std::rc::Rc::clone(count)))
+        })
+        .unwrap()
+    }
+
+    /// STAGE -> COMMIT -> SUCCESS: the output is not dropped by the commit; it
+    /// belongs to the caller, who is the one to drop it.
+    #[test]
+    fn a_successful_commit_hands_the_output_to_the_caller_undestroyed() {
+        let p = pair();
+        let mut store = FakeStore::default();
+        let mut s = DurableSession::create(&mut store, p.alice, SessionRole::Initiator, p.alice_pk)
+            .unwrap();
+        let count = drops();
+        let staged = staged_probe(&s, &count);
+        let released = s.commit(&mut store, staged).unwrap();
+        assert_eq!(
+            count.get(),
+            0,
+            "the commit must not destroy what it releases"
+        );
+        assert_eq!(s.generation(), 1);
+        drop(released);
+        assert_eq!(count.get(), 1);
+    }
+
+    /// STAGE -> DROP: a transition that is never committed drops its output
+    /// with it, and changes nothing.
+    #[test]
+    fn an_abandoned_transition_drops_its_output_and_changes_nothing() {
+        let p = pair();
+        let mut store = FakeStore::default();
+        let s = DurableSession::create(&mut store, p.alice, SessionRole::Initiator, p.alice_pk)
+            .unwrap();
+        let (mem, disk) = (installed(&s), stored(&mut store, &s));
+        let count = drops();
+        let staged = staged_probe(&s, &count);
+        assert_eq!(count.get(), 0, "staging alone does not destroy the output");
+        drop(staged);
+        assert_eq!(count.get(), 1);
+        assert_eq!(*installed(&s), *mem);
+        assert_eq!(*stored(&mut store, &s), *disk);
+    }
+
+    /// STAGE -> COMMIT -> REJECTION / OUTCOME UNKNOWN: every way a commit can
+    /// fail drops the output before the error reaches the caller, and releases
+    /// nothing.
+    #[test]
+    fn every_failed_commit_drops_the_staged_output() {
+        // The store reports the write as not committed.
+        let p = pair();
+        let mut store = FakeStore::default();
+        let mut s = DurableSession::create(&mut store, p.alice, SessionRole::Initiator, p.alice_pk)
+            .unwrap();
+        let count = drops();
+        let staged = staged_probe(&s, &count);
+        store.next_write = Some(Fault::NotCommitted);
+        assert!(matches!(
+            s.commit(&mut store, staged),
+            Err(CommitError::NotCommitted(_))
+        ));
+        assert_eq!(count.get(), 1, "NotCommitted");
+
+        // The store reports an unknown outcome, whether or not it stored the
+        // record; a transition staged earlier is then refused as unresolved.
+        for (fault, name) in [
+            (Fault::UnknownStored, "OutcomeUnknown (stored)"),
+            (Fault::UnknownLost, "OutcomeUnknown (lost)"),
+        ] {
+            let p = pair();
+            let mut store = FakeStore::default();
+            let mut s =
+                DurableSession::create(&mut store, p.alice, SessionRole::Initiator, p.alice_pk)
+                    .unwrap();
+            let (count, later) = (drops(), drops());
+            let staged = staged_probe(&s, &count);
+            let queued = staged_probe(&s, &later);
+            store.next_write = Some(fault);
+            assert!(matches!(
+                s.commit(&mut store, staged),
+                Err(CommitError::OutcomeUnknown(_))
+            ));
+            assert_eq!(count.get(), 1, "{name}");
+            assert!(matches!(
+                s.commit(&mut store, queued),
+                Err(CommitError::Unresolved { .. })
+            ));
+            assert_eq!(later.get(), 1, "{name}: refused as unresolved");
+        }
+
+        // The session record moved on under this instance.
+        let p = pair();
+        let mut store = FakeStore::default();
+        let b = binding(p.alice_pk, p.bob_pk);
+        let mut s = DurableSession::create(&mut store, p.alice, SessionRole::Initiator, p.alice_pk)
+            .unwrap();
+        let mut rival = DurableSession::load(&mut store, &b).unwrap().unwrap();
+        let advance = rival.stage_encrypt(b"other").unwrap();
+        rival.commit(&mut store, advance).unwrap();
+        let (count, held) = (drops(), drops());
+        let staged = staged_probe(&s, &count);
+        let queued = staged_probe(&s, &held);
+        assert!(matches!(
+            s.commit(&mut store, staged),
+            Err(CommitError::Conflict(_))
+        ));
+        assert_eq!(count.get(), 1, "Conflict");
+        // The instance is now conflicted: a transition staged before that is
+        // refused, and dropped.
+        assert!(matches!(
+            s.commit(&mut store, queued),
+            Err(CommitError::Conflicted)
+        ));
+        assert_eq!(held.get(), 1, "Conflicted");
+
+        // A transition from another instance, and one from an older state.
+        let p = pair();
+        let mut store = FakeStore::default();
+        let b = binding(p.alice_pk, p.bob_pk);
+        let mut s = DurableSession::create(&mut store, p.alice, SessionRole::Initiator, p.alice_pk)
+            .unwrap();
+        let mut other = DurableSession::load(&mut store, &b).unwrap().unwrap();
+        let (foreign, old) = (drops(), drops());
+        let staged = staged_probe(&s, &foreign);
+        assert!(matches!(
+            other.commit(&mut store, staged),
+            Err(CommitError::StaleTransition)
+        ));
+        assert_eq!(foreign.get(), 1, "StaleTransition (other instance)");
+        let first = staged_probe(&s, &old);
+        let advance = s.stage_encrypt(b"x").unwrap();
+        s.commit(&mut store, advance).unwrap();
+        assert!(matches!(
+            s.commit(&mut store, first),
+            Err(CommitError::StaleTransition)
+        ));
+        assert_eq!(old.get(), 1, "StaleTransition (older state)");
+
+        // A side write that cannot be batched with the checkpoint.
+        let count = drops();
+        let staged = staged_probe(&s, &count);
+        let side = [
+            SideWrite::insert("dup:1".into(), Zeroizing::new(vec![1])).unwrap(),
+            SideWrite::insert("dup:1".into(), Zeroizing::new(vec![2])).unwrap(),
+        ];
+        assert!(matches!(
+            s.commit_with(&mut store, staged, &side),
+            Err(CommitError::SideWrite(_))
+        ));
+        assert_eq!(count.get(), 1, "SideWrite");
+
+        // A side precondition that fails: the transition is rejected, and the
+        // session stays usable.
+        let taken = SideWrite::insert("taken:1".into(), Zeroizing::new(vec![1])).unwrap();
+        let staged = s.stage_encrypt(b"y").unwrap();
+        s.commit_with(&mut store, staged, &[taken]).unwrap();
+        let count = drops();
+        let staged = staged_probe(&s, &count);
+        let absent = SideWrite::require_absent("taken:1".into()).unwrap();
+        assert!(matches!(
+            s.commit_with(&mut store, staged, &[absent]),
+            Err(CommitError::SideConflict { .. })
+        ));
+        assert_eq!(count.get(), 1, "SideConflict");
+    }
+
+    /// The first-message path releases plaintext only through a successful
+    /// promotion, and a rejected promotion returns none.
+    #[test]
+    fn a_first_message_is_released_only_by_a_successful_promotion() {
+        let fresh = || {
+            let p = pair();
+            let mut a_store = FakeStore::default();
+            let mut alice =
+                DurableSession::create(&mut a_store, p.alice, SessionRole::Initiator, p.alice_pk)
+                    .unwrap();
+            let msg = send(&mut alice, &mut a_store, b"the first message");
+            let provisional =
+                ProvisionalSession::new(p.bob, SessionRole::Responder, p.bob_pk).unwrap();
+            (provisional, msg)
+        };
+
+        // Success: the plaintext arrives intact.
+        let (provisional, msg) = fresh();
+        let mut store = FakeStore::default();
+        let staged = provisional.stage_first_decrypt(&msg.0, &msg.1).unwrap();
+        let (session, plaintext): (DurableSession, Zeroizing<Vec<u8>>) =
+            provisional.promote_with(&mut store, staged, &[]).unwrap();
+        assert_eq!(plaintext.as_slice(), b"the first message");
+        assert_eq!(session.generation(), 1);
+
+        // Rejection: a record already exists for the peer.
+        let (provisional, msg) = fresh();
+        let mut store = FakeStore::default();
+        let staged = provisional.stage_first_decrypt(&msg.0, &msg.1).unwrap();
+        let other = pair();
+        let existing = DurableSession::create(
+            &mut store,
+            Session {
+                ratchet: other.bob.ratchet,
+                ad: provisional.inner.session.ad.clone(),
+                peer_identity_pk: provisional.inner.session.peer_identity_pk,
+            },
+            SessionRole::Responder,
+            provisional.inner.our_identity_pk,
+        )
+        .unwrap();
+        let before = stored(&mut store, &existing);
+        assert!(matches!(
+            provisional.promote_with(&mut store, staged, &[]),
+            Err(OpenError::AlreadyExists)
+        ));
+        assert_eq!(
+            *stored(&mut store, &existing),
+            *before,
+            "nothing was written"
+        );
+
+        // Rejection: the store reports the write as not committed, or unknown.
+        for fault in [
+            Fault::NotCommitted,
+            Fault::UnknownStored,
+            Fault::UnknownLost,
+        ] {
+            let (provisional, msg) = fresh();
+            let mut store = FakeStore::default();
+            let staged = provisional.stage_first_decrypt(&msg.0, &msg.1).unwrap();
+            store.next_write = Some(fault);
+            assert!(matches!(
+                provisional.promote_with(&mut store, staged, &[]),
+                Err(OpenError::NotCommitted(_) | OpenError::OutcomeUnknown(_))
+            ));
+        }
     }
 
     /// F-1 at the session level: a stored record whose `nr` could overflow is

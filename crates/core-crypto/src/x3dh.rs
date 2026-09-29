@@ -100,13 +100,26 @@ pub fn verify_signed_prekey_v1(bundle: &PrekeyBundle) -> Result<(), X3dhError> {
         .map_err(|_| X3dhError::BadSignature)
 }
 
-#[derive(Debug)]
 pub struct AliceSession {
     /// Wiped when the session value is dropped.
     pub root_key: Zeroizing<[u8; 32]>,
     pub ephemeral_pk: PublicKey,
     pub their_signed_prekey_pk: PublicKey,
     pub ad: Vec<u8>,
+}
+
+/// `Zeroizing` derives `Debug` over its contents, so a derived `Debug` here
+/// would print the root key. Formatting shows the public fields and hides the
+/// key; this guards against accidental formatting and logging only.
+impl std::fmt::Debug for AliceSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AliceSession")
+            .field("root_key", &"<redacted>")
+            .field("ephemeral_pk", &self.ephemeral_pk)
+            .field("their_signed_prekey_pk", &self.their_signed_prekey_pk)
+            .field("ad", &self.ad)
+            .finish()
+    }
 }
 
 pub fn x3dh_initiate(
@@ -453,5 +466,73 @@ mod key_lifetime_tests {
             ad: Vec::new(),
         };
         is_wiping(&session.root_key);
+    }
+
+    /// Every rendering of `secret` a formatter could produce: the comma list a
+    /// derived `Debug` prints, lower- and upper-case hex, and the bytes as text.
+    fn renderings(secret: &[u8; 32]) -> Vec<String> {
+        let list = secret
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let hex = hex(secret);
+        vec![
+            list,
+            hex.to_uppercase(),
+            hex,
+            String::from_utf8_lossy(secret).into_owned(),
+        ]
+    }
+
+    /// Accidental formatting (`{:?}`, `{:#?}`, a logged error context) of an
+    /// `AliceSession` must not print its root key. This is about formatting and
+    /// logging only; it says nothing about process memory.
+    #[test]
+    fn alice_session_debug_does_not_print_the_root_key() {
+        let secret: [u8; 32] = *b"ROOT-KEY-CANARY!ROOT-KEY-CANARY!";
+        let session = AliceSession {
+            root_key: Zeroizing::new(secret),
+            ephemeral_pk: PublicKey::from([0x11; 32]),
+            their_signed_prekey_pk: PublicKey::from([0x22; 32]),
+            ad: vec![0x33; 8],
+        };
+        for text in [format!("{session:?}"), format!("{session:#?}")] {
+            for needle in renderings(&secret) {
+                assert!(!text.contains(&needle), "{needle:?} found in {text}");
+            }
+            // The public fields stay visible, and the redaction is explicit.
+            assert!(text.contains("AliceSession"), "{text}");
+            assert!(text.contains("<redacted>"), "{text}");
+            assert!(text.contains("ephemeral_pk"), "{text}");
+            assert!(text.contains("their_signed_prekey_pk"), "{text}");
+            assert!(text.contains("ad"), "{text}");
+        }
+    }
+
+    /// The same, for a session a real handshake produced: the key that is
+    /// searched for is the one X3DH derived, not one chosen by the test.
+    #[test]
+    fn a_handshake_sessions_debug_does_not_print_its_derived_root_key() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let a_sk = StaticSecret::random_from_rng(OsRng);
+        let b_identity_pk = PublicKey::from(&StaticSecret::random_from_rng(OsRng));
+        let b_spk = PublicKey::from(&StaticSecret::random_from_rng(OsRng));
+        let b_signing = SigningKey::generate(&mut OsRng);
+        let object = signed_prekey_object_v1(&b_identity_pk, &b_signing.verifying_key(), &b_spk);
+        let bundle = PrekeyBundle {
+            identity_pk: b_identity_pk,
+            signing_pk: b_signing.verifying_key(),
+            signed_prekey_pk: b_spk,
+            signed_prekey_signature: b_signing.sign(&object),
+            one_time_prekey_pk: None,
+            one_time_prekey_id: None,
+        };
+        let alice = x3dh_initiate(&a_sk, PublicKey::from(&a_sk), &bundle).expect("initiate");
+        for text in [format!("{alice:?}"), format!("{alice:#?}")] {
+            for needle in renderings(&alice.root_key) {
+                assert!(!text.contains(&needle), "the derived root key is printed");
+            }
+        }
     }
 }

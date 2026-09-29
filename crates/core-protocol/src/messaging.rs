@@ -328,7 +328,7 @@ impl Messenger {
             Ok((_, plaintext)) => Ok(Received::Accepted(IncomingMessage {
                 message_id: id,
                 generation,
-                plaintext: Zeroizing::new(plaintext),
+                plaintext,
             })),
             // A session exists for the peer, or the handle is taken. If it is
             // this peer's session under this handle, the message belongs to it.
@@ -514,7 +514,7 @@ impl Messenger {
             Ok(plaintext) => Ok(Received::Accepted(IncomingMessage {
                 message_id: id,
                 generation,
-                plaintext: Zeroizing::new(plaintext),
+                plaintext,
             })),
             // Accepted (and possibly acknowledged) by another instance
             // between the check above and this commit.

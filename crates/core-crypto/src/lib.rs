@@ -265,7 +265,7 @@ mod tests {
         let (hdr, ct) = alice.encrypt(msg, ad).unwrap();
         let pt = bob.decrypt(&hdr, &ct, ad).unwrap();
 
-        assert_eq!(pt, msg);
+        assert_eq!(*pt, msg);
     }
 
     /// Bob replies after receiving Alice's first message.
@@ -280,7 +280,7 @@ mod tests {
         let (h2, c2) = bob.encrypt(b"pong", ad).unwrap();
         let pt = alice.decrypt(&h2, &c2, ad).unwrap();
 
-        assert_eq!(pt, b"pong");
+        assert_eq!(*pt, b"pong");
     }
 
     /// Messages that arrive out of order are still decryptable.
@@ -294,9 +294,9 @@ mod tests {
         let (h2, c2) = alice.encrypt(b"msg-2", ad).unwrap();
 
         // Deliver in reverse order.
-        assert_eq!(bob.decrypt(&h2, &c2, ad).unwrap(), b"msg-2");
-        assert_eq!(bob.decrypt(&h1, &c1, ad).unwrap(), b"msg-1");
-        assert_eq!(bob.decrypt(&h0, &c0, ad).unwrap(), b"msg-0");
+        assert_eq!(*bob.decrypt(&h2, &c2, ad).unwrap(), b"msg-2");
+        assert_eq!(*bob.decrypt(&h1, &c1, ad).unwrap(), b"msg-1");
+        assert_eq!(*bob.decrypt(&h0, &c0, ad).unwrap(), b"msg-0");
     }
 
     /// Many back-and-forth messages stay consistent.
@@ -310,13 +310,13 @@ mod tests {
             let payload = format!("a→b {i}");
             let (h, c) = alice.encrypt(payload.as_bytes(), ad).unwrap();
             let pt = bob.decrypt(&h, &c, ad).unwrap();
-            assert_eq!(pt, payload.as_bytes());
+            assert_eq!(*pt, payload.as_bytes());
 
             // Bob → Alice
             let payload = format!("b→a {i}");
             let (h, c) = bob.encrypt(payload.as_bytes(), ad).unwrap();
             let pt = alice.decrypt(&h, &c, ad).unwrap();
-            assert_eq!(pt, payload.as_bytes());
+            assert_eq!(*pt, payload.as_bytes());
         }
     }
 
@@ -338,7 +338,7 @@ mod tests {
         // Alice continues — after Bob's reply Alice knows Bob's new DH pub → ratchet.
         let (h, c) = alice.encrypt(b"r2-a", ad).unwrap();
         let pt = bob.decrypt(&h, &c, ad).unwrap();
-        assert_eq!(pt, b"r2-a");
+        assert_eq!(*pt, b"r2-a");
     }
 
     /// Attempting to skip more than MAX_SKIP messages must return SkipLimit.

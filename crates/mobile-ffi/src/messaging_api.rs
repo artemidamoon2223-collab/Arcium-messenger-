@@ -106,11 +106,22 @@ pub enum SendResult {
     Abandoned { message_id: Vec<u8> },
 }
 
-/// A committed incoming message.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+/// A committed incoming message. `plaintext` is the application's copy: it
+/// leaves Rust ownership here, and the application owns its lifetime.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct IncomingMessage {
     pub message_id: Vec<u8>,
     pub plaintext: Vec<u8>,
+}
+
+/// Shows the id and hides the text: accidental formatting and logging only.
+impl std::fmt::Debug for IncomingMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IncomingMessage")
+            .field("message_id", &self.message_id)
+            .field("plaintext", &"<redacted>")
+            .finish()
+    }
 }
 
 /// The result of `receive_message`.
@@ -156,6 +167,57 @@ fn incoming(m: messaging::IncomingMessage) -> IncomingMessage {
 fn message_id_arg(session_id: u64, id: &[u8]) -> Result<messaging::MessageId, CoreError> {
     id.try_into()
         .map_err(|_| CoreError::UnknownMessage { session_id })
+}
+
+/// What the network layer needs from the messaging surface without leaving
+/// Rust ownership. These are not exported through UniFFI (an `impl` block
+/// marked `#[uniffi::export]` exports every method in it): they return the
+/// messenger's own types, so a plaintext stays in its wiping owner instead of
+/// being copied into the application's plain `Vec<u8>` record first.
+impl ArciumCore {
+    /// [`receive_message`](Self::receive_message), without converting the
+    /// result into the application's record.
+    pub(crate) fn receive_committed(
+        &self,
+        session_id: u64,
+        message: &[u8],
+    ) -> Result<Received, CoreError> {
+        let identity = self.require_identity()?;
+        let our = PublicKey::from(&identity.dh_key).to_bytes();
+        let (mut store, mut messenger) = self.lock()?;
+        let map = |e| CoreError::messaging(session_id, e);
+        let provisional = match messenger.peer_of(&store, session_id).map_err(map)? {
+            Some(_) => None,
+            None => messenger
+                .provisional_handshake(&store, session_id)
+                .map_err(map)?,
+        };
+        Ok(match provisional {
+            Some(p) => accept_first_message(
+                &identity,
+                &mut store,
+                &mut messenger,
+                session_id,
+                p,
+                message,
+            )?,
+            None => messenger
+                .receive(&mut store, our, session_id, message)
+                .map_err(map)?,
+        })
+    }
+
+    /// [`pending_incoming`](Self::pending_incoming), without converting the
+    /// messages into the application's record.
+    pub(crate) fn pending_committed(
+        &self,
+        session_id: u64,
+    ) -> Result<Vec<messaging::IncomingMessage>, CoreError> {
+        let (store, messenger) = self.lock()?;
+        messenger
+            .pending_incoming(&store, session_id)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
 }
 
 #[uniffi::export]
@@ -300,30 +362,7 @@ impl ArciumCore {
         session_id: u64,
         message: Vec<u8>,
     ) -> Result<ReceiveResult, CoreError> {
-        let identity = self.require_identity()?;
-        let our = PublicKey::from(&identity.dh_key).to_bytes();
-        let (mut store, mut messenger) = self.lock()?;
-        let map = |e| CoreError::messaging(session_id, e);
-        let provisional = match messenger.peer_of(&store, session_id).map_err(map)? {
-            Some(_) => None,
-            None => messenger
-                .provisional_handshake(&store, session_id)
-                .map_err(map)?,
-        };
-        let received = match provisional {
-            Some(p) => accept_first_message(
-                &identity,
-                &mut store,
-                &mut messenger,
-                session_id,
-                p,
-                &message,
-            )?,
-            None => messenger
-                .receive(&mut store, our, session_id, &message)
-                .map_err(map)?,
-        };
-        Ok(match received {
+        Ok(match self.receive_committed(session_id, &message)? {
             Received::Accepted(m) => ReceiveResult::Accepted {
                 message: incoming(m),
             },
@@ -342,11 +381,11 @@ impl ArciumCore {
     /// least once: a message shown but not acknowledged before a crash is
     /// listed again, and its `message_id` identifies the repeat.
     pub fn pending_incoming(&self, session_id: u64) -> Result<Vec<IncomingMessage>, CoreError> {
-        let (store, messenger) = self.lock()?;
-        messenger
-            .pending_incoming(&store, session_id)
-            .map(|v| v.into_iter().map(incoming).collect())
-            .map_err(|e| CoreError::messaging(session_id, e))
+        Ok(self
+            .pending_committed(session_id)?
+            .into_iter()
+            .map(incoming)
+            .collect())
     }
 
     /// Records that the application has durably processed an incoming

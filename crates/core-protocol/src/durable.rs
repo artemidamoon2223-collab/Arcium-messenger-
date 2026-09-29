@@ -1844,10 +1844,12 @@ mod tests {
         .unwrap()
     }
 
-    /// The plaintext a commit releases is the buffer the ratchet produced and
-    /// the transition held: it was moved, not copied, so no second owner was
-    /// ever made between staging and release. Compared by heap address, which a
-    /// move of a `Vec` does not change and a copy always does.
+    /// The plaintext a commit releases is the buffer the staged transition
+    /// held: it was moved, not copied, so no second owner was made between
+    /// staging and release. Compared by heap address, which a move of a `Vec`
+    /// does not change and a copy always does. This does not cover the step
+    /// before staging (the ratchet's buffer into the transition), which no test
+    /// observes.
     #[test]
     fn the_released_plaintext_is_the_staged_buffer_not_a_copy() {
         let p = pair();

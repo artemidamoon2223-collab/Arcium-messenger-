@@ -45,6 +45,15 @@ Record base and head as commit SHAs and review `BASE...HEAD`. With three dots
 the diff starts at the merge base, so later commits on `main` do not appear in
 it. A review of a moving branch reviews nothing in particular.
 
+**Target integrity.** The target is the one the requester named. If the exact
+requested SHA cannot be established — it is not fetchable, the ref has moved,
+the name is ambiguous — report the review (or the snapshot audit) of that
+target as `NOT_VERIFIED`, with the reason. Never substitute another commit
+(`HEAD`, `HEAD~1`, the branch tip) and present the result as if it were about
+the requested one. A snapshot audit ("state of `main` at X") is bound by this
+rule as much as a diff review: what it read is what it reports on, and a read
+of a different commit is a different, labelled, result.
+
 ### 2. Read the complete change
 
 - `git diff --name-status BASE...HEAD` gives every path, including deletions and
@@ -71,7 +80,10 @@ function, type, constant or workflow step, read:
   `docs/NET-MESSAGING.md`, the module's `//!` documentation — including what it
   says it does **not** provide;
 - the tests that claim to cover it, to see what they actually assert;
-- open findings on the same code in `docs/SECURITY-FINDINGS.md`.
+- the entries for the same code in `docs/SECURITY-FINDINGS.md`. The tracker is a
+  dated snapshot (it names the `main` commit it was read at), so its rows are
+  leads and the record of accepted residuals, not evidence: re-derive a row's
+  status from the source at your target SHA before you cite it as open or fixed.
 
 ### 4. Check every area the change touches
 

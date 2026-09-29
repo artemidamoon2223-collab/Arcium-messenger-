@@ -1,5 +1,14 @@
 # CLAUDE.md → skills migration report
 
+> **HISTORICAL — do not read as current.** This report describes one past
+> migration of `CLAUDE.md` into skills, made against `main` @ `93cddf5e`. It is
+> kept unchanged below as a record of what was decided then. It is **not** a
+> description of the current repository: `CLAUDE.md`, the skills, the
+> workflows and `docs/SECURITY-FINDINGS.md` have all changed since, and the
+> workflows and API-key handling it mentions no longer match (the paid LLM review
+> workflows were removed). For current state, read the sources at your target
+> commit.
+
 Base: `main` @ `93cddf5e394e688da031b20cc97ad1323004245b`.
 Scope touched: `CLAUDE.md` and `.claude/**` only. No commit, push, or PR.
 

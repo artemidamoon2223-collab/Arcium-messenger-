@@ -18,6 +18,12 @@ the code is correct or secure.
 
 Record base and head as commit SHAs and review `BASE...HEAD`.
 
+The target is the one the requester named. If the exact requested SHA cannot be
+established (it is not fetchable, the ref moved, the name is ambiguous), the
+review of that target is `NOT_VERIFIED`: say so, and do not substitute another
+commit (`HEAD`, `HEAD~1`, the branch tip) and report it as if it were the
+target.
+
 ## Read every changed file completely
 
 1. List every changed path, with deletions and renames:

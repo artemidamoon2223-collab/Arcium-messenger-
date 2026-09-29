@@ -21,22 +21,46 @@ Running them locally is the cheapest way to know what CI will say.
 
 ## Which CI checks a diff actually triggers
 
-Knowing this prevents both false confidence and pointless waiting.
+Knowing this prevents both false confidence and pointless waiting. The `on:`
+blocks of the workflows are the source; re-read them at your target SHA, this
+list is a pointer and can go stale.
 
-- `bridge-compile-package` (`.github/workflows/android-native-bridge.yml`)
-  fires on `crates/**`, the repository-root `Cargo.toml`,
-  `android/app/build.gradle.kts`, and its own workflow file. It does **not**
-  fire on docs-only diffs, and it does **not** fire on changes confined to
+- `arcium-ci.yml` runs on every push and pull request (no path filter). A
+  docs-only or skill-only diff triggers **only** this workflow.
+- The Android workflows are path-filtered. `android-native-bridge.yml` fires on
+  `crates/**`, the repository-root `Cargo.toml`, `android/app/build.gradle.kts`
+  and its own file; `android-instrumentation.yml` and
+  `android-two-device-e2e.yml` fire on `crates/**`, `Cargo.toml`, `android/**`
+  and their own inputs; `android-ci.yml` fires on `android/**`. None of them
+  fires on a docs-only diff, and none fires on a change confined to
   `arcium-psi/`.
-- `arcium-build` and `arcium-test` (`.github/workflows/arcium-ci.yml`) run on
-  every push and pull request.
+- So a documentation PR that is green shows that the deterministic Rust and
+  Arcium jobs still pass on that tree. It says nothing about the Android
+  jobs, which did not run.
 
 ## Reading the result honestly
 
-- A green check means the job reached its end, nothing more.
-- `arcium-build` and `arcium-test` currently end on a zero-exit path even when
-  the underlying command fails, so their colour is not a pass signal. Read the
-  job log. This is tracked as F-11 in `docs/SECURITY-FINDINGS.md`.
+- A green check means the job reached its end, nothing more. Whether that end
+  means "the commands passed" depends on how the job handles exit codes: read
+  the step, and for a claim that matters, the log.
+- A `|| true`, `continue-on-error: true` or piped command is a problem only
+  when it sits on a step the job depends on for its verdict. Decide by what
+  the step gates:
+  - **Diagnostic** — the step gates nothing: printing tool versions, or an
+    `if: failure()` log dump after the real step has already failed the job.
+    `|| true` there is fine and is not a finding.
+  - **Masked gate** — the step is the required build, test, lint or audit
+    itself, and its non-zero exit is swallowed, or a pipe (`cmd | tee`) hides
+    it because `pipefail` is off. That makes the job's colour meaningless, and
+    it is a finding. Turning a blocking check into an advisory one is
+    forbidden (`CLAUDE.md`, «Ревью и CI»).
+- At the time of writing `arcium-ci.yml` fails the job on a non-zero exit of
+  `arcium build` and of `arcium test` (the latter under `set -o pipefail`, with
+  guards for "no passing test" and "pending tests"); its remaining `|| true`
+  are diagnostics. That describes one commit: F-11 in
+  `docs/SECURITY-FINDINGS.md` records the state and the SHA it was read at.
+  Re-check the workflow at yours, and do not carry either "CI swallows
+  failures" or "CI is trustworthy" from this file to a different tree.
 - If a check is stuck rather than failing, that is an infrastructure condition,
   not a result. Do not treat it as either pass or fail.
 

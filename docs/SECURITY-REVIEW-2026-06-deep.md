@@ -6,16 +6,22 @@
 > **2026-07-19** so the F-1…F-17 finding definitions are durable and don't
 > depend on an unmerged branch that could disappear.
 >
-> **This document is preserved exactly as originally written. Its status
-> language ("open", "not yet fixed", severity framing, the fix-order
-> plan, etc.) reflects the repository state on 2026-06-09 and must NOT be
-> read as current.** The authoritative, continuously re-verified status of
-> every finding (F-1…F-17), each backed by a commit SHA / `file:line` /
-> test name from the *current* `main`, lives in
-> [`docs/SECURITY-FINDINGS.md`](./SECURITY-FINDINGS.md) — that tracker
-> supersedes any status claim below. For example, **F-1** is described
-> below as an unfixed HIGH-severity bug; it has since been fixed (see the
-> tracker for the commit and passing regression tests).
+> **The review below is preserved exactly as originally written; only this
+> banner was amended (2026-09-29). Its status language ("open", "not yet
+> fixed", severity framing, the fix-order plan, etc.) reflects the
+> repository state on 2026-06-09 and must NOT be read as current.** A later
+> status snapshot of F-1…F-17, with a commit SHA / `file:line` / test name
+> for each row, is kept in [`docs/SECURITY-FINDINGS.md`](./SECURITY-FINDINGS.md).
+> That tracker is itself a dated snapshot, not a live source: it names the
+> `main` commit it was read at, and a reader re-checks a row against the
+> source at their own commit. For example, **F-1** is described below as an
+> unfixed HIGH-severity bug; the tracker records the commit and the passing
+> regression tests at the commit it names.
+>
+> Several files this review cites no longer exist. The GitHub Actions
+> workflows it discusses under F-5 and F-11 (`security-review.yml`,
+> `karpathy-review.yml`, `pi-review.yml`, `graphify.yml`) were removed
+> from `main`; they are historical references here, not current paths.
 >
 > One scope note for context: "Scope: full repository at commit `40b35b3`"
 > in the header below refers to *this review's own* baseline at the time

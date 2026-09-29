@@ -3,7 +3,9 @@
 What to check, area by area. Paths say where each area lives; they drift, so
 re-derive before citing (`find crates -name '*.rs'`, `ls .github/workflows`,
 `grep -rn`). The permanent crypto rules are in `CLAUDE.md` and are referred to,
-not repeated. Open findings are in `docs/SECURITY-FINDINGS.md`.
+not repeated. `docs/SECURITY-FINDINGS.md` is a dated snapshot of finding status,
+useful as leads and as the record of accepted residuals; it is not a live source,
+and a row is re-checked against the source at the target SHA before it is cited.
 
 A question here is a prompt to read the code, not a finding. A finding needs the
 attack path described in `SKILL.md`, step 5.
@@ -21,7 +23,8 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
   identity key to the Ed25519 signing key (the F-2 binding)? Is the associated
   data still initiator identity key then responder identity key? Is each
   one-time prekey consumed at most once (F-13)? Read the tracker entries for
-  F-2 and F-13 against the code before citing them: tracker status can lag. A
+  F-2 and F-13 against the code before citing them: the tracker is a dated
+  snapshot and its status has lagged the code before. A
   change to the AD, a KDF `info` string, a version or cipher-suite byte, or the
   handshake layout is a protocol change.
 - **KDF and domain separation.** Every HKDF `info` label and domain constant
@@ -33,9 +36,17 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
   return or `?` between mutation and authentication breaks that. Skipped keys
   are indexed by (DH public key, n), bounded by `MAX_SKIP` and
   `MAX_SKIPPED_KEYS`, and zeroized on eviction.
-- **Counter exhaustion.** `ns`, `nr`, `pn` are `u32`. Check the arithmetic, and
-  check the root `Cargo.toml` release profile for `overflow-checks`: without it
-  an unchecked `+= 1` wraps silently in release builds.
+- **Counter exhaustion.** `ns`, `nr`, `pn` are `u32`. Two different things
+  bound them, and a claim about one is not a claim about the other:
+  - the raw `DoubleRatchet` increments with an unchecked `+= 1`; without
+    `overflow-checks` in the root `Cargo.toml` release profile that wraps
+    silently in release and panics in debug, so the raw type has no bound of
+    its own;
+  - the durable layer refuses to persist a state past the limit
+    (`check_state`, `MAX_RESUMABLE_NR`, `ratchet/checkpoint.rs`), so a durable
+    session rejects that transition instead of storing it.
+  Check the arithmetic on any path that holds a raw ratchet, and check whether
+  that path goes through the durable layer before relying on its bound.
 - **Nonces.** No (key, nonce) pair is ever reused. Two live copies of one
   ratchet state encrypt under the same message key and counter
   (`ratchet/checkpoint.rs` module notes); anything that makes a second copy
@@ -49,8 +60,11 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
   has been used.
 - **Zeroization.** Root, chain and message keys, identity secrets, decrypted
   blobs and plaintext buffers are wiped on every exit path, including errors
-  and unwinding. Watch for new `Clone`, `Copy` or `Debug` on secret types, and
-  for secrets reaching `format!`, error values or logs.
+  and unwinding. Watch for new `Clone`, `Copy` or `Debug` on secret types
+  (`Zeroizing` derives `Debug` and prints its contents), and for secrets
+  reaching `format!`, error values or logs. Secret-derived state inside
+  `hmac`/`hkdf`/`sha2` values is not wiped and cannot be from this crate: that
+  is a known residual (F-8, H-9); a new copy in Arcium's own code is not.
 
 ## 2. Durable state
 
@@ -197,6 +211,10 @@ Where: `arcium-psi/programs/arcium-psi/src/lib.rs`,
   longer run, test filters that match nothing.
 - **False-green CI.** A step that exits 0 without doing what it claims:
   `continue-on-error`, `|| true`, a swallowed exit code in a pipe without
-  `pipefail`, a path filter that keeps a relevant job from firing. The
-  "tests actually ran" guards in `.github/workflows/arcium-ci.yml` show the
-  pattern to expect.
+  `pipefail`, a path filter that keeps a relevant job from firing. Decide by
+  what the step gates. A diagnostic `|| true` — tool versions, an
+  `if: failure()` log dump after the real step has already failed the job —
+  gates nothing and is not a finding. A masked required build, test, lint or
+  audit step is one, and turning a blocking check advisory is forbidden
+  (`CLAUDE.md`). The "tests actually ran" guards in
+  `.github/workflows/arcium-ci.yml` show the pattern to expect.

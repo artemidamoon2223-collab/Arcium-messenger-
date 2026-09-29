@@ -69,12 +69,14 @@ here.
 
 ## Documents worth knowing
 
-- `docs/SECURITY-FINDINGS.md` — authoritative current status for every finding
-  (F-1 … F-17, plus X-series). A tracker update is always a separate PR from
+- `docs/SECURITY-FINDINGS.md` — a dated snapshot of finding status (F-series,
+  A-series, H-series follow-ups, X-series). It names the `main` commit it was
+  read at and is a list of leads, not a live source: re-check a row against the
+  source at your own target SHA. A tracker update is always a separate PR from
   the fix, and lands after it.
 - `docs/SECURITY-REVIEW-2026-06-deep.md` — historical snapshot of the 2026-06
-  review, kept for the original finding definitions. Its status language is
-  superseded by the tracker.
+  review, kept for the original finding definitions. Its status language
+  reflects 2026-06-09 and is not current.
 - `docs/HOME-DEPLOY.md` — devnet deploy, which needs open network and toolchain
   the agent sandbox does not have.
 - `PROJECT_CONTEXT.md` — PSI architecture detail at the repository root.

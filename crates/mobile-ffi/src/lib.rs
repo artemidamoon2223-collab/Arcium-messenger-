@@ -568,10 +568,12 @@ impl ArciumCore {
         // every exit path (F-8) — the Kotlin side already zeros its own copy
         // (PR #48's MasterKeyProvider), this covers what the Rust side holds.
         let master_key = Zeroizing::new(master_key);
-        let key: [u8; 32] = master_key.as_slice().try_into().map_err(|_| CoreError::InvalidKey {
+        // Borrowed, not copied: the store makes the one copy it keeps, in its
+        // own wiping owner, so no plain 32-byte array of the key exists here.
+        let key: &[u8; 32] = master_key.as_slice().try_into().map_err(|_| CoreError::InvalidKey {
             msg: "expected exactly 32 bytes".into(),
         })?;
-        let store = EncryptedStore::open(&storage_path, key)?;
+        let store = EncryptedStore::open_with_key(&storage_path, key)?;
         Ok(Arc::new(Self {
             store: Mutex::new(store),
             messenger: Mutex::new(Messenger::new()),
@@ -1063,6 +1065,34 @@ mod tests {
         let path = dir.path().join("db").to_str().unwrap().to_string();
         let result = ArciumCore::new(path, vec![0u8; 16]);
         assert!(matches!(result, Err(CoreError::InvalidKey { .. })));
+    }
+
+    /// `new` borrows the key it is given: every wrong length is refused with
+    /// the same error, and a right-length key opens a store that the by-value
+    /// `EncryptedStore::open` reads back — the construction path changed, the
+    /// store did not.
+    #[test]
+    fn core_new_checks_key_length_and_opens_the_same_store() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("db").to_str().unwrap().to_string();
+        for len in [0usize, 1, 31, 33, 64] {
+            match ArciumCore::new(path.clone(), vec![0u8; len]) {
+                Err(CoreError::InvalidKey { msg }) => {
+                    assert_eq!(msg, "expected exactly 32 bytes", "length {len}")
+                }
+                other => panic!("length {len}: expected InvalidKey, got {:?}", other.err()),
+            }
+        }
+        let core = ArciumCore::new(path.clone(), key32(5)).unwrap();
+        let id = Identity::generate();
+        let pk = id.public_key_bytes();
+        core.save_identity(id).unwrap();
+        drop(core);
+        let store = EncryptedStore::open(&path, [5u8; 32]).unwrap();
+        assert_eq!(store.get(IDENTITY_KEY).unwrap().len(), 64);
+        drop(store);
+        let again = ArciumCore::new(path, key32(5)).unwrap();
+        assert_eq!(again.load_identity().unwrap().public_key_bytes(), pk);
     }
 
     #[test]

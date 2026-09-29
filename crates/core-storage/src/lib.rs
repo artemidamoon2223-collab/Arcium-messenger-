@@ -30,7 +30,7 @@ use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use sha2::Sha256;
 use std::path::Path;
 use thiserror::Error;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 const NONCE_SIZE: usize = 24;
 const NAME_HASH_LEN: usize = 32;
@@ -58,21 +58,34 @@ pub struct EncryptedStore {
 /// `EncryptedStore` so that a transaction can borrow the key material while
 /// holding the connection mutably; the derivation bodies are unchanged.
 struct KeyMaterial {
-    master_key: [u8; 32],
+    /// Wiped when the key material is dropped, on every path that drops it.
+    master_key: Zeroizing<[u8; 32]>,
 }
 
 impl EncryptedStore {
+    /// Opens the store, taking the key by value. The by-value argument is a
+    /// copy this function cannot wipe; a caller that holds the key in a wiping
+    /// owner should use [`open_with_key`](Self::open_with_key).
     pub fn open<P: AsRef<Path>>(path: P, master_key: [u8; 32]) -> Result<Self, StorageError> {
+        Self::open_with_key(path, &master_key)
+    }
+
+    /// As [`open`](Self::open), borrowing the key: the only copy made is the
+    /// one the store keeps, in a wiping owner.
+    pub fn open_with_key<P: AsRef<Path>>(
+        path: P,
+        master_key: &[u8; 32],
+    ) -> Result<Self, StorageError> {
         let conn = Connection::open(path)?;
         Self::init(conn, master_key)
     }
 
     pub fn open_in_memory(master_key: [u8; 32]) -> Result<Self, StorageError> {
         let conn = Connection::open_in_memory()?;
-        Self::init(conn, master_key)
+        Self::init(conn, &master_key)
     }
 
-    fn init(conn: Connection, master_key: [u8; 32]) -> Result<Self, StorageError> {
+    fn init(conn: Connection, master_key: &[u8; 32]) -> Result<Self, StorageError> {
         // Durability is set explicitly rather than inherited, so a change in a
         // bundled-SQLite default cannot move it. See "What a successful commit
         // does and does not mean" on `transaction` for what these give.
@@ -108,7 +121,7 @@ impl EncryptedStore {
         )?;
         Ok(Self {
             conn,
-            keys: KeyMaterial { master_key },
+            keys: KeyMaterial::new(master_key),
         })
     }
 
@@ -269,6 +282,13 @@ impl EncryptedStore {
 }
 
 impl KeyMaterial {
+    /// Copies the key once, straight into its owner: no intermediate array.
+    fn new(master_key: &[u8; 32]) -> Self {
+        let mut owned = Zeroizing::new([0u8; 32]);
+        owned.copy_from_slice(master_key);
+        Self { master_key: owned }
+    }
+
     /// Everything up to and including the first `:` — the "namespace" a
     /// group of keys (`contact:alice`, `contact:bob`, ...) shares. A key
     /// with no `:` is its own namespace.
@@ -284,7 +304,7 @@ impl KeyMaterial {
     /// namespace, so equal inputs always hash identically and prefix
     /// listing stays possible without storing plaintext key names (F-10).
     fn key_name_hash(&self, s: &str) -> [u8; NAME_HASH_LEN] {
-        let hk = Hkdf::<Sha256>::new(Some(b"core-storage/key-name-hash/v1"), &self.master_key);
+        let hk = Hkdf::<Sha256>::new(Some(b"core-storage/key-name-hash/v1"), &*self.master_key);
         let mut out = [0u8; NAME_HASH_LEN];
         hk.expand(s.as_bytes(), &mut out).expect("hkdf expand");
         out
@@ -307,10 +327,10 @@ impl KeyMaterial {
     /// Fixed (not per-key) subkey for encrypting key *names* themselves —
     /// domain-separated from both the per-value subkeys (`subkey`) and the
     /// key-name hash (`key_name_hash`) via distinct HKDF info strings.
-    fn key_name_encryption_subkey(&self) -> [u8; 32] {
-        let hk = Hkdf::<Sha256>::new(Some(b"core-storage/key-name-enc/v1"), &self.master_key);
-        let mut sk = [0u8; 32];
-        hk.expand(&[], &mut sk).expect("hkdf expand");
+    fn key_name_encryption_subkey(&self) -> Zeroizing<[u8; 32]> {
+        let hk = Hkdf::<Sha256>::new(Some(b"core-storage/key-name-enc/v1"), &*self.master_key);
+        let mut sk = Zeroizing::new([0u8; 32]);
+        hk.expand(&[], &mut *sk).expect("hkdf expand");
         sk
     }
 
@@ -318,14 +338,13 @@ impl KeyMaterial {
     /// real key names of a matched namespace without the DB file storing
     /// them in plaintext.
     fn encrypt_key_name(&self, key: &str) -> Vec<u8> {
-        let mut sk = self.key_name_encryption_subkey();
-        let cipher = XChaCha20Poly1305::new((&sk).into());
+        let sk = self.key_name_encryption_subkey();
+        let cipher = XChaCha20Poly1305::new((&*sk).into());
         let mut nonce = [0u8; NONCE_SIZE];
         OsRng.fill_bytes(&mut nonce);
         let ct = cipher
             .encrypt((&nonce).into(), key.as_bytes())
             .expect("encryption with a valid key/nonce cannot fail");
-        sk.zeroize();
         let mut out = Vec::with_capacity(NONCE_SIZE + ct.len());
         out.extend_from_slice(&nonce);
         out.extend_from_slice(&ct);
@@ -337,25 +356,24 @@ impl KeyMaterial {
             return Err(StorageError::Decryption);
         }
         let (nonce, ct) = ct_with_nonce.split_at(NONCE_SIZE);
-        let mut sk = self.key_name_encryption_subkey();
-        let cipher = XChaCha20Poly1305::new((&sk).into());
+        let sk = self.key_name_encryption_subkey();
+        let cipher = XChaCha20Poly1305::new((&*sk).into());
         let pt = cipher
             .decrypt(nonce.into(), ct)
             .map_err(|_| StorageError::Decryption)?;
-        sk.zeroize();
         String::from_utf8(pt).map_err(|_| StorageError::Decryption)
     }
 
-    fn subkey(&self, key: &str) -> [u8; 32] {
-        let hk = Hkdf::<Sha256>::new(Some(b"core-storage/v1"), &self.master_key);
-        let mut sk = [0u8; 32];
-        hk.expand(key.as_bytes(), &mut sk).expect("hkdf expand");
+    fn subkey(&self, key: &str) -> Zeroizing<[u8; 32]> {
+        let hk = Hkdf::<Sha256>::new(Some(b"core-storage/v1"), &*self.master_key);
+        let mut sk = Zeroizing::new([0u8; 32]);
+        hk.expand(key.as_bytes(), &mut *sk).expect("hkdf expand");
         sk
     }
 
     fn encrypt(&self, key: &str, plaintext: &[u8]) -> Result<Vec<u8>, StorageError> {
         let sk = self.subkey(key);
-        let cipher = XChaCha20Poly1305::new((&sk).into());
+        let cipher = XChaCha20Poly1305::new((&*sk).into());
         let mut nonce = [0u8; NONCE_SIZE];
         OsRng.fill_bytes(&mut nonce);
         let ct = cipher
@@ -370,8 +388,6 @@ impl KeyMaterial {
         let mut out = Vec::with_capacity(NONCE_SIZE + ct.len());
         out.extend_from_slice(&nonce);
         out.extend_from_slice(&ct);
-        let mut sk = sk;
-        sk.zeroize();
         Ok(out)
     }
 
@@ -381,7 +397,7 @@ impl KeyMaterial {
         }
         let (nonce, ct) = ct_with_nonce.split_at(NONCE_SIZE);
         let sk = self.subkey(key);
-        let cipher = XChaCha20Poly1305::new((&sk).into());
+        let cipher = XChaCha20Poly1305::new((&*sk).into());
         let pt = cipher
             .decrypt(
                 nonce.into(),
@@ -391,15 +407,7 @@ impl KeyMaterial {
                 },
             )
             .map_err(|_| StorageError::Decryption)?;
-        let mut sk = sk;
-        sk.zeroize();
         Ok(pt)
-    }
-}
-
-impl Drop for KeyMaterial {
-    fn drop(&mut self) {
-        self.master_key.zeroize();
     }
 }
 
@@ -575,6 +583,121 @@ mod tests {
         let mut k = [0u8; 32];
         OsRng.fill_bytes(&mut k);
         k
+    }
+
+    // ── Secret lifetime: every derived key is held by an owner that wipes it ──
+
+    fn is_wiping<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// Compile-time pin. The master key and both kinds of subkey are wiping
+    /// types, so each is wiped by its owner's drop on every path that leaves the
+    /// scope holding it — `?` included. Returning any of them as a plain
+    /// `[u8; 32]` again stops this test compiling.
+    #[test]
+    fn master_key_and_subkeys_are_wiping_types() {
+        let store = EncryptedStore::open_in_memory([7u8; 32]).unwrap();
+        is_wiping(&store.keys.master_key);
+        is_wiping(&store.keys.subkey("contact:alice"));
+        is_wiping(&store.keys.key_name_encryption_subkey());
+    }
+
+    /// The derivations are unchanged by the move into wiping types. Expected
+    /// values come from an independent HKDF-SHA256 (Python `hmac`), not from
+    /// this crate: salt is the label, IKM the master key, info as noted.
+    #[test]
+    fn subkey_derivations_match_independent_hkdf() {
+        let store = EncryptedStore::open_in_memory([7u8; 32]).unwrap();
+        assert_eq!(
+            store.keys.subkey("contact:alice")[..],
+            unhex("e12a9df8a5c0137b624abcf2e6bf34e930adefcb47ade716a9665528649f75f9")[..]
+        );
+        assert_eq!(
+            store.keys.key_name_encryption_subkey()[..],
+            unhex("faffdad78b59d20f42a830dad86d93872a0b663dd720c4cab87b55a2c80b7008")[..]
+        );
+        assert_eq!(
+            store.keys.key_name_hash("contact:alice")[..],
+            unhex("78eba4ab8115ee8f7c27efff17764a77fd1df70e6689c78603eb118204ddc18e")[..]
+        );
+    }
+
+    /// Every fallible exit that follows a subkey derivation, taken in turn. Each
+    /// used to leave through `?` before a manual wipe; the owner now drops on
+    /// the way out. What this shows is that each branch is reached and reports
+    /// its error; that the key is wiped on it is the wiping-type pin above.
+    #[test]
+    fn every_error_exit_after_a_subkey_derivation_is_reached() {
+        let store = EncryptedStore::open_in_memory([7u8; 32]).unwrap();
+        let keys = &store.keys;
+        // decrypt: too short to hold a nonce, and an AEAD failure.
+        assert!(matches!(
+            keys.decrypt("k", &[0u8; NONCE_SIZE - 1]),
+            Err(StorageError::Decryption)
+        ));
+        assert!(matches!(
+            keys.decrypt("k", &[0u8; NONCE_SIZE + 16]),
+            Err(StorageError::Decryption)
+        ));
+        // decrypt_key_name: too short, and an AEAD failure.
+        assert!(matches!(
+            keys.decrypt_key_name(&[0u8; NONCE_SIZE - 1]),
+            Err(StorageError::Decryption)
+        ));
+        assert!(matches!(
+            keys.decrypt_key_name(&[0u8; NONCE_SIZE + 16]),
+            Err(StorageError::Decryption)
+        ));
+        // A ciphertext for another key name fails to authenticate here.
+        let ct = keys.encrypt("a", b"value").unwrap();
+        assert!(matches!(
+            keys.decrypt("b", &ct),
+            Err(StorageError::Decryption)
+        ));
+        assert_eq!(keys.decrypt("a", &ct).unwrap(), b"value");
+        // A key name that decrypts to bytes that are not UTF-8.
+        let sk = keys.key_name_encryption_subkey();
+        let cipher = XChaCha20Poly1305::new((&*sk).into());
+        let nonce = [9u8; NONCE_SIZE];
+        let mut bad = nonce.to_vec();
+        bad.extend(
+            cipher
+                .encrypt((&nonce).into(), &[0xFFu8, 0xFE][..])
+                .unwrap(),
+        );
+        assert!(matches!(
+            keys.decrypt_key_name(&bad),
+            Err(StorageError::Decryption)
+        ));
+        // The store is unaffected by all of the above.
+        store.put("still:works", b"yes").unwrap();
+        assert_eq!(store.get("still:works").unwrap(), b"yes");
+    }
+
+    /// `open_with_key` (borrowing) and `open` (by value) build the same store:
+    /// what one writes the other reads, under the same lookup keys.
+    #[test]
+    fn open_with_key_and_open_are_interchangeable() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        let key = random_key();
+        let by_value = EncryptedStore::open(&path, key).unwrap();
+        by_value.put("contact:alice", b"payload").unwrap();
+        let lookup = by_value.storage_key("contact:alice");
+        drop(by_value);
+        let borrowed = EncryptedStore::open_with_key(&path, &key).unwrap();
+        assert_eq!(borrowed.get("contact:alice").unwrap(), b"payload");
+        assert_eq!(borrowed.storage_key("contact:alice"), lookup);
+        assert_eq!(
+            borrowed.list_keys_with_prefix("contact:").unwrap(),
+            vec!["contact:alice"]
+        );
     }
 
     #[test]
@@ -1465,7 +1588,7 @@ mod tests {
             )
         };
         assert_eq!(rc, rusqlite::ffi::SQLITE_OK, "could not disable lookaside");
-        let mut store = EncryptedStore::init(conn, CHILD_KEY).unwrap();
+        let mut store = EncryptedStore::init(conn, &CHILD_KEY).unwrap();
         store.put("base", b"kept").unwrap();
 
         let tx = store.transaction().unwrap();

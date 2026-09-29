@@ -2152,4 +2152,5 @@ mod tests {
     mod legacy_upgrade;
     mod mailbox_scan;
     mod debug_redaction;
+    mod outgoing;
 }

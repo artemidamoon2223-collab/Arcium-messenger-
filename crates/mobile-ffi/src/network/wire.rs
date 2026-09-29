@@ -221,4 +221,23 @@ mod tests {
         assert_eq!(client_id::receipt(&[0; 32], 0).len(), 33);
         assert_eq!(client_id::text(b"x"), b"tx");
     }
+
+    /// The bytes a payload encodes to, pinned: the outgoing path may change
+    /// who owns them, never what they are. The encoding is a wiping owner.
+    #[test]
+    fn payload_bytes_are_pinned_and_held_in_a_wiping_owner() {
+        fn wiping<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        let binary: Vec<u8> = (0..=255).collect();
+        let large = vec![0xA5; 16 * 1024];
+        for text in [&b""[..], b"hello", "привет, ✓".as_bytes(), &binary, &large] {
+            let encoded = Payload::Text(Zeroizing::new(text.to_vec())).encode();
+            wiping(&encoded);
+            assert_eq!(*encoded, [&[1u8][..], text].concat());
+        }
+        assert_eq!(*Payload::Open.encode(), [3u8]);
+        assert_eq!(
+            *Payload::Receipt(vec![[7; 32], [8; 32]]).encode(),
+            [&[2u8, 0, 2][..], &[7; 32], &[8; 32]].concat()
+        );
+    }
 }

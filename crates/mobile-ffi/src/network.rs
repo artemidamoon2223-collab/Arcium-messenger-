@@ -218,28 +218,7 @@ impl NetworkMessenger {
     ) -> Result<SentText, CoreError> {
         let text = Zeroizing::new(text);
         let peer = peer_key(&peer)?;
-        self.require_contact(&peer)?;
-        let handle = handle_of(&peer);
-        // `send_message` wraps its argument in `Zeroizing` on entry.
-        let sent = self.core.send_message(
-            handle,
-            client_id::text(&client_message_id),
-            Payload::Text(text).encode().to_vec(),
-        )?;
-        Ok(match sent {
-            SendResult::Sent { message } | SendResult::AlreadyPending { message } => SentText {
-                message_id: message.message_id,
-                state: TextState::Pending,
-            },
-            SendResult::AlreadyAcknowledged { message_id } => SentText {
-                message_id,
-                state: TextState::Delivered,
-            },
-            SendResult::Abandoned { message_id } => SentText {
-                message_id,
-                state: TextState::Abandoned,
-            },
-        })
+        self.send_committed_text(&peer, &client_message_id, text)
     }
 
     /// Texts from `peer` accepted and not yet marked read, in order. The same
@@ -291,6 +270,39 @@ impl NetworkMessenger {
 }
 
 impl NetworkMessenger {
+    /// [`send_text`](Self::send_text) for a text already held in a wiping
+    /// owner, which it takes. The text moves into the payload (wiped once
+    /// encoded); `send_committed` borrows the encoded payload, a wiping owner
+    /// wiped when this returns, on every exit.
+    pub(super) fn send_committed_text(
+        &self,
+        peer: &[u8; 32],
+        client_message_id: &[u8],
+        text: Zeroizing<Vec<u8>>,
+    ) -> Result<SentText, CoreError> {
+        self.require_contact(peer)?;
+        let payload = Payload::Text(text).encode();
+        let sent = self.core.send_committed(
+            handle_of(peer),
+            &client_id::text(client_message_id),
+            &payload,
+        )?;
+        Ok(match sent {
+            SendResult::Sent { message } | SendResult::AlreadyPending { message } => SentText {
+                message_id: message.message_id,
+                state: TextState::Pending,
+            },
+            SendResult::AlreadyAcknowledged { message_id } => SentText {
+                message_id,
+                state: TextState::Delivered,
+            },
+            SendResult::Abandoned { message_id } => SentText {
+                message_id,
+                state: TextState::Abandoned,
+            },
+        })
+    }
+
     fn connect(&self) -> Result<Connection, CoreError> {
         Connection::connect(&self.relay, self.timeout).map_err(network)
     }

@@ -188,6 +188,9 @@ fn combine_secrets(
 }
 
 #[cfg(test)]
+mod golden;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

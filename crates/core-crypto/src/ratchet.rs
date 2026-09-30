@@ -30,6 +30,8 @@ use zeroize::Zeroizing;
 
 mod checkpoint;
 #[cfg(test)]
+mod golden;
+#[cfg(test)]
 mod probe;
 pub use checkpoint::{
     CheckpointError, MAX_SKIPPED_KEYS, RATCHET_CHECKPOINT_MAX_LEN, RATCHET_CHECKPOINT_VERSION,
@@ -406,13 +408,15 @@ fn kdf_ck(ck: &[u8; 32]) -> (ChainKey, MessageKey) {
 }
 
 /// `HMAC-SHA256(key, [tag])` written into `out`. The tag is derived secret
-/// material, so the `Output` it passes through is wiped once copied.
+/// material. The `CtOutput` `finalize` returns is only borrowed until it is
+/// copied into `out`, and wipes itself when it drops (the `digest` `zeroize`
+/// feature, see `hash_contract`); `into_bytes` would make a second, ordinary
+/// copy of it, so it is not used.
 fn hmac_tag(key: &[u8; 32], tag: u8, out: &mut [u8; 32]) {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("hmac");
+    let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(key).expect("hmac");
     mac.update(&[tag]);
-    let mut bytes = mac.finalize().into_bytes();
-    out.copy_from_slice(&bytes);
-    bytes.as_mut_slice().zeroize();
+    let tag = mac.finalize();
+    out.copy_from_slice(tag.as_bytes());
 }
 
 fn aead_encrypt(key: &[u8; 32], plaintext: &[u8], ad: &[u8]) -> Result<Vec<u8>, RatchetError> {

@@ -1049,6 +1049,9 @@ pub(crate) mod test_hooks {
 }
 
 #[cfg(test)]
+mod golden;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use rand_core::OsRng;

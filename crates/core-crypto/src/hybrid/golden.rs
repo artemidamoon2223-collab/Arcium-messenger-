@@ -21,7 +21,6 @@ fn combine_secrets_with_realistic_lengths_is_unchanged() {
         &[0xA5u8; 32],
         &ml_pk,
     );
-    println!("GOLDEN combine_secrets={}", hex(&*out));
     assert_eq!(
         hex(&*out),
         concat!(

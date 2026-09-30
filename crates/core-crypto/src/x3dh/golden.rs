@@ -17,7 +17,6 @@ fn root_derivation_with_a_one_time_prekey_is_unchanged() {
         &[0x33u8; 32],
         Some([0x34u8; 32]),
     );
-    println!("GOLDEN derive_root/opk={}", hex(&*rk));
     assert_eq!(
         hex(&*rk),
         "3045bc2271a4baca0278bc29f88be6c23ec87e081bb82ef22341aab6e496a47a"
@@ -32,7 +31,6 @@ fn root_derivation_without_a_one_time_prekey_is_unchanged() {
         &[0x33u8; 32],
         None::<[u8; 32]>,
     );
-    println!("GOLDEN derive_root/no-opk={}", hex(&*rk));
     assert_eq!(
         hex(&*rk),
         "0d75439e3da8795ea602c2424e92c3374c2e1dc99ff34b8c1784da218410ae73"

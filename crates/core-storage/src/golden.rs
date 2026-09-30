@@ -27,9 +27,6 @@ fn per_key_subkey_is_unchanged() {
         "be6c03dd27c1516b35757bce6214ad08d8dd93555c6dc597af6b6e98808503f7",
     ];
     let got: Vec<String> = KEYS.iter().map(|k| hex(&*store.keys.subkey(k))).collect();
-    for (k, g) in KEYS.iter().zip(&got) {
-        println!("GOLDEN subkey({k:?})={g}");
-    }
     assert_eq!(got, want);
 }
 
@@ -46,9 +43,6 @@ fn key_name_hash_is_unchanged() {
         .iter()
         .map(|k| hex(&store.keys.key_name_hash(k)))
         .collect();
-    for (k, g) in KEYS.iter().zip(&got) {
-        println!("GOLDEN key_name_hash({k:?})={g}");
-    }
     assert_eq!(got, want);
 }
 
@@ -56,7 +50,6 @@ fn key_name_hash_is_unchanged() {
 fn key_name_encryption_subkey_is_unchanged() {
     let store = EncryptedStore::open_in_memory([0x42u8; 32]).unwrap();
     let got = hex(&*store.keys.key_name_encryption_subkey());
-    println!("GOLDEN key_name_encryption_subkey={got}");
     assert_eq!(
         got,
         "c94155fb5f997ee3a88bb853810e7d4bf36a646700e08e17590e09ca8739b8e4"

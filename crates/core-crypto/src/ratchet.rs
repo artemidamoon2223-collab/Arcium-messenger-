@@ -380,10 +380,11 @@ struct RatchetSnapshot {
 /// split into `(new root key, new chain key)`. Both outputs are wiped on drop.
 ///
 /// The HKDF pseudorandom key is a secret intermediate: `Hkdf::new` would drop
-/// it unwiped, so it is taken from `extract` and wiped here. What the `hkdf`,
-/// `hmac` and `sha2` crates keep inside their own values (a keyed hasher state,
-/// the per-block output of `expand`) has no wiping in those crates and cannot
-/// be reached from here.
+/// it unwiped, so it is taken from `extract` and wiped here. The keyed hash
+/// state the `hkdf`, `hmac` and `sha2` crates hold is wiped when it drops (their
+/// `zeroize` features, pinned in `hash_contract`); what they compute in locals
+/// (the key block, the inner digest, the per-block output of `expand`) is not,
+/// and cannot be reached from here.
 fn kdf_rk(rk: &[u8; 32], dh_out: &[u8]) -> (RootKey, ChainKey) {
     let (mut prk, hk) = Hkdf::<Sha256>::extract(Some(rk), dh_out);
     prk.as_mut_slice().zeroize();

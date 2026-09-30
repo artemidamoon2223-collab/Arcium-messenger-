@@ -37,9 +37,6 @@ fn chain_kdf_chain_of_four_is_unchanged() {
             "60bab79f7c569f3a06fac06fb2389d31730654505a863af657258932d1e419ac",
         ),
     ];
-    for (i, g) in got.iter().enumerate() {
-        println!("GOLDEN kdf_ck[{i}] new_ck={} mk={}", g.0, g.1);
-    }
     for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
         assert_eq!((g.0.as_str(), g.1.as_str()), *w, "kdf_ck step {i}");
     }
@@ -82,9 +79,6 @@ fn root_kdf_is_unchanged() {
             "e058b4a61004d3c7eb180be9413ff01d49125849ded72780ee3228f66b8a8dd5",
         ),
     ];
-    for (i, g) in got.iter().enumerate() {
-        println!("GOLDEN kdf_rk[{i}] new_rk={} new_ck={}", g.0, g.1);
-    }
     for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
         assert_eq!((g.0.as_str(), g.1.as_str()), *w, "kdf_rk case {i}");
     }

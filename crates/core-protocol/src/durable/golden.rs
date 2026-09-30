@@ -56,9 +56,6 @@ fn record_digest_is_unchanged() {
             hex(&record_digest(&record))
         })
         .collect();
-    for ((len, _), g) in cases.iter().zip(&got) {
-        println!("GOLDEN record_digest(len={len})={g}");
-    }
     for ((len, want), g) in cases.iter().zip(&got) {
         assert_eq!(g, want, "record_digest len {len}");
     }

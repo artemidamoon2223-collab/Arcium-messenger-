@@ -1,0 +1,14 @@
+# Kotlin types for the UniFFI custom types in src/plaintext.rs. Each maps to a
+# value class in android/app/src/main/kotlin/com/arcium/messenger/ffi/Plaintext.kt
+# whose toString is "<redacted>", so a generated record that holds message
+# plaintext does not print it when formatted. The bridge action checks the
+# generated Kotlin against this (.github/actions/uniffi-android-bridge).
+[bindings.kotlin.custom_types.PlaintextBytes]
+imports = ["com.arcium.messenger.ffi.PlaintextBytes"]
+into_custom = "PlaintextBytes({})"
+from_custom = "{}.bytes"
+
+[bindings.kotlin.custom_types.PlaintextText]
+imports = ["com.arcium.messenger.ffi.PlaintextText"]
+into_custom = "PlaintextText({})"
+from_custom = "{}.value"

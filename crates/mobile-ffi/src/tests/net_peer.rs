@@ -64,12 +64,12 @@ fn net_peer_bot() {
         let mut offline = None;
         for peer in core.contacts().unwrap() {
             for t in net.received_texts(peer.clone()).unwrap() {
-                let text = String::from_utf8_lossy(&t.text).to_string();
+                let text = String::from_utf8_lossy(&t.text.0).to_string();
                 eprintln!("peer: decrypted text from {}: {text:?}", &hex(&peer)[..8]);
                 if let Some(ms) = text.strip_prefix("cmd:offline:") {
                     offline = ms.parse::<u64>().ok();
                 } else {
-                    let reply = [b"echo:".as_slice(), &t.text].concat();
+                    let reply = [b"echo:".as_slice(), &t.text.0].concat();
                     let id = [b"echo-".as_slice(), &t.message_id[..16]].concat();
                     net.send_text(peer.clone(), id, reply).unwrap();
                 }
@@ -172,7 +172,7 @@ fn a_peer_in_another_process_answers_over_the_relay() {
         let r = alice.sync();
         assert!(r.errors.is_empty(), "{:?}", r.errors);
         if let Some(t) = alice.net.received_texts(peer.clone()).unwrap().pop() {
-            break t.text;
+            break t.text.0;
         }
         assert!(std::time::Instant::now() < deadline, "no reply");
         std::thread::sleep(Duration::from_millis(100));

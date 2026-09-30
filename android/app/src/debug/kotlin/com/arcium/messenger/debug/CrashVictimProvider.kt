@@ -55,7 +55,7 @@ class CrashVictimProvider : ContentProvider() {
                 SCENARIO_RECEIVE -> {
                     when (val r = core.receiveMessage(session, File(dir, "wire").readBytes())) {
                         is uniffi.arcium_core.ReceiveResult.Accepted ->
-                            File(dir, "received").writeBytes(r.message.plaintext)
+                            File(dir, "received").writeBytes(r.message.plaintext.bytes)
                         is uniffi.arcium_core.ReceiveResult.Duplicate ->
                             error("unexpected duplicate")
                     }

@@ -106,9 +106,9 @@ class NetworkMessagingInstrumentationTest {
         val expected = "echo:".toByteArray() + sent
         var echo: ByteArray? = null
         syncUntil(net, "the echo of '${String(sent)}'") {
-            echo = net.receivedTexts(peer).firstOrNull { t -> t.text.contentEquals(expected) }?.also { t ->
+            echo = net.receivedTexts(peer).firstOrNull { t -> t.text.bytes.contentEquals(expected) }?.also { t ->
                 net.markRead(peer, t.messageId)
-            }?.text
+            }?.text?.bytes
             echo != null
         }
         return echo!!

@@ -200,7 +200,7 @@ fn a_sender_killed_while_sending_from_the_chat_sends_the_text_once() {
         chat_rounds(&[&alice, &bob, &alice], 2);
         let received = bob.net.chat_entries(alice.pk.clone()).unwrap();
         assert_eq!(received.len(), 1, "{point:?}: received once");
-        assert!(received[0].text.starts_with("sent from the chat"));
+        assert!(received[0].text.0.starts_with("sent from the chat"));
         assert_eq!(
             alice.net.chat_entries(bob.pk.clone()).unwrap()[0].state,
             ChatEntryState::Delivered,
@@ -241,7 +241,7 @@ fn a_recipient_killed_before_marking_a_recorded_text_read_shows_it_once() {
     );
     let entries = bob.net.chat_entries(alice.pk.clone()).unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].text, "recorded");
+    assert_eq!(entries[0].text.0, "recorded");
     assert!(bob.net.received_texts(alice.pk.clone()).unwrap().is_empty());
     relay.stop();
 }

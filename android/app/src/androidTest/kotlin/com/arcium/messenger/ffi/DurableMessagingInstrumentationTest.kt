@@ -106,7 +106,7 @@ class DurableMessagingInstrumentationTest {
     }
 
     private fun accepted(r: ReceiveResult): ByteArray = when (r) {
-        is ReceiveResult.Accepted -> r.message.plaintext
+        is ReceiveResult.Accepted -> r.message.plaintext.bytes
         is ReceiveResult.Duplicate -> throw AssertionError("expected a new message, got a duplicate")
     }
 
@@ -226,7 +226,7 @@ class DurableMessagingInstrumentationTest {
         val bob = open(w.bobDb, BOB_KEY)
         val pending = bob.pendingIncoming(p.bobHandle)
         assertEquals(1, pending.size)
-        assertArrayEquals(bytes("received before the crash"), pending[0].plaintext)
+        assertArrayEquals(bytes("received before the crash"), pending[0].plaintext.bytes)
         val dup = bob.receiveMessage(p.bobHandle, wire)
         assertTrue(dup is ReceiveResult.Duplicate && dup.undelivered != null)
 

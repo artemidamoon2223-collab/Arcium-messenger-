@@ -104,7 +104,7 @@ impl Device {
             .received_texts(from.pk.clone())
             .unwrap()
             .into_iter()
-            .map(|t| String::from_utf8(t.text[..t.text.len() - CANARY.len()].to_vec()).unwrap())
+            .map(|t| String::from_utf8(t.text.0[..t.text.0.len() - CANARY.len()].to_vec()).unwrap())
             .collect()
     }
 

@@ -26,7 +26,7 @@ use zeroize::Zeroizing;
 
 use super::{crash_point, handle_of, peer_key, NetworkMessenger, SyncReport, TextState};
 use crate::contacts::contact_card_fingerprint;
-use crate::CoreError;
+use crate::{CoreError, PlaintextText};
 
 /// Longest contact name accepted, in bytes.
 pub const MAX_NAME_LEN: usize = 128;
@@ -104,7 +104,7 @@ pub struct ChatEntry {
     pub app_id: Vec<u8>,
     /// Invalid UTF-8 from a peer is shown with replacement characters. The
     /// application's copy of the text.
-    pub text: String,
+    pub text: PlaintextText,
 }
 
 /// Shows the metadata and hides the text: accidental formatting and logging
@@ -276,7 +276,7 @@ impl Entry {
             state: self.state,
             timestamp_ms: self.at_ms,
             app_id: self.app_id.clone(),
-            text: String::from_utf8_lossy(&self.text).into_owned(),
+            text: PlaintextText(String::from_utf8_lossy(&self.text).into_owned()),
         }
     }
 }

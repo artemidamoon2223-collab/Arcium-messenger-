@@ -120,7 +120,7 @@ fn outgoing_messages_are_resent_byte_for_byte_and_accepted_once() {
     let bob = open_at(&pb, 1);
     match bob.receive_message(1, pending[0].wire.clone()).unwrap() {
         ReceiveResult::Accepted { message } => {
-            assert_eq!(message.plaintext, b"resend me");
+            assert_eq!(message.plaintext.0, b"resend me");
             assert_eq!(message.message_id, sent.message_id);
         }
         other => panic!("{other:?}"),
@@ -132,7 +132,7 @@ fn outgoing_messages_are_resent_byte_for_byte_and_accepted_once() {
             undelivered: Some(m),
         } => {
             assert_eq!(message_id, sent.message_id);
-            assert_eq!(m.plaintext, b"resend me");
+            assert_eq!(m.plaintext.0, b"resend me");
         }
         other => panic!("{other:?}"),
     }
@@ -371,7 +371,7 @@ fn killed_before_delivering_the_message_it_is_still_pending() {
     let bob = open_at(&pb, 1);
     let pending = bob.pending_incoming(1).unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].plaintext, b"undelivered");
+    assert_eq!(pending[0].plaintext.0, b"undelivered");
     assert!(matches!(
         bob.receive_message(1, wire).unwrap(),
         ReceiveResult::Duplicate {
@@ -455,7 +455,7 @@ fn killed_after_the_first_message_the_session_is_complete() {
     assert_ne!(current_opk_id(&bob).unwrap(), published, "prekey consumed");
     let pending = bob.pending_incoming(5).unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].plaintext, b"first");
+    assert_eq!(pending[0].plaintext.0, b"first");
     assert!(matches!(
         bob.receive_message(5, wire).unwrap(),
         ReceiveResult::Duplicate {

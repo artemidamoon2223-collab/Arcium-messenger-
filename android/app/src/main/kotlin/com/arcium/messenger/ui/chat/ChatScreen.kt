@@ -198,7 +198,7 @@ private fun Bubble(entry: ChatEntry, onResend: () -> Unit) {
                 .testTag("msg")
                 .semantics(mergeDescendants = true) { stateDescription = status },
         ) {
-            Text(entry.text)
+            Text(entry.text.value)
             Text(
                 DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(entry.timestampMs.toLong())) +
                     if (entry.outgoing) " · $status" else "",

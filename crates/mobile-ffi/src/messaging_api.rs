@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 
 use core_protocol::messaging::{self, MessagingError, Received, SendOutcome};
 
-use crate::{accept_first_message, ArciumCore, CoreError};
+use crate::{accept_first_message, ArciumCore, CoreError, PlaintextBytes};
 
 impl CoreError {
     /// Maps a messaging failure on `session_id` onto the FFI error surface.
@@ -111,7 +111,7 @@ pub enum SendResult {
 #[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct IncomingMessage {
     pub message_id: Vec<u8>,
-    pub plaintext: Vec<u8>,
+    pub plaintext: PlaintextBytes,
 }
 
 /// Shows the id and hides the text: accidental formatting and logging only.
@@ -160,7 +160,7 @@ fn outgoing(m: messaging::OutgoingMessage) -> OutgoingMessage {
 fn incoming(m: messaging::IncomingMessage) -> IncomingMessage {
     IncomingMessage {
         message_id: m.message_id.to_vec(),
-        plaintext: m.plaintext.to_vec(),
+        plaintext: PlaintextBytes(m.plaintext.to_vec()),
     }
 }
 

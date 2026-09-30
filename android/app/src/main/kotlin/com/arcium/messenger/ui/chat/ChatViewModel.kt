@@ -80,7 +80,7 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
     /** Sends the text of a message given up on again, as a new message. */
     fun resend(entry: ChatEntry) {
         if (_state.value.sending) return
-        record(entry.text, newAppId(), clearInput = false)
+        record(entry.text.value, newAppId(), clearInput = false)
     }
 
     private fun record(text: String, id: ByteArray, clearInput: Boolean) {

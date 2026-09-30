@@ -82,7 +82,7 @@ fun ContactsScreen(
                                 when {
                                     c.identityMismatch -> "⚠ Keys on the relay do not match the verified card"
                                     c.session is ChatSessionState.Conflict -> "⚠ Session conflict"
-                                    else -> c.last?.let { (if (it.outgoing) "You: " else "") + it.text }
+                                    else -> c.last?.let { (if (it.outgoing) "You: " else "") + it.text.value }
                                         ?: "No messages yet"
                                 },
                                 maxLines = 1,

@@ -24,7 +24,9 @@ uniffi::setup_scaffolding!();
 mod contacts;
 mod messaging_api;
 pub(crate) mod network;
+mod plaintext;
 pub use messaging_api::{IncomingMessage, OutgoingMessage, ReceiveResult, RecoveryReport, SendResult};
+pub use plaintext::{PlaintextBytes, PlaintextText};
 
 #[derive(Debug, Error, uniffi::Error)]
 pub enum CoreError {
@@ -1001,7 +1003,7 @@ mod tests {
 
         fn decrypt_message(&self, session_id: u64, message: Vec<u8>) -> Result<Vec<u8>, CoreError> {
             match self.receive_message(session_id, message)? {
-                ReceiveResult::Accepted { message } => Ok(message.plaintext),
+                ReceiveResult::Accepted { message } => Ok(message.plaintext.0),
                 other => panic!("expected a new message, got {other:?}"),
             }
         }

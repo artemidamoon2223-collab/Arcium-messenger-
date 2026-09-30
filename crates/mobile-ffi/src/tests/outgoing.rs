@@ -76,7 +76,7 @@ fn the_exported_and_the_internal_send_are_one_path() {
         else {
             panic!("expected Accepted");
         };
-        assert_eq!(message.plaintext, text);
+        assert_eq!(message.plaintext.0, text);
     }
 
     let text = Zeroizing::new(b"x".to_vec());
@@ -118,7 +118,7 @@ fn a_sent_text_arrives_byte_for_byte() {
         .received_texts(alice.pk.clone())
         .unwrap()
         .into_iter()
-        .map(|t| t.text)
+        .map(|t| t.text.0)
         .collect();
     assert_eq!(received, texts);
     relay.stop();
@@ -151,7 +151,7 @@ fn a_queued_chat_text_is_sent_unchanged_once_a_session_exists() {
         .unwrap()
         .into_iter()
         .filter(|e| !e.outgoing)
-        .map(|e| e.text)
+        .map(|e| e.text.0)
         .collect();
     assert_eq!(got, vec![text]);
     assert_eq!(

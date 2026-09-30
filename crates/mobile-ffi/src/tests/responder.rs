@@ -141,7 +141,7 @@ fn the_first_authenticated_message_creates_the_session_exactly_once() {
     let m1 = says(&alice, &bob, b"1", b"first");
     let got = accepted(bob.core.receive_message(h, m1.wire.clone()));
     assert_eq!(
-        (got.plaintext, got.message_id.clone()),
+        (got.plaintext.0, got.message_id.clone()),
         (b"first".to_vec(), m1.message_id.clone())
     );
     assert!(bob.core.has_session(h).unwrap());
@@ -194,12 +194,14 @@ fn the_first_authenticated_message_creates_the_session_exactly_once() {
 
     let m2 = says(&alice, &bob, b"2", b"second");
     assert_eq!(
-        accepted(bob.core.receive_message(h, m2.wire)).plaintext,
+        accepted(bob.core.receive_message(h, m2.wire)).plaintext.0,
         b"second"
     );
     let reply = says(&bob, &alice, b"r", b"reply");
     assert_eq!(
-        accepted(alice.core.receive_message(handle(&bob), reply.wire)).plaintext,
+        accepted(alice.core.receive_message(handle(&bob), reply.wire))
+            .plaintext
+            .0,
         b"reply"
     );
 }
@@ -249,7 +251,7 @@ fn a_first_message_that_does_not_authenticate_creates_nothing() {
         assert_eq!(provisional(&bob, h), recorded);
     }
     assert_eq!(
-        accepted(bob.core.receive_message(h, m1.wire)).plaintext,
+        accepted(bob.core.receive_message(h, m1.wire)).plaintext.0,
         b"first"
     );
 }
@@ -271,7 +273,9 @@ fn a_restart_while_provisional_keeps_the_handshake_without_authority() {
     assert_eq!(state(&restarted, &alice), ChatSessionState::None);
     let m1 = says(&alice, &restarted, b"1", b"after restart");
     assert_eq!(
-        accepted(restarted.core.receive_message(h, m1.wire)).plaintext,
+        accepted(restarted.core.receive_message(h, m1.wire))
+            .plaintext
+            .0,
         b"after restart"
     );
     assert_eq!(state(&restarted, &alice), ChatSessionState::Established);
@@ -408,7 +412,7 @@ fn a_newer_handshake_replaces_an_unconfirmed_one() {
     assert!(!bob.core.has_session(h).unwrap());
     let m = says(&alice, &bob, b"new", b"under the second handshake");
     assert_eq!(
-        accepted(bob.core.receive_message(h, m.wire)).plaintext,
+        accepted(bob.core.receive_message(h, m.wire)).plaintext.0,
         b"under the second handshake"
     );
     assert!(matches!(

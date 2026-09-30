@@ -52,7 +52,7 @@ fn chat(from: &Device, with: &Device) -> Vec<(bool, S, String)> {
         .chat_entries(with.pk.clone())
         .unwrap()
         .into_iter()
-        .map(|e| (e.outgoing, e.state, e.text.replace(&canary(), "")))
+        .map(|e| (e.outgoing, e.state, e.text.0.replace(&canary(), "")))
         .collect()
 }
 
@@ -158,7 +158,7 @@ fn repeating_a_send_never_records_or_encrypts_it_twice() {
     let first = say(&alice, &bob, "x", "once");
     let again = say(&alice, &bob, "x", "a different text under the same id");
     assert_eq!(again.seq, first.seq);
-    assert_eq!(again.text, first.text, "the first text stands");
+    assert_eq!(again.text.0, first.text.0, "the first text stands");
     assert_eq!(chat(&alice, &bob).len(), before + 1);
     assert_eq!(
         alice.undelivered(&bob),

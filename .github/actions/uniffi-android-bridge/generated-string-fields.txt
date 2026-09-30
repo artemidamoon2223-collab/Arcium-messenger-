@@ -1,0 +1,39 @@
+# Every constructor property of a UniFFI-generated Kotlin class whose type is
+# (or contains) kotlin.String, kotlin.ByteArray, PlaintextBytes or
+# PlaintextText, with its exact generated type. check_generated_plaintext.py
+# fails the bridge build when the generated Kotlin differs from this list.
+#
+# A  message plaintext: must be PlaintextBytes/PlaintextText (toString redacted)
+# C  ciphertext / wire bytes
+# D  ids and public metadata (keys, fingerprints, contact names, notes)
+# F  Rust error and status text, not application content
+#
+# Owner.field<TAB>type<TAB>class
+ChatEntry.appId	kotlin.ByteArray	D
+ChatEntry.text	PlaintextText	A
+Conversation.fingerprint	kotlin.String	D
+Conversation.name	kotlin.String	D
+Conversation.note	kotlin.String	F
+Conversation.peer	kotlin.ByteArray	D
+CoreException.Crypto.msg	kotlin.String	F
+CoreException.Handshake.msg	kotlin.String	F
+CoreException.InvalidArgument.msg	kotlin.String	F
+CoreException.InvalidContactCard.msg	kotlin.String	F
+CoreException.InvalidHandshake.msg	kotlin.String	F
+CoreException.InvalidKey.msg	kotlin.String	F
+CoreException.InvalidPrekeyBundle.msg	kotlin.String	F
+CoreException.InvalidSessionState.msg	kotlin.String	F
+CoreException.Network.msg	kotlin.String	F
+CoreException.Storage.msg	kotlin.String	F
+IncomingMessage.messageId	kotlin.ByteArray	D
+IncomingMessage.plaintext	PlaintextBytes	A
+OutgoingMessage.clientMessageId	kotlin.ByteArray	D
+OutgoingMessage.messageId	kotlin.ByteArray	D
+OutgoingMessage.wire	kotlin.ByteArray	C
+ReceiveResult.Duplicate.messageId	kotlin.ByteArray	D
+ReceivedText.messageId	kotlin.ByteArray	D
+ReceivedText.text	PlaintextBytes	A
+SendResult.Abandoned.messageId	kotlin.ByteArray	D
+SendResult.AlreadyAcknowledged.messageId	kotlin.ByteArray	D
+SentText.messageId	kotlin.ByteArray	D
+SyncReport.errors	List<kotlin.String>	F

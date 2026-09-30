@@ -98,7 +98,7 @@ class TwoPeerMessagingInstrumentationTest {
         /** Durable receive; the plaintext of a newly accepted message. */
         fun decryptFrom(peer: ByteArray, message: ByteArray): ByteArray =
             when (val r = repo.receiveFromPeer(peer, message)) {
-                is uniffi.arcium_core.ReceiveResult.Accepted -> r.message.plaintext
+                is uniffi.arcium_core.ReceiveResult.Accepted -> r.message.plaintext.bytes
                 is uniffi.arcium_core.ReceiveResult.Duplicate ->
                     throw AssertionError("expected a new message, got a duplicate")
             }

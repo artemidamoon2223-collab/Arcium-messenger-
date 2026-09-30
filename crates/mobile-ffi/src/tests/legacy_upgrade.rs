@@ -108,7 +108,7 @@ fn sent(r: SendResult) -> Vec<u8> {
 
 fn plaintext(r: ReceiveResult) -> Vec<u8> {
     match r {
-        ReceiveResult::Accepted { message } => message.plaintext,
+        ReceiveResult::Accepted { message } => message.plaintext.0,
         other => panic!("expected an accepted message, got {other:?}"),
     }
 }
@@ -247,7 +247,7 @@ fn t1_over_the_network_the_new_session_forms_and_the_queued_text_follows() {
     let entries = bob.net.chat_entries(alice_old.pk.clone()).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(
-        (entries[0].state, entries[0].app_id.as_slice(), entries[0].text.as_str()),
+        (entries[0].state, entries[0].app_id.as_slice(), entries[0].text.0.as_str()),
         (ChatEntryState::Queued, &b"q1"[..], "queued before the upgrade")
     );
     let r = bob.net.sync_conversations();
@@ -272,7 +272,7 @@ fn t1_over_the_network_the_new_session_forms_and_the_queued_text_follows() {
     // Sent once, under its original id, and delivered.
     let texts = alice.net.received_texts(bob.pk.clone()).unwrap();
     assert_eq!(texts.len(), 1);
-    assert_eq!(texts[0].text, b"queued before the upgrade");
+    assert_eq!(texts[0].text.0, b"queued before the upgrade");
     bob.net.sync_conversations();
     let outgoing: Vec<_> = bob
         .net
@@ -297,7 +297,7 @@ fn t1_over_the_network_the_new_session_forms_and_the_queued_text_follows() {
         .received_texts(bob.pk.clone())
         .unwrap()
         .iter()
-        .any(|t| t.text.starts_with(b"from bob after the upgrade")));
+        .any(|t| t.text.0.starts_with(b"from bob after the upgrade")));
 
     let history_after = history(&records(&bob.core, &alice));
     for (k, v) in history_before.iter().filter(|(k, _)| !k.starts_with("chat-")) {
@@ -329,7 +329,7 @@ fn t1_the_old_handshakes_own_first_message_still_completes_the_old_session() {
     settle(&[&alice, &bob]);
     let texts = alice.net.received_texts(bob.pk.clone()).unwrap();
     assert_eq!(texts.len(), 1);
-    assert_eq!(texts[0].text, b"queued before the upgrade");
+    assert_eq!(texts[0].text.0, b"queued before the upgrade");
 }
 
 /// T2: an old session that authenticated the peer is never replaced or

@@ -170,7 +170,7 @@ class TwoDeviceMessengerTest {
         report("ready" to "offline")
         for (i in 1..3) waitForMessage(text("queued $i"))
         for (i in 1..3) assertEquals(1, stored(text("queued $i"), outgoing = false).size)
-        val order = messenger { it.chatEntries(peerKey) }.map { it.text }.filter { it.startsWith("queued") }
+        val order = messenger { it.chatEntries(peerKey) }.map { it.text.value }.filter { it.startsWith("queued") }
         assertEquals((1..3).map { text("queued $it") }, order)
     }
 
@@ -207,7 +207,7 @@ class TwoDeviceMessengerTest {
             text("queued 2") to ChatEntryState.RECEIVED,
             text("queued 3") to ChatEntryState.RECEIVED,
         )
-        assertEquals(expected, history.map { it.text to it.state })
+        assertEquals(expected, history.map { it.text.value to it.state })
         for ((t, _) in expected) waitForMessage(t)
         assertEquals(ChatSessionState.Established, messenger { it.conversation(peerKey) }.session)
         send(text("after restart"))
@@ -317,7 +317,7 @@ class TwoDeviceMessengerTest {
         block(ArciumApp.messenger.messenger())
 
     private fun stored(text: String, outgoing: Boolean) =
-        messenger { it.chatEntries(peerKey) }.filter { it.text == text && it.outgoing == outgoing }
+        messenger { it.chatEntries(peerKey) }.filter { it.text.value == text && it.outgoing == outgoing }
 
     private fun report(vararg pairs: Pair<String, String>) {
         val data = Bundle()

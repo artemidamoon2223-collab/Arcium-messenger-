@@ -119,6 +119,13 @@ runs:
         test -n "${KOTLIN_FILE}"
         test -s "${KOTLIN_FILE}"
 
+        # Message plaintext in generated records must use the redacting custom
+        # types (crates/mobile-ffi/uniffi.toml); every other String/ByteArray
+        # field must be classified. Fails on any drift, then proves it would
+        # have failed on each known kind of regression.
+        python3 "${GITHUB_ACTION_PATH}/check_generated_plaintext.py" --self-test \
+          "${KOTLIN_FILE}" "${GITHUB_ACTION_PATH}/generated-string-fields.txt"
+
         # Android cross-build, one pass per ABI in ABI_TARGETS → place each
         # .so into its own jniLibs/<abi> build dir. Env var names for Cargo's
         # target-specific linker config use underscores in place of hyphens

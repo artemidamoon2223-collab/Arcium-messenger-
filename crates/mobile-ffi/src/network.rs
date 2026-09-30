@@ -30,7 +30,7 @@ use zeroize::Zeroizing;
 use crate::contacts::{pinned, Card};
 use core_protocol::messaging::{MessageId, Received};
 
-use crate::{unpack_prekey_bundle, ArciumCore, CoreError, SendResult, PREKEYS_KEY};
+use crate::{unpack_prekey_bundle, ArciumCore, CoreError, PlaintextBytes, SendResult, PREKEYS_KEY};
 use wire::{client_id, Envelope, Payload};
 
 /// What one [`NetworkMessenger::sync`] did. Counters only; nothing here is a
@@ -64,7 +64,7 @@ pub struct SyncReport {
 #[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ReceivedText {
     pub message_id: Vec<u8>,
-    pub text: Vec<u8>,
+    pub text: PlaintextBytes,
 }
 
 /// Shows the id and hides the text: accidental formatting and logging only.
@@ -233,7 +233,7 @@ impl NetworkMessenger {
             .into_iter()
             .map(|(message_id, text)| ReceivedText {
                 message_id: message_id.to_vec(),
-                text: text.to_vec(),
+                text: PlaintextBytes(text.to_vec()),
             })
             .collect())
     }

@@ -48,7 +48,7 @@ fn entry() -> ChatEntry {
         state: ChatEntryState::Received,
         timestamp_ms: 1_700_000_000_000,
         app_id: vec![0xA1, 0xA2],
-        text: String::from_utf8(CANARY.to_vec()).unwrap(),
+        text: PlaintextText(String::from_utf8(CANARY.to_vec()).unwrap()),
     }
 }
 
@@ -56,7 +56,7 @@ fn entry() -> ChatEntry {
 fn ffi_incoming_message_and_its_results_hide_the_plaintext() {
     let message = IncomingMessage {
         message_id: vec![0x11; 32],
-        plaintext: CANARY.to_vec(),
+        plaintext: PlaintextBytes(CANARY.to_vec()),
     };
     for text in assert_redacted(&message) {
         assert!(text.contains("IncomingMessage") && text.contains("message_id"));
@@ -78,7 +78,7 @@ fn ffi_incoming_message_and_its_results_hide_the_plaintext() {
 fn received_text_hides_the_text() {
     let received = ReceivedText {
         message_id: vec![0x22; 32],
-        text: CANARY.to_vec(),
+        text: PlaintextBytes(CANARY.to_vec()),
     };
     for text in assert_redacted(&received) {
         assert!(text.contains("ReceivedText") && text.contains("message_id"));
@@ -163,7 +163,7 @@ fn what_a_real_receive_returns_hides_the_plaintext() {
         panic!("expected Accepted");
     };
     assert_eq!(
-        message.plaintext, CANARY,
+        message.plaintext.0, CANARY,
         "the application still gets the text"
     );
 
@@ -171,7 +171,7 @@ fn what_a_real_receive_returns_hides_the_plaintext() {
     assert_redacted(&bob.receive_message(session_id, wire).unwrap());
     let pending = bob.pending_incoming(session_id).unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].plaintext, CANARY);
+    assert_eq!(pending[0].plaintext.0, CANARY);
     assert_redacted(&pending);
 
     // The internal accessor the network layer uses returns the messenger's own

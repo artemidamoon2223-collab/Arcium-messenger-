@@ -4,6 +4,7 @@ Derived from repository files. **Re-derive before relying on a detail here:**
 
 ```bash
 cat .github/actions/uniffi-android-bridge/action.yml
+cat crates/mobile-ffi/uniffi.toml
 cat .github/workflows/android-native-bridge.yml
 sed -n '/\[lib\]/,/^$/p' crates/mobile-ffi/Cargo.toml
 grep -n jna android/app/build.gradle.kts
@@ -27,12 +28,24 @@ Gradle to compile and package.
 4. **Host build for metadata.** `mobile-ffi` is first built for the host with
    `--config 'profile.release.strip=false'`, because the bindgen step reads
    UniFFI metadata out of the unstripped host library.
-5. **Cross build per ABI.** For each entry, `CC_*`, `CXX_*`, `AR_*`, `RANLIB_*`
+5. **Generated-Kotlin plaintext check.** Bindgen reads
+   `crates/mobile-ffi/uniffi.toml`, which maps the custom types
+   `PlaintextBytes`/`PlaintextText` (`crates/mobile-ffi/src/plaintext.rs`) to
+   the Kotlin value classes in
+   `android/app/src/main/kotlin/com/arcium/messenger/ffi/Plaintext.kt`, whose
+   `toString` is `"<redacted>"`. The action then runs
+   `check_generated_plaintext.py --self-test` on the generated file: every
+   generated property whose type is or contains `kotlin.String`,
+   `kotlin.ByteArray` or a `Plaintext*` type must match
+   `generated-string-fields.txt` exactly, or the action fails. A new record
+   field of those types therefore needs a line there, and message plaintext
+   needs one of the custom types. The generated file is checked, never edited.
+6. **Cross build per ABI.** For each entry, `CC_*`, `CXX_*`, `AR_*`, `RANLIB_*`
    are exported for the NDK toolchain and
    `cargo build --locked -p mobile-ffi --release --target <rust_target>` runs.
    Each resulting `libarcium_core.so` is placed in its own
    `jniLibs/<abi>` directory.
-6. **Gradle.** The workflow asserts the generated Kotlin file and both `.so`
+7. **Gradle.** The workflow asserts the generated Kotlin file and both `.so`
    files exist *before* invoking Gradle, then runs
    `./gradlew :app:assembleDebug`, then unzips the APK and checks
    `lib/<abi>/libarcium_core.so` is present for every ABI. A missing library

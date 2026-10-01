@@ -30,7 +30,7 @@ use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use sha2::Sha256;
 use std::path::Path;
 use thiserror::Error;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const NONCE_SIZE: usize = 24;
 const NAME_HASH_LEN: usize = 32;
@@ -289,6 +289,18 @@ impl KeyMaterial {
         Self { master_key: owned }
     }
 
+    /// `HKDF-Extract(salt, master key)`, ready for the caller's expand. The
+    /// pseudorandom key `extract` returns is derived from the master key, so it
+    /// is wiped here; `Hkdf::new` would drop it unwiped. Same salt, same input,
+    /// same expand: the derived bytes are those `Hkdf::new` gave. What the
+    /// `hkdf`, `hmac` and `sha2` crates keep inside their own values (see
+    /// `hash_contract` in `core-crypto`) is not reachable from here.
+    fn hkdf(salt: &[u8], master_key: &[u8; 32]) -> Hkdf<Sha256> {
+        let (mut prk, hk) = Hkdf::<Sha256>::extract(Some(salt), master_key);
+        prk.as_mut_slice().zeroize();
+        hk
+    }
+
     /// Everything up to and including the first `:` — the "namespace" a
     /// group of keys (`contact:alice`, `contact:bob`, ...) shares. A key
     /// with no `:` is its own namespace.
@@ -304,7 +316,7 @@ impl KeyMaterial {
     /// namespace, so equal inputs always hash identically and prefix
     /// listing stays possible without storing plaintext key names (F-10).
     fn key_name_hash(&self, s: &str) -> [u8; NAME_HASH_LEN] {
-        let hk = Hkdf::<Sha256>::new(Some(b"core-storage/key-name-hash/v1"), &*self.master_key);
+        let hk = Self::hkdf(b"core-storage/key-name-hash/v1", &self.master_key);
         let mut out = [0u8; NAME_HASH_LEN];
         hk.expand(s.as_bytes(), &mut out).expect("hkdf expand");
         out
@@ -328,7 +340,7 @@ impl KeyMaterial {
     /// domain-separated from both the per-value subkeys (`subkey`) and the
     /// key-name hash (`key_name_hash`) via distinct HKDF info strings.
     fn key_name_encryption_subkey(&self) -> Zeroizing<[u8; 32]> {
-        let hk = Hkdf::<Sha256>::new(Some(b"core-storage/key-name-enc/v1"), &*self.master_key);
+        let hk = Self::hkdf(b"core-storage/key-name-enc/v1", &self.master_key);
         let mut sk = Zeroizing::new([0u8; 32]);
         hk.expand(&[], &mut *sk).expect("hkdf expand");
         sk
@@ -365,7 +377,7 @@ impl KeyMaterial {
     }
 
     fn subkey(&self, key: &str) -> Zeroizing<[u8; 32]> {
-        let hk = Hkdf::<Sha256>::new(Some(b"core-storage/v1"), &*self.master_key);
+        let hk = Self::hkdf(b"core-storage/v1", &self.master_key);
         let mut sk = Zeroizing::new([0u8; 32]);
         hk.expand(key.as_bytes(), &mut *sk).expect("hkdf expand");
         sk
@@ -572,6 +584,9 @@ impl StoreTransaction<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod golden;
 
 #[cfg(test)]
 mod tests {

@@ -223,6 +223,9 @@ fn derive_root<T: AsRef<[u8]>>(
 }
 
 #[cfg(test)]
+mod golden;
+
+#[cfg(test)]
 mod v1_signed_prekey_tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};

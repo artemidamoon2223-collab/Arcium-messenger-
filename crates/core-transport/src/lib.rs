@@ -1,3 +1,8 @@
+/// `TRANSPORT_ENVELOPE_V1`: the framing every message on a transport is wrapped
+/// in. Pure encoding and parsing — it depends on nothing else in this crate and
+/// touches no network.
+pub mod envelope;
+
 use arti_client::{TorClient, TorClientConfig};
 use std::sync::Arc;
 use thiserror::Error;

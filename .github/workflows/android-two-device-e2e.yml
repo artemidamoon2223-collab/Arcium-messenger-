@@ -63,7 +63,7 @@ jobs:
         run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace
 
       - name: Build the relay
-        run: cargo build -p relay --bin arcium-relay
+        run: cargo build --locked -p relay --bin arcium-relay
 
       # The relay alerts if a stored envelope contains the plaintext canary
       # every test text carries; the check after the run fails on that.

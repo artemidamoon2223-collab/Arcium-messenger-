@@ -56,7 +56,9 @@ runs:
           rust_target="${entry%%:*}"
           rustup target add "${rust_target}"
         done
-        cargo generate-lockfile
+        # The root workspace's dependency graph is the tracked Cargo.lock (H-10);
+        # every root build below is --locked and nothing here regenerates it.
+        git ls-files --error-unmatch Cargo.lock >/dev/null
         test -s Cargo.lock
 
         # uniffi version is single-sourced from the workspace lockfile — never
@@ -69,7 +71,8 @@ runs:
         )"
         test -n "${UNIFFI_VERSION}"
 
-        # Ephemeral uniffi-bindgen matching the locked uniffi version.
+        # Ephemeral uniffi-bindgen matching the locked uniffi version. Its own
+        # lockfile belongs to this scratch helper crate, not to the workspace.
         HELPER_DIR="${RUNNER_TEMP}/uniffi-bindgen-helper"
         rm -rf "${HELPER_DIR}" "${RUNNER_TEMP}/uniffi-tools"
         mkdir -p "${HELPER_DIR}/src"
@@ -153,4 +156,5 @@ runs:
           SO_PATHS+=("${JNILIBS_BASE}/${abi}/libarcium_core.so")
         done
 
+        git diff --exit-code -- Cargo.lock
         echo "BRIDGE_INPUTS_READY kotlin=${KOTLIN_FILE} so=${SO_PATHS[*]}"

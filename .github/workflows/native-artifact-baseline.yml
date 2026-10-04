@@ -53,7 +53,8 @@ jobs:
 
           rustup target add "${TARGET}"
 
-          cargo generate-lockfile
+          # The root workspace's dependency graph is the tracked Cargo.lock (H-10).
+          git ls-files --error-unmatch Cargo.lock >/dev/null
           test -s Cargo.lock
 
           UNIFFI_VERSION="$(
@@ -201,7 +202,7 @@ jobs:
             echo "ndk_package=${NDK_PACKAGE}"
             echo "uniffi_version=${UNIFFI_VERSION}"
             echo "runner_lockfile_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
-            echo "runner_lockfile_ephemeral=true"
+            echo "runner_lockfile_ephemeral=false"
             echo "bindgen_helper_ephemeral=true"
             echo "bindgen_helper_lockfile_sha256=$(sha256sum "${HELPER_DIR}/Cargo.lock" | awk '{print $1}')"
             echo "rustc=$(rustc --version)"

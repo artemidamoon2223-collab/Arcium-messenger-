@@ -21,7 +21,18 @@ data class ChatState(
     val input: String = "",
     val sending: Boolean = false,
     val error: String? = null,
-)
+) {
+    /**
+     * The generated `toString` would print [input], the user's unsent draft.
+     * This one prints `<redacted>` in its place and the other fields as
+     * before; a field added later is not printed until it is added here. It
+     * covers accidental formatting only: [input] is an ordinary `String`,
+     * nothing wipes it, and code that reads it still gets the draft.
+     */
+    override fun toString(): String =
+        "ChatState(conversation=$conversation, entries=$entries, link=$link, " +
+            "input=<redacted>, sending=$sending, error=$error)"
+}
 
 /**
  * One conversation. The history, every message state and the session come

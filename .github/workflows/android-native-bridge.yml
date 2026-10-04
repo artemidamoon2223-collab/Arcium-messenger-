@@ -5,12 +5,14 @@ on:
     paths:
       - 'crates/**'
       - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'android/app/build.gradle.kts'
       - '.github/workflows/android-native-bridge.yml'
   pull_request:
     paths:
       - 'crates/**'
       - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'android/app/build.gradle.kts'
       - '.github/workflows/android-native-bridge.yml'
   workflow_dispatch:

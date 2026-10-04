@@ -1,5 +1,9 @@
 /target/
+# The root workspace's Cargo.lock is tracked: it is the dependency graph every
+# build and CI job uses (H-10). Other lockfiles (arcium-psi, scratch helpers) stay
+# untracked.
 Cargo.lock
+!/Cargo.lock
 .codegraph/
 android/.gradle/
 # openlore analysis artifacts (run locally, not for VCS)

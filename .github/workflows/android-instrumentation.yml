@@ -21,6 +21,7 @@ on:
     paths:
       - 'crates/**'
       - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'android/**'
       - '.github/workflows/android-instrumentation.yml'
       - '.github/actions/uniffi-android-bridge/**'
@@ -28,6 +29,7 @@ on:
     paths:
       - 'crates/**'
       - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'android/**'
       - '.github/workflows/android-instrumentation.yml'
       - '.github/actions/uniffi-android-bridge/**'
@@ -67,8 +69,8 @@ jobs:
 
       - name: Build the host relay and peer
         run: |
-          cargo build -p relay --bin arcium-relay
-          cargo test -p mobile-ffi --lib --no-run
+          cargo build --locked -p relay --bin arcium-relay
+          cargo test --locked -p mobile-ffi --lib --no-run
 
       # The relay alerts if a stored envelope contains the plaintext canary
       # every test text carries; the check after the tests fails on that.
@@ -83,7 +85,7 @@ jobs:
           ARCIUM_PEER_RELAY=127.0.0.1:7700 \
           ARCIUM_PEER_DB="$PWD/net-e2e/peer.db" \
           ARCIUM_PEER_CARD_OUT="$PWD/net-e2e/peer.card" \
-            cargo test -p mobile-ffi --lib -- --exact tests::net_peer::net_peer_bot --nocapture \
+            cargo test --locked -p mobile-ffi --lib -- --exact tests::net_peer::net_peer_bot --nocapture \
             > net-e2e/peer.log 2>&1 &
           for _ in $(seq 1 120); do
             [ -s net-e2e/peer.card ] && break

@@ -21,6 +21,7 @@ on:
     paths:
       - 'crates/**'
       - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'android/**'
       - '.github/workflows/android-instrumentation.yml'
       - '.github/actions/uniffi-android-bridge/**'
@@ -28,6 +29,7 @@ on:
     paths:
       - 'crates/**'
       - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'android/**'
       - '.github/workflows/android-instrumentation.yml'
       - '.github/actions/uniffi-android-bridge/**'

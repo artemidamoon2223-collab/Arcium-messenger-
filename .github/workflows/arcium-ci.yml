@@ -154,9 +154,10 @@ jobs:
           test -f ~/.config/solana/id.json ||
             solana-keygen new --no-bip39-passphrase --silent --outfile ~/.config/solana/id.json
       # `arcium test` stops and removes the Arx node and trusted-dealer
-      # containers before the next step runs, so their logs are streamed to
-      # files while they live. The localnet test writes a trace of each
-      # computation to the same directory (LOCALNET_DIAG_DIR).
+      # containers before the next step runs, so their output and events are
+      # streamed to files while they live (the Arx nodes also write their own
+      # logs under artifacts/arx_node_logs). The localnet test writes a trace
+      # of each computation to the same directory (LOCALNET_DIAG_DIR).
       - name: arcium test (with open-files limit fix)
         working-directory: arcium-psi
         env:
@@ -205,10 +206,14 @@ jobs:
           find artifacts -type f -name '*.log' -not -path 'artifacts/localnet/*' \
             -exec cp --parents {} "$LOCALNET_DIAG_DIR/" \; 2>/dev/null || true
           find artifacts -type f > "$LOCALNET_DIAG_DIR/artifacts-files.txt" 2>/dev/null || true
+          # Arx node log names contain ':', which artifacts do not allow.
+          find "$LOCALNET_DIAG_DIR" -type f -name '*:*' | while read -r f; do
+            mv "$f" "$(dirname "$f")/$(basename "$f" | tr ':' '-')"
+          done
           python3 ../.github/scripts/scrub_localnet_diagnostics.py "$LOCALNET_DIAG_DIR" \
             'artifacts/localnet/*' "$HOME/.config/solana/id.json"
-          ls -la "$LOCALNET_DIAG_DIR"
-          tail -60 "$LOCALNET_DIAG_DIR"/container-*.log 2>/dev/null || true
+          ls -laR "$LOCALNET_DIAG_DIR"
+          python3 ../.github/scripts/summarize_localnet_diagnostics.py "$LOCALNET_DIAG_DIR"
       - name: Upload localnet diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

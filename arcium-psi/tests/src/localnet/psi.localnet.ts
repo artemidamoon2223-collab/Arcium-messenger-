@@ -531,7 +531,8 @@ async function traceComputation(
         getComputationsInMempool(arcium, getMempoolAccAddress(clusterOffset)),
         getExecutingPoolAccInfo(provider, getExecutingPoolAccAddress(clusterOffset)),
       ]);
-      const executing = (execpool as any).currentlyExecuting as any[];
+      // Every pool size wraps the same ExecutingPool as `inner`.
+      const executing = (execpool as any).inner.currentlyExecuting as any[];
       observations.push({
         t: new Date(at).toISOString(),
         ms: at - start,

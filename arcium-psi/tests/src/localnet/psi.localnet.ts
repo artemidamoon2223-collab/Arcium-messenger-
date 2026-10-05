@@ -29,7 +29,9 @@ import {
   getCompDefAccAddress,
   getCompDefAccOffset,
   getComputationAccAddress,
+  getComputationsInMempool,
   getExecutingPoolAccAddress,
+  getExecutingPoolAccInfo,
   getFeePoolAccAddress,
   getLookupTableAddress,
   getMempoolAccAddress,
@@ -240,13 +242,16 @@ describe('LOCALNET — Arcium PSI program', function () {
     // Sent through the connection, not AnchorProvider.sendAndConfirm: on a
     // failed v0 transaction the latter throws "Unknown action 'undefined'"
     // (@anchor-lang/core provider.ts:196) and hides the program error.
-    console.log('    submit_psi_query:', await sendAndCheck(provider, query.raw));
-    await awaitComputationFinalization(
-      provider,
-      query.computationOffset,
-      programId,
-      'confirmed',
-      300_000,
+    const signature = await sendAndCheck(provider, query.raw);
+    console.log('    submit_psi_query:', signature);
+    await traceComputation(provider, clusterOffset, query, signature, () =>
+      awaitComputationFinalization(
+        provider,
+        query.computationOffset,
+        programId,
+        'confirmed',
+        300_000,
+      ),
     );
     const output = await callbackOutput(provider, programId, idl, query.computationAccount);
     // The result is encrypted to the client's key, with the nonce after its own.
@@ -493,4 +498,111 @@ async function sendAndCheck(
     );
   }
   return sig;
+}
+
+// When the previous computation of this run finalized, for the trace below.
+let lastFinalizedAt: number | null = null;
+
+// Runs `wait` (the finalization check) unchanged while recording, once a
+// second, what the cluster shows for this computation: its account status,
+// whether its offset is in the mempool or the executing pool, and the slot.
+// Afterwards it lists every transaction that touched the computation account,
+// with the logs of failed ones. The trace goes to LOCALNET_DIAG_DIR when that
+// is set (CI uploads it), and is printed when `wait` fails. It records
+// accounts, offsets, signatures and states only: no keys or plaintexts.
+async function traceComputation(
+  provider: anchor.AnchorProvider,
+  clusterOffset: number,
+  query: { computationOffset: anchor.BN; computationAccount: PublicKey },
+  submitSignature: string,
+  wait: () => Promise<unknown>,
+) {
+  const conn = provider.connection;
+  const arcium: any = getArciumProgram(provider);
+  const offset = query.computationOffset.toString();
+  const start = Date.now();
+  const observations: Record<string, unknown>[] = [];
+  const observe = async () => {
+    const at = Date.now();
+    try {
+      const [slot, account, mempool, execpool] = await Promise.all([
+        conn.getSlot('confirmed'),
+        arcium.account.computationAccount.fetchNullable(query.computationAccount, 'confirmed'),
+        getComputationsInMempool(arcium, getMempoolAccAddress(clusterOffset)),
+        getExecutingPoolAccInfo(provider, getExecutingPoolAccAddress(clusterOffset)),
+      ]);
+      const executing = (execpool as any).currentlyExecuting as any[];
+      observations.push({
+        t: new Date(at).toISOString(),
+        ms: at - start,
+        slot,
+        status: account === null ? 'missing' : Object.keys(account.status)[0],
+        callbacksSubmitted: account?.callbackTransactionsSubmittedBm,
+        inMempool: mempool.some((r: any) => r.computationOffset.toString() === offset),
+        mempoolSize: mempool.length,
+        inExecpool: executing.some((r: any) => r.computationOffset.toString() === offset),
+        execpoolSize: executing.filter((r: any) => !r.computationOffset.isZero()).length,
+      });
+    } catch (e: any) {
+      observations.push({ t: new Date(at).toISOString(), ms: at - start, error: String(e?.message ?? e) });
+    }
+  };
+
+  let done = false;
+  const observer = (async () => {
+    while (!done) {
+      await observe();
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  })();
+  let failure: unknown = null;
+  try {
+    await wait();
+  } catch (e) {
+    failure = e;
+  } finally {
+    done = true;
+    await observer;
+  }
+  const finishedAt = Date.now();
+  await observe();
+
+  const touching = await conn.getSignaturesForAddress(query.computationAccount, { limit: 50 }, 'confirmed');
+  const transactions = [];
+  for (const { signature, slot, err, blockTime } of touching.reverse()) {
+    const entry: Record<string, unknown> = { signature, slot, blockTime, err };
+    if (err) {
+      const tx = await conn.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+      entry.logs = tx?.meta?.logMessages ?? [];
+    }
+    transactions.push(entry);
+  }
+  const submitted = await conn.getTransaction(submitSignature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+  const trace = {
+    computationAccount: query.computationAccount.toBase58(),
+    computationOffset: offset,
+    submitSignature,
+    submitSlot: submitted?.slot ?? null,
+    submitErr: submitted?.meta?.err ?? null,
+    startedAt: new Date(start).toISOString(),
+    msSincePreviousFinalization: lastFinalizedAt === null ? null : start - lastFinalizedAt,
+    outcome: failure === null ? 'finalized' : String((failure as any)?.message ?? failure),
+    waitedMs: finishedAt - start,
+    observations,
+    transactions,
+  };
+  if (failure === null) lastFinalizedAt = finishedAt;
+  const dir = process.env.LOCALNET_DIAG_DIR;
+  if (dir) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `computation-${offset}.json`), JSON.stringify(trace, null, 2));
+  }
+  if (failure !== null) {
+    const last = observations[observations.length - 1];
+    console.log(`    computation ${trace.computationAccount} (offset ${offset}) did not finalize:`);
+    console.log(`      submitted in slot ${trace.submitSlot}, ${trace.msSincePreviousFinalization} ms after the previous computation finalized`);
+    console.log(`      last observation: ${JSON.stringify(last)}`);
+    console.log(`      transactions on the computation account: ${JSON.stringify(transactions)}`);
+    throw failure;
+  }
 }

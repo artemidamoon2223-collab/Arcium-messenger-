@@ -52,10 +52,38 @@ const CIRCUIT_PATH = path.join(ROOT, 'build/psi_intersect.arcis');
 const ALICE = ['+1234567890', '+0987654321', '+1111111111'].map(hashPhoneWithTruncation);
 const BOB = ['+1234567890', '+9999999999', '+1111111111'].map(hashPhoneWithTruncation);
 
+// The real MPC scenario this run executes, or all three when unset. CI runs
+// each on its own fresh localnet (.github/workflows/arcium-ci.yml), because
+// the Arx node (arcium 0.10.4) can lose a computation for a computation
+// definition it has already used. In the CI runs where a computation stayed
+// queued, one node logged "Pending circuits not found for computation
+// definition" just before it registered the computation ("Processing fetched
+// Computation"), never logged it ready for execution, and the other node
+// waited for it in the protocol. That only happened to a second or third
+// computation; on a fresh node the first one waits tens of ms for the
+// definition to be fetched, and was registered first in every run observed.
+const MPC_SCENARIOS = ['matches', 'zero-hash', 'invalid-count'];
+const MPC_SCENARIO = process.env.LOCALNET_MPC_SCENARIO;
+if (MPC_SCENARIO !== undefined && !MPC_SCENARIOS.includes(MPC_SCENARIO)) {
+  throw new Error(`LOCALNET_MPC_SCENARIO must be one of ${MPC_SCENARIOS.join(', ')}`);
+}
+const runs = (scenario: string) => MPC_SCENARIO === undefined || MPC_SCENARIO === scenario;
+
 describe('LOCALNET — Arcium PSI program', function () {
   this.timeout(600_000);
 
-  const provider = anchor.AnchorProvider.env();
+  // Confirmed commitment for the recent blockhash as well as for preflight.
+  // With AnchorProvider.env() alone, `.rpc({ commitment: 'confirmed' })`
+  // takes the blockhash at the connection's 'processed' commitment and
+  // simulates at 'confirmed' (@anchor-lang/core provider.ts); right after the
+  // validator starts, the confirmed bank may not have that blockhash yet, and
+  // init_user failed with "Blockhash not found".
+  const env = anchor.AnchorProvider.env();
+  const provider = new anchor.AnchorProvider(
+    new anchor.web3.Connection(env.connection.rpcEndpoint, 'confirmed'),
+    env.wallet,
+    { commitment: 'confirmed', preflightCommitment: 'confirmed' },
+  );
   anchor.setProvider(provider);
   const idl = JSON.parse(fs.readFileSync(IDL_PATH, 'utf8'));
   // Untyped: the IDL is read at runtime from the build output, so there are
@@ -286,7 +314,7 @@ describe('LOCALNET — Arcium PSI program', function () {
   // These read the output from the callback transaction: the program does
   // not store or emit it (finding F-14). They check what the cluster
   // computed, not a way for a client to receive it.
-  it('runs a PSI computation on the MPC cluster and returns the expected matches', async () => {
+  if (runs('matches')) it('runs a PSI computation on the MPC cluster and returns the expected matches', async () => {
     const run = await runQuery(side(ALICE), side(BOB));
     const logs = await callbackLogs(provider, programId);
     expect(logs, 'no successful psi_intersect_callback transaction found').to.not.equal(null);
@@ -298,7 +326,7 @@ describe('LOCALNET — Arcium PSI program', function () {
   // Client: a real zero hash, a hash the server has only as padding, a real
   // match; client padding equal to a real server hash and to server padding.
   // Server padding equal to a real client hash and zero.
-  it('compares real entries only, including a real zero hash', async () => {
+  if (runs('zero-hash')) it('compares real entries only, including a real zero hash', async () => {
     const [a, b, c] = BOB;
     const run = await runQuery(side([0n, a, b], [c, 0n]), side([b, c], [a, 0n]));
     // decryptResult also requires every client padding slot to be 0.
@@ -308,7 +336,7 @@ describe('LOCALNET — Arcium PSI program', function () {
 
   // A count of 11 sent past client.ts: the circuit marks the result invalid
   // and sets no match, and the client rejects it.
-  it('fails closed on an invalid count inside the circuit', async () => {
+  if (runs('invalid-count')) it('fails closed on an invalid count inside the circuit', async () => {
     const run = await runQuery(side(ALICE, [0n], BigInt(BATCH_SIZE + 1)), side(BOB));
     expect(run.plain).to.deep.equal(Array(CIPHERTEXTS).fill(0n));
     expect(() => decryptResult(run.output, run.client.shared, run.client.request))

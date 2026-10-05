@@ -153,12 +153,14 @@ jobs:
         run: |
           test -f ~/.config/solana/id.json ||
             solana-keygen new --no-bip39-passphrase --silent --outfile ~/.config/solana/id.json
-      # `arcium test` stops and removes the Arx node and trusted-dealer
-      # containers before the next step runs, so their output and events are
-      # streamed to files while they live (the Arx nodes also write their own
-      # logs under artifacts/arx_node_logs). The localnet test writes a trace
-      # of each computation to the same directory (LOCALNET_DIAG_DIR).
-      - name: arcium test (with open-files limit fix)
+      # Each real MPC scenario runs on its own fresh localnet: the Arx node
+      # can lose a computation for a computation definition it has already
+      # used (see tests/src/localnet/psi.localnet.ts). `arcium test` removes
+      # the containers and regenerates the localnet keys on every run, so the
+      # evidence of each run (Arx node logs under artifacts/, the validator
+      # log, the test's computation traces) is copied and scrubbed of key
+      # material right after it, and container events are recorded throughout.
+      - name: arcium test, one fresh localnet per MPC scenario
         working-directory: arcium-psi
         env:
           LOCALNET_DIAG_DIR: ${{ runner.temp }}/localnet-diagnostics
@@ -167,29 +169,39 @@ jobs:
           mkdir -p "$LOCALNET_DIAG_DIR"
           docker events --filter type=container --format '{{json .}}' \
             > "$LOCALNET_DIAG_DIR/docker-events.jsonl" 2>&1 &
-          (
-            while true; do
-              for c in $(docker ps --format '{{.Names}}'); do
-                log="$LOCALNET_DIAG_DIR/container-$c.log"
-                if [ ! -e "$log" ]; then
-                  : > "$log"
-                  docker logs --follow --timestamps "$c" >> "$log" 2>&1 &
-                fi
-              done
-              sleep 1
-            done
-          ) &
           trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
           sudo prlimit --pid $$ --nofile=1048576:1048576
-          timeout 30m arcium test 2>&1 | tee arcium-test.log
-          if ! grep -qE '^ +[1-9][0-9]* passing' arcium-test.log; then
-            echo "::error::arcium test reported no passing tests"
-            exit 1
-          fi
-          if grep -qE '^ +[0-9]+ pending' arcium-test.log; then
-            echo "::error::arcium test left tests pending (not executed)"
-            exit 1
-          fi
+          run_scenario() {
+            local scenario=$1 title=$2 dir="$LOCALNET_DIAG_DIR/$1" status=0
+            mkdir -p "$dir"
+            LOCALNET_MPC_SCENARIO=$scenario LOCALNET_DIAG_DIR=$dir \
+              timeout 30m arcium test 2>&1 | tee "$dir/arcium-test.log" || status=$?
+            cp .anchor/test-ledger/validator.log "$dir/" 2>/dev/null || true
+            find artifacts -type f -name '*.log' -not -path 'artifacts/localnet/*' \
+              -exec cp --parents {} "$dir/" \; 2>/dev/null || true
+            find artifacts -type f > "$dir/artifacts-files.txt" 2>/dev/null || true
+            python3 ../.github/scripts/scrub_localnet_diagnostics.py "$dir" \
+              'artifacts/localnet/*' "$HOME/.config/solana/id.json"
+            if [ "$status" -ne 0 ]; then
+              echo "::error::arcium test failed for MPC scenario $scenario"
+              return 1
+            fi
+            if ! grep -qE '^ +[1-9][0-9]* passing' "$dir/arcium-test.log"; then
+              echo "::error::arcium test reported no passing tests for $scenario"
+              return 1
+            fi
+            if grep -qE '^ +[0-9]+ pending' "$dir/arcium-test.log"; then
+              echo "::error::arcium test left tests pending (not executed) for $scenario"
+              return 1
+            fi
+            if ! grep -qF "✔ $title" "$dir/arcium-test.log"; then
+              echo "::error::MPC scenario $scenario did not run and pass: $title"
+              return 1
+            fi
+          }
+          run_scenario matches 'runs a PSI computation on the MPC cluster and returns the expected matches'
+          run_scenario zero-hash 'compares real entries only, including a real zero hash'
+          run_scenario invalid-count 'fails closed on an invalid count inside the circuit'
         shell: bash
       - name: Localnet diagnostics
         if: always()
@@ -199,21 +211,19 @@ jobs:
         run: |
           mkdir -p "$LOCALNET_DIAG_DIR"
           docker ps -a > "$LOCALNET_DIAG_DIR/docker-ps.txt" 2>&1 || true
-          cp arcium-test.log "$LOCALNET_DIAG_DIR/" 2>/dev/null || true
-          cp .anchor/test-ledger/validator.log "$LOCALNET_DIAG_DIR/" 2>/dev/null || true
-          # Every log file `arcium test` left (callback server, nodes); the
-          # localnet key directory is listed by name only, never copied.
-          find artifacts -type f -name '*.log' -not -path 'artifacts/localnet/*' \
-            -exec cp --parents {} "$LOCALNET_DIAG_DIR/" \; 2>/dev/null || true
-          find artifacts -type f > "$LOCALNET_DIAG_DIR/artifacts-files.txt" 2>/dev/null || true
           # Arx node log names contain ':', which artifacts do not allow.
           find "$LOCALNET_DIAG_DIR" -type f -name '*:*' | while read -r f; do
             mv "$f" "$(dirname "$f")/$(basename "$f" | tr ':' '-')"
           done
+          # The keys of the last run are still on disk; earlier runs were
+          # scrubbed against their own keys as they finished.
           python3 ../.github/scripts/scrub_localnet_diagnostics.py "$LOCALNET_DIAG_DIR" \
             'artifacts/localnet/*' "$HOME/.config/solana/id.json"
           ls -laR "$LOCALNET_DIAG_DIR"
-          python3 ../.github/scripts/summarize_localnet_diagnostics.py "$LOCALNET_DIAG_DIR"
+          for dir in "$LOCALNET_DIAG_DIR"/*/; do
+            echo "######## $(basename "$dir")"
+            python3 ../.github/scripts/summarize_localnet_diagnostics.py "$dir"
+          done
       - name: Upload localnet diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

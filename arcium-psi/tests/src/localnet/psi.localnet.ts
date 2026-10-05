@@ -176,6 +176,14 @@ describe('LOCALNET — Arcium PSI program', function () {
     expect(finalized.circuitSource.onChain[0].isCompleted).to.equal(true);
   });
 
+  async function mxeLookupTable() {
+    const mxe = await getArciumProgram(provider).account.mxeAccount.fetch(mxeAccount);
+    const lutAddress = getLookupTableAddress(programId, mxe.lutOffsetSlot);
+    const lut = (await provider.connection.getAddressLookupTable(lutAddress)).value;
+    expect(lut, `no lookup table at ${lutAddress.toBase58()}`).to.not.equal(null);
+    return lut!;
+  }
+
   // Builds a signed v0 submit_psi_query transaction from the plaintexts of
   // both sides (see `side`). `overrides` replaces accounts, to check that the
   // program rejects substituted ones.
@@ -209,17 +217,14 @@ describe('LOCALNET — Arcium PSI program', function () {
     // Two SharedEncryptedStruct<11> plus the Arcium accounts exceed a legacy
     // transaction. A v0 transaction resolves the Arcium accounts through the
     // MXE's address lookup table.
-    const mxe = await getArciumProgram(provider).account.mxeAccount.fetch(mxeAccount);
-    const lutAddress = getLookupTableAddress(programId, mxe.lutOffsetSlot);
-    const lut = (await provider.connection.getAddressLookupTable(lutAddress)).value;
-    expect(lut, `no lookup table at ${lutAddress.toBase58()}`).to.not.equal(null);
+    const lut = await mxeLookupTable();
     const { blockhash } = await provider.connection.getLatestBlockhash('confirmed');
     const tx = new VersionedTransaction(
       new TransactionMessage({
         payerKey: owner,
         recentBlockhash: blockhash,
         instructions: [ix],
-      }).compileToV0Message([lut!]),
+      }).compileToV0Message([lut]),
     );
     const signed = await provider.wallet.signTransaction(tx);
     const raw = signed.serialize();
@@ -255,9 +260,13 @@ describe('LOCALNET — Arcium PSI program', function () {
   }
 
   it('rejects a query whose Arcium account is substituted', async () => {
-    const { raw } = await psiQueryTx(undefined, undefined, {
-      mempoolAccount: anchor.web3.Keypair.generate().publicKey,
-    });
+    // Another address from the MXE's lookup table: a key outside it would
+    // add 32 bytes and push the transaction past the size limit, so the
+    // rejection would no longer be the program's.
+    const mempool = getMempoolAccAddress(clusterOffset);
+    const wrong = (await mxeLookupTable()).state.addresses.find((a) => !a.equals(mempool));
+    expect(wrong, 'no other address in the lookup table').to.not.equal(undefined);
+    const { raw } = await psiQueryTx(undefined, undefined, { mempoolAccount: wrong! });
     let error = '';
     try {
       await sendAndCheck(provider, raw);

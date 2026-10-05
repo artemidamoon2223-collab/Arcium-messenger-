@@ -100,6 +100,26 @@ jobs:
             fi
           done
           sha256sum build/psi_intersect.arcis.ir target/deploy/arcium_psi.so
+          # CIRCUIT_HASH in the tests must be this build's circuit.
+          built=$(sha256sum build/psi_intersect.arcis.ir | cut -d' ' -f1)
+          recorded=$(grep -oE "CIRCUIT_HASH = '[0-9a-f]{64}'" tests/src/scenarios.test.ts | grep -oE '[0-9a-f]{64}')
+          if [ "$built" != "$recorded" ]; then
+            echo "::error::CIRCUIT_HASH ${recorded:-missing} is not the built circuit $built"
+            exit 1
+          fi
+      # Runs the compiled psi_intersect circuit on chosen inputs (padding,
+      # zero hashes, invalid counts) through Arcis's mock MPC evaluation.
+      - name: psi_intersect circuit tests
+        env:
+          TEST_CIRCUIT: "1"
+        run: |
+          set -o pipefail
+          cargo test --manifest-path arcium-psi/encrypted-ixs/Cargo.toml 2>&1 | tee circuit.log
+          grep -qE '^test result: ok\. [1-9][0-9]* passed' circuit.log || {
+            echo "::error::no circuit tests ran"
+            exit 1
+          }
+        shell: bash
       - name: arcium-psi borsh tests (require the arcium artifacts)
         run: |
           set -o pipefail

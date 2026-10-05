@@ -100,12 +100,16 @@ export function resultNonceFor(request: PsiRequest): Uint8Array {
  * Decrypts the result of `request` and returns, for each of its real
  * contacts in order, whether the server has it.
  *
- * Throws unless the result uses the nonce that follows the request's, every
+ * Throws unless the request's count is in 0..BATCH_SIZE, the result is
+ * CIPHERTEXTS × 32 bytes, its nonce is the request's nonce plus one, every
  * decrypted value is exactly 0 or 1, the validity flag is 1 (both counts were
- * in range), and every slot past the request's count is 0. These checks
- * reject a malformed, mis-keyed or out-of-contract result. They do not
- * authenticate it: RescueCipher is unauthenticated counter mode, so a changed
- * ciphertext can turn a 0 into a 1 without failing them.
+ * in range), and every slot past the request's count is 0.
+ *
+ * These checks do not authenticate the result: RescueCipher is
+ * unauthenticated counter mode, so a changed ciphertext can turn a 0 into a 1
+ * without failing them. A result decrypted with the wrong key fails them only
+ * if some value comes out other than 0 or 1, as it did in the tested sample;
+ * that is not guaranteed for every wrong key.
  */
 export function decryptResult(
   result: PsiResult,

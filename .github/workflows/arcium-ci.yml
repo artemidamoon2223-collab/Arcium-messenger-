@@ -156,10 +156,11 @@ jobs:
       # Each real MPC scenario runs on its own fresh localnet: the Arx node
       # can lose a computation for a computation definition it has already
       # used (see tests/src/localnet/psi.localnet.ts). `arcium test` removes
-      # the containers and regenerates the localnet keys on every run, so the
-      # evidence of each run (Arx node logs under artifacts/, the validator
-      # log, the test's computation traces) is copied and scrubbed of key
-      # material right after it, and container events are recorded throughout.
+      # the containers when it ends, and each run's generated files are
+      # removed before the next, so the evidence of each run (Arx node logs
+      # under artifacts/, the validator log, the test's computation traces) is
+      # copied and scrubbed of that run's key material right after it.
+      # Container events are recorded throughout.
       - name: arcium test, one fresh localnet per MPC scenario
         working-directory: arcium-psi
         env:
@@ -182,6 +183,11 @@ jobs:
             find artifacts -type f > "$dir/artifacts-files.txt" 2>/dev/null || true
             python3 ../.github/scripts/scrub_localnet_diagnostics.py "$dir" \
               'artifacts/localnet/*' "$HOME/.config/solana/id.json"
+            # A second `arcium test` reuses artifacts/localnet, and in 4 of 4
+            # CI runs its MXE key was not available within the test's 10 s
+            # wait. Removing what `arcium test` generated (git-ignored) makes
+            # the next run start from the same state as the first.
+            rm -rf artifacts .anchor/test-ledger
             if [ "$status" -ne 0 ]; then
               echo "::error::arcium test failed for MPC scenario $scenario"
               return 1
@@ -215,8 +221,8 @@ jobs:
           find "$LOCALNET_DIAG_DIR" -type f -name '*:*' | while read -r f; do
             mv "$f" "$(dirname "$f")/$(basename "$f" | tr ':' '-')"
           done
-          # The keys of the last run are still on disk; earlier runs were
-          # scrubbed against their own keys as they finished.
+          # Each run was scrubbed against its own keys as it finished; this
+          # checks the files recorded outside the runs against the wallet.
           python3 ../.github/scripts/scrub_localnet_diagnostics.py "$LOCALNET_DIAG_DIR" \
             'artifacts/localnet/*' "$HOME/.config/solana/id.json"
           ls -laR "$LOCALNET_DIAG_DIR"

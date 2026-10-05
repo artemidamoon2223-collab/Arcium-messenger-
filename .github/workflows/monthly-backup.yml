@@ -20,10 +20,13 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+      # No later step talks to git, so the write-scoped token is not left in
+      # .git/config for the rest of the job.
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       
       - name: Create ZIP archive
         run: |
@@ -35,28 +38,27 @@ jobs:
           FILENAME=$(ls Arcium-messenger-backup-*.zip | head -n1)
           echo "backup_file=$FILENAME" >> $GITHUB_OUTPUT
       
-      - name: Create Release
-        uses: actions/create-release@v1
+      # The release is created as a draft with the ZIP attached and published
+      # only after the ZIP is confirmed on it with its full size. If any command
+      # fails, the job fails and at most an unpublished draft is left, never a
+      # published backup release without its backup.
+      - name: Publish release with the backup
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: backup-${{ github.run_number }}-${{ github.run_id }}
-          release_name: Monthly Backup - ${{ steps.filename.outputs.backup_file }}
-          body: |
-            📦 Автоматический месячный бэкап проекта
-            
-            📅 Дата создания: ${{ steps.filename.outputs.backup_file }}
-            
-            Скачай ZIP-архив ниже и сохрани где нужно!
-          draft: false
-          prerelease: false
-      
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./${{ steps.filename.outputs.backup_file }}
-          asset_name: ${{ steps.filename.outputs.backup_file }}
-          asset_content_type: application/zip
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: backup-${{ github.run_number }}-${{ github.run_id }}
+          BACKUP_FILE: ${{ steps.filename.outputs.backup_file }}
+        run: |
+          set -euo pipefail
+          test -s "$BACKUP_FILE"
+          notes=$(printf '📦 Автоматический месячный бэкап проекта\n\n📅 Дата создания: %s\n\nСкачай ZIP-архив ниже и сохрани где нужно!\n' "$BACKUP_FILE")
+          gh release create "$TAG" "$BACKUP_FILE" --draft --target "$GITHUB_SHA" \
+            --title "Monthly Backup - $BACKUP_FILE" --notes "$notes"
+          expected=$(printf '%s\t%s\tuploaded' "$BACKUP_FILE" "$(stat -c %s "$BACKUP_FILE")")
+          assets=$(gh release view "$TAG" --json assets \
+            --jq '.assets[] | [.name, (.size | tostring), .state] | @tsv')
+          if ! grep -Fxq -- "$expected" <<< "$assets"; then
+            echo "::error::$BACKUP_FILE is not on draft release $TAG; it stays unpublished"
+            exit 1
+          fi
+          gh release edit "$TAG" --draft=false

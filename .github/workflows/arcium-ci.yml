@@ -9,18 +9,31 @@ on:
 # audits — it never writes to repo contents. Without an explicit block the token
 # inherits the repository default (possibly read-write-all), which any
 # compromised step (cargo install, npm install, third-party action) would then
-# hold. All four jobs are read-only.
+# hold. All jobs are read-only.
 permissions:
   contents: read
 
 jobs:
+  # ── Job 0: every external action is pinned to a full commit SHA (F-5) ──
+  # A tag or branch can be moved upstream to point at different code; a commit
+  # SHA cannot. Scans every workflow and local action, so a new workflow is
+  # checked without being listed anywhere.
+  action-pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Checker self-test
+        run: python3 .github/scripts/check_action_pins.py --self-test
+      - name: Action references are pinned
+        run: python3 .github/scripts/check_action_pins.py
+
   # ── Job 1: Core Rust — root workspace only, no Arcium toolchain needed ──
   # arcium-psi borsh tests are NOT here: arcium-macros reads build/psi_intersect.arcis
   # at proc-macro expansion time. Those artifacts only exist after arcium build (Job 3).
   core-rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component clippy
       # --locked: the tracked Cargo.lock is the dependency graph (H-10). Cargo
@@ -29,9 +42,12 @@ jobs:
         run: cargo test --workspace --locked
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --locked -- -D warnings
+      # --version pins cargo-audit itself; --locked alone pins only the
+      # dependencies of whichever version is newest on crates.io (F-5).
       - name: Cargo audit (known CVEs)
         run: |
-          cargo install cargo-audit --locked --quiet
+          cargo install cargo-audit --version 0.22.2 --locked --quiet
+          cargo audit --version
           cargo audit --file Cargo.lock
       - name: Cargo.lock is tracked and was not rewritten
         run: |
@@ -42,8 +58,8 @@ jobs:
   ts-crypto:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
       - name: Install deps
@@ -61,8 +77,8 @@ jobs:
   arcium-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: arcium-hq/setup-arcium@v0.10.4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: arcium-hq/setup-arcium@e2e40ef15394b26e8f8f08617386bfb3efc3e83d # v0.10.4
         with:
           runner-arch-os: x86_64_linux
       - name: Diagnostic — toolchain versions
@@ -104,11 +120,11 @@ jobs:
     needs: arcium-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: arcium-hq/setup-arcium@v0.10.4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: arcium-hq/setup-arcium@e2e40ef15394b26e8f8f08617386bfb3efc3e83d # v0.10.4
         with:
           runner-arch-os: x86_64_linux
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
       - name: Install test dependencies

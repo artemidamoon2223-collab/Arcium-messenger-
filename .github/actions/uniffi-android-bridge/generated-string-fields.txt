@@ -17,6 +17,7 @@ Conversation.note	kotlin.String	F
 Conversation.peer	kotlin.ByteArray	D
 CoreException.Crypto.msg	kotlin.String	F
 CoreException.Handshake.msg	kotlin.String	F
+CoreException.IdentityUnreadable.msg	kotlin.String	F
 CoreException.InvalidArgument.msg	kotlin.String	F
 CoreException.InvalidContactCard.msg	kotlin.String	F
 CoreException.InvalidHandshake.msg	kotlin.String	F

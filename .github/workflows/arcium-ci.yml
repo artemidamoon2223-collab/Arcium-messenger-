@@ -141,6 +141,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The diagnostics upload below must publish only sanitised files. These
+      # check the scrubber and gate on synthetic keys and fixtures (T1-T7),
+      # that this job's upload is gated, and that mutated gates are caught.
+      - name: Diagnostics publication gate checks
+        run: |
+          python3 -B .github/scripts/scrub_localnet_diagnostics.py --self-test
+          python3 -B .github/scripts/check_diagnostics_gate.py
+          python3 -B .github/scripts/check_diagnostics_gate.py --self-test
       - uses: arcium-hq/setup-arcium@e2e40ef15394b26e8f8f08617386bfb3efc3e83d # v0.10.4
         with:
           runner-arch-os: x86_64_linux
@@ -157,31 +165,45 @@ jobs:
       # can lose a computation for a computation definition it has already
       # used (see tests/src/localnet/psi.localnet.ts). `arcium test` removes
       # the containers when it ends, and each run's generated files are
-      # removed before the next, so the evidence of each run (Arx node logs
-      # under artifacts/, the validator log, the test's computation traces) is
-      # copied and scrubbed of that run's key material right after it.
-      # Container events are recorded throughout.
+      # removed before the next, so each run's evidence (Arx node logs under
+      # artifacts/, the validator log, the test's computation traces, Docker
+      # container events) is copied to a raw directory right after it.
+      #
+      # Raw diagnostics are never uploaded: the repository is public. Only
+      # scrub_localnet_diagnostics.py writes to the publication directory: it
+      # checks a run's raw files against that run's generated keys and the
+      # test wallet, and moves in only the files it checked and found clean,
+      # with a manifest of their hashes. If that check cannot be completed,
+      # nothing of that run is published. A failing scenario's diagnostics
+      # are published the same way, and the step still fails.
       - name: arcium test, one fresh localnet per MPC scenario
         working-directory: arcium-psi
         env:
-          LOCALNET_DIAG_DIR: ${{ runner.temp }}/localnet-diagnostics
+          LOCALNET_RAW_DIR: ${{ runner.temp }}/localnet-raw
+          LOCALNET_STAGING_DIR: ${{ runner.temp }}/localnet-staging
+          LOCALNET_PUBLISH_DIR: ${{ runner.temp }}/localnet-publish
         run: |
           set -o pipefail
-          mkdir -p "$LOCALNET_DIAG_DIR"
-          docker events --filter type=container --format '{{json .}}' \
-            > "$LOCALNET_DIAG_DIR/docker-events.jsonl" 2>&1 &
+          rm -rf "$LOCALNET_RAW_DIR" "$LOCALNET_STAGING_DIR" "$LOCALNET_PUBLISH_DIR"
+          mkdir -p "$LOCALNET_RAW_DIR" "$LOCALNET_PUBLISH_DIR"
           trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
           sudo prlimit --pid $$ --nofile=1048576:1048576
           run_scenario() {
-            local scenario=$1 title=$2 dir="$LOCALNET_DIAG_DIR/$1" status=0
-            mkdir -p "$dir"
-            LOCALNET_MPC_SCENARIO=$scenario LOCALNET_DIAG_DIR=$dir \
-              timeout 30m arcium test 2>&1 | tee "$dir/arcium-test.log" || status=$?
-            cp .anchor/test-ledger/validator.log "$dir/" 2>/dev/null || true
+            local scenario=$1 title=$2 raw="$LOCALNET_RAW_DIR/$1" status=0 events
+            mkdir -p "$raw"
+            docker events --filter type=container --format '{{json .}}' \
+              > "$raw/docker-events.jsonl" 2>&1 &
+            events=$!
+            LOCALNET_MPC_SCENARIO=$scenario LOCALNET_DIAG_DIR=$raw \
+              timeout 30m arcium test 2>&1 | tee "$raw/arcium-test.log" || status=$?
+            kill "$events" 2>/dev/null || true
+            wait "$events" 2>/dev/null || true
+            cp .anchor/test-ledger/validator.log "$raw/" 2>/dev/null || true
             find artifacts -type f -name '*.log' -not -path 'artifacts/localnet/*' \
-              -exec cp --parents {} "$dir/" \; 2>/dev/null || true
-            find artifacts -type f > "$dir/artifacts-files.txt" 2>/dev/null || true
-            python3 ../.github/scripts/scrub_localnet_diagnostics.py "$dir" \
+              -exec cp --parents {} "$raw/" \; 2>/dev/null || true
+            find artifacts -type f > "$raw/artifacts-files.txt" 2>/dev/null || true
+            python3 ../.github/scripts/scrub_localnet_diagnostics.py publish \
+              "$raw" "$LOCALNET_PUBLISH_DIR/$scenario" "$LOCALNET_STAGING_DIR" \
               'artifacts/localnet/*' "$HOME/.config/solana/id.json"
             # A second `arcium test` reuses artifacts/localnet, and in 4 of 4
             # CI runs its MXE key was not available within the test's 10 s
@@ -192,15 +214,15 @@ jobs:
               echo "::error::arcium test failed for MPC scenario $scenario"
               return 1
             fi
-            if ! grep -qE '^ +[1-9][0-9]* passing' "$dir/arcium-test.log"; then
+            if ! grep -qE '^ +[1-9][0-9]* passing' "$raw/arcium-test.log"; then
               echo "::error::arcium test reported no passing tests for $scenario"
               return 1
             fi
-            if grep -qE '^ +[0-9]+ pending' "$dir/arcium-test.log"; then
+            if grep -qE '^ +[0-9]+ pending' "$raw/arcium-test.log"; then
               echo "::error::arcium test left tests pending (not executed) for $scenario"
               return 1
             fi
-            if ! grep -qF "✔ $title" "$dir/arcium-test.log"; then
+            if ! grep -qF "✔ $title" "$raw/arcium-test.log"; then
               echo "::error::MPC scenario $scenario did not run and pass: $title"
               return 1
             fi
@@ -209,31 +231,28 @@ jobs:
           run_scenario zero-hash 'compares real entries only, including a real zero hash'
           run_scenario invalid-count 'fails closed on an invalid count inside the circuit'
         shell: bash
-      - name: Localnet diagnostics
+      # Passes only if the publication directory holds nothing but sets the
+      # scrubber wrote for this run, unchanged since. It must stay the last
+      # step before the upload (check_diagnostics_gate.py checks that).
+      - name: Diagnostics publication gate
+        id: diagnostics_gate
         if: always()
-        working-directory: arcium-psi
         env:
-          LOCALNET_DIAG_DIR: ${{ runner.temp }}/localnet-diagnostics
-        run: |
-          mkdir -p "$LOCALNET_DIAG_DIR"
-          docker ps -a > "$LOCALNET_DIAG_DIR/docker-ps.txt" 2>&1 || true
-          # Arx node log names contain ':', which artifacts do not allow.
-          find "$LOCALNET_DIAG_DIR" -type f -name '*:*' | while read -r f; do
-            mv "$f" "$(dirname "$f")/$(basename "$f" | tr ':' '-')"
-          done
-          # Each run was scrubbed against its own keys as it finished; this
-          # checks the files recorded outside the runs against the wallet.
-          python3 ../.github/scripts/scrub_localnet_diagnostics.py "$LOCALNET_DIAG_DIR" \
-            'artifacts/localnet/*' "$HOME/.config/solana/id.json"
-          ls -laR "$LOCALNET_DIAG_DIR"
-          for dir in "$LOCALNET_DIAG_DIR"/*/; do
-            echo "######## $(basename "$dir")"
-            python3 ../.github/scripts/summarize_localnet_diagnostics.py "$dir"
-          done
+          LOCALNET_PUBLISH_DIR: ${{ runner.temp }}/localnet-publish
+        run: python3 .github/scripts/scrub_localnet_diagnostics.py verify "$LOCALNET_PUBLISH_DIR"
       - name: Upload localnet diagnostics
-        if: always()
+        if: always() && steps.diagnostics_gate.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: localnet-diagnostics-${{ github.event_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/localnet-diagnostics
-          if-no-files-found: warn
+          path: ${{ runner.temp }}/localnet-publish
+          if-no-files-found: error
+      - name: Localnet diagnostics summary
+        if: always() && steps.diagnostics_gate.outcome == 'success'
+        env:
+          LOCALNET_PUBLISH_DIR: ${{ runner.temp }}/localnet-publish
+        run: |
+          for dir in "$LOCALNET_PUBLISH_DIR"/*/; do
+            echo "######## $(basename "$dir")"
+            python3 .github/scripts/summarize_localnet_diagnostics.py "$dir"
+          done

@@ -109,6 +109,8 @@ fun LinkBanner(link: RelayLink, onOpenSettings: () -> Unit) {
         RelayLink.NotConfigured ->
             "No relay configured: messages are not sent or received. Tap to set one." to true
         RelayLink.NoIdentity -> "No identity yet." to true
+        is RelayLink.IdentityUnavailable ->
+            "Your identity could not be read: messages are not sent or received." to true
         RelayLink.Connecting -> "Connecting to the relay…" to false
         is RelayLink.Online -> "Connected to the development relay" to false
         is RelayLink.Offline ->

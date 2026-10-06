@@ -33,7 +33,7 @@ fn net_peer_bot() {
     };
     let db = std::env::var("ARCIUM_PEER_DB").expect("ARCIUM_PEER_DB");
     let core = ArciumCore::new(db, key32(0x5e)).unwrap();
-    if core.load_identity().is_none() {
+    if core.load_identity().unwrap().is_none() {
         core.save_identity(Identity::generate()).unwrap();
     }
     let net = NetworkMessenger::new(core.clone(), relay.clone(), 2000, 5000);

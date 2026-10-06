@@ -35,11 +35,14 @@ class ArciumCoreWrapper {
     }
 
     /**
-     * Generates a fresh identity, persists it into the open encrypted store,
-     * then returns the 32-byte Ed25519 public key. The private key material
-     * never crosses into Kotlin — it goes Rust Identity → Rust store directly.
-     * Throws IllegalStateException if the DB is not open, CoreException on
-     * storage failure. No fallback, no silent success.
+     * Generates a fresh identity, persists it into the open encrypted store
+     * if the store holds none, then returns the 32-byte Ed25519 public key.
+     * The private key material never crosses into Kotlin — it goes Rust
+     * Identity → Rust store directly. An identity already stored is never
+     * replaced: CoreException.IdentityAlreadyExists if it is readable, another
+     * CoreException if it is not or the store fails. Throws
+     * IllegalStateException if the DB is not open. No fallback, no silent
+     * success.
      */
     fun generateAndSaveIdentity(): ByteArray {
         val c = core ?: error("encrypted DB is not open — call openEncryptedDb() first")
@@ -50,10 +53,11 @@ class ArciumCoreWrapper {
     }
 
     /**
-     * Loads the persisted identity's public key. Returns null only when no
-     * identity is stored (or the store cannot decrypt one — same semantics
-     * as Rust load_identity). Throws IllegalStateException if the DB is not
-     * open.
+     * Loads the persisted identity's public key. Returns null only when the
+     * store holds no identity record under this master key. A record that is
+     * stored but cannot be read (CoreException.IdentityUnreadable), or a store
+     * that cannot be read (CoreException.Storage), throws — it is never
+     * reported as null. Throws IllegalStateException if the DB is not open.
      */
     fun loadIdentityPublicKey(): ByteArray? {
         val c = core ?: error("encrypted DB is not open — call openEncryptedDb() first")

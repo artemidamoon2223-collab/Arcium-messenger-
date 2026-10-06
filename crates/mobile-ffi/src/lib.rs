@@ -144,6 +144,16 @@ pub enum CoreError {
     /// a request the current state does not allow. Nothing changed.
     #[error("invalid argument: {msg}")]
     InvalidArgument { msg: String },
+    /// An identity record is stored but cannot be used: it does not decrypt,
+    /// or it is not the 64-byte identity format. It is neither "no identity"
+    /// nor replaced; nothing changed.
+    #[error("the stored identity cannot be read: {msg}")]
+    IdentityUnreadable { msg: String },
+    /// `save_identity` found an identity already stored. Identities are
+    /// created once and never replaced; nothing changed. `load_identity`
+    /// returns the stored one.
+    #[error("an identity is already stored")]
+    IdentityAlreadyExists,
 }
 
 impl From<StorageError> for CoreError {
@@ -224,6 +234,36 @@ impl Identity {
 // ── ArciumCore ────────────────────────────────────────────────────────────────
 
 const IDENTITY_KEY: &str = "identity/v1";
+/// The Ed25519 signing secret, then the X25519 secret.
+const IDENTITY_RECORD_LEN: usize = 64;
+
+/// Classifies a read of `IDENTITY_KEY`: only a missing record is `Ok(None)`.
+fn identity_from_record(read: Result<Vec<u8>, StorageError>) -> Result<Option<Arc<Identity>>, CoreError> {
+    let bytes = match read {
+        Ok(bytes) => Zeroizing::new(bytes),
+        Err(StorageError::NotFound) => return Ok(None),
+        Err(StorageError::Decryption) => {
+            return Err(CoreError::IdentityUnreadable {
+                msg: "the record does not decrypt".into(),
+            })
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if bytes.len() != IDENTITY_RECORD_LEN {
+        return Err(CoreError::IdentityUnreadable {
+            msg: format!("the record is {} bytes, expected {IDENTITY_RECORD_LEN}", bytes.len()),
+        });
+    }
+    let mut sk_bytes = Zeroizing::new([0u8; 32]);
+    let mut dh_bytes = Zeroizing::new([0u8; 32]);
+    sk_bytes.copy_from_slice(&bytes[..32]);
+    dh_bytes.copy_from_slice(&bytes[32..]);
+    Ok(Some(Arc::new(Identity {
+        signing_key: SigningKey::from_bytes(&sk_bytes),
+        dh_key: StaticSecret::from(*dh_bytes),
+    })))
+}
+
 // v2 is a strict cutover: `ARCIUM_X3DH_FORMAT_V1` changes the record's length and
 // contents, and a v1 record cannot be reinterpreted as one. Moving the key rather
 // than versioning inside the old one means a legacy record simply stops being
@@ -582,37 +622,52 @@ impl ArciumCore {
         }))
     }
 
+    /// Stores `identity` as this store's identity, only if it has none.
+    ///
+    /// Create-only: one transaction reads the identity record and writes
+    /// only when there is none. Nothing is written when
+    ///
+    /// - an identity is stored and readable: `IdentityAlreadyExists`;
+    /// - an identity record is stored but unreadable: `IdentityUnreadable`;
+    /// - the store cannot be read or written: `Storage`.
+    ///
+    /// A `Storage` error from the final commit can leave the outcome unknown:
+    /// the identity may have been stored (see `StoreTransaction::commit`).
+    /// Calling again never replaces it: it returns `IdentityAlreadyExists` if
+    /// the first call took effect, and `load_identity` returns that identity.
     pub fn save_identity(&self, identity: Arc<Identity>) -> Result<(), CoreError> {
-        let mut bytes = Zeroizing::new(Vec::with_capacity(64));
+        let mut bytes = Zeroizing::new(Vec::with_capacity(IDENTITY_RECORD_LEN));
         bytes.extend_from_slice(identity.signing_key.as_bytes());
         bytes.extend_from_slice(identity.dh_key.as_bytes());
-        self.store
+        let mut store = self
+            .store
             .lock()
-            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?
-            .put(IDENTITY_KEY, &bytes)?;
+            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?;
+        // Dropping `tx` on any early return rolls it back; nothing is written.
+        let tx = store.transaction()?;
+        if identity_from_record(tx.get(IDENTITY_KEY))?.is_some() {
+            return Err(CoreError::IdentityAlreadyExists);
+        }
+        tx.put(IDENTITY_KEY, &bytes)?;
+        tx.commit()?;
         Ok(())
     }
 
-    pub fn load_identity(&self) -> Option<Arc<Identity>> {
-        // A poisoned mutex must not panic across the FFI boundary; treat the
-        // store as unavailable, consistent with save_identity's error path.
-        let store = match self.store.lock() {
-            Ok(guard) => guard,
-            Err(_) => return None,
-        };
-        let bytes = match store.get(IDENTITY_KEY) {
-            Ok(b) => Zeroizing::new(b),
-            Err(_) => return None, // NotFound or wrong-key Decryption → None
-        };
-        if bytes.len() != 64 {
-            return None;
-        }
-        let sk_bytes: Zeroizing<[u8; 32]> = Zeroizing::new(bytes[..32].try_into().ok()?);
-        let dh_bytes: Zeroizing<[u8; 32]> = Zeroizing::new(bytes[32..].try_into().ok()?);
-        Some(Arc::new(Identity {
-            signing_key: SigningKey::from_bytes(&sk_bytes),
-            dh_key: StaticSecret::from(*dh_bytes),
-        }))
+    /// The stored identity. `Ok(None)` only when the store holds no identity
+    /// record under this master key; a record that is stored but cannot be
+    /// read is `IdentityUnreadable`, and a store that cannot be read is
+    /// `Storage` — neither is reported as "no identity".
+    ///
+    /// The store finds records by a name derived from the master key, so
+    /// `Ok(None)` does not show that the database file holds no identity
+    /// under some other key.
+    pub fn load_identity(&self) -> Result<Option<Arc<Identity>>, CoreError> {
+        // A poisoned mutex must not panic across the FFI boundary.
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| CoreError::Storage { msg: "mutex poisoned".into() })?;
+        identity_from_record(store.get(IDENTITY_KEY))
     }
 
     /// Generates this device's signed prekey and one one-time prekey, signs the
@@ -973,7 +1028,7 @@ impl ArciumCore {
     }
 
     fn require_identity(&self) -> Result<Arc<Identity>, CoreError> {
-        self.load_identity()
+        self.load_identity()?
             .ok_or_else(|| CoreError::InvalidKey { msg: "no identity saved — call save_identity first".into() })
     }
 }
@@ -1043,7 +1098,7 @@ mod tests {
         let pk = id.public_key_bytes();
         core.save_identity(id).unwrap();
 
-        let loaded = core.load_identity().expect("identity must be present after save");
+        let loaded = core.load_identity().unwrap().expect("identity must be present after save");
         assert_eq!(loaded.public_key_bytes(), pk);
     }
 
@@ -1056,9 +1111,10 @@ mod tests {
         let core = ArciumCore::new(path.clone(), key32(0)).unwrap();
         core.save_identity(Identity::generate()).unwrap();
 
-        // Open same file with key 0x01… → Decryption fails → None
+        // Open same file with key 0x01…: records are found by a name derived
+        // from the master key, so this key finds no identity record at all.
         let core2 = ArciumCore::new(path, key32(1)).unwrap();
-        assert!(core2.load_identity().is_none());
+        assert!(matches!(core2.load_identity(), Ok(None)));
     }
 
     #[test]
@@ -1094,7 +1150,7 @@ mod tests {
         assert_eq!(store.get(IDENTITY_KEY).unwrap().len(), 64);
         drop(store);
         let again = ArciumCore::new(path, key32(5)).unwrap();
-        assert_eq!(again.load_identity().unwrap().public_key_bytes(), pk);
+        assert_eq!(again.load_identity().unwrap().unwrap().public_key_bytes(), pk);
     }
 
     #[test]
@@ -1128,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn load_identity_returns_none_on_poisoned_mutex() {
+    fn load_identity_returns_err_on_poisoned_mutex() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("db").to_str().unwrap().to_string();
         let core = Arc::new(ArciumCore::new(path, key32(0)).unwrap());
@@ -1140,10 +1196,11 @@ mod tests {
             panic!("poison");
         })
         .join();
-        // The mutex is now poisoned; load_identity must return None, not panic.
+        // The mutex is now poisoned; load_identity must return Err — not
+        // panic across FFI, and not report "no identity".
         assert!(
-            core.load_identity().is_none(),
-            "poisoned mutex must yield None, not a panic across FFI"
+            matches!(core.load_identity(), Err(CoreError::Storage { .. })),
+            "poisoned mutex must surface as CoreError::Storage"
         );
     }
 
@@ -2155,4 +2212,5 @@ mod tests {
     mod mailbox_scan;
     mod debug_redaction;
     mod outgoing;
+    mod identity;
 }

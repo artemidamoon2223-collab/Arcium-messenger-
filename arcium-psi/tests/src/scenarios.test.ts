@@ -13,13 +13,13 @@ import {
   buildSubmitPsiQueryIx,
   buildInitPsiCompDefIx,
 } from './program';
+import { CIPHERTEXTS } from './client';
 
 // ── Known constants ───────────────────────────────────────────────────────────
 const CONTACT_HASH_TEST_VECTOR = 5364562789390625858n;
 // TODO at devnet deploy: verify this matches sha256(psi_intersect.arcis.ir) from fresh `arcis build`
-const CIRCUIT_HASH = '1e1b485ae0a279683f2b39f7a3dd01570e8968b250234b6a7452e0aef9d5a767';
-const BATCH_SIZE = 10;
-const SERIALIZED_SIZE = 368;
+const CIRCUIT_HASH = 'dd3bda7c6101e45f765165bfb01327313300758f0e3ae59ad79beace94b7b919';
+const SERIALIZED_SIZE = 400; // SharedEncryptedStruct<11>
 
 // ── Block 1: Contact Hash Consistency ────────────────────────────────────────
 
@@ -50,17 +50,17 @@ describe('OFFLINE — Contact Hash Consistency', () => {
 
 describe('OFFLINE — Serialization', () => {
 
-  it('serializeSharedEncrypted returns exactly 368 bytes', () => {
+  it('serializeSharedEncrypted returns exactly 400 bytes', () => {
     const key        = new Uint8Array(32).fill(1);
     const nonce      = new Uint8Array(16).fill(2);
-    const ciphertexts = new Uint8Array(BATCH_SIZE * 32).fill(3);
+    const ciphertexts = new Uint8Array(CIPHERTEXTS * 32).fill(3);
     const result = serializeSharedEncrypted(key, nonce, ciphertexts);
     expect(result.length).to.equal(SERIALIZED_SIZE);
   });
 
   it('different inputs produce different bytes', () => {
     const nonce       = new Uint8Array(16).fill(0);
-    const ciphertexts = new Uint8Array(BATCH_SIZE * 32).fill(0);
+    const ciphertexts = new Uint8Array(CIPHERTEXTS * 32).fill(0);
     const r1 = serializeSharedEncrypted(new Uint8Array(32).fill(1), nonce, ciphertexts);
     const r2 = serializeSharedEncrypted(new Uint8Array(32).fill(2), nonce, ciphertexts);
     expect(Array.from(r1)).to.not.deep.equal(Array.from(r2));
@@ -99,11 +99,11 @@ describe('OFFLINE — PDA Derivation & Instruction Builders', () => {
     expect(ix.data).to.be.instanceof(Buffer);
   });
 
-  it('buildSubmitPsiQueryIx accepts BATCH_SIZE=10 hashes', () => {
+  it('buildSubmitPsiQueryIx accepts 10 hashes and a count per side', () => {
     const user            = Keypair.generate();
     const dummyKey        = new Uint8Array(32).fill(1);
     const dummyNonce      = new Uint8Array(16).fill(2);
-    const dummyCiphertexts = new Uint8Array(BATCH_SIZE * 32).fill(3);
+    const dummyCiphertexts = new Uint8Array(CIPHERTEXTS * 32).fill(3);
     const ix = buildSubmitPsiQueryIx(
       user.publicKey,
       dummyKey, dummyNonce, dummyCiphertexts,

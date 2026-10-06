@@ -10,6 +10,7 @@
 import * as anchor from '@anchor-lang/core';
 import {
   AddressLookupTableProgram,
+  PACKET_DATA_SIZE,
   PublicKey,
   TransactionMessage,
   VersionedTransaction,
@@ -28,7 +29,9 @@ import {
   getCompDefAccAddress,
   getCompDefAccOffset,
   getComputationAccAddress,
+  getComputationsInMempool,
   getExecutingPoolAccAddress,
+  getExecutingPoolAccInfo,
   getFeePoolAccAddress,
   getLookupTableAddress,
   getMempoolAccAddress,
@@ -40,16 +43,47 @@ import {
   x25519,
 } from '@arcium-hq/client';
 import { hashPhoneWithTruncation } from '../utils';
+import { BATCH_SIZE, CIPHERTEXTS, PsiRequest, contactInputPlaintext, decryptResult } from '../client';
 
 const ROOT = path.resolve(__dirname, '../../..');
 const IDL_PATH = path.join(ROOT, 'target/idl/arcium_psi.json');
 const CIRCUIT_PATH = path.join(ROOT, 'build/psi_intersect.arcis');
-const BATCH_SIZE = 10;
+
+const ALICE = ['+1234567890', '+0987654321', '+1111111111'].map(hashPhoneWithTruncation);
+const BOB = ['+1234567890', '+9999999999', '+1111111111'].map(hashPhoneWithTruncation);
+
+// The real MPC scenario this run executes, or all three when unset. CI runs
+// each on its own fresh localnet (.github/workflows/arcium-ci.yml), because
+// the Arx node (arcium 0.10.4) can lose a computation for a computation
+// definition it has already used. In the CI runs where a computation stayed
+// queued, one node logged "Pending circuits not found for computation
+// definition" just before it registered the computation ("Processing fetched
+// Computation"), never logged it ready for execution, and the other node
+// waited for it in the protocol. That only happened to a second or third
+// computation; on a fresh node the first one waits tens of ms for the
+// definition to be fetched, and was registered first in every run observed.
+const MPC_SCENARIOS = ['matches', 'zero-hash', 'invalid-count'];
+const MPC_SCENARIO = process.env.LOCALNET_MPC_SCENARIO;
+if (MPC_SCENARIO !== undefined && !MPC_SCENARIOS.includes(MPC_SCENARIO)) {
+  throw new Error(`LOCALNET_MPC_SCENARIO must be one of ${MPC_SCENARIOS.join(', ')}`);
+}
+const runs = (scenario: string) => MPC_SCENARIO === undefined || MPC_SCENARIO === scenario;
 
 describe('LOCALNET — Arcium PSI program', function () {
   this.timeout(600_000);
 
-  const provider = anchor.AnchorProvider.env();
+  // Confirmed commitment for the recent blockhash as well as for preflight.
+  // With AnchorProvider.env() alone, `.rpc({ commitment: 'confirmed' })`
+  // takes the blockhash at the connection's 'processed' commitment and
+  // simulates at 'confirmed' (@anchor-lang/core provider.ts); right after the
+  // validator starts, the confirmed bank may not have that blockhash yet, and
+  // init_user failed with "Blockhash not found".
+  const env = anchor.AnchorProvider.env();
+  const provider = new anchor.AnchorProvider(
+    new anchor.web3.Connection(env.connection.rpcEndpoint, 'confirmed'),
+    env.wallet,
+    { commitment: 'confirmed', preflightCommitment: 'confirmed' },
+  );
   anchor.setProvider(provider);
   const idl = JSON.parse(fs.readFileSync(IDL_PATH, 'utf8'));
   // Untyped: the IDL is read at runtime from the build output, so there are
@@ -172,28 +206,36 @@ describe('LOCALNET — Arcium PSI program', function () {
     expect(finalized.circuitSource.onChain[0].isCompleted).to.equal(true);
   });
 
-  // Builds a signed v0 submit_psi_query transaction. `overrides` replaces
-  // accounts, to check that the program rejects substituted ones.
-  async function psiQueryTx(overrides: Record<string, PublicKey> = {}) {
+  async function mxeLookupTable() {
+    const mxe = await getArciumProgram(provider).account.mxeAccount.fetch(mxeAccount);
+    const lutAddress = getLookupTableAddress(programId, mxe.lutOffsetSlot);
+    const lut = (await provider.connection.getAddressLookupTable(lutAddress)).value;
+    expect(lut, `no lookup table at ${lutAddress.toBase58()}`).to.not.equal(null);
+    return lut!;
+  }
+
+  // Builds a signed v0 submit_psi_query transaction from the plaintexts of
+  // both sides (see `side`). `overrides` replaces accounts, to check that the
+  // program rejects substituted ones.
+  async function psiQueryTx(
+    clientValues = side(ALICE),
+    serverValues = side(BOB),
+    overrides: Record<string, PublicKey> = {},
+  ) {
     const mxePublicKey = await mxePublicKeyWithRetry(provider, programId);
-    const client = encryptSide(
-      ['+1234567890', '+0987654321', '+1111111111'].map(hashPhoneWithTruncation),
-      mxePublicKey,
-    );
-    const server = encryptSide(
-      ['+1234567890', '+9999999999', '+1111111111'].map(hashPhoneWithTruncation),
-      mxePublicKey,
-    );
+    const client = encryptSide(clientValues, mxePublicKey);
+    const server = encryptSide(serverValues, mxePublicKey);
     const computationOffset = new anchor.BN(randomBytes(8), 'hex');
+    const computationAccount = getComputationAccAddress(clusterOffset, computationOffset);
 
     const ix = await program.methods
-      .submitPsiQuery(client, server, computationOffset)
+      .submitPsiQuery(client.arg, server.arg, computationOffset)
       .accountsPartial({
         user: owner,
         mxeAccount,
         mempoolAccount: getMempoolAccAddress(clusterOffset),
         executingPool: getExecutingPoolAccAddress(clusterOffset),
-        computationAccount: getComputationAccAddress(clusterOffset, computationOffset),
+        computationAccount,
         compDefAccount,
         clusterAccount: getClusterAccAddress(clusterOffset),
         poolAccount: getFeePoolAccAddress(),
@@ -202,27 +244,62 @@ describe('LOCALNET — Arcium PSI program', function () {
       })
       .instruction();
 
-    // Two SharedEncryptedStruct<10> plus the Arcium accounts exceed a legacy
-    // transaction (1286 > 1232 bytes). A v0 transaction resolves the Arcium
-    // accounts through the MXE's address lookup table.
-    const mxe = await getArciumProgram(provider).account.mxeAccount.fetch(mxeAccount);
-    const lutAddress = getLookupTableAddress(programId, mxe.lutOffsetSlot);
-    const lut = (await provider.connection.getAddressLookupTable(lutAddress)).value;
-    expect(lut, `no lookup table at ${lutAddress.toBase58()}`).to.not.equal(null);
+    // Two SharedEncryptedStruct<11> plus the Arcium accounts exceed a legacy
+    // transaction. A v0 transaction resolves the Arcium accounts through the
+    // MXE's address lookup table.
+    const lut = await mxeLookupTable();
     const { blockhash } = await provider.connection.getLatestBlockhash('confirmed');
     const tx = new VersionedTransaction(
       new TransactionMessage({
         payerKey: owner,
         recentBlockhash: blockhash,
         instructions: [ix],
-      }).compileToV0Message([lut!]),
+      }).compileToV0Message([lut]),
     );
     const signed = await provider.wallet.signTransaction(tx);
-    return { raw: signed.serialize(), computationOffset };
+    const raw = signed.serialize();
+    console.log(`    submit_psi_query transaction: ${raw.length} bytes (limit ${PACKET_DATA_SIZE})`);
+    expect(raw.length).to.be.at.most(PACKET_DATA_SIZE);
+    return { raw, computationOffset, computationAccount, client };
+  }
+
+  // Queues a query, waits for the cluster, and returns the client's view of
+  // the encrypted result the cluster passed to the callback.
+  async function runQuery(clientValues: bigint[], serverValues: bigint[]) {
+    const query = await psiQueryTx(clientValues, serverValues);
+    // Sent through the connection, not AnchorProvider.sendAndConfirm: on a
+    // failed v0 transaction the latter throws "Unknown action 'undefined'"
+    // (@anchor-lang/core provider.ts:196) and hides the program error.
+    const signature = await sendAndCheck(provider, query.raw);
+    console.log('    submit_psi_query:', signature);
+    await traceComputation(provider, clusterOffset, query, signature, () =>
+      awaitComputationFinalization(
+        provider,
+        query.computationOffset,
+        programId,
+        'confirmed',
+        300_000,
+      ),
+    );
+    const output = await callbackOutput(provider, programId, idl, query.computationAccount);
+    // The result is encrypted to the client's key, with the nonce after its own.
+    expect(Array.from(output.encryptionKey)).to.deep.equal(Array.from(query.client.publicKey));
+    const plain: bigint[] = new RescueCipher(query.client.shared).decrypt(
+      chunks(output.ciphertexts),
+      output.nonce,
+    );
+    console.log(`    decrypted MatchResult: [${plain.join(', ')}]`);
+    return { ...query, output, plain };
   }
 
   it('rejects a query whose Arcium account is substituted', async () => {
-    const { raw } = await psiQueryTx({ mempoolAccount: anchor.web3.Keypair.generate().publicKey });
+    // Another address from the MXE's lookup table: a key outside it would
+    // add 32 bytes and push the transaction past the size limit, so the
+    // rejection would no longer be the program's.
+    const mempool = getMempoolAccAddress(clusterOffset);
+    const wrong = (await mxeLookupTable()).state.addresses.find((a) => !a.equals(mempool));
+    expect(wrong, 'no other address in the lookup table').to.not.equal(undefined);
+    const { raw } = await psiQueryTx(undefined, undefined, { mempoolAccount: wrong! });
     let error = '';
     try {
       await sendAndCheck(provider, raw);
@@ -234,28 +311,36 @@ describe('LOCALNET — Arcium PSI program', function () {
     expect(error).to.include('ConstraintAddress');
   });
 
-  it('runs a PSI computation on the MPC cluster and delivers the callback', async () => {
-    const { raw, computationOffset } = await psiQueryTx();
-    // Sent through the connection, not AnchorProvider.sendAndConfirm: on a
-    // failed v0 transaction the latter throws "Unknown action 'undefined'"
-    // (@anchor-lang/core provider.ts:196) and hides the program error.
-    const queueSig = await sendAndCheck(provider, raw);
-    console.log('    submit_psi_query:', queueSig);
-
-    await awaitComputationFinalization(
-      provider,
-      computationOffset,
-      programId,
-      'confirmed',
-      300_000,
-    );
-
-    // The callback does not store or emit the result yet (finding F-14), so the
-    // intersection cannot be decrypted here. What can be checked is that the
-    // callback ran: verify_output passed (BLS signature) and it logged.
+  // These read the output from the callback transaction: the program does
+  // not store or emit it (finding F-14). They check what the cluster
+  // computed, not a way for a client to receive it.
+  if (runs('matches')) it('runs a PSI computation on the MPC cluster and returns the expected matches', async () => {
+    const run = await runQuery(side(ALICE), side(BOB));
     const logs = await callbackLogs(provider, programId);
     expect(logs, 'no successful psi_intersect_callback transaction found').to.not.equal(null);
     expect(logs!.some((l) => l.includes('PSI result delivered'))).to.equal(true);
+    expect(decryptResult(run.output, run.client.shared, run.client.request))
+      .to.deep.equal([true, false, true]);
+  });
+
+  // Client: a real zero hash, a hash the server has only as padding, a real
+  // match; client padding equal to a real server hash and to server padding.
+  // Server padding equal to a real client hash and zero.
+  if (runs('zero-hash')) it('compares real entries only, including a real zero hash', async () => {
+    const [a, b, c] = BOB;
+    const run = await runQuery(side([0n, a, b], [c, 0n]), side([b, c], [a, 0n]));
+    // decryptResult also requires every client padding slot to be 0.
+    expect(decryptResult(run.output, run.client.shared, run.client.request))
+      .to.deep.equal([false, false, true]);
+  });
+
+  // A count of 11 sent past client.ts: the circuit marks the result invalid
+  // and sets no match, and the client rejects it.
+  if (runs('invalid-count')) it('fails closed on an invalid count inside the circuit', async () => {
+    const run = await runQuery(side(ALICE, [0n], BigInt(BATCH_SIZE + 1)), side(BOB));
+    expect(run.plain).to.deep.equal(Array(CIPHERTEXTS).fill(0n));
+    expect(() => decryptResult(run.output, run.client.shared, run.client.request))
+      .to.throw(/rejected a count/);
   });
 });
 
@@ -277,17 +362,45 @@ async function rejection(tx: Promise<unknown>): Promise<string> {
   throw new Error('transaction from an outside signer was accepted');
 }
 
-function encryptSide(hashes: bigint[], mxePublicKey: Uint8Array) {
-  const values = hashes.slice(0, BATCH_SIZE);
-  while (values.length < BATCH_SIZE) values.push(0n);
+// One side's plaintexts: real hashes first, then the padding values in turn,
+// then the count. `count` replaces the count, to send one that client.ts
+// would never produce.
+function side(real: bigint[], pads: bigint[] = [0n], count = BigInt(real.length)): bigint[] {
+  const values = contactInputPlaintext(real);
+  for (let i = real.length; i < BATCH_SIZE; i++) values[i] = pads[(i - real.length) % pads.length];
+  values[BATCH_SIZE] = count;
+  return values;
+}
+
+function encryptSide(values: bigint[], mxePublicKey: Uint8Array) {
   const secret = x25519.utils.randomSecretKey();
-  const cipher = new RescueCipher(x25519.getSharedSecret(secret, mxePublicKey));
+  const publicKey = x25519.getPublicKey(secret);
+  const shared = x25519.getSharedSecret(secret, mxePublicKey);
   const nonce = randomBytes(16);
-  return {
-    encryptionKey: Array.from(x25519.getPublicKey(secret)),
-    nonce: new anchor.BN(deserializeLE(nonce).toString()),
-    ciphertexts: cipher.encrypt(values, nonce).map((c) => Array.from(c)),
+  const ciphertexts: number[][] = new RescueCipher(shared).encrypt(values, nonce);
+  const flat = new Uint8Array(ciphertexts.length * 32);
+  ciphertexts.forEach((c, i) => flat.set(c, i * 32));
+  const request: PsiRequest = {
+    count: Math.min(Number(values[BATCH_SIZE]), BATCH_SIZE),
+    nonce: Uint8Array.from(nonce),
+    ciphertexts: flat,
   };
+  return {
+    publicKey,
+    shared,
+    request,
+    arg: {
+      encryptionKey: Array.from(publicKey),
+      nonce: new anchor.BN(deserializeLE(nonce).toString()),
+      ciphertexts: ciphertexts.map((c) => Array.from(c)),
+    },
+  };
+}
+
+function chunks(bytes: Uint8Array): number[][] {
+  const out: number[][] = [];
+  for (let i = 0; i < bytes.length; i += 32) out.push(Array.from(bytes.subarray(i, i + 32)));
+  return out;
 }
 
 async function mxePublicKeyWithRetry(
@@ -324,6 +437,62 @@ async function callbackLogs(
   return null;
 }
 
+// The encrypted MatchResult the cluster passed to psi_intersect_callback for
+// the computation at `computationAccount`, read from that callback
+// instruction's data: discriminator (8), SignedComputationOutputs variant
+// (1, Success = 0), SharedEncryptedStruct<11> (32 + 16 + 11 × 32), BLS
+// signature (64).
+async function callbackOutput(
+  provider: anchor.AnchorProvider,
+  programId: PublicKey,
+  idl: any,
+  computationAccount: PublicKey,
+) {
+  const spec = idl.instructions.find((i: any) => i.name === 'psi_intersect_callback');
+  expect(spec?.discriminator, 'no psi_intersect_callback discriminator in the IDL').to.not.equal(undefined);
+  const disc = Buffer.from(spec.discriminator);
+  const outputSize = 48 + CIPHERTEXTS * 32;
+  const sigs = await provider.connection.getSignaturesForAddress(programId, { limit: 100 }, 'confirmed');
+  for (const { signature, err } of sigs) {
+    if (err) continue;
+    const tx = await provider.connection.getTransaction(signature, {
+      commitment: 'confirmed',
+      maxSupportedTransactionVersion: 0,
+    });
+    if (!tx) continue;
+    const message: any = tx.transaction.message;
+    const keys = message.getAccountKeys({ accountKeysFromLookups: tx.meta?.loadedAddresses ?? undefined });
+    const instructions = [
+      ...message.compiledInstructions.map((i: any) => ({
+        program: i.programIdIndex as number,
+        accounts: i.accountKeyIndexes as number[],
+        data: Buffer.from(i.data),
+      })),
+      ...(tx.meta?.innerInstructions ?? []).flatMap((group) =>
+        group.instructions.map((i) => ({
+          program: i.programIdIndex,
+          accounts: i.accounts,
+          data: Buffer.from(anchor.utils.bytes.bs58.decode(i.data)),
+        })),
+      ),
+    ];
+    for (const ix of instructions) {
+      if (!keys.get(ix.program)?.equals(programId)) continue;
+      if (!ix.data.subarray(0, 8).equals(disc)) continue;
+      if (!ix.accounts.some((a: number) => keys.get(a)?.equals(computationAccount))) continue;
+      expect(ix.data.length, 'callback data size').to.equal(8 + 1 + outputSize + 64);
+      expect(ix.data[8], 'callback output is not Success').to.equal(0);
+      const out = ix.data.subarray(9, 9 + outputSize);
+      return {
+        encryptionKey: Uint8Array.from(out.subarray(0, 32)),
+        nonce: Uint8Array.from(out.subarray(32, 48)),
+        ciphertexts: Uint8Array.from(out.subarray(48)),
+      };
+    }
+  }
+  throw new Error(`no psi_intersect_callback for ${computationAccount.toBase58()}`);
+}
+
 // Send with preflight so a failing instruction reports its program logs,
 // then require the confirmed transaction to have no error.
 async function sendAndCheck(
@@ -357,4 +526,112 @@ async function sendAndCheck(
     );
   }
   return sig;
+}
+
+// When the previous computation of this run finalized, for the trace below.
+let lastFinalizedAt: number | null = null;
+
+// Runs `wait` (the finalization check) unchanged while recording, once a
+// second, what the cluster shows for this computation: its account status,
+// whether its offset is in the mempool or the executing pool, and the slot.
+// Afterwards it lists every transaction that touched the computation account,
+// with the logs of failed ones. The trace goes to LOCALNET_DIAG_DIR when that
+// is set (CI uploads it), and is printed when `wait` fails. It records
+// accounts, offsets, signatures and states only: no keys or plaintexts.
+async function traceComputation(
+  provider: anchor.AnchorProvider,
+  clusterOffset: number,
+  query: { computationOffset: anchor.BN; computationAccount: PublicKey },
+  submitSignature: string,
+  wait: () => Promise<unknown>,
+) {
+  const conn = provider.connection;
+  const arcium: any = getArciumProgram(provider);
+  const offset = query.computationOffset.toString();
+  const start = Date.now();
+  const observations: Record<string, unknown>[] = [];
+  const observe = async () => {
+    const at = Date.now();
+    try {
+      const [slot, account, mempool, execpool] = await Promise.all([
+        conn.getSlot('confirmed'),
+        arcium.account.computationAccount.fetchNullable(query.computationAccount, 'confirmed'),
+        getComputationsInMempool(arcium, getMempoolAccAddress(clusterOffset)),
+        getExecutingPoolAccInfo(provider, getExecutingPoolAccAddress(clusterOffset)),
+      ]);
+      // Every pool size wraps the same ExecutingPool as `inner`.
+      const executing = (execpool as any).inner.currentlyExecuting as any[];
+      observations.push({
+        t: new Date(at).toISOString(),
+        ms: at - start,
+        slot,
+        status: account === null ? 'missing' : Object.keys(account.status)[0],
+        callbacksSubmitted: account?.callbackTransactionsSubmittedBm,
+        inMempool: mempool.some((r: any) => r.computationOffset.toString() === offset),
+        mempoolSize: mempool.length,
+        inExecpool: executing.some((r: any) => r.computationOffset.toString() === offset),
+        execpoolSize: executing.filter((r: any) => !r.computationOffset.isZero()).length,
+      });
+    } catch (e: any) {
+      observations.push({ t: new Date(at).toISOString(), ms: at - start, error: String(e?.message ?? e) });
+    }
+  };
+
+  let done = false;
+  const observer = (async () => {
+    while (!done) {
+      await observe();
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  })();
+  let failure: unknown = null;
+  try {
+    await wait();
+  } catch (e) {
+    failure = e;
+  } finally {
+    done = true;
+    await observer;
+  }
+  const finishedAt = Date.now();
+  await observe();
+
+  const touching = await conn.getSignaturesForAddress(query.computationAccount, { limit: 50 }, 'confirmed');
+  const transactions = [];
+  for (const { signature, slot, err, blockTime } of touching.reverse()) {
+    const entry: Record<string, unknown> = { signature, slot, blockTime, err };
+    if (err) {
+      const tx = await conn.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+      entry.logs = tx?.meta?.logMessages ?? [];
+    }
+    transactions.push(entry);
+  }
+  const submitted = await conn.getTransaction(submitSignature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+  const trace = {
+    computationAccount: query.computationAccount.toBase58(),
+    computationOffset: offset,
+    submitSignature,
+    submitSlot: submitted?.slot ?? null,
+    submitErr: submitted?.meta?.err ?? null,
+    startedAt: new Date(start).toISOString(),
+    msSincePreviousFinalization: lastFinalizedAt === null ? null : start - lastFinalizedAt,
+    outcome: failure === null ? 'finalized' : String((failure as any)?.message ?? failure),
+    waitedMs: finishedAt - start,
+    observations,
+    transactions,
+  };
+  if (failure === null) lastFinalizedAt = finishedAt;
+  const dir = process.env.LOCALNET_DIAG_DIR;
+  if (dir) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `computation-${offset}.json`), JSON.stringify(trace, null, 2));
+  }
+  if (failure !== null) {
+    const last = observations[observations.length - 1];
+    console.log(`    computation ${trace.computationAccount} (offset ${offset}) did not finalize:`);
+    console.log(`      submitted in slot ${trace.submitSlot}, ${trace.msSincePreviousFinalization} ms after the previous computation finalized`);
+    console.log(`      last observation: ${JSON.stringify(last)}`);
+    console.log(`      transactions on the computation account: ${JSON.stringify(transactions)}`);
+    throw failure;
+  }
 }

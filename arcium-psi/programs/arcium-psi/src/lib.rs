@@ -46,18 +46,23 @@ pub mod arcium_psi {
 
     /// Queues a blind PSI computation on the Arcium MPC cluster.
     ///
-    /// client_data / server_data are SharedEncryptedStruct<10>:
-    ///   { encryption_key: [u8;32], nonce: u128, ciphertexts: [[u8;32]; 10] }
+    /// client_data / server_data are SharedEncryptedStruct<11>:
+    ///   { encryption_key: [u8;32], nonce: u128, ciphertexts: [[u8;32]; 11] }
     ///
-    /// Each ciphertext is one RescueCipher-encrypted u64 phone hash.
+    /// ciphertexts[0..10] are RescueCipher-encrypted u64 phone hashes, real
+    /// entries first; ciphertexts[10] is the encrypted number of real entries.
+    /// The circuit checks that number and compares real entries only.
     /// computation_offset is the unique ID for this computation (used as PDA seed).
+    /// `#[check_args]` checks the arguments against build/psi_intersect.idarc
+    /// at compile time.
+    #[check_args]
     pub fn submit_psi_query(
         ctx: Context<SubmitPsiQuery>,
-        client_data: SharedEncryptedStruct<10>,
-        server_data: SharedEncryptedStruct<10>,
+        client_data: SharedEncryptedStruct<11>,
+        server_data: SharedEncryptedStruct<11>,
         computation_offset: u64,
     ) -> Result<()> {
-        // Batch size is enforced statically by SharedEncryptedStruct<10> — no runtime check needed.
+        // Batch size is enforced statically by SharedEncryptedStruct<11> — no runtime check needed.
         // Guard against a zeroed encryption key (indicates uninitialized client data).
         require!(
             client_data.encryption_key != [0u8; 32],
@@ -69,7 +74,11 @@ pub mod arcium_psi {
         );
         // Pack args in the exact order the Arcis circuit signature expects:
         // psi_intersect(client_data: Enc<Shared, ClientContacts>, server_data: Enc<Shared, ServerContacts>)
-        // Each Enc<Shared, T> compiles to: X25519Pubkey + u128 nonce + N ciphertexts
+        // Each Enc<Shared, T> compiles to: X25519Pubkey + u128 nonce + N ciphertexts.
+        // The count is a field element in the circuit; every encrypted_* call
+        // fills one ciphertext slot (arcium-anchor arg_match_param), so
+        // encrypted_u64 here does not limit its range.
+        #[args("psi_intersect")]
         let args = ArgBuilder::new()
             // ── client_data: Enc<Shared, ClientContacts> ──────────────────────
             .x25519_pubkey(client_data.encryption_key)
@@ -84,6 +93,7 @@ pub mod arcium_psi {
             .encrypted_u64(client_data.ciphertexts[7])
             .encrypted_u64(client_data.ciphertexts[8])
             .encrypted_u64(client_data.ciphertexts[9])
+            .encrypted_u64(client_data.ciphertexts[10])
             // ── server_data: Enc<Shared, ServerContacts> ──────────────────────
             .x25519_pubkey(server_data.encryption_key)
             .plaintext_u128(server_data.nonce)
@@ -97,6 +107,7 @@ pub mod arcium_psi {
             .encrypted_u64(server_data.ciphertexts[7])
             .encrypted_u64(server_data.ciphertexts[8])
             .encrypted_u64(server_data.ciphertexts[9])
+            .encrypted_u64(server_data.ciphertexts[10])
             .build();
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
@@ -135,8 +146,8 @@ pub mod arcium_psi {
             &ctx.accounts.computation_account,
         )?;
 
-        // result.field_0 is SharedEncryptedStruct<10> — the encrypted boolean match vector.
-        // Each ciphertext[i] = RescueCipher(match_result[i]) encrypted with client's key.
+        // result.field_0 is SharedEncryptedStruct<11>: ciphertexts[0..10] are the
+        // match flags, ciphertexts[10] the validity flag, encrypted with the client's key.
         // Client decrypts on their device to learn which contacts are registered.
         msg!(
             "PSI result delivered — encryption_key {:?}",
@@ -197,8 +208,8 @@ pub struct InitPsiIntersectCompDef<'info> {
 #[queue_computation_accounts("psi_intersect", user)]
 #[derive(Accounts)]
 #[instruction(
-    client_data: SharedEncryptedStruct<10>,
-    server_data: SharedEncryptedStruct<10>,
+    client_data: SharedEncryptedStruct<11>,
+    server_data: SharedEncryptedStruct<11>,
     computation_offset: u64,
 )]
 pub struct SubmitPsiQuery<'info> {

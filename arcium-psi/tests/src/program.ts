@@ -22,6 +22,7 @@ import {
   getLookupTableAddress,
   awaitComputationFinalization,
 } from '@arcium-hq/client';
+import { CIPHERTEXTS } from './client';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -31,8 +32,6 @@ const ARCIUM_PROGRAM_ID = getArciumProgramId();
 
 // Cluster offset used by this MXE — 1 is the default on devnet.
 const CLUSTER_OFFSET = 1;
-
-const BATCH_SIZE = 10;
 
 // ── Discriminators (SHA256("global:<name>")[0..8]) ────────────────────────────
 
@@ -76,22 +75,22 @@ export function getPsiCompDefAccount(): PublicKey {
   return getCompDefAccAddress(PROGRAM_ID, PSI_COMP_DEF_OFFSET);
 }
 
-// ── SharedEncryptedStruct<10> serialization ───────────────────────────────────
+// ── SharedEncryptedStruct<11> serialization ───────────────────────────────────
 // Borsh layout:
 //   [u8; 32]       encryption_key
 //   u128 (16 bytes LE)  nonce
-//   [[u8;32]; 10]  ciphertexts  (10 × 32 = 320 bytes)
-// Total: 368 bytes
+//   [[u8;32]; 11]  ciphertexts  (10 hashes + count = 11 × 32 = 352 bytes)
+// Total: 400 bytes
 
 export function serializeSharedEncrypted(
   encryptionKey: Uint8Array,  // 32 bytes — X25519 public key
   nonce: Uint8Array,          // 16 bytes LE — RescueCipher nonce
-  ciphertexts: Uint8Array,    // 320 bytes — 10 × 32-byte encrypted u64s
+  ciphertexts: Uint8Array,    // 352 bytes — PsiRequest.ciphertexts
 ): Buffer {
   if (encryptionKey.length !== 32)  throw new Error('encryptionKey must be 32 bytes');
   if (nonce.length !== 16)          throw new Error('nonce must be 16 bytes');
-  if (ciphertexts.length !== BATCH_SIZE * 32) throw new Error(`ciphertexts must be ${BATCH_SIZE * 32} bytes`);
-  const buf = Buffer.alloc(368);
+  if (ciphertexts.length !== CIPHERTEXTS * 32) throw new Error(`ciphertexts must be ${CIPHERTEXTS * 32} bytes`);
+  const buf = Buffer.alloc(48 + CIPHERTEXTS * 32);
   buf.set(encryptionKey, 0);
   buf.set(nonce,         32);
   buf.set(ciphertexts,   48);
@@ -216,7 +215,7 @@ export function buildSubmitPsiQueryIx(
   const poolAccount    = getFeePoolAccAddress();
   const clockAccount   = getClockAccAddress();
 
-  // Data: disc (8) + clientData (368) + serverData (368) + computation_offset u64 (8) = 752 bytes
+  // Data: disc (8) + clientData (400) + serverData (400) + computation_offset u64 (8) = 816 bytes
   const offsetBuf = Buffer.alloc(8);
   offsetBuf.writeBigUInt64LE(computationOffset, 0);
   const data = Buffer.concat([

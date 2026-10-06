@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import uniffi.arcium_core.CoreException
 import uniffi.arcium_core.NetworkMessenger
 import uniffi.arcium_core.SyncReport
 
@@ -22,6 +23,12 @@ sealed interface RelayLink {
 
     /** No identity yet: onboarding has not finished. */
     data object NoIdentity : RelayLink
+
+    /**
+     * The identity could not be read: an error, not [NoIdentity]. Nothing is
+     * sent, fetched or created; the read is retried.
+     */
+    data class IdentityUnavailable(val reason: String) : RelayLink
 
     data object Connecting : RelayLink
 
@@ -126,7 +133,7 @@ class MessengerService(
                         backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
                         backoff
                     }
-                } ?: Long.MAX_VALUE
+                } ?: if (_link.value is RelayLink.IdentityUnavailable) MAX_BACKOFF_MS else Long.MAX_VALUE
                 withTimeoutOrNull(delayMs) { wake.receive() }
             }
         } finally {
@@ -134,20 +141,26 @@ class MessengerService(
         }
     }
 
-    /** One sync round; null if none can run (no relay, no identity). */
+    /** One sync round; null if none can run (no relay, no identity, identity unreadable). */
     private suspend fun round(): SyncReport? {
         if (relay.address.value == null) {
             _link.value = RelayLink.NotConfigured
             return null
         }
-        val report = withContext(syncDispatcher) {
-            if (core.loadIdentityPublicKey() == null) return@withContext null
-            if (_link.value !is RelayLink.Online) _link.value = RelayLink.Connecting
-            messenger().syncConversations()
+        val hasIdentity = try {
+            withContext(syncDispatcher) { core.loadIdentityPublicKey() != null }
+        } catch (e: CoreException) {
+            // Caught here so the loop keeps running; it never creates one.
+            _link.value = RelayLink.IdentityUnavailable(e.message.orEmpty())
+            return null
         }
-        if (report == null) {
+        if (!hasIdentity) {
             _link.value = RelayLink.NoIdentity
             return null
+        }
+        val report = withContext(syncDispatcher) {
+            if (_link.value !is RelayLink.Online) _link.value = RelayLink.Connecting
+            messenger().syncConversations()
         }
         _link.value = if (report.reachedRelay()) {
             RelayLink.Online(System.currentTimeMillis())

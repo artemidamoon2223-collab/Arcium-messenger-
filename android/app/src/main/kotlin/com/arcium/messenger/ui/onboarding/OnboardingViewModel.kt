@@ -4,9 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.arcium.messenger.ArciumApp
 import com.arcium.messenger.data.IdentityRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class OnboardingState(
     val isLoading: Boolean = false,
@@ -25,7 +27,10 @@ class OnboardingViewModel(
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, error = null)
             try {
-                val pk = identityRepo.generateAndSave()
+                // An identity already stored (a second tap, or a create whose
+                // commit outcome was unknown) is loaded, never replaced; the
+                // screen proceeds only once one has loaded.
+                val pk = withContext(Dispatchers.IO) { identityRepo.createOrLoadExisting() }
                 // Messaging can start now: publishing prekeys needs the identity.
                 ArciumApp.messenger.changed()
                 _state.value = _state.value.copy(isLoading = false, publicKey = pk)

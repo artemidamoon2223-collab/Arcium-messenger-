@@ -2147,6 +2147,7 @@ dependencies = [
  "log",
  "rand_core 0.6.4",
  "relay",
+ "rusqlite",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 1.0.69",

@@ -223,7 +223,7 @@ fn alice_elsewhere(alice: &Device, bob: &Device, relay: &str) -> Device {
     let path = tempdir().unwrap().keep().join("db");
     let path = path.to_str().unwrap().to_string();
     let core = ArciumCore::new(path.clone(), key32(3)).unwrap();
-    core.save_identity(alice.core.load_identity().unwrap()).unwrap();
+    core.save_identity(alice.core.load_identity().unwrap().unwrap()).unwrap();
     drop(core);
     let d = Device::reopen(&path, 3, relay);
     assert_eq!(d.pk, alice.pk);
@@ -367,7 +367,7 @@ fn t2_an_old_authenticated_responder_session_is_kept_and_continues() {
         key32(9),
     )
     .unwrap();
-    second.save_identity(alice.core.load_identity().unwrap()).unwrap();
+    second.save_identity(alice.core.load_identity().unwrap().unwrap()).unwrap();
     let hs2 = second
         .establish_session_initiator(hb, bob.core.export_prekey_bundle().unwrap())
         .unwrap();

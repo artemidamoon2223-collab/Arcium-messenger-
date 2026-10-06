@@ -361,7 +361,7 @@ fn a_first_message_a_page_ahead_of_its_handshake_is_not_lost() {
     let path = path.to_str().unwrap().to_string();
     let second = ArciumCore::new(path.clone(), key32(31)).unwrap();
     second
-        .save_identity(dave.core.load_identity().unwrap())
+        .save_identity(dave.core.load_identity().unwrap().unwrap())
         .unwrap();
     drop(second);
     let dave2 = Device::reopen(&path, 31, &w.addr);

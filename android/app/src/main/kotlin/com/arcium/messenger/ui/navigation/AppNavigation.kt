@@ -1,13 +1,12 @@
 package com.arcium.messenger.ui.navigation
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.arcium.messenger.data.IdentityRepository
 import com.arcium.messenger.ui.chat.ChatScreen
 import com.arcium.messenger.ui.contacts.AddContactScreen
 import com.arcium.messenger.ui.contacts.ContactsScreen
@@ -26,13 +25,15 @@ object Routes {
 }
 
 @Composable
-fun AppNavigation() {
+fun AppNavigation(gate: IdentityGateViewModel = viewModel()) {
+    // Onboarding starts only when the store holds no identity; a failed read
+    // stays on the gate's error screen (IdentityGate).
+    IdentityGate(gate) { startDestination -> AppNavHost(startDestination) }
+}
+
+@Composable
+private fun AppNavHost(startDestination: String) {
     val navController = rememberNavController()
-    // Computed once. With an identity stored, onboarding — whose button
-    // generates and saves a new identity, replacing the old one — is never
-    // reachable.
-    val hasStoredIdentity = remember { IdentityRepository().loadPublicKey() != null }
-    val startDestination = if (hasStoredIdentity) Routes.CONTACTS else Routes.ONBOARDING
     NavHost(navController = navController, startDestination = startDestination) {
         composable(Routes.ONBOARDING) {
             OnboardingScreen(

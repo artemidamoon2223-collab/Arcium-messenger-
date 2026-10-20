@@ -1,5 +1,19 @@
 {
   "permissions": {
     "defaultMode": "plan"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/continuity.sh\"",
+            "timeout": 40
+          }
+        ]
+      }
+    ]
   }
 }

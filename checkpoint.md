@@ -27,7 +27,15 @@ Updated: 2026-10-20 (UTC), by a Claude Code cloud session
    - re-read both from GitHub.
 
 ## Active goal
-ARCIUM CONTINUITY PHASE 1 (D-006): this branch and these two files only.
+ARCIUM CONTINUITY PHASE 1 (D-006) — DONE, verified on 2026-10-20:
+- Seed commit `6ac2d90` has no parents and holds exactly these two files; it
+  shares no history with main (GitHub compare: "No common ancestor").
+- The sha256 of both files read through the GitHub contents API equals the local
+  copies.
+- Recovery: a fresh clone read both files with the procedure above, and the
+  recorded main SHA equalled the live one.
+- This update is a normal fast-forward commit on top of `6ac2d90`, so earlier
+  versions stay in history.
 
 ## Baseline (re-verify)
 - `main` = `fb9cf323840b94d55395084fbb4aa9697e8e4b7d` (GitHub API, 2026-10-20 03:42 UTC).
@@ -61,7 +69,7 @@ ARCIUM CONTINUITY PHASE 1 (D-006): this branch and these two files only.
 - Artifact bytes cannot be downloaded (blob host 403).
 
 ## Next authorized step
-None. Phase 1 is complete once this branch is verified. Phase 2 (hooks) and the merge of PR #122 each need a separate Owner instruction.
+None. Phase 2 (hooks) and the merge of PR #122 each need a separate Owner instruction.
 
 ## Deferred (needs MacBook)
 - APK hash, signature and `.so` check;

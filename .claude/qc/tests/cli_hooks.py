@@ -8,8 +8,11 @@ cost money. Never run it in GitHub Actions (CLAUDE.md: no LLM calls in CI).
 
 Needs git, a logged-in `claude`, and network access to github.com (the
 continuity check reads it); `--e2e` also needs cargo. Every check runs in a
-temporary clone whose push URL points at a missing local path, so no push can
-leave the machine even if a guard failed. The QC files are copied from this
+temporary clone whose `origin` push URL points at a missing local path, so a
+`git push` to origin fails locally even if a guard failed. That covers only
+origin: a push to an explicit URL, `gh` or GitHub MCP tools would not be
+caught by it (the prompts here ask only for origin pushes, and the nested
+sessions are given no GitHub tools). The QC files are copied from this
 checkout into the clone, together with a .claude/settings.local.json that
 enables the candidate hooks wrapped in `tee` logging. Nothing is written to
 this checkout.
@@ -60,7 +63,7 @@ class Clone:
         origin = subprocess.run(["git", "-C", SRC, "remote", "get-url", "origin"], capture_output=True,
                                 text=True).stdout.strip()
         subprocess.run(["git", "clone", "-q", "--no-hardlinks", SRC, self.dir], check=True)
-        if origin:  # continuity.sh reads the fetch URL; pushes go nowhere
+        if origin:  # continuity.sh reads the fetch URL; origin pushes go nowhere
             self.git("remote", "set-url", "origin", origin)
         self.git("remote", "set-url", "--push", "origin", self.nopush)
         for rel in QC_FILES:

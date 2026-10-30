@@ -28,6 +28,7 @@ machine (`python3 -c ...`, a script, a build) and can do anything its program
 can: the criteria are reviewed, not sandboxed.
 """
 
+import codecs
 import hashlib
 import hmac
 import json
@@ -240,9 +241,14 @@ def classify_paths(paths):
 def added_lines(root, base):
     """(path, line) for every line the tree adds over `base`, new files included."""
     cur = None
-    for line in git(root, "diff", "-U0", "--no-renames", base).splitlines():
+    # quotePath off keeps non-ASCII names literal; names with control
+    # characters, quotes or backslashes still arrive C-quoted ("b/...").
+    for line in git(root, "-c", "core.quotePath=false", "diff", "-U0", "--no-renames", base).splitlines():
         if line.startswith("+++ "):
-            cur = line[6:] if line.startswith("+++ b/") else None
+            name = line[4:]
+            if name.startswith('"') and name.endswith('"'):
+                name = codecs.escape_decode(name[1:-1].encode())[0].decode("utf-8", "replace")
+            cur = name[2:] if name.startswith("b/") else None
         elif cur and line.startswith("+"):
             yield cur, line[1:]
     for rel in (x for x in git(root, "ls-files", "--others", "--exclude-standard", "-z").split("\0") if x):

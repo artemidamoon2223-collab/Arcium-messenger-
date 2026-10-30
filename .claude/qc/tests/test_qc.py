@@ -469,6 +469,20 @@ class QcTest(unittest.TestCase):
         self.assertIn("self-declared", line)
         self.assertIn("CRYPTO", line)
 
+    def test_masked_gate_in_a_quoted_path_escalates(self):
+        for name in (".github/workflows/\u00fcber.yml", '.github/workflows/q"uote.yml'):
+            self.r.write(name, "jobs: {}\n")
+            self.r.git("add", "-A")
+            self.r.git("commit", "-qm", "add " + name)
+        self.r.base = self.r.git("rev-parse", "HEAD").strip()
+        self.r.locked("t-quoted", [PASSING], owner_authorizes=["CI_INTEGRITY"])
+        for name in (".github/workflows/\u00fcber.yml", '.github/workflows/q"uote.yml'):
+            self.r.write(name, "jobs: {}\n# run: cargo test || true\n")
+            st, line = self.state("t-quoted")
+            self.assertEqual(st, "ESCALATE_TO_OWNER", name)
+            self.assertIn("CI_MASKED_GATE", line)
+            self.r.write(name, "jobs: {}\n")
+
     def test_lock_requires_clean_tree_at_base(self):
         self.r.spec("t-dirty", [PASSING])
         self.r.write("src/app.txt", "implemented first\n")

@@ -34,7 +34,10 @@ own explicit Owner instruction.
    `python3 .claude/qc/qc.py activate $ARGUMENTS` to arm the optional hooks
    (only if the Owner enabled them; see below).
 2. Build the smallest change that meets the criteria (`engineering-code-review`
-   workflow). Stay inside the classes the spec authorizes.
+   workflow). Stay inside the classes the spec authorizes. Run every Bash
+   command from the repository root and name paths instead of `cd`-ing into
+   a subdirectory: the shell's working directory persists between calls,
+   the subagents start in it, and the QC commands are relative to the root.
 3. Verify: delegate to `qc-verifier` with only the spec id. Do not pass your
    own claims about the result.
 4. Read the state it reports, then act:

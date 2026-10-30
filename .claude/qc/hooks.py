@@ -47,11 +47,13 @@ OTHER_OWNER_ONLY = re.compile(
 MCP_WRITE = re.compile(
     r"^mcp__github__(merge_|create_|update_|delete_|push_|fork_|enable_|disable_|add_|resolve_|unresolve_|"
     r"request_|actions_run_trigger|issue_write|sub_issue_write|pull_request_review_write)")
-PROTECTED = re.compile(r"(^|/)(CLAUDE\.md|\.git/|\.claude/(settings[^/]*\.json|qc/|hooks/|agents/|skills/))")
+PROTECTED = re.compile(r"(^|/)(CLAUDE\.md|\.mcp\.json|\.githooks/|\.git/|"
+                       r"\.claude/(settings[^/]*\.json|qc/|hooks/|agents/|skills/|commands/))")
 BASH_WRITES_PROTECTED = re.compile(
     r"((?<![0-9&])>(?!&)|\btee\b|\bsed\s+-i|\bmv\b|\bcp\b|\brm\b|\bchmod\b|\btruncate\b|"
     r"\bpython3?\s+-c\b|\bperl\s+-\w*[pie]|\bgit\s+(checkout|restore|reset|clean|stash)\b).*"
-    r"(CLAUDE\.md|\.claude/(settings|qc|hooks|agents|skills)|arcium-qc)")
+    r"(CLAUDE\.md|\.mcp\.json|\.githooks/|\.git/(info|hooks|config)|"
+    r"\.claude/(settings|qc|hooks|agents|skills|commands)|arcium-qc)")
 
 
 def deny(reason):

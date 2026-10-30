@@ -1,6 +1,6 @@
 ---
 name: qc-loop
-description: "Bounded Builder -> independent Verifier -> independent Reviewer loop for an Owner-authorized Arcium change with a locked qc-spec. The verdict (VERIFIED, FAILED, NOT_VERIFIED, BLOCKED, ESCALATE_TO_OWNER) is computed by .claude/qc/qc.py from evidence it produced itself; at most three repair rounds, then escalation. Reviews use engineering-code-review and arcium-security-review. Authorizes nothing: no commit, push, PR, merge, dispatch or crypto change follows from any state."
+description: "Bounded Builder -> independent Verifier -> independent Reviewer loop for an Owner-authorized Arcium change with a locked qc-spec. The verdict (VERIFIED, FAILED, NOT_VERIFIED, BLOCKED, ESCALATE_TO_OWNER) is computed by .claude/qc/qc.py from the results of commands it ran itself and from the recorded review blocks, which agents write, as are the criteria and owner_authorizes; at most three repair rounds, then escalation. Reviews use engineering-code-review and arcium-security-review. Authorizes nothing: no commit, push, PR, merge, dispatch or crypto change follows from any state."
 disable-model-invocation: true
 argument-hint: "<spec-id>"
 ---

@@ -2,10 +2,15 @@
 """Arcium QC engine: acceptance criteria, evidence and terminal states.
 
 Deterministic, stdlib only. The terminal state of a task is computed here from
-evidence this script produced itself, never from what an agent wrote:
+the results of commands this script ran itself and from the recorded review
+blocks, never from an agent's own report of the result. The criteria, the
+spec's owner_authorizes and the review text are still written by agents:
 
   VERIFIED          every criterion passed on the current tree, the required
-                    reviews are recorded for that tree, nothing is owner-gated
+                    reviews are recorded for that tree, and every owner-gated
+                    class the diff touches is listed in the spec's
+                    owner_authorizes. That authority is self-declared by the
+                    spec's author; the verdict names it for the Owner to check
   FAILED            a criterion or a review failed; repair rounds remain
   NOT_VERIFIED      no evidence, stale evidence, a missing tool, a network
                     error, a manual criterion, or a review not yet recorded

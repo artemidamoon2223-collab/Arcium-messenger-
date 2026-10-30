@@ -12,10 +12,11 @@ temporary clone whose `origin` push URL points at a missing local path, so a
 `git push` to origin fails locally even if a guard failed. That covers only
 origin: a push to an explicit URL, `gh` or GitHub MCP tools would not be
 caught by it (the prompts here ask only for origin pushes, and the nested
-sessions are given no GitHub tools). The QC files are copied from this
-checkout into the clone, together with a .claude/settings.local.json that
-enables the candidate hooks wrapped in `tee` logging. Nothing is written to
-this checkout.
+sessions are given no GitHub tools). QC files committed at HEAD are used as
+committed (uncommitted edits to them are not tested); ones not yet committed
+are copied from this checkout. A .claude/settings.local.json enables the
+candidate hooks wrapped in `tee` logging. Nothing is written to this
+checkout.
 
 Checks whose outcome depends on what the model chose to do are reported as
 NOT_VERIFIED when the model skipped the step; the exit code is non-zero only
@@ -66,10 +67,18 @@ class Clone:
         if origin:  # continuity.sh reads the fetch URL; origin pushes go nowhere
             self.git("remote", "set-url", "origin", origin)
         self.git("remote", "set-url", "--push", "origin", self.nopush)
-        for rel in QC_FILES:
-            os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
-            shutil.copy(os.path.join(SRC, rel), os.path.join(self.dir, rel))
-        with open(os.path.join(SRC, ".claude/qc/hooks.candidate.json")) as f:
+        tracked = subprocess.run(["git", "-C", self.dir, "ls-files", "--error-unmatch", QC_FILES[0]],
+                                 capture_output=True).returncode == 0
+        if tracked:
+            dirty = subprocess.run(["git", "-C", SRC, "status", "--porcelain", "--", *QC_FILES],
+                                   capture_output=True, text=True).stdout.strip()
+            if dirty:
+                print("WARNING: uncommitted QC changes in %s are not tested:\n%s" % (SRC, dirty))
+        else:
+            for rel in QC_FILES:
+                os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
+                shutil.copy(os.path.join(SRC, rel), os.path.join(self.dir, rel))
+        with open(os.path.join(self.dir, ".claude/qc/hooks.candidate.json")) as f:
             hooks = json.load(f)
         for event, groups in hooks["hooks"].items():
             for g in groups:

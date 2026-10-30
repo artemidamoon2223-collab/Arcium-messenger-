@@ -7,9 +7,11 @@ file name keeps it out of `unittest discover`, and it is not run in CI.
 
 Needs git and cargo (and, for the Gradle observation, java and network
 access to services.gradle.org). It clones this checkout's HEAD into a
-temporary directory, copies the QC tool from this checkout into the clone
-(hidden from the diff through .git/info/exclude), and drives qc.py there with
-real `cargo` runs. It writes nothing to this checkout. Set
+temporary directory and drives qc.py there with real `cargo` runs. A QC tool
+committed at HEAD is used as committed (uncommitted edits to it are not
+tested; commit them first); one not yet committed is copied from this
+checkout, hidden from the diff through .git/info/exclude. It writes nothing
+to this checkout. Set
 QC_INTEGRATION_TARGET to reuse a Cargo target directory between runs.
 
 Exits non-zero at the first unmet expectation.
@@ -30,15 +32,28 @@ FIXED = "#[test]\nfn qc_probe() {\n    assert_eq!(1 + 1, 2);\n}\n"
 OWNER = "Integration fixture for the QC tool; not an Owner instruction."
 
 
+def install_untracked(clone, files, exclude):
+    """Copy QC files the clone's HEAD lacks; keep the committed ones as they are."""
+    if subprocess.run(["git", "-C", clone, "ls-files", "--error-unmatch", files[0]],
+                      capture_output=True).returncode == 0:
+        dirty = subprocess.run(["git", "-C", SRC, "status", "--porcelain", "--", *files],
+                               capture_output=True, text=True).stdout.strip()
+        if dirty:
+            print("WARNING: uncommitted QC changes in %s are not tested:\n%s" % (SRC, dirty))
+        return
+    for rel in files:
+        os.makedirs(os.path.dirname(os.path.join(clone, rel)), exist_ok=True)
+        shutil.copy(os.path.join(SRC, rel), os.path.join(clone, rel))
+    with open(os.path.join(clone, ".git/info/exclude"), "a") as f:
+        f.write("\n" + "\n".join(exclude) + "\n")
+
+
 class Clone:
     def __init__(self, tmp):
         self.dir = os.path.join(tmp, "repo")
         subprocess.run(["git", "clone", "-q", "--no-hardlinks", SRC, self.dir], check=True)
         os.makedirs(os.path.join(self.dir, ".claude/qc"), exist_ok=True)
-        for f in ("qc.py", "hooks.py"):
-            shutil.copy(os.path.join(SRC, ".claude/qc", f), os.path.join(self.dir, ".claude/qc", f))
-        with open(os.path.join(self.dir, ".git/info/exclude"), "a") as f:
-            f.write("\n.claude/qc/\n")
+        install_untracked(self.dir, [".claude/qc/qc.py", ".claude/qc/hooks.py"], [".claude/qc/"])
         target = os.environ.get("QC_INTEGRATION_TARGET") or os.path.join(tmp, "target")
         self.env = dict(os.environ, CARGO_TARGET_DIR=target, PYTHONDONTWRITEBYTECODE="1")
         self.env.pop("CLAUDE_PROJECT_DIR", None)

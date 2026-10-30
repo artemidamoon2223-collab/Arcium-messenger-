@@ -82,3 +82,10 @@ them is the Owner's decision: copy the `hooks` block into
 `.claude/settings.local.json`. They act only while a loop is activated in
 this clone, only ever deny or warn (never allow), and fail open. See the docstring of
 `.claude/qc/hooks.py` for exactly what each one checks.
+
+While a loop is active and `FAILED`, the PreToolUse guard also refuses
+commits and pushes the Owner asks for, and `deactivate` is refused. The Owner
+ends the loop from their own terminal by deleting
+`$(git rev-parse --absolute-git-dir)/arcium-qc/active.json`, or by removing
+the hooks from `.claude/settings.local.json`; the activation also expires
+after 8 hours.

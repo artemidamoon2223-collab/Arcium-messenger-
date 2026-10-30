@@ -20,8 +20,12 @@ key so that a hand-written or edited record is rejected. The key is readable
 by anything with shell access: the signature stops fabricated or stale
 records, not a deliberate forger with this clone's key.
 
-This script grants nothing. It never commits, pushes, merges or dispatches,
-and it refuses criteria that would.
+This script grants nothing. It never commits, pushes, merges or dispatches
+itself. `spec-check` refuses criteria whose program is a shell, `git` (other
+than read-only subcommands), `gh`, `curl`, `wget`, `anchor`, `solana` or
+`arcium`; that checks the program name only. A criterion is code run on this
+machine (`python3 -c ...`, a script, a build) and can do anything its program
+can: the criteria are reviewed, not sandboxed.
 """
 
 import hashlib
@@ -83,8 +87,9 @@ OWNER_ONLY_ARGV = [
 OWNER_ONLY_GIT_OK = {"diff", "status", "log", "show", "rev-parse", "ls-files", "grep", "merge-base"}
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "xargs", "eval"}
 # Test runners whose exit code alone does not show that any test ran.
-TEST_RUNNER_RE = re.compile(r"(^|\s)(cargo (\S+ )*test|\S*gradlew? (\S+ )*\S*[tT]est\S*|\S*mocha|\S*pytest|"
-                            r"\S*jest|npm (run )?test)(\s|$)")
+TEST_RUNNER_RE = re.compile(r"(^|\s)(cargo (\S+ )*(test|nextest)|\S*gradlew? (\S+ )*\S*[tT]est\S*|\S*mocha|"
+                            r"\S*pytest|\S*jest|\S*vitest|(npm|pnpm|yarn) (run )?test\S*|go test|make \S*test\S*|"
+                            r"\S*python3? (\S+ )*-m (unittest|pytest))(\s|$)")
 
 # A non-zero exit whose output matches this is an environment problem
 # (network, proxy, missing SDK), reported NOT_VERIFIED rather than FAILED...
@@ -571,9 +576,11 @@ def parse_review(skill, text):
             if v.group(1) == "fail":
                 blocking.append(p)
     else:
-        for sev in re.findall(r"^\s*-\s*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\s*\|", block, re.M):
-            if sev in ("CRITICAL", "HIGH"):
-                blocking.append(sev)
+        # Any CRITICAL or HIGH in the findings section blocks, whatever its layout.
+        section = re.search(r"^findings:(.*?)^known_findings:", block, re.M | re.S)
+        if not section:
+            raise QcError("NOT_VERIFIED", "security review lacks its findings section")
+        blocking = re.findall(r"\b(CRITICAL|HIGH)\b", section.group(1))
     return {"complete": bool(complete and complete.group(1) == "yes"), "blocking": blocking,
             "block_sha256": hashlib.sha256(block.encode()).hexdigest()}
 

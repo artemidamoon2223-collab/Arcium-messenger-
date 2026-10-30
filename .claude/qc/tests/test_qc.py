@@ -320,6 +320,11 @@ class QcTest(unittest.TestCase):
             self.r.spec("t-proof", [{"id": "ac-x", "description": "x", "command": argv}])
             rc, line = self.r.qc("spec-check", "t-proof")
             self.assertIn("must_match", line, argv)
+        for argv in (["npm", "run", "test:unit"], ["python3", "-m", "unittest"], ["cargo", "nextest", "run"],
+                     ["go", "test", "./..."], ["make", "test"], ["npx", "vitest", "run"]):
+            self.r.spec("t-proof", [{"id": "ac-x", "description": "x", "command": argv}])
+            rc, line = self.r.qc("spec-check", "t-proof")
+            self.assertIn("must_match", line, argv)
         self.r.spec("t-proof", [{"id": "ac-x", "description": "x", "command": ["cargo", "clippy", "--", "-D", "warnings"]}])
         self.assertIn("valid", self.r.qc("spec-check", "t-proof")[1])
 
@@ -416,6 +421,24 @@ class QcTest(unittest.TestCase):
         self.assertIn("target", line)
         st = load(os.path.join(self.r.gitdir(), "runs/t-cov/state.json"))
         self.assertEqual(st["reviews"], [], "a refused review is not recorded")
+
+    def test_a_high_finding_in_another_layout_still_blocks(self):
+        self.r.locked("t-layout", [PASSING], owner_authorizes=["CRYPTO"])
+        self.r.write("crates/core-crypto/src/x.rs", "// changed\n")
+        self.r.qc("run", "t-layout")
+        x = ["crates/core-crypto/src/x.rs"]
+        self.r.qc("review-record", "t-layout", "engineering-code-review", stdin=eng_pass(self.r.base, x))
+        rc, line = self.r.qc("review-record", "t-layout", "arcium-security-review",
+                             stdin=sec(self.r.base, x, "  * [HIGH] replay accepted at crates/core-crypto/src/x.rs:1"))
+        self.assertIn("FAILED", line)
+
+    def test_a_security_review_without_a_findings_section_is_refused(self):
+        self.r.locked("t-nofind", [PASSING], owner_authorizes=["CRYPTO"])
+        self.r.write("crates/core-crypto/src/x.rs", "// changed\n")
+        self.r.qc("run", "t-nofind")
+        block = sec(self.r.base, ["crates/core-crypto/src/x.rs"]).replace("findings:\n  (none)\n", "")
+        rc, line = self.r.qc("review-record", "t-nofind", "arcium-security-review", stdin=block)
+        self.assertIn("findings section", line)
 
     def test_a_later_clean_review_does_not_erase_a_blocking_one(self):
         self.r.locked("t-erase", [PASSING], owner_authorizes=["CRYPTO"])

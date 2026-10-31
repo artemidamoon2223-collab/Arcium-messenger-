@@ -49,21 +49,23 @@ import uniffi.arcium_core.contactCardFingerprint
  * with `am instrument` on the right emulator, in order or side by side, and
  * passes what a user would have: the relay address, and the contact's card,
  * fingerprint and name as shown on the contact's own screen (the out-of-band
- * channel). Steps drive the screens only — the Rust store is read afterwards,
- * from this same app process, just to count what the screens show.
+ * channel). Steps drive the screens; the Rust store is read from this same
+ * app process to count what the screens show, and the steps named below go
+ * further.
  *
  * Every text carries [CANARY]; the relay alerts if it ever stores those
  * bytes, and the workflow fails on that alert. Missing arguments fail a step;
  * nothing is skipped.
  *
- * Two steps also act as the untrusted relay or call the messenger directly,
- * to reach a boundary the screens cannot: [bobIgnoresReplayedEnvelopes] sends
- * old envelopes to Bob again, and [everyTextIsInTheHistoryOnceAfterRepeatedSyncs]
- * runs sync rounds itself, reads their reports and reads both mailboxes on
- * the relay. Both do so on the app's own sync thread ([exclusive]), so no
- * round of the app's loop runs between their rounds and their checks.
- * [theFinalChecksRejectViolatedFixtures] shows that those checks fail on
- * fixtures that break what they guard.
+ * Some steps also act as the untrusted relay or call the messenger directly,
+ * to reach a boundary the screens cannot: [aKeyMismatchOnTheRelayIsRefusedAndShown]
+ * publishes a bundle, [aliceSendsWhileBobIsOffline] reads what the relay holds
+ * for Bob, [bobIgnoresReplayedEnvelopes] sends old envelopes to Bob again,
+ * [everyTextIsInTheHistoryOnceAfterRepeatedSyncs] runs sync rounds itself and
+ * reads both mailboxes, and [theFinalChecksRejectViolatedFixtures] uses a
+ * mailbox of its own. The two that sync do so on the app's own sync thread
+ * ([exclusive]), so no round of the app's loop runs between their rounds and
+ * their checks.
  */
 @RunWith(AndroidJUnit4::class)
 class TwoDeviceMessengerTest {
@@ -102,7 +104,7 @@ class TwoDeviceMessengerTest {
     private val myName get() = if (peerName == "Bob") "Alice" else "Bob"
 
     /** This device's mailbox on the relay: the X25519 key in its own card. */
-    private val myKey get() = checkNotNull(ContactCardText.decode(arg("myCard"))).copyOfRange(1, 33)
+    private val myKey get() = ArciumApp.core.contactCard().copyOfRange(1, 33)
 
     private fun text(s: String) = "$s $CANARY"
 
@@ -221,7 +223,7 @@ class TwoDeviceMessengerTest {
         // What the relay holds for Bob now, before he fetches it: replayed to
         // him in bobIgnoresReplayedEnvelopes, long after he accepted it.
         val held = RelayClient(arg("relay")).fetchAfter(peerKey, 0)
-        assertTrue("the relay holds Alice's three texts for Bob: ${held.size}", held.size >= 3)
+        assertEquals("the relay holds Alice's three texts for Bob, and nothing else", 3, held.size)
         report(
             "replayTo" to hex(peerKey),
             "replay" to held.joinToString(",") { hex(it.second) },
@@ -425,10 +427,10 @@ class TwoDeviceMessengerTest {
      * synced empty first, this step sends Bob, a second time, the envelopes
      * the relay held for him while he was offline (all accepted long ago),
      * then runs one sync round itself. That round must fetch exactly those
-     * envelopes, find each a duplicate (none newly accepted, none discarded),
-     * answer each with a new receipt (docs/NET-MESSAGING.md: a duplicate text
-     * gets a new receipt) and delete them from the relay; and nothing in his
-     * history may change.
+     * envelopes, find each a duplicate (none newly accepted, none discarded)
+     * and delete them from the relay; and nothing in his history may change.
+     * A duplicate text gets a new receipt, but at most one per message per
+     * minute (docs/NET-MESSAGING.md), so the round sends at most one each.
      */
     @Test
     fun bobIgnoresReplayedEnvelopes() {
@@ -447,10 +449,14 @@ class TwoDeviceMessengerTest {
             val n = seqs.size.toUInt()
             val round = messenger { it.syncConversations() }
             assertEquals(
-                "the replay round: each envelope fetched, a duplicate, answered by a new receipt",
-                IDLE.copy(fetched = n, duplicates = n, published = n),
-                round,
+                "the replay round: each envelope fetched and a duplicate, nothing else: $round",
+                IDLE.copy(fetched = n, duplicates = n),
+                round.copy(published = 0u),
             )
+            // Not exactly n: an earlier duplicate of the same text in this
+            // minute (a new process of Alice's sends pending texts again)
+            // already used that minute's receipt.
+            assertTrue("the replay round sent more than a receipt per envelope: $round", round.published <= n)
             assertTrue("the replay is still on the relay", relay.fetchAfter(me, 0).none { it.first in seqs })
             assertEquals(before, history())
             for (i in 1..3) assertEquals(1, stored(text("queued $i"), outgoing = false).size)
@@ -463,13 +469,15 @@ class TwoDeviceMessengerTest {
      * Run last, one device at a time (see the driver). On the app's sync
      * thread: sync until a round fetches nothing; then three rounds of the
      * app's messenger, and one of a new messenger with no retransmission
-     * clock (it sends at once whatever is still pending: texts, receipts,
-     * handshakes), must each send, fetch and change nothing; no text to the
-     * contact waits for a receipt; the relay holds nothing for this device;
-     * and the history is the whole conversation, every text once, in its
-     * final state, and nothing else. With `checkPeerMailbox`, the relay must
-     * also hold nothing for the contact: nothing this device sent is left
-     * untaken.
+     * clock (it sends at once whatever any session still has pending: texts,
+     * receipts, handshakes), must each send, fetch and change nothing; no
+     * text to the contact waits for a receipt; the relay holds nothing for
+     * this device; and the history with the contact is the whole
+     * conversation, every text once, in its final state, and nothing else.
+     * With `checkPeerMailbox`, the relay must also hold nothing for the
+     * contact: nothing this device sent is left untaken. Not covered: a text
+     * to a contact without a session (Alice's to "Mallory" stays queued),
+     * and other contacts' histories.
      */
     @Test
     fun everyTextIsInTheHistoryOnceAfterRepeatedSyncs() {
@@ -502,7 +510,8 @@ class TwoDeviceMessengerTest {
      * a fixture that breaks what it guards and must fail, and to the matching
      * correct fixture, which must pass. The mailbox fixture is the condition
      * of run 82: one envelope left on the relay for a device after the last
-     * pass. It is a new random mailbox that nothing else uses.
+     * pass. It is a new random mailbox that nothing else uses. The driver
+     * runs this step first, so no app process runs after the final step.
      */
     @Test
     fun theFinalChecksRejectViolatedFixtures() {
@@ -551,7 +560,9 @@ class TwoDeviceMessengerTest {
      * Runs [block] on the app's own sync thread (`MessengerService.syncDispatcher`,
      * one task at a time, read here by reflection): a round of the app's loop
      * already running finishes first, and none starts until [block] returns.
-     * [block] must not suspend, or the thread would be free again.
+     * [block] must not suspend, or the thread would be free again. It excludes
+     * only what runs on that dispatcher: today the app syncs nowhere else
+     * (`MessengerService.round`); a sync path added elsewhere would not be.
      */
     private fun <T> exclusive(block: () -> T): T {
         val field = MessengerService::class.java.getDeclaredField("syncDispatcher").apply { isAccessible = true }

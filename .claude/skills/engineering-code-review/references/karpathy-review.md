@@ -48,7 +48,14 @@ These are the engineering rules of `SKILL.md`, scored per change:
 | think_before_coding | workflow step 1: the change uses real APIs and values from the source, and each choice traces to a stated requirement | code written against an API that does not exist or behaves differently; an unstated assumption the change depends on |
 | simplicity_first | workflow step 3: minimum code for the stated problem | a speculative feature, an abstraction with one caller, handling for a case that cannot occur |
 | surgical_changes | workflow step 2: only what was asked is touched | unrelated reformatting, renames or refactors in the diff |
-| goal_driven | workflow step 4: the change has a verification step | new behaviour with no test or check that would catch its failure |
+| goal_driven | workflow step 4: the change has a verification step that can fail | new behaviour with no test or check that would catch its failure; or a check that cannot fail, because its own setup already guarantees what it asserts |
+
+For goal_driven, name for each new or changed assertion the concrete defect
+that would make it fail. When the passing state cannot show that — an empty
+mailbox, an idle report, a history that is already right — the check must be
+seen failing once: on a fixture that breaks the invariant, on a mutant of the
+check, or as a negative control run in place. An assertion that holds by
+construction is a `fail`, however carefully it is worded.
 
 `warning` means a concern worth the owner's attention that does not meet the
 `fail` bar. Every verdict needs evidence: a `path:line` (or line range) and

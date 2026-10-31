@@ -59,7 +59,9 @@ guards against, all of which have actually occurred in this repository:
 
 4. **Every task has a verification step.** Decide it before starting, and run
    it. If the task cannot be verified in this environment, say so explicitly
-   rather than substituting a weaker check silently.
+   rather than substituting a weaker check silently. A check that passes
+   whatever the code does verifies nothing: for each new assertion, know which
+   defect makes it fail (`references/karpathy-review.md`, goal_driven).
 
 5. **Run the pre-delivery checklist** — see
    `references/delivery-checklist.md`.

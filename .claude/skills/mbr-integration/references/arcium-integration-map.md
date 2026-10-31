@@ -7,6 +7,27 @@ Repository layout is not repeated here — see
 `engineering-code-review/references/repo-map.md`. This file covers only what
 bears on durable state.
 
+## Superseded since `5faadaf` — read this first
+
+Checked at `main` `483a664` (2026-10-31). After `5faadaf`, `main` gained durable
+messaging (S2-B2: `docs/S2-B2-DURABLE-MESSAGING.md`, `docs/NET-MESSAGING.md`).
+These statements in Part 1 no longer hold, and the stage status in Part 2 is
+out of date:
+
+| Part 1 statement | Now | Evidence at `483a664` |
+|---|---|---|
+| durable ratchet state: `mobile-ffi` keeps sessions in memory, never uses the durable layer | `mobile-ffi` runs on `core_protocol::messaging`; sessions are stored records | `mobile-ffi/src/lib.rs:9`, `:621`; `core-protocol/src/durable.rs:414` (`session:`) |
+| duplicate rejection: no application-level dedup | an incoming message is checked against its inbox and seen records by message id before decryption; the chat history is indexed by message id | `core-protocol/src/messaging.rs:495-500`; `mobile-ffi/src/network/chat.rs:196` |
+| immutable outbox / retry: a resend re-encrypts | the outbox keeps the wire bytes and a retransmission publishes them unchanged; a repeated send with the same client id is answered from its `sendid` record, not encrypted again | `core-protocol/src/messaging/records.rs:35`; `mobile-ffi/src/network.rs:493-523`; `core-protocol/src/messaging/helpers.rs:77-84` |
+| exact event identity: only the ratchet header | message id = SHA-256 of a domain label and the wire bytes | `core-protocol/src/messaging.rs:44-49` |
+| ACK bound to an artifact: no ACK | a text leaves the outbox only on an authenticated receipt naming its message id | `mobile-ffi/src/network.rs:700`; `mobile-ffi/src/messaging_api.rs:329` |
+| explicit states: no such enum | each chat entry has a state (`Queued` … `Received`), a different set from MBR's | `mobile-ffi/src/network/chat.rs:51` |
+| persisted keys in full: `identity/v1`, `prekeys/v2` | also session, outbox, inbox, seen, sendid, contact and chat records | `core-protocol/src/messaging/records.rs:35-36`; `core-protocol/src/durable.rs:414`; `mobile-ffi/src/network/chat.rs:170-196` |
+| PRAGMAs: SQLite defaults, `synchronous = 2` | the store sets `journal_mode = DELETE` and `synchronous = EXTRA` | `core-storage/src/lib.rs:106-115` |
+
+Statements not listed here were not re-checked. Do not quote any row of Part 1
+or Part 2 as current without re-deriving it.
+
 ## Re-derive before relying on any of this
 
 Facts below were verified at `5faadaf` (they were first recorded at `99c9f49`).

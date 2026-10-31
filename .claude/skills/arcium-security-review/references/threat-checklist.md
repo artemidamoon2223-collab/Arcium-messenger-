@@ -190,7 +190,12 @@ Where: `arcium-psi/programs/arcium-psi/src/lib.rs`,
 - **Circuit source and hash.** `OffChainCircuitSource` keeps only the hash on
   chain, and that hash is the SHA-256 of `psi_intersect.arcis.ir`, not a git
   SHA (`CLAUDE.md`). A circuit change changes the hash and every constant that
-  pins it.
+  pins it. Check what source `init_computation_def` is actually given and what
+  the localnet test asserts: comments and docs have described
+  `OffChainCircuitSource` while the code passed `None` and the test uploaded
+  the circuit on chain (at `483a664`:
+  `arcium-psi/programs/arcium-psi/src/lib.rs:42`,
+  `arcium-psi/tests/src/localnet/psi.localnet.ts:167-168`).
 - **Open findings.** Server-dataset anchoring (F-4) and padding false positives
   (F-3): say whether the change touches them.
 
@@ -208,7 +213,8 @@ Where: `arcium-psi/programs/arcium-psi/src/lib.rs`,
 - **Insecure defaults.** A permissive default, or a development-only path
   reachable in a release build.
 - **Test masking.** `#[ignore]`, deleted or weakened assertions, tests that no
-  longer run, test filters that match nothing.
+  longer run, test filters that match nothing, and assertions that hold by
+  construction and so cannot fail.
 - **False-green CI.** A step that exits 0 without doing what it claims:
   `continue-on-error`, `|| true`, a swallowed exit code in a pipe without
   `pipefail`, a path filter that keeps a relevant job from firing. Decide by

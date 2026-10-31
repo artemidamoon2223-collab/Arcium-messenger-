@@ -6,6 +6,8 @@ Derived from repository files. **Re-derive before relying on a detail here:**
 cat .github/actions/uniffi-android-bridge/action.yml
 cat crates/mobile-ffi/uniffi.toml
 cat .github/workflows/android-native-bridge.yml
+grep -n "arch:\|SYSTEM_IMAGE\|connectedDebugAndroidTest\|notPackage\|two_devices.py" \
+  .github/workflows/android-instrumentation.yml .github/workflows/android-two-device-e2e.yml
 sed -n '/\[lib\]/,/^$/p' crates/mobile-ffi/Cargo.toml
 grep -n jna android/app/build.gradle.kts
 ```
@@ -13,9 +15,13 @@ grep -n jna android/app/build.gradle.kts
 ## Pipeline
 
 The composite action `.github/actions/uniffi-android-bridge` is the single
-source of truth for building and generating the bridge. The workflow
-`android-native-bridge.yml` (job `bridge-compile-package`) calls it, then asks
-Gradle to compile and package.
+source of truth for building and generating the bridge. Five workflows call it
+(`grep -l uniffi-android-bridge .github/workflows/*.yml`).
+`android-native-bridge.yml` (job `bridge-compile-package`), `android-ci.yml` and
+the dispatch-only `android-build-baseline.yml` then compile and package.
+`android-instrumentation.yml` (job `connected-tests`) and
+`android-two-device-e2e.yml` (job `two-devices`) also build the test APK and run
+it on x86_64 API-30 emulators — see the proof boundary below.
 
 1. **ABI list.** `ABI_TARGETS` inside the composite action is the single source
    of truth for which Android ABIs are built. Each entry carries a Rust target,
@@ -75,9 +81,6 @@ UniFFI Kotlin documentation for the uniffi version in use.
 
 The generated bindings load the native library lazily through JNA on the first
 FFI call. A manual `System.loadLibrary("arcium_core")` is therefore redundant.
-`android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt` still
-carries a stale `// TODO: System.loadLibrary(...)` comment that should not be
-acted on literally.
 
 ## Export-surface hazard
 
@@ -90,24 +93,26 @@ while the intended methods remained.
 
 ## The proof boundary
 
-| Established by CI | Not established by CI |
-|---|---|
-| Rust cross-compiles for each ABI | `System.loadLibrary` succeeds on a device |
-| UniFFI bindgen produces Kotlin that compiles | Any Kotlin↔Rust call executes |
-| `.so` is packaged into the APK per ABI | Message encryption, ratchet, transport, PSI behaviour |
-| Gradle assembles a debug APK | Persistence across process restart |
-| | Production readiness |
+| Established by `android-native-bridge.yml` | Established on an x86_64 API-30 emulator by `android-instrumentation.yml` and `android-two-device-e2e.yml`, for what their tests assert | Not established by CI |
+|---|---|---|
+| Rust cross-compiles for each ABI | The packaged `libarcium_core.so` loads through JNA | Anything on arm64-v8a (built and packaged, never run) |
+| UniFFI bindgen produces Kotlin that compiles | Kotlin↔Rust calls execute | Physical devices, other API levels, background or Doze behaviour |
+| `.so` is packaged into the APK per ABI | Durable messaging across process death (instrumentation) and two app instances messaging through the development relay (two-device) | Tor, PSI, a production relay |
+| Gradle assembles a debug APK | | Cryptographic correctness beyond what the tests assert; production readiness |
 
-Runtime confirmation requires installing on an emulator or device and
-exercising the path by hand. Where a task needs that, say so and leave it to
-the owner rather than implying the build covered it.
+`android-instrumentation.yml` excludes the `com.arcium.messenger.e2e` package;
+`android-two-device-e2e.yml` runs that package through `android/e2e/two_devices.py`.
+
+Physical-device confirmation requires installing on a phone and exercising the
+path by hand. Where a task needs that, say so and leave it to the owner rather
+than implying that an emulator run or a build covered it.
 
 ## Local build recipe — unverified
 
 The previous `CLAUDE.md` documented a local cross-build using `cargo ndk`:
 
 ```bash
-cargo build -p mobile-ffi                                   # generate .kt
+cargo build -p mobile-ffi                                   # builds the crate; generates no .kt (build.rs only sets rerun-if-changed)
 cargo ndk -t arm64-v8a build -p mobile-ffi --release        # needs NDK
 # → target/aarch64-linux-android/release/libarcium_core.so
 ```

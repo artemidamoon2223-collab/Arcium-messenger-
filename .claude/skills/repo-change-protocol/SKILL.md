@@ -30,8 +30,13 @@ Verify the clone's HEAD equals the expected main tip before starting.
 Never write to the persistent checkout. Read-only inspection of it is fine.
 
 The reason, recorded so it does not get optimised away: the persistent
-checkout sits on a stale merged branch with stale remote refs. Writing there
-silently produces work against a weeks-old base.
+checkout can sit on any branch — a long-merged one, or the head of an open PR —
+with stale remote refs. Writing there silently produces work against the wrong
+base, or changes an open PR.
+
+Push from the disposable clone itself, to the GitHub URL that the persistent
+checkout's `origin` names: `git push <that URL> HEAD:refs/heads/<branch>`. Do
+not fetch the work into the persistent checkout to push it from there.
 
 ## 3. Scope
 
@@ -60,12 +65,13 @@ Leave the merge decision to the owner.
 
 ## 6. Validation before requesting a merge
 
-In the disposable clone: `cargo test --workspace` and
-`cargo clippy --workspace --all-targets`.
+In the disposable clone, the commands in `CLAUDE.md` («Команды проверки»):
+`cargo test --workspace` and `cargo clippy --workspace -- -D warnings` — the
+ones `arcium-ci.yml` runs (with `--locked`).
 
-On CI, know which checks the diff actually triggers. `bridge-compile-package`
-fires on any `crates/**` or `Cargo.toml` change and does not fire on
-docs-only diffs. Confirm the checks that ran are green.
+On CI, know which checks the diff actually triggers:
+`engineering-code-review/references/delivery-checklist.md` («Which CI checks a
+diff actually triggers»). Confirm the checks that ran are green.
 
 ## 7. Merge mechanics
 
@@ -82,9 +88,10 @@ How to carry out a merge that has already been instructed:
 
 ## 8. Stuck CI is not failing CI
 
-A queue that will not start is an infrastructure condition, not a result. At
-most one soft retrigger via an empty commit; note the new head SHA. If it
-still will not run, stop and report.
+A queue that will not start is an infrastructure condition, not a result. Do
+not push an empty commit to retrigger it. If the task allows re-running CI,
+re-run the stuck workflow once and note the run ID; if it still will not run,
+stop and report.
 
 A check that goes red is stop-and-report, with the log.
 

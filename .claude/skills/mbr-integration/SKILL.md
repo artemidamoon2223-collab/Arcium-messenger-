@@ -10,9 +10,11 @@ description: "What the MBR durable-history research established, what it only as
 Knowledge and judgment aid. Everything here is either a **verified fact** with a
 citation, an **experimental finding** with its provenance, or a **proposal that
 is not implemented**. The three are labelled separately throughout and must not
-be collapsed. Arcium-side facts were verified at commit `5faadaf`; re-derive
-before relying on any of them — `references/arcium-integration-map.md` carries
-the commands.
+be collapsed. Arcium-side facts were verified at commit `5faadaf` (2026-09-23),
+and several are now superseded: `main` has since gained durable messaging —
+outbox, inbox, message ids and receipts — wired into `mobile-ffi`. The map
+lists the superseded rows; re-derive any other fact before relying on it —
+`references/arcium-integration-map.md` carries the commands.
 
 ## This skill authorizes nothing
 
@@ -119,6 +121,6 @@ test was objectively mis-specified — and record that it was.
 
 - `references/evidence-ledger.md` — what MBR demonstrated, with artifact hashes,
   minimal counterexample traces, and the declared negative results.
-- `references/arcium-integration-map.md` — verified Arcium state per mechanism,
-  re-derivation commands, and the proposed staging (S1 and part of S2 since
-  implemented; the rest not).
+- `references/arcium-integration-map.md` — Arcium state per mechanism as
+  verified at `5faadaf`, the rows superseded since, re-derivation commands, and
+  the proposed staging.

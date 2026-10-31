@@ -49,7 +49,7 @@ citing them; they drift.
 |------|-----------|
 | `crates/` | Rust core: crypto, storage, transport, protocol, FFI |
 | `arcium-psi/` | Anchor program, Arcis circuit, TypeScript tests — separate workspace |
-| `android/` | Kotlin/Compose app, Gradle build, generated UniFFI bindings |
+| `android/` | Kotlin/Compose app, Gradle build, two-device e2e driver (`android/e2e/`). UniFFI bindings are generated at build time under `android/app/build/` and never committed |
 | `docs/` | Security findings tracker, deep review, home-deploy guide |
 | `.github/` | Workflows and the composite UniFFI bridge action |
 | `.devcontainer/` | Codespaces setup (no Android SDK/NDK) |
@@ -60,9 +60,10 @@ citing them; they drift.
 |-------|------|
 | `core-crypto` | X3DH, Double Ratchet, hybrid KEM, contact hash, RescueCipher stub |
 | `core-storage` | Encrypted SQLite key-value store |
-| `core-transport` | Tor client (arti) |
+| `core-transport` | Tor client skeleton (arti). Not used by the messenger, which reaches the relay over plain TCP |
 | `core-protocol` | Session manager over the ratchet |
 | `mobile-ffi` | UniFFI cdylib, `[lib] name = "arcium_core"` → `libarcium_core.so` |
+| `relay` | development relay (`arcium-relay`), `RELAY_PROTOCOL_V1` server and client |
 
 Crypto layering rules for these crates are in `CLAUDE.md` and are not repeated
 here.
@@ -77,6 +78,13 @@ here.
 - `docs/SECURITY-REVIEW-2026-06-deep.md` — historical snapshot of the 2026-06
   review, kept for the original finding definitions. Its status language
   reflects 2026-06-09 and is not current.
+- `docs/NET-MESSAGING.md` — messaging through the relay: receipts,
+  retransmission, what the relay sees.
+- `docs/S2-B2-DURABLE-MESSAGING.md` — durable messaging specification: outbox,
+  inbox, commit boundaries.
 - `docs/HOME-DEPLOY.md` — devnet deploy, which needs open network and toolchain
   the agent sandbox does not have.
-- `PROJECT_CONTEXT.md` — PSI architecture detail at the repository root.
+- `PROJECT_CONTEXT.md` — PSI design notes at the repository root, last changed
+  2026-08-15. Its status table and test counts predate the relay, durable
+  messaging and the Android app — for example it marks Tor as ready, which it
+  is not. Read it as history and check every claim against the code.

@@ -9,6 +9,7 @@ verification step — "it looks right" is not one.
 ☐ cargo test --workspace                    →  0 упавших
 ☐ cargo clippy --workspace -- -D warnings   →  0 предупреждений
 ☐ tsc --noEmit                              →  0 ошибок  (если трогал TS)
+☐ Kotlin/Android тронут → Android-джобы на этом SHA →  зелёные, иначе NOT_VERIFIED
 ☐ grep на висячие ссылки                    →  нет
 ☐ diff затрагивает ТОЛЬКО запрошенное       →  да
 ☐ инженерное ревью (karpathy-review.md)     →  блок результата в отчёте
@@ -28,12 +29,13 @@ list is a pointer and can go stale.
 - `arcium-ci.yml` runs on every push and pull request (no path filter). A
   docs-only or skill-only diff triggers **only** this workflow.
 - The Android workflows are path-filtered. `android-native-bridge.yml` fires on
-  `crates/**`, the repository-root `Cargo.toml`, `android/app/build.gradle.kts`
-  and its own file; `android-instrumentation.yml` and
-  `android-two-device-e2e.yml` fire on `crates/**`, `Cargo.toml`, `android/**`
-  and their own inputs; `android-ci.yml` fires on `android/**`. None of them
-  fires on a docs-only diff, and none fires on a change confined to
-  `arcium-psi/`.
+  `crates/**`, the repository-root `Cargo.toml` and `Cargo.lock`,
+  `android/app/build.gradle.kts` and its own file; `android-instrumentation.yml`
+  and `android-two-device-e2e.yml` fire on `crates/**`, `Cargo.toml`,
+  `Cargo.lock`, `android/**`, `.github/actions/uniffi-android-bridge/**` and
+  their own file; `android-ci.yml` fires on `android/**` and its own file only,
+  so a `crates/**` change does not run the JVM unit tests. None of them fires on
+  a docs-only diff, and none fires on a change confined to `arcium-psi/`.
 - So a documentation PR that is green shows that the deterministic Rust and
   Arcium jobs still pass on that tree. It says nothing about the Android
   jobs, which did not run.
@@ -64,10 +66,27 @@ list is a pointer and can go stale.
 - If a check is stuck rather than failing, that is an infrastructure condition,
   not a result. Do not treat it as either pass or fail.
 
+## Android and Kotlin changes
+
+The agent sandbox has no Android SDK: Kotlin cannot be compiled or run here.
+`android-ci.yml` compiles the app, runs the JVM unit tests and assembles the
+instrumentation APK; `android-instrumentation.yml` and
+`android-two-device-e2e.yml` run on x86_64 API-30 emulators. Until the job that
+covers the change has run on your SHA, a Kotlin change is `NOT_VERIFIED`, not
+"compiles". A local `kotlinc` type-check against freshly generated bindings and
+stubs for the Android classes is weaker evidence — stubs can hide real API
+errors — and is reported as such. What an emulator run does and does not prove
+is in `android-uniffi-bridge`.
+
 ## Where a new test goes
 
-- **Rust:** a `#[cfg(test)] mod tests { ... }` block at the end of the crate
-  file it covers.
+- **Rust:** next to the tests of the code it covers — a `#[cfg(test)] mod tests`
+  block at the end of the file, or the crate's test-module directory where one
+  exists (`crates/mobile-ffi/src/tests/`, `crates/core-protocol/src/messaging/tests/`).
+  Follow the nearest existing test.
+- **Kotlin:** JVM unit tests in `android/app/src/test/`; instrumentation tests in
+  `android/app/src/androidTest/`. The package `com.arcium.messenger.e2e` runs
+  only in `android-two-device-e2e.yml`, through `android/e2e/two_devices.py`.
 - **TypeScript:** `arcium-psi/tests/src/*.test.ts`, run with
   `npx mocha --require ts-node/register 'src/<name>.test.ts'` from
   `arcium-psi/tests`.

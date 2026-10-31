@@ -429,8 +429,9 @@ class TwoDeviceMessengerTest {
     }
 
     /**
-     * Run last, on Bob's device and then on Alice's. Receipts are ratchet
-     * messages too, and Bob answered the replayed envelopes with new ones.
+     * Run last, one device at a time: Alice, Bob, then Alice again (see the
+     * driver). Receipts are ratchet messages too, and Bob answered the
+     * replayed envelopes with new ones.
      * Once the history shows every text, the activity is stopped, which ends
      * the app's own sync loop (it runs while the activity is started), so the
      * rounds below are the only ones: sync until a round fetches nothing, then

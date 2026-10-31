@@ -268,8 +268,11 @@ def main():
     r.step("bob", "bobIgnoresReplayedEnvelopes", replay)
 
     print("12. Repeated sync rounds accept nothing; every text is in each history once")
-    # One device after the other: Bob first publishes what the replay left him
-    # to send, then Alice fetches it; neither runs while the other syncs.
+    # One device at a time, so neither syncs while the other is counted. Alice
+    # goes first and last: her new process sends again what still waits for a
+    # receipt, Bob takes it and answers, and Alice's second pass takes that
+    # answer. Each device's last check comes after the other's last send.
+    r.step("alice", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs")
     r.step("bob", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs")
     r.step("alice", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs")
 

@@ -50,6 +50,11 @@ import uniffi.arcium_core.contactCardFingerprint
  * Every text carries [CANARY]; the relay alerts if it ever stores those
  * bytes, and the workflow fails on that alert. Missing arguments fail a step;
  * nothing is skipped.
+ *
+ * Two steps also act as the untrusted relay or call the messenger directly,
+ * to reach a boundary the screens cannot: [bobIgnoresReplayedEnvelopes] sends
+ * old envelopes to Bob again, and [everyTextIsInTheHistoryOnceAfterRepeatedSyncs]
+ * runs sync rounds itself and reads their reports.
  */
 @RunWith(AndroidJUnit4::class)
 class TwoDeviceMessengerTest {
@@ -62,6 +67,13 @@ class TwoDeviceMessengerTest {
         const val WAIT_MS = 180_000L
         const val UI_MS = 20_000L
         const val DATA_CODE = 42
+
+        /** Every text of the Alice–Bob conversation, and whether Alice wrote it. */
+        val CONVERSATION = listOf(
+            "hello bob" to true, "hi alice" to false, "queued 1" to true, "queued 2" to true,
+            "queued 3" to true, "after restart" to false, "welcome back" to true, "before the kill" to true,
+            "during the outage" to true, "before publishing" to true, "while bob restarts" to true,
+        )
     }
 
     private val args = InstrumentationRegistry.getArguments()
@@ -187,6 +199,11 @@ class TwoDeviceMessengerTest {
             for (i in 1..3) assertNotEquals("Delivered", statusOf(text("queued $i")))
             Thread.sleep(1_000)
         }
+        // What the relay holds for Bob now, before he fetches it: replayed to
+        // him in bobIgnoresReplayedEnvelopes, long after he accepted it.
+        val held = RelayClient(arg("relay")).fetchAfter(peerKey, 0)
+        assertTrue("the relay holds Alice's three texts for Bob: ${held.size}", held.size >= 3)
+        report("replayTo" to hex(peerKey), "replay" to held.joinToString(",") { hex(it.second) })
     }
 
     /** Alice's new process: the pending texts were kept, once each, and are now delivered. */
@@ -320,7 +337,128 @@ class TwoDeviceMessengerTest {
         assertEquals(ChatSessionState.None, c.session)
     }
 
+    /**
+     * Alice has no network (the driver switched it off): her text is recorded
+     * and shown as not sent when her process receives SIGKILL. Nothing of it
+     * has reached the relay.
+     */
+    @Test
+    fun aliceIsKilledBeforePublishing() {
+        openChat()
+        waitForText("No network", WAIT_MS)
+        send(text("before publishing"))
+        waitForStatus(text("before publishing"), "Not sent yet")
+        report("killing" to "SIGKILL")
+        android.os.Process.sendSignal(android.os.Process.myPid(), android.os.Process.SIGNAL_KILL)
+        Thread.sleep(30_000)
+        throw AssertionError("SIGKILL did not end this process")
+    }
+
+    /** Alice's new process, network back: the text was kept, once, and is delivered once. */
+    @Test
+    fun aliceDeliversTheTextFromBeforePublishing() {
+        openChat()
+        assertEquals(1, stored(text("before publishing"), outgoing = true).size)
+        waitForStatus(text("before publishing"), "Delivered")
+        assertEquals(1, stored(text("before publishing"), outgoing = true).size)
+    }
+
+    @Test
+    fun bobReceivesTheTextFromBeforePublishing() {
+        openChat()
+        waitForMessage(text("before publishing"))
+        assertEquals(1, stored(text("before publishing"), outgoing = false).size)
+    }
+
+    /** Bob is offline again (the driver switched his network off): Alice's text waits on the relay. */
+    @Test
+    fun aliceWritesWhileBobRestartsOffline() {
+        openChat()
+        send(text("while bob restarts"))
+        waitForStatus(text("while bob restarts"), "Sent to relay")
+    }
+
+    /** Bob's app opens with no network and has not got the text; then this process ends. */
+    @Test
+    fun bobOpensTheChatOffline() {
+        openChat()
+        waitForText("No network", WAIT_MS)
+        assertEquals(0, stored(text("while bob restarts"), outgoing = false).size)
+    }
+
+    /** Bob's next process, network back: the text arrives, once. */
+    @Test
+    fun bobCatchesUpAfterRestartingOffline() {
+        openChat()
+        waitForMessage(text("while bob restarts"))
+        assertEquals(1, stored(text("while bob restarts"), outgoing = false).size)
+    }
+
+    /**
+     * The relay is untrusted and may deliver an envelope again after it was
+     * fetched and deleted. This step sends Bob, a second time, the envelopes
+     * the relay held for him while he was offline (all accepted long ago),
+     * waits until his app has taken them off the relay again, and checks
+     * that nothing in his history changed.
+     */
+    @Test
+    fun bobIgnoresReplayedEnvelopes() {
+        openChat()
+        val me = unhex(arg("replayTo"))
+        val envelopes = arg("replay").split(",").map(::unhex)
+        val before = history()
+        val relay = RelayClient(arg("relay"))
+        val seqs = envelopes.map { relay.send(me, it) }
+        val deadline = System.currentTimeMillis() + WAIT_MS
+        while (relay.fetchAfter(me, 0).any { it.first in seqs }) {
+            check(System.currentTimeMillis() < deadline) { "the replayed envelopes $seqs stayed on the relay" }
+            Thread.sleep(500)
+        }
+        assertEquals(before, history())
+        for (i in 1..3) assertEquals(1, stored(text("queued $i"), outgoing = false).size)
+        report("replayed" to seqs.joinToString(","))
+    }
+
+    /**
+     * Run last, on both devices. Receipts are ratchet messages too, and Bob
+     * answered the replayed envelopes with new ones, so each device first
+     * syncs until a round fetches nothing. Then three more rounds accept
+     * nothing, and the history holds every text of the conversation exactly
+     * once, in its final state, and nothing else.
+     */
+    @Test
+    fun everyTextIsInTheHistoryOnceAfterRepeatedSyncs() {
+        openChat()
+        val iAmAlice = peerName == "Bob"
+        val expected = CONVERSATION.map { (t, fromAlice) ->
+            val outgoing = fromAlice == iAmAlice
+            Triple(text(t), outgoing, if (outgoing) ChatEntryState.DELIVERED else ChatEntryState.RECEIVED)
+        }
+        for ((t, outgoing, _) in expected) if (outgoing) waitForStatus(t, "Delivered") else waitForMessage(t)
+        val deadline = System.currentTimeMillis() + WAIT_MS
+        while (true) {
+            val r = messenger { it.syncConversations() }
+            assertTrue("settling: ${r.errors}", r.errors.isEmpty())
+            if (r.fetched == 0u) break
+            check(System.currentTimeMillis() < deadline) { "the mailbox never ran empty: $r" }
+        }
+        val rounds = List(3) { messenger { it.syncConversations() } }
+        for ((i, r) in rounds.withIndex()) {
+            assertTrue("round ${i + 1}: ${r.errors}", r.errors.isEmpty())
+            assertEquals("round ${i + 1} accepted a message: $r", 0u, r.accepted)
+        }
+        assertEquals(expected.sortedBy { it.first }, history().sortedBy { it.first })
+        report("rounds" to rounds.joinToString(" | ") { "fetched=${it.fetched} accepted=${it.accepted} duplicates=${it.duplicates}" })
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    private fun history() =
+        messenger { it.chatEntries(peerKey) }.map { Triple(it.text.value, it.outgoing, it.state) }
+
+    private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
+
+    private fun unhex(s: String) = ByteArray(s.length / 2) { s.substring(2 * it, 2 * it + 2).toInt(16).toByte() }
 
     private fun <T> messenger(block: (uniffi.arcium_core.NetworkMessenger) -> T): T =
         block(ArciumApp.messenger.messenger())
@@ -424,7 +562,7 @@ class TwoDeviceMessengerTest {
         waitUntil("'$message' to be '$status'", WAIT_MS) { statusOf(message) == status }
     }
 
-    /** The two relay requests this test needs (`RELAY_PROTOCOL_V1`). */
+    /** The relay requests this test needs (`RELAY_PROTOCOL_V1`). */
     private class RelayClient(address: String) {
         private val host = address.substringBeforeLast(':')
         private val port = address.substringAfterLast(':').toInt()
@@ -436,6 +574,27 @@ class TwoDeviceMessengerTest {
 
         fun putBundle(owner: ByteArray, bundle: ByteArray) {
             check(request(byteArrayOf(1) + owner + bundle).contentEquals(byteArrayOf(0))) { "PUT_BUNDLE refused" }
+        }
+
+        /** SEND: the sequence number the relay stored [envelope] under. */
+        fun send(recipient: ByteArray, envelope: ByteArray): Long {
+            val response = request(byteArrayOf(3) + recipient + envelope)
+            check(response.size == 9 && response[0].toInt() == 0) { "SEND refused: status ${response[0]}" }
+            return DataInputStream(response.inputStream(1, 8)).readLong()
+        }
+
+        /** FETCH_AFTER: up to 256 (sequence number, envelope) pairs after [after]. */
+        fun fetchAfter(recipient: ByteArray, after: Long): List<Pair<Long, ByteArray>> {
+            val body = java.io.ByteArrayOutputStream().also { b ->
+                DataOutputStream(b).run { write(6); write(recipient); writeLong(after); writeShort(256) }
+            }.toByteArray()
+            val response = request(body)
+            check(response[0].toInt() == 0) { "FETCH_AFTER refused: status ${response[0]}" }
+            val input = DataInputStream(response.inputStream(1, response.size - 1))
+            return List(input.readUnsignedShort()) {
+                val seq = input.readLong()
+                seq to ByteArray(input.readInt()).also { input.readFully(it) }
+            }
         }
 
         private fun request(body: ByteArray): ByteArray = Socket(host, port).use { socket ->

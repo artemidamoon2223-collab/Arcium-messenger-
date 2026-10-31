@@ -7,13 +7,17 @@ needs, and passes each step what its user would have: the relay address and
 the contact's card, fingerprint and name as read from the contact's own
 screen. After every step the app is force-stopped (`am force-stop`) and
 checked to be gone, so every later step starts from a new app process (each
-step reports its pid). One step ends with SIGKILL instead (the app process
-signals itself, as `kill -9` would) while a text is on its way; the driver
-checks the process is gone. Neither is a power loss.
+step reports its pid). Two steps end with SIGKILL instead (the app process
+signals itself, as `kill -9` would): once while a text is on the relay, once
+while a text is recorded but not yet sent; the driver checks the process is
+gone. Neither is a power loss.
 
-Bob's network is switched off and on around the offline step with airplane
-mode; the switch is checked in Android's settings and connectivity state,
-and the app on Bob's device must itself report having no network.
+A device's network is switched off and on around the offline steps with
+airplane mode; the switch is checked in Android's settings and connectivity
+state, and the app on that device must itself report having no network.
+
+The envelopes the relay holds for Bob while he is offline are passed, as the
+step reported them, to a later step that sends them to him again.
 
 A step passes only if exactly one test ran and passed. Any failure, error,
 ignored or assumption-failed test, crash or missing result fails the run.
@@ -135,8 +139,8 @@ class Run:
             args["peerCard"], args["peerFingerprint"] = self.cards[peer]
         return args
 
-    def start(self, who, method):
-        return Step(self.out, self.serial[who], who, method, self.peer_args(who))
+    def start(self, who, method, extra=None):
+        return Step(self.out, self.serial[who], who, method, {**self.peer_args(who), **(extra or {})})
 
     def finish(self, *steps):
         results = [s.wait() for s in steps]
@@ -152,8 +156,18 @@ class Run:
             raise SystemExit(self.summary())
         return steps
 
-    def step(self, who, method):
-        return self.finish(self.start(who, method))[0]
+    def step(self, who, method, extra=None):
+        return self.finish(self.start(who, method, extra))[0]
+
+    def killed(self, who, method):
+        """A step that ends with SIGKILL: passes only if its process died before the test finished."""
+        s = self.start(who, method)
+        s.expect_kill = True
+        s.proc.wait(timeout=300)
+        s.reader.join(timeout=30)
+        if "killing" in s.data:
+            self.gone(who, s.data["pid"])
+        self.finish(s)
 
     def together(self, *pairs):
         return self.finish(*[self.start(who, method) for who, method in pairs])
@@ -213,19 +227,16 @@ def main():
     finally:
         r.network("bob", on=True)
     r.finish(bob)
+    replay = {k: alice.data[k] for k in ("replayTo", "replay") if k in alice.data}
+    if len(replay) != 2:
+        raise SystemExit("alice: aliceSendsWhileBobIsOffline did not report the envelopes held for Bob")
     r.step("alice", "aliceSeesTheQueuedTextsDelivered")
 
     print("5. Bob's app restarts and the conversation goes on")
     r.together(("bob", "bobContinuesAfterRestart"), ("alice", "aliceAnswersAfterBobsRestart"))
 
     print("6. Alice's process is killed with SIGKILL while her text is on its way")
-    alice = r.start("alice", "aliceIsKilledWithATextInFlight")
-    alice.expect_kill = True
-    alice.proc.wait(timeout=300)
-    alice.reader.join(timeout=30)
-    if "killing" in alice.data:
-        r.gone("alice", alice.data["pid"])
-    r.finish(alice)
+    r.killed("alice", "aliceIsKilledWithATextInFlight")
     r.together(("alice", "aliceSeesTheTextFromBeforeTheKillDelivered"),
                ("bob", "bobReceivesTheTextFromBeforeTheKill"))
 
@@ -234,6 +245,31 @@ def main():
 
     print("8. Keys on the relay that do not match a verified card are refused")
     r.step("alice", "aKeyMismatchOnTheRelayIsRefusedAndShown")
+
+    print("9. Alice's process is killed with SIGKILL before her text reaches the relay")
+    r.network("alice", on=False)
+    try:
+        r.killed("alice", "aliceIsKilledBeforePublishing")
+    finally:
+        r.network("alice", on=True)
+    r.together(("alice", "aliceDeliversTheTextFromBeforePublishing"),
+               ("bob", "bobReceivesTheTextFromBeforePublishing"))
+
+    print("10. Bob's app restarts while he is offline, then catches up")
+    r.network("bob", on=False)
+    try:
+        r.step("alice", "aliceWritesWhileBobRestartsOffline")
+        r.step("bob", "bobOpensTheChatOffline")
+    finally:
+        r.network("bob", on=True)
+    r.step("bob", "bobCatchesUpAfterRestartingOffline")
+
+    print("11. The relay delivers envelopes Bob accepted long ago a second time")
+    r.step("bob", "bobIgnoresReplayedEnvelopes", replay)
+
+    print("12. Repeated sync rounds accept nothing; every text is in each history once")
+    r.together(("alice", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs"),
+               ("bob", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs"))
 
     print(r.summary())
 

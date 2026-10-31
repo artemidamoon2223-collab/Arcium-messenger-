@@ -21,7 +21,11 @@ step reported them, to a later step that sends them to him again.
 
 A step passes only if exactly one test ran and passed. Any failure, error,
 ignored or assumption-failed test, crash or missing result fails the run.
-Raw output of every step is kept in --out.
+Besides the SIGKILL steps, the other exception is a negative control run in
+place: it passes only if its test ran and failed with an assertion whose
+message contains the expected text. Raw output of every step is kept in
+--out; what a step reports, apart from cards and envelopes, is printed with
+its result.
 
 Usage: two_devices.py --alice SERIAL --bob SERIAL --relay HOST:PORT --out DIR
 """
@@ -40,6 +44,8 @@ CLASS = f"{APP}.e2e.TwoDeviceMessengerTest"
 # Custom status code the test uses for data (TwoDeviceMessengerTest.DATA_CODE).
 DATA_CODE = "42"
 RESULT = {"0": "passed", "-1": "error", "-2": "failure", "-3": "ignored", "-4": "assumption failure"}
+# Reported data not worth printing: the pid is printed anyway, the rest is long.
+UNPRINTED = {"pid", "card", "fingerprint", "replay", "replayTo", "ready", "killing"}
 
 
 class Step:
@@ -51,6 +57,10 @@ class Step:
         # Set for a step whose process the driver kills: it passes only if
         # the process died before the test could finish.
         self.expect_kill = False
+        # Set for a negative control: it passes only if the test failed with
+        # an assertion whose message contains this text.
+        self.expect_failure = None
+        self.failures = []
         self.log = out / f"{len(list(out.glob('*.log'))):02d}-{who}-{method}.log"
         self.data, self.results, self.lines = {}, [], []
         self.ready = threading.Event()
@@ -82,6 +92,9 @@ class Step:
                             self.ready.set()
                     elif code != "1":
                         self.results.append((status.get("test", "?"), RESULT.get(code, f"code {code}")))
+                        if code in ("-1", "-2"):
+                            # The first line of the stack: the exception and its message.
+                            self.failures.append(status.get("stack", ""))
                     status = {}
         self.ready.set()
 
@@ -91,6 +104,11 @@ class Step:
         if self.expect_kill:
             ok = ("killing" in self.data and not self.results
                   and any("shortMsg=Process crashed" in l for l in self.lines))
+        elif self.expect_failure is not None:
+            ok = (self.results == [(self.method, "failure")]
+                  and any(f.startswith("java.lang.AssertionError: ") and self.expect_failure in f
+                          for f in self.failures)
+                  and any(l.startswith("INSTRUMENTATION_CODE: -1") for l in self.lines))
         else:
             ok = self.results == [(self.method, "passed")] and any(
                 l.startswith("INSTRUMENTATION_CODE: -1") for l in self.lines
@@ -98,6 +116,12 @@ class Step:
         took = time.time() - self.started
         print(f"  {self.who:5} {self.method}: {self.results or 'no result'} "
               f"(pid {self.data.get('pid', '?')}, {took:.0f} s) -> {'OK' if ok else 'FAILED'}")
+        for k, v in self.data.items():
+            if k not in UNPRINTED:
+                print(f"    {k}: {v[:400]}")
+        if self.expect_failure is not None:
+            for f in self.failures:
+                print(f"    expected failure: {f[:400]}")
         if not ok:
             print("\n".join("    | " + l for l in self.lines[-60:]))
         return ok
@@ -137,6 +161,8 @@ class Run:
         args = {"relay": self.relay, "peerName": peer.capitalize()}
         if peer in self.cards:
             args["peerCard"], args["peerFingerprint"] = self.cards[peer]
+        if who in self.cards:
+            args["myCard"] = self.cards[who][0]
         return args
 
     def start(self, who, method, extra=None):
@@ -158,6 +184,12 @@ class Run:
 
     def step(self, who, method, extra=None):
         return self.finish(self.start(who, method, extra))[0]
+
+    def expect_failing(self, who, method, extra, text):
+        """A negative control: passes only if the test fails with an assertion containing `text`."""
+        s = self.start(who, method, extra)
+        s.expect_failure = text
+        return self.finish(s)[0]
 
     def killed(self, who, method):
         """A step that ends with SIGKILL: passes only if its process died before the test finished."""
@@ -267,14 +299,22 @@ def main():
     print("11. The relay delivers envelopes Bob accepted long ago a second time")
     r.step("bob", "bobIgnoresReplayedEnvelopes", replay)
 
-    print("12. Repeated sync rounds accept nothing; every text is in each history once")
-    # One device at a time, so neither syncs while the other is counted. Alice
-    # goes first and last: her new process sends again what still waits for a
-    # receipt, Bob takes it and answers, and Alice's second pass takes that
-    # answer. Each device's last check comes after the other's last send.
-    r.step("alice", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs")
-    r.step("bob", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs")
-    r.step("alice", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs")
+    print("12. Final state, one device at a time: nothing pending, nothing left on the relay,")
+    print("    every text in each history once")
+    final = "everyTextIsInTheHistoryOnceAfterRepeatedSyncs"
+    # Negative control in place, in the order of run 82: Bob, then Alice. Alice's
+    # new process sends Bob once more the text still waiting for his receipt
+    # (it is on the relay before she fetches the receipt), after Bob's pass.
+    # Her check of his mailbox must find that envelope and fail.
+    r.step("bob", final)
+    r.expect_failing("alice", final, {"checkPeerMailbox": "1"}, "left on the relay for Bob: [seq=")
+    # Bob takes it, a duplicate, and answers with a new receipt; Alice's last
+    # pass takes that, sends nothing, and finds both mailboxes empty.
+    r.step("bob", final)
+    r.step("alice", final, {"checkPeerMailbox": "1"})
+
+    print("13. The final checks fail on fixtures that break what they guard")
+    r.step("alice", "theFinalChecksRejectViolatedFixtures")
 
     print(r.summary())
 

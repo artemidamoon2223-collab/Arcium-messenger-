@@ -16,18 +16,21 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
-import androidx.lifecycle.Lifecycle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.arcium.messenger.ArciumApp
 import com.arcium.messenger.MainActivity
 import com.arcium.messenger.messaging.ContactCardText
+import com.arcium.messenger.messaging.MessengerService
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.Socket
 import java.security.SecureRandom
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -35,6 +38,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import uniffi.arcium_core.ChatEntryState
 import uniffi.arcium_core.ChatSessionState
+import uniffi.arcium_core.SyncReport
 import uniffi.arcium_core.contactCardFingerprint
 
 /**
@@ -55,7 +59,11 @@ import uniffi.arcium_core.contactCardFingerprint
  * Two steps also act as the untrusted relay or call the messenger directly,
  * to reach a boundary the screens cannot: [bobIgnoresReplayedEnvelopes] sends
  * old envelopes to Bob again, and [everyTextIsInTheHistoryOnceAfterRepeatedSyncs]
- * runs sync rounds itself and reads their reports.
+ * runs sync rounds itself, reads their reports and reads both mailboxes on
+ * the relay. Both do so on the app's own sync thread ([exclusive]), so no
+ * round of the app's loop runs between their rounds and their checks.
+ * [theFinalChecksRejectViolatedFixtures] shows that those checks fail on
+ * fixtures that break what they guard.
  */
 @RunWith(AndroidJUnit4::class)
 class TwoDeviceMessengerTest {
@@ -75,6 +83,12 @@ class TwoDeviceMessengerTest {
             "queued 3" to true, "after restart" to false, "welcome back" to true, "before the kill" to true,
             "during the outage" to true, "before publishing" to true, "while bob restarts" to true,
         )
+
+        /** A sync round that sent, fetched and changed nothing. */
+        val IDLE = SyncReport(
+            published = 0u, fetched = 0u, accepted = 0u, duplicates = 0u, sessionsAccepted = 0u,
+            delivered = 0u, dropped = 0u, deferred = 0u, errors = emptyList(),
+        )
     }
 
     private val args = InstrumentationRegistry.getArguments()
@@ -85,6 +99,10 @@ class TwoDeviceMessengerTest {
     private val peerName get() = arg("peerName")
     private val peerCard get() = checkNotNull(ContactCardText.decode(arg("peerCard")))
     private val peerKey get() = peerCard.copyOfRange(1, 33)
+    private val myName get() = if (peerName == "Bob") "Alice" else "Bob"
+
+    /** This device's mailbox on the relay: the X25519 key in its own card. */
+    private val myKey get() = checkNotNull(ContactCardText.decode(arg("myCard"))).copyOfRange(1, 33)
 
     private fun text(s: String) = "$s $CANARY"
 
@@ -197,7 +215,7 @@ class TwoDeviceMessengerTest {
         for (i in 1..3) waitForStatus(text("queued $i"), "Sent to relay")
         val until = System.currentTimeMillis() + 15_000
         while (System.currentTimeMillis() < until) {
-            for (i in 1..3) assertNotEquals("Delivered", statusOf(text("queued $i")))
+            for (i in 1..3) assertEquals("Sent to relay", statusOf(text("queued $i")))
             Thread.sleep(1_000)
         }
         // What the relay holds for Bob now, before he fetches it: replayed to
@@ -344,8 +362,9 @@ class TwoDeviceMessengerTest {
 
     /**
      * Alice has no network (the driver switched it off): her text is recorded
-     * and shown as not sent when her process receives SIGKILL. Nothing of it
-     * has reached the relay.
+     * and shown as not sent when her process receives SIGKILL. With no
+     * network nothing of it can have reached the relay; the relay itself is
+     * not read here.
      */
     @Test
     fun aliceIsKilledBeforePublishing() {
@@ -381,6 +400,7 @@ class TwoDeviceMessengerTest {
         openChat()
         send(text("while bob restarts"))
         waitForStatus(text("while bob restarts"), "Sent to relay")
+        assertEquals(1, stored(text("while bob restarts"), outgoing = true).size)
     }
 
     /** Bob's app opens with no network and has not got the text; then this process ends. */
@@ -401,73 +421,182 @@ class TwoDeviceMessengerTest {
 
     /**
      * The relay is untrusted and may deliver an envelope again after it was
-     * fetched and deleted. This step sends Bob, a second time, the envelopes
+     * fetched and deleted. On the app's sync thread, with Bob's mailbox
+     * synced empty first, this step sends Bob, a second time, the envelopes
      * the relay held for him while he was offline (all accepted long ago),
-     * waits until his app has taken them off the relay again, and checks
-     * that nothing in his history changed.
+     * then runs one sync round itself. That round must fetch exactly those
+     * envelopes, find each a duplicate (none newly accepted, none discarded),
+     * answer each with a new receipt (docs/NET-MESSAGING.md: a duplicate text
+     * gets a new receipt) and delete them from the relay; and nothing in his
+     * history may change.
      */
     @Test
     fun bobIgnoresReplayedEnvelopes() {
         openChat()
         val me = unhex(arg("replayTo"))
         val envelopes = arg("replay").split(",").map(::unhex)
-        val before = history()
-        val relay = RelayClient(arg("relay"))
-        val seqs = envelopes.map { relay.send(me, it) }
-        // Identical bytes still stored would get their old number back: new
-        // numbers show the relay stored them again, after Bob deleted them.
         val heldMax = arg("replayHeldMaxSeq").toLong()
-        assertTrue("the relay stored the replay anew: $seqs after $heldMax", seqs.all { it > heldMax })
-        val deadline = System.currentTimeMillis() + WAIT_MS
-        while (relay.fetchAfter(me, 0).any { it.first in seqs }) {
-            check(System.currentTimeMillis() < deadline) { "the replayed envelopes $seqs stayed on the relay" }
-            Thread.sleep(500)
+        val relay = RelayClient(arg("relay"))
+        val (seqs, round) = exclusive {
+            settle()
+            val before = history()
+            val seqs = envelopes.map { relay.send(me, it) }
+            // Identical bytes still stored would get their old number back: new
+            // numbers show the relay stored them again, after Bob deleted them.
+            assertTrue("the relay stored the replay anew: $seqs after $heldMax", seqs.all { it > heldMax })
+            val n = seqs.size.toUInt()
+            val round = messenger { it.syncConversations() }
+            assertEquals(
+                "the replay round: each envelope fetched, a duplicate, answered by a new receipt",
+                IDLE.copy(fetched = n, duplicates = n, published = n),
+                round,
+            )
+            assertTrue("the replay is still on the relay", relay.fetchAfter(me, 0).none { it.first in seqs })
+            assertEquals(before, history())
+            for (i in 1..3) assertEquals(1, stored(text("queued $i"), outgoing = false).size)
+            seqs to round
         }
-        assertEquals(before, history())
-        for (i in 1..3) assertEquals(1, stored(text("queued $i"), outgoing = false).size)
-        report("replayed" to seqs.joinToString(","))
+        report("replayed" to seqs.joinToString(","), "replayRound" to round.brief())
     }
 
     /**
-     * Run last, one device at a time: Alice, Bob, then Alice again (see the
-     * driver). Receipts are ratchet messages too, and Bob answered the
-     * replayed envelopes with new ones.
-     * Once the history shows every text, the activity is stopped, which ends
-     * the app's own sync loop (it runs while the activity is started), so the
-     * rounds below are the only ones: sync until a round fetches nothing, then
-     * three more rounds accept nothing, and the history holds every text of
-     * the conversation exactly once, in its final state, and nothing else.
+     * Run last, one device at a time (see the driver). On the app's sync
+     * thread: sync until a round fetches nothing; then three rounds of the
+     * app's messenger, and one of a new messenger with no retransmission
+     * clock (it sends at once whatever is still pending: texts, receipts,
+     * handshakes), must each send, fetch and change nothing; no text to the
+     * contact waits for a receipt; the relay holds nothing for this device;
+     * and the history is the whole conversation, every text once, in its
+     * final state, and nothing else. With `checkPeerMailbox`, the relay must
+     * also hold nothing for the contact: nothing this device sent is left
+     * untaken.
      */
     @Test
     fun everyTextIsInTheHistoryOnceAfterRepeatedSyncs() {
         openChat()
-        val iAmAlice = peerName == "Bob"
-        val expected = CONVERSATION.map { (t, fromAlice) ->
-            val outgoing = fromAlice == iAmAlice
-            Triple(text(t), outgoing, if (outgoing) ChatEntryState.DELIVERED else ChatEntryState.RECEIVED)
-        }
+        val expected = conversation(iAmAlice = peerName == "Bob")
         for ((t, outgoing, _) in expected) if (outgoing) waitForStatus(t, "Delivered") else waitForMessage(t)
-        rule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
-        val deadline = System.currentTimeMillis() + WAIT_MS
-        while (true) {
-            val r = messenger { it.syncConversations() }
-            assertTrue("settling: ${r.errors}", r.errors.isEmpty())
-            if (r.fetched == 0u) break
-            check(System.currentTimeMillis() < deadline) { "the mailbox never ran empty: $r" }
+        val relay = RelayClient(arg("relay"))
+        val (rounds, fresh) = exclusive {
+            settle()
+            val rounds = List(3) { messenger { it.syncConversations() } }
+            rounds.forEachIndexed { i, r -> checkQuiet("round ${i + 1}", r) }
+            val probe = ArciumApp.core.networkMessenger(arg("relay"), retransmitAfterMs = 0u)
+            val fresh = try {
+                probe.syncConversations()
+            } finally {
+                probe.close()
+            }
+            checkQuiet("the round of a messenger that sends everything pending at once", fresh)
+            checkNothingUndelivered(messenger { it.undelivered(peerKey) })
+            checkMailboxEmpty(relay, myKey, myName)
+            checkHistory(expected, history())
+            if (args.getString("checkPeerMailbox") == "1") checkMailboxEmpty(relay, peerKey, peerName)
+            rounds to fresh
         }
-        val rounds = List(3) { messenger { it.syncConversations() } }
-        for ((i, r) in rounds.withIndex()) {
-            assertTrue("round ${i + 1}: ${r.errors}", r.errors.isEmpty())
-            assertEquals("round ${i + 1} accepted a message: $r", 0u, r.accepted)
+        report("rounds" to rounds.joinToString(" | ") { it.brief() }, "fresh" to fresh.brief())
+    }
+
+    /**
+     * Negative controls for the checks of the final step: each is applied to
+     * a fixture that breaks what it guards and must fail, and to the matching
+     * correct fixture, which must pass. The mailbox fixture is the condition
+     * of run 82: one envelope left on the relay for a device after the last
+     * pass. It is a new random mailbox that nothing else uses.
+     */
+    @Test
+    fun theFinalChecksRejectViolatedFixtures() {
+        checkQuiet("the idle report", IDLE)
+        val busy = listOf(
+            IDLE.copy(published = 1u), IDLE.copy(fetched = 1u), IDLE.copy(accepted = 1u),
+            IDLE.copy(duplicates = 1u), IDLE.copy(deferred = 1u), IDLE.copy(errors = listOf("network: refused")),
+        )
+        for (r in busy) rejects("was not idle") { checkQuiet("a fixture", r) }
+
+        val expected = conversation(iAmAlice = true)
+        checkHistory(expected, expected.reversed())
+        val sent = expected.indexOfFirst { it.second }
+        val broken = listOf(
+            expected + expected[sent],
+            expected.drop(1),
+            expected.mapIndexed { i, e -> if (i == sent) e.copy(third = ChatEntryState.TRANSMITTED) else e },
+        )
+        for (h in broken) rejects("is not the conversation") { checkHistory(expected, h) }
+
+        checkNothingUndelivered(emptyList())
+        rejects("still wait for a receipt") { checkNothingUndelivered(listOf(ByteArray(32))) }
+
+        val relay = RelayClient(arg("relay"))
+        val mailbox = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        checkMailboxEmpty(relay, mailbox, "the fixture")
+        val seq = relay.send(mailbox, ByteArray(158).also { SecureRandom().nextBytes(it) })
+        rejects("left on the relay for the fixture: [seq=$seq len=158]") {
+            checkMailboxEmpty(relay, mailbox, "the fixture")
         }
-        assertEquals(expected.sortedBy { it.first }, history().sortedBy { it.first })
-        report("rounds" to rounds.joinToString(" | ") { "fetched=${it.fetched} accepted=${it.accepted} duplicates=${it.duplicates}" })
+        report("controls" to "${busy.size + broken.size + 2} violated fixtures rejected, 4 correct ones passed")
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private fun history() =
         messenger { it.chatEntries(peerKey) }.map { Triple(it.text.value, it.outgoing, it.state) }
+
+    /** Every text of [CONVERSATION] as this device's history must end: (text, outgoing, state). */
+    private fun conversation(iAmAlice: Boolean) = CONVERSATION.map { (t, fromAlice) ->
+        val outgoing = fromAlice == iAmAlice
+        Triple(text(t), outgoing, if (outgoing) ChatEntryState.DELIVERED else ChatEntryState.RECEIVED)
+    }
+
+    /**
+     * Runs [block] on the app's own sync thread (`MessengerService.syncDispatcher`,
+     * one task at a time, read here by reflection): a round of the app's loop
+     * already running finishes first, and none starts until [block] returns.
+     * [block] must not suspend, or the thread would be free again.
+     */
+    private fun <T> exclusive(block: () -> T): T {
+        val field = MessengerService::class.java.getDeclaredField("syncDispatcher").apply { isAccessible = true }
+        return runBlocking(field.get(ArciumApp.messenger) as CoroutineDispatcher) { block() }
+    }
+
+    /** Syncs until a round fetches nothing: every envelope on the relay for this device was processed. */
+    private fun settle() {
+        val deadline = System.currentTimeMillis() + WAIT_MS
+        while (true) {
+            val r = messenger { it.syncConversations() }
+            assertTrue("settling: ${r.errors}", r.errors.isEmpty())
+            if (r.fetched == 0u) return
+            check(System.currentTimeMillis() < deadline) { "the mailbox never ran empty: $r" }
+        }
+    }
+
+    private fun checkQuiet(what: String, r: SyncReport) = assertEquals("$what was not idle", IDLE, r)
+
+    private fun checkNothingUndelivered(ids: List<ByteArray>) =
+        assertTrue("texts to $peerName still wait for a receipt: ${ids.map(::hex)}", ids.isEmpty())
+
+    private fun checkMailboxEmpty(relay: RelayClient, owner: ByteArray, whose: String) {
+        val left = relay.fetchAfter(owner, 0).map { "seq=${it.first} len=${it.second.size}" }
+        assertTrue("left on the relay for $whose: $left", left.isEmpty())
+    }
+
+    /** Every expected entry once and nothing else; order is not compared. */
+    private fun checkHistory(
+        expected: List<Triple<String, Boolean, ChatEntryState>>,
+        actual: List<Triple<String, Boolean, ChatEntryState>>,
+    ) {
+        val order = compareBy<Triple<String, Boolean, ChatEntryState>>({ it.first }, { it.second }, { it.third })
+        assertEquals("the history is not the conversation", expected.sortedWith(order), actual.sortedWith(order))
+    }
+
+    /** Fails unless [check] fails with a message containing [fragment]. */
+    private fun rejects(fragment: String, check: () -> Unit) {
+        val e = assertThrows(AssertionError::class.java) { check() }
+        assertTrue("the failure says '$fragment': ${e.message}", e.message.orEmpty().contains(fragment))
+    }
+
+    private fun SyncReport.brief() =
+        "published=$published fetched=$fetched accepted=$accepted duplicates=$duplicates " +
+            "delivered=$delivered dropped=$dropped deferred=$deferred errors=$errors"
 
     private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
 

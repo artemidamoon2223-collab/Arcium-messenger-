@@ -147,6 +147,8 @@ class TwoDeviceMessengerTest {
         waitForStatus(text("hello bob"), "Delivered")
         waitForMessage(text("hi alice"))
         assertEquals(ChatSessionState.Established, messenger { it.conversation(peerKey) }.session)
+        assertEquals(1, stored(text("hello bob"), outgoing = true).size)
+        assertEquals(1, stored(text("hi alice"), outgoing = false).size)
     }
 
     /** Bob reads Alice's text and answers; tapping send twice sends once. */
@@ -187,11 +189,12 @@ class TwoDeviceMessengerTest {
         }
     }
 
-    /** Alice's new process: the pending texts were kept and are now delivered. */
+    /** Alice's new process: the pending texts were kept, once each, and are now delivered. */
     @Test
     fun aliceSeesTheQueuedTextsDelivered() {
         openChat()
         for (i in 1..3) waitForStatus(text("queued $i"), "Delivered")
+        for (i in 1..3) assertEquals(1, stored(text("queued $i"), outgoing = true).size)
         assertEquals(ChatSessionState.Established, messenger { it.conversation(peerKey) }.session)
     }
 
@@ -213,6 +216,8 @@ class TwoDeviceMessengerTest {
         send(text("after restart"))
         waitForStatus(text("after restart"), "Delivered")
         waitForMessage(text("welcome back"))
+        assertEquals(1, stored(text("after restart"), outgoing = true).size)
+        assertEquals(1, stored(text("welcome back"), outgoing = false).size)
     }
 
     @Test
@@ -221,6 +226,8 @@ class TwoDeviceMessengerTest {
         waitForMessage(text("after restart"))
         send(text("welcome back"))
         waitForStatus(text("welcome back"), "Delivered")
+        assertEquals(1, stored(text("after restart"), outgoing = false).size)
+        assertEquals(1, stored(text("welcome back"), outgoing = true).size)
     }
 
     /**
@@ -258,7 +265,7 @@ class TwoDeviceMessengerTest {
 
     /**
      * Alice loses the network while sending: the text is kept and shown as
-     * not sent; when the network returns it goes out and is delivered.
+     * not sent; when the network returns it goes out and is delivered, once.
      */
     @Test
     fun aliceSendsDuringAnOutage() {
@@ -274,12 +281,14 @@ class TwoDeviceMessengerTest {
             shell("cmd connectivity airplane-mode disable")
         }
         waitForStatus(text("during the outage"), "Delivered")
+        assertEquals(1, stored(text("during the outage"), outgoing = true).size)
     }
 
     @Test
     fun bobReceivesAfterAlicesOutage() {
         openChat()
         waitForMessage(text("during the outage"))
+        assertEquals(1, stored(text("during the outage"), outgoing = false).size)
     }
 
     /**

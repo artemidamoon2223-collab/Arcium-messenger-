@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import androidx.lifecycle.Lifecycle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.arcium.messenger.ArciumApp
@@ -203,7 +204,11 @@ class TwoDeviceMessengerTest {
         // him in bobIgnoresReplayedEnvelopes, long after he accepted it.
         val held = RelayClient(arg("relay")).fetchAfter(peerKey, 0)
         assertTrue("the relay holds Alice's three texts for Bob: ${held.size}", held.size >= 3)
-        report("replayTo" to hex(peerKey), "replay" to held.joinToString(",") { hex(it.second) })
+        report(
+            "replayTo" to hex(peerKey),
+            "replay" to held.joinToString(",") { hex(it.second) },
+            "replayHeldMaxSeq" to held.maxOf { it.first }.toString(),
+        )
     }
 
     /** Alice's new process: the pending texts were kept, once each, and are now delivered. */
@@ -409,6 +414,10 @@ class TwoDeviceMessengerTest {
         val before = history()
         val relay = RelayClient(arg("relay"))
         val seqs = envelopes.map { relay.send(me, it) }
+        // Identical bytes still stored would get their old number back: new
+        // numbers show the relay stored them again, after Bob deleted them.
+        val heldMax = arg("replayHeldMaxSeq").toLong()
+        assertTrue("the relay stored the replay anew: $seqs after $heldMax", seqs.all { it > heldMax })
         val deadline = System.currentTimeMillis() + WAIT_MS
         while (relay.fetchAfter(me, 0).any { it.first in seqs }) {
             check(System.currentTimeMillis() < deadline) { "the replayed envelopes $seqs stayed on the relay" }
@@ -420,11 +429,13 @@ class TwoDeviceMessengerTest {
     }
 
     /**
-     * Run last, on both devices. Receipts are ratchet messages too, and Bob
-     * answered the replayed envelopes with new ones, so each device first
-     * syncs until a round fetches nothing. Then three more rounds accept
-     * nothing, and the history holds every text of the conversation exactly
-     * once, in its final state, and nothing else.
+     * Run last, on Bob's device and then on Alice's. Receipts are ratchet
+     * messages too, and Bob answered the replayed envelopes with new ones.
+     * Once the history shows every text, the activity is stopped, which ends
+     * the app's own sync loop (it runs while the activity is started), so the
+     * rounds below are the only ones: sync until a round fetches nothing, then
+     * three more rounds accept nothing, and the history holds every text of
+     * the conversation exactly once, in its final state, and nothing else.
      */
     @Test
     fun everyTextIsInTheHistoryOnceAfterRepeatedSyncs() {
@@ -435,6 +446,7 @@ class TwoDeviceMessengerTest {
             Triple(text(t), outgoing, if (outgoing) ChatEntryState.DELIVERED else ChatEntryState.RECEIVED)
         }
         for ((t, outgoing, _) in expected) if (outgoing) waitForStatus(t, "Delivered") else waitForMessage(t)
+        rule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
         val deadline = System.currentTimeMillis() + WAIT_MS
         while (true) {
             val r = messenger { it.syncConversations() }

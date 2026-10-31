@@ -227,8 +227,8 @@ def main():
     finally:
         r.network("bob", on=True)
     r.finish(bob)
-    replay = {k: alice.data[k] for k in ("replayTo", "replay") if k in alice.data}
-    if len(replay) != 2:
+    replay = {k: alice.data[k] for k in ("replayTo", "replay", "replayHeldMaxSeq") if k in alice.data}
+    if len(replay) != 3:
         raise SystemExit("alice: aliceSendsWhileBobIsOffline did not report the envelopes held for Bob")
     r.step("alice", "aliceSeesTheQueuedTextsDelivered")
 
@@ -268,8 +268,10 @@ def main():
     r.step("bob", "bobIgnoresReplayedEnvelopes", replay)
 
     print("12. Repeated sync rounds accept nothing; every text is in each history once")
-    r.together(("alice", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs"),
-               ("bob", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs"))
+    # One device after the other: Bob first publishes what the replay left him
+    # to send, then Alice fetches it; neither runs while the other syncs.
+    r.step("bob", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs")
+    r.step("alice", "everyTextIsInTheHistoryOnceAfterRepeatedSyncs")
 
     print(r.summary())
 

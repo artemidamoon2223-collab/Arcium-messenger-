@@ -84,7 +84,7 @@ here.
   inbox, commit boundaries.
 - `docs/HOME-DEPLOY.md` — devnet deploy, which needs open network and toolchain
   the agent sandbox does not have.
-- `PROJECT_CONTEXT.md` — PSI design notes at the repository root, last changed
-  2026-08-15. Its status table and test counts predate the relay, durable
+- `PROJECT_CONTEXT.md` — PSI design notes at the repository root. Its status
+  table and test counts predate the relay, durable
   messaging and the Android app — for example it marks Tor as ready, which it
   is not. Read it as history and check every claim against the code.

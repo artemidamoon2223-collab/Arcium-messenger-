@@ -31,7 +31,7 @@ Keeping these levels explicit is most of what this skill is for.
 
 ## Use when
 
-- Changing `crates/mobile-ffi` — especially anything inside a
+- Changing the FFI surface of `crates/mobile-ffi` — anything inside a
   `#[uniffi::export]` block.
 - Working on the generated Kotlin bindings or code that calls them.
 - Touching the JNA dependency, `jniLibs` packaging, or

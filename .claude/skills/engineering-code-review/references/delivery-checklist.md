@@ -9,7 +9,7 @@ verification step — "it looks right" is not one.
 ☐ cargo test --workspace                    →  0 упавших
 ☐ cargo clippy --workspace -- -D warnings   →  0 предупреждений
 ☐ tsc --noEmit                              →  0 ошибок  (если трогал TS)
-☐ Kotlin/Android тронут → Android-джобы на этом SHA →  зелёные, иначе NOT_VERIFIED
+☐ Kotlin/Android тронут → Android-джобы на этом SHA →  лог прочитан, иначе NOT_VERIFIED
 ☐ grep на висячие ссылки                    →  нет
 ☐ diff затрагивает ТОЛЬКО запрошенное       →  да
 ☐ инженерное ревью (karpathy-review.md)     →  блок результата в отчёте
@@ -68,7 +68,7 @@ list is a pointer and can go stale.
 
 ## Android and Kotlin changes
 
-The agent sandbox has no Android SDK: Kotlin cannot be compiled or run here.
+The agent sandbox has no Android SDK: the app cannot be built or run here.
 `android-ci.yml` compiles the app, runs the JVM unit tests and assembles the
 instrumentation APK; `android-instrumentation.yml` and
 `android-two-device-e2e.yml` run on x86_64 API-30 emulators. Until the job that

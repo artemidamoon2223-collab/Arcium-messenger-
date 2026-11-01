@@ -34,7 +34,7 @@ checkout can sit on any branch — a long-merged one, or the head of an open PR 
 with stale remote refs. Writing there silently produces work against the wrong
 base, or changes an open PR.
 
-Push from the disposable clone itself, to the GitHub URL that the persistent
+When a push is instructed — never to `main` — push from the disposable clone itself, to the GitHub URL that the persistent
 checkout's `origin` names: `git push <that URL> HEAD:refs/heads/<branch>`. Do
 not fetch the work into the persistent checkout to push it from there.
 
@@ -67,7 +67,8 @@ Leave the merge decision to the owner.
 
 In the disposable clone, the commands in `CLAUDE.md` («Команды проверки»):
 `cargo test --workspace` and `cargo clippy --workspace -- -D warnings` — the
-ones `arcium-ci.yml` runs (with `--locked`).
+ones `arcium-ci.yml` runs (with `--locked`). Adding `--all-targets` to clippy
+also lints test code; it is stricter than CI, not a substitute for it.
 
 On CI, know which checks the diff actually triggers:
 `engineering-code-review/references/delivery-checklist.md` («Which CI checks a

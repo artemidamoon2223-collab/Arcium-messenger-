@@ -51,7 +51,7 @@ it on x86_64 API-30 emulators — see the proof boundary below.
    `cargo build --locked -p mobile-ffi --release --target <rust_target>` runs.
    Each resulting `libarcium_core.so` is placed in its own
    `jniLibs/<abi>` directory.
-7. **Gradle.** The workflow asserts the generated Kotlin file and both `.so`
+7. **Gradle.** `android-native-bridge.yml` asserts the generated Kotlin file and both `.so`
    files exist *before* invoking Gradle, then runs
    `./gradlew :app:assembleDebug`, then unzips the APK and checks
    `lib/<abi>/libarcium_core.so` is present for every ABI. A missing library
@@ -97,7 +97,7 @@ while the intended methods remained.
 |---|---|---|
 | Rust cross-compiles for each ABI | The packaged `libarcium_core.so` loads through JNA | Anything on arm64-v8a (built and packaged, never run) |
 | UniFFI bindgen produces Kotlin that compiles | Kotlin↔Rust calls execute | Physical devices, other API levels, background or Doze behaviour |
-| `.so` is packaged into the APK per ABI | Durable messaging across process death (instrumentation) and two app instances messaging through the development relay (two-device) | Tor, PSI, a production relay |
+| `.so` is packaged into the APK per ABI | Durable messaging across process death (instrumentation) and two app instances messaging through the development relay (two-device) | Tor, PSI from the app (the PSI program runs only on a localnet in `arcium-ci.yml`), a production relay |
 | Gradle assembles a debug APK | | Cryptographic correctness beyond what the tests assert; production readiness |
 
 `android-instrumentation.yml` excludes the `com.arcium.messenger.e2e` package;

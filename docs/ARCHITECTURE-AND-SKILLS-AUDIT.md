@@ -21,7 +21,7 @@ Evidence labels follow `CLAUDE.md` («Границы доказательств�
   3 ignored (`RUNTIME_VERIFIED`; tree identical to `main`'s `crates/`);
   `cargo test -p core-crypto -- contact_hash rescue` — 7 passed; in
   `arcium-psi/tests`, `npx tsc --noEmit` — 0 errors and the mocha crypto test —
-  17 passing (survey C, `RUNTIME_VERIFIED`); `cargo tree --offline` for the
+  17 passing (survey C's run; `INFERRED` here from its report); `cargo tree --offline` for the
   dependency findings in §1.5.
 - Android runtime evidence on `main`'s tree comes from earlier CI logs read
   through the GitHub API: two-device run `41185016456` on `483a664` (17 of 17
@@ -65,7 +65,7 @@ arcium-psi (separate workspace): Anchor program + Arcis circuit, localnet only, 
 | Receipts, retransmission | IMPLEMENTED | `mobile-ffi/src/network.rs:493-523` (republish stored wire bytes), `:700` (receipt handling), `:731-741` (`receipt_again`) | Retransmission clock is in memory, so a new process resends everything pending once. A replayed receipt makes a new receipt (open question vs `docs/NET-MESSAGING.md:170-171`). |
 | Chat history | IMPLEMENTED | `mobile-ffi/src/network/chat.rs:170-196` (keys), `:51` (entry states) | Outgoing keyed by app id, incoming by message id. |
 | Identity lifecycle | IMPLEMENTED (create-only); key-loss detection absent | `mobile-ffi/src/lib.rs:638-671` | See risk R3. |
-| Contact pinning | IMPLEMENTED on the `NetworkMessenger` path | `mobile-ffi/src/contacts.rs:101-117`, `network.rs:183-201` | The exported `establish_session_initiator` checks no pin (survey A; whether Kotlin calls it: NOT_VERIFIED). |
+| Contact pinning | IMPLEMENTED on the `NetworkMessenger` path | `mobile-ffi/src/contacts.rs:101-117`, `network.rs:183-201` | The exported `establish_session_initiator` checks no pin (survey A); Kotlin calls it at `android/app/src/main/kotlin/com/arcium/messenger/data/MessageRepository.kt:151`. |
 | Rust ↔ Kotlin boundary | IMPLEMENTED | `.github/actions/uniffi-android-bridge/action.yml:27-29` (x86_64, arm64-v8a), `crates/mobile-ffi/uniffi.toml` | All exports blocking; plaintext types redact `toString` for generated record properties (not function arguments). Survey B. |
 | Android app | IMPLEMENTED (debug relay only) | `android/app/src/main/kotlin/com/arcium/messenger/messaging/MessengerService.kt:114-142`, `RelaySettings.kt:20-29` | Sync only while visible; release builds have no relay at all (untested). PSI, Tor, BLE mesh, Solana: stubs that throw or return empty. |
 | Development relay | IMPLEMENTED, development only | `relay/src/server.rs` (TTL 7 days at `:60`; identical-bytes dedup `:265-291`), `relay/src/client.rs:44` (plain `TcpStream`) | In memory; no authentication: any client can fetch, delete or flood any mailbox and overwrite any bundle. |
@@ -79,7 +79,7 @@ arcium-psi (separate workspace): Anchor program + Arcis circuit, localnet only, 
   content do not depend on the relay (end-to-end AEAD, receipts inside the
   ratchet). Availability does: it can drop, delay, reorder and replay, and —
   because the protocol has no mailbox authentication — so can any other client.
-- **Metadata exposed** (survey B, `SOURCE_VERIFIED` in `relay/src/server.rs`
+- **Metadata exposed** (survey B's reading of `relay/src/server.rs`
   and `mobile-ffi/src/network/wire.rs`): recipient key on every request; the
   sender's X25519 key in clear in the envelope; envelope kind; the ratchet
   header (ratchet public key, `pn`, `n`); sizes (no padding found — `INFERRED`);
@@ -101,7 +101,7 @@ arcium-psi (separate workspace): Anchor program + Arcis circuit, localnet only, 
 | A failed decrypt changes no ratchet state (F-1) | `core-crypto/src/ratchet.rs:212-229` | ratchet unit tests |
 | One client id → at most one ciphertext | `core-protocol/src/messaging.rs:443-466` | `mobile-ffi/src/tests/chat.rs`, `tests/network.rs` |
 | A message id is accepted once; a duplicate leaves the ratchet untouched | `core-protocol/src/messaging.rs:495-525` | `mobile-ffi/src/tests/network.rs`, `tests/network_crash.rs`; two-device replay step (PR #126, not on `main`) |
-| A text is delivered only on an authenticated receipt naming its id | `mobile-ffi/src/network.rs:700-705` | two-device "Delivered" waits |
+| On the network path a text is marked delivered on an authenticated receipt naming its id. Not enforced for every caller: the exported `acknowledge_outgoing` (called from `MessageRepository.kt:217`) removes it unconditionally, and the chat shows "Delivered" for anything not in the outbox | `mobile-ffi/src/network.rs:700-705`; `messaging_api.rs:329`; `network/chat.rs:840-845` | two-device "Delivered" waits |
 | A pinned card is never replaced | `mobile-ffi/src/contacts.rs:101-117` | `tests/network.rs`, two-device `addContact` |
 | A failed identity read never becomes "no identity" | `IdentityRepository.kt:31-35` | identity instrumentation tests |
 | Plaintext records print `<redacted>` | `Plaintext.kt`, `check_generated_plaintext.py` | stringification tests |
@@ -114,10 +114,10 @@ Rows are survey A/B readings with the author's spot checks of the cited lines.
 |---|---|---|---|
 | R1 | **The product is described as anonymous and Tor-protected; it is neither.** Messages go over plain TCP to an unauthenticated relay that sees sender and recipient keys, sizes, timing and IP. | High (claims vs reality) | `CLAUDE.md:13`, `PROJECT_CONTEXT.md:7` vs `relay/src/client.rs:44`, `core-transport/src/lib.rs:30`; the app itself says "Not anonymous" (survey B). |
 | R2 | **Unauthenticated relay operations.** Any client can delete or flood any mailbox and overwrite any prekey bundle, so delivery can be delayed indefinitely by a third party; retransmission recovers only while the sender's app is open. | High (availability) | `relay/src/server.rs` request handling (survey B); exercised deliberately by the e2e key-mismatch step. |
-| R3 | **Master-key loss resets identity or bricks the app.** A missing `master_key.blob` makes a new key; the store then reads as empty and onboarding creates a new identity. A lost Keystore key or a corrupt blob makes startup fail on every launch. The blob is written without fsync. `MasterKeyProvider` has no tests. | Medium-High (data loss) | D-007; `MasterKeyProvider.kt:42-67`; `mobile-ffi/src/lib.rs:661-671` (survey A/B). |
+| R3 | **Master-key loss resets identity or bricks the app.** A missing `master_key.blob` makes a new key; the store then reads as empty and onboarding creates a new identity. A lost Keystore key or a corrupt blob makes startup fail on every launch. The blob is written without fsync. `MasterKeyProvider` has no tests. | Medium-High (data loss) | tracker F-9 (limits); continuity record D-007; `MasterKeyProvider.kt:42-67`; `mobile-ffi/src/lib.rs:661-671` (survey A/B). |
 | R4 | **The PSI implementation contradicts the project's own rule.** `CLAUDE.md` requires `OffChainCircuitSource` (hash only on chain); the program passes `None` and the localnet test asserts an on-chain circuit and uploads it. Results are never delivered (F-14); the server set is caller-supplied, so low-entropy phone numbers are enumerable (F-4). | High for the PSI milestone (not user-facing yet) | `arcium-psi/programs/arcium-psi/src/lib.rs:37` (comment) vs `:42`; `arcium-psi/tests/src/localnet/psi.localnet.ts:167-168`, `:198-206`. |
 | R5 | **No rollback protection** (accepted residual). An older database, or a single older row, still authenticates: consumed prekeys, skipped keys and acknowledged messages can come back. | Medium | `core-storage/src/lib.rs:18-21`; F-10 remainder. |
-| R6 | **The unused Tor stack carries seven of the nine dependency advisories.** `ring 0.16.20` and `rsa 0.9.10` (both ignored in `.cargo/audit.toml`) and `rustls-webpki`, `zstd`, `zstd-safe` (two advisories) and `zstd-sys` (five of the seven failing `cargo audit` today) reach the workspace only through `arti-client` in `core-transport`, which `mobile-ffi` declares and never calls. The other two failing advisories (`crypto-bigint`, `ctutils`) do not. | Medium (supply chain, red CI) | `cargo tree --offline --locked -i <crate>` (`RUNTIME_VERIFIED`); `mobile-ffi/Cargo.toml:16`. Removing the dependency from `mobile-ffi` alone would not clear `cargo audit`, which reads the whole workspace lockfile while `core-transport` stays a member. |
+| R6 | **The unused Tor stack carries eight of the nine dependency advisories.** `ring 0.16.20` and `rsa 0.9.10` (both ignored in `.cargo/audit.toml`) and `rustls-webpki`, `zstd`, `zstd-safe` (two advisories), `zstd-sys` and `crypto-bigint` (six of the seven failing `cargo audit` today) reach the workspace only through `arti-client` in `core-transport`, which `mobile-ffi` declares and never calls. Only `ctutils` (via `core-crypto`) does not. | Medium (supply chain, red CI) | `cargo tree --offline --locked -i <crate>` for all but `crypto-bigint` (`RUNTIME_VERIFIED`); `crypto-bigint` via `tor-keymgr` → `ssh-key` → `elliptic-curve` from the independent reviewer's `Cargo.lock` walk (`INFERRED`: its features are inactive, so `cargo tree` prints nothing, but `cargo audit` reads the lockfile); `mobile-ffi/Cargo.toml:16`. Removing the dependency from `mobile-ffi` alone would not clear `cargo audit`, which reads the whole workspace lockfile while `core-transport` stays a member. |
 | R7 | **No background delivery.** Sync runs only while the activity is started; envelopes expire after 7 days. | Medium (product) | `MainActivity.kt:20`, `relay/src/server.rs:60`. |
 | R8 | **Replay amplification and unbounded growth.** A replayed text or receipt makes a new receipt (at most one a minute per message); `seen:` and `sendid:` records are never deleted. | Low-Medium | `mobile-ffi/src/network.rs:623-626`, `:731-741` (survey A). |
 | R9 | **Fragile failure surfaces.** A poisoned-mutex `expect` panics across the FFI; Kotlin catches only `CoreException`; link state depends on the `"network:"` error-string prefix. | Low | `mobile-ffi/src/network.rs:477-489`; `MessengerService.kt:182`, `:193` (survey B). |
@@ -130,7 +130,7 @@ Rows are survey A/B readings with the author's spot checks of the cited lines.
 | `CLAUDE.md:13` | four layers of protection incl. Tor onion | Tor is a skeleton (R1) |
 | `CLAUDE.md:45-48` | only the circuit hash is on chain | the circuit is registered on chain (R4) |
 | `CLAUDE.md:52` | the Rescue stub's API is right | it does not match the circuit's input format (survey C) |
-| `PROJECT_CONTEXT.md` (last changed 2026-08-15) | Tor "✅ готово"; `SHA256(phone)`; `find_contacts(Vec<Hash>)`; test tables "42 passed" | see R1, R4; contact hash is `u64::from_le_bytes(sha256[0..8])`; circuit is `psi_intersect`; 428 tests pass |
+| `PROJECT_CONTEXT.md` (last changed 2026-05-28, `e7cb1bb`, per GitHub) | Tor "✅ готово"; `SHA256(phone)`; `find_contacts(Vec<Hash>)`; test tables "42 passed" | see R1, R4; contact hash is `u64::from_le_bytes(sha256[0..8])`; circuit is `psi_intersect`; 428 tests pass |
 | `README.md` | empty | — |
 | `docs/HOME-DEPLOY.md` | hash-only circuit; `src/deploy.ts`; `libmobile_ffi.so` in `src/main/jniLibs` | on-chain circuit; no such file; `libarcium_core.so` under `build/generated/rustBridge/jniLibs` (survey C) |
 | `android/README.md` | Hilt, PSI discovery, Tor, `TorManager.kt` | none exist (survey B) |
@@ -267,11 +267,11 @@ Incomplete diff review — yes, through `complete: yes/no` and the coverage rule
 
 Each is a separate Owner decision.
 
-- **`CLAUDE.md:13-14`** → «E2E-мессенджер для Android. Реализовано: X3DH +
-  Double Ratchet, шифрованное хранилище (XChaCha20-Poly1305), долговечная
-  доставка через development relay (plain TCP, без TLS и аутентификации).
-  Не подключено: Tor (arti — каркас), Arcium PSI (программа и circuit только
-  на localnet). Анонимности сейчас нет.»
+- **`CLAUDE.md:13-15`** — keep the project description, but replace the claim
+  of four active layers with one standing warning (not a status inventory,
+  which `CLAUDE.md`'s own F-17 rule forbids): «Tor и Arcium PSI в приложение не
+  подключены; не заявляй анонимность или защиту метаданных, пока код этого не
+  подтверждает.»
 - **`CLAUDE.md:45-48`** — either bring the code to the rule (a PSI task) or
   record that the rule is not yet met, as a tracker finding rather than a
   status line in `CLAUDE.md`. Proposed tracker text: "Circuit registered on
@@ -304,14 +304,14 @@ Each is a separate Owner decision.
    *Acceptance:* emulator instrumentation tests in CI show that (a) a deleted
    blob with an existing database produces the "key lost" state and never a
    new identity, (b) a corrupt blob does the same and the app still starts,
-   (c) the normal path keeps the same identity across restarts; D-007 closes
-   in the tracker after the fix lands.
+   (c) the normal path keeps the same identity across restarts; the tracker
+   row F-9 and the continuity record D-007 are updated after the fix lands.
 2. **Authenticated relay operations and an honest transport baseline.** Make
    FETCH, DELETE and bundle publication require proof of the mailbox key
    (for example a signature by the identity key over a relay challenge), add
    TLS to the relay connection, and decide the Tor question: either wire
    `core-transport` or drop it (which also removes the `ring 0.16` / `rsa 0.9`
-   / `zstd` / `rustls-webpki` tree behind seven of the nine advisories, R6).
+   / `zstd` / `rustls-webpki` tree behind eight of the nine advisories, R6).
    *Acceptance:* a relay test and a two-device step show that a client without
    the key cannot fetch, delete or overwrite another user's mailbox or bundle;
    the e2e suite stays green; `cargo tree -i ring@0.16.20` is empty for

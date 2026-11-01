@@ -149,7 +149,8 @@ class ArciumCoreWrapper {
      * Any later call with the same id encrypts nothing and returns the stored
      * message (`AlreadyPending`), `AlreadyAcknowledged` or `Abandoned` — so
      * after a crash or CoreException.CommitOutcomeUnknown, call again with
-     * the same id.
+     * the same id. Ids the network layer reserves (starting with `t` or `r`,
+     * or `o` alone) fail with CoreException.InvalidClientMessageId.
      */
     fun sendMessage(
         sessionId: ULong,

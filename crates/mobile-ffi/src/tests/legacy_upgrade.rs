@@ -203,7 +203,7 @@ fn t1_an_old_unconfirmed_responder_session_gives_way_to_a_new_first_contact() {
     assert_ne!(now, Some(old_opk));
 
     // Both directions.
-    let reply = sent(bob.core.send_message(ha, b"r".to_vec(), b"hi alice".to_vec()).unwrap());
+    let reply = sent(bob.core.send_message(ha, b"back".to_vec(), b"hi alice".to_vec()).unwrap());
     assert_eq!(plaintext(alice.core.receive_message(hb, reply).unwrap()), b"hi alice");
     let m2 = sent(alice.core.send_message(hb, b"2".to_vec(), b"and again".to_vec()).unwrap());
     assert_eq!(plaintext(bob.core.receive_message(ha, m2).unwrap()), b"and again");

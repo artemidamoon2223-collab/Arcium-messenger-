@@ -71,32 +71,65 @@ fn bobs_receipt_delivers_the_text() {
 
 /// Without a receipt the text survives a restart in the outbox, the new
 /// process publishes it again, byte for byte, and Bob's later receipt still
-/// delivers it once. (The harness retransmits on every sync, so this shows
-/// the outbox surviving, not the in-memory retransmission clock.)
+/// delivers it once. Both restart against an empty second relay, so what it
+/// holds afterwards was sent after the restart (the relay drops identical
+/// envelopes, so resending to the first one would leave no trace).
 #[test]
 fn an_unreceipted_text_is_resent_after_a_restart_and_then_delivered_once() {
     let relay = start_relay();
     let addr = relay.addr().to_string();
     let (alice, bob) = unreceipted_text(&addr);
-    let before = stored_messages(&relay, &bob);
-    let (path, byte) = (alice.path.clone(), alice.byte);
-    drop(alice);
+    let sent = stored_messages(&relay, &bob);
+    assert_eq!(sent.len(), 2, "the session opener and the text");
+    let (alice_at, bob_at) = ((alice.path.clone(), alice.byte), (bob.path.clone(), bob.byte));
+    drop((alice, bob));
 
-    let alice = Device::reopen(&path, byte, &addr);
+    let relay2 = start_relay();
+    let addr2 = relay2.addr().to_string();
+    let alice = Device::reopen(&alice_at.0, alice_at.1, &addr2);
+    let bob = Device::reopen(&bob_at.0, bob_at.1, &addr2);
     assert_eq!(state_of_text(&alice, &bob), S::Transmitted, "a restart is not a receipt");
     assert_eq!(alice.net.undelivered(bob.pk.clone()).unwrap().len(), 1);
-    let r = alice.net.sync_conversations();
-    assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert!(r.published >= 1, "published again: {}", r.published);
-    // The relay drops an identical envelope, so an unchanged mailbox means
-    // the resend was the stored bytes, not a new ciphertext.
-    assert_eq!(stored_messages(&relay, &bob), before);
+    round(&[&alice]);
+    assert_eq!(stored_messages(&relay2, &bob), sent, "both sent again, byte for byte");
     assert_eq!(state_of_text(&alice, &bob), S::Transmitted);
 
     round(&[&bob, &alice]);
     assert_eq!(state_of_text(&alice, &bob), S::Delivered);
     assert!(alice.net.undelivered(bob.pk.clone()).unwrap().is_empty());
     assert_eq!(bob.net.chat_entries(alice.pk.clone()).unwrap().len(), 1, "received once");
+}
+
+/// A raw `send_message` cannot take a chat text's client id: otherwise its
+/// own message would be committed under the text's id, the text would be
+/// linked to it, and the peer's receipt for it would show the text delivered
+/// although the peer never received it.
+#[test]
+fn a_raw_send_cannot_take_the_network_layers_client_ids() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = unreceipted_text(&addr);
+    let handle = core_crypto::session_handle::local_session_handle(bob.pk.as_slice().try_into().unwrap());
+    for id in [&b"tfoo"[..], b"t", b"r", b"rX", b"o"] {
+        assert!(
+            matches!(
+                alice.core.send_message(handle, id.to_vec(), b"\x01substituted".to_vec()),
+                Err(crate::CoreError::InvalidClientMessageId)
+            ),
+            "{id:?} must be refused"
+        );
+    }
+    // Control: other ids, including ones merely starting with `o`, still work.
+    for id in [&b"orphan"[..], b"foo", b"x"] {
+        assert!(alice.core.send_message(handle, id.to_vec(), b"\x01raw".to_vec()).is_ok());
+    }
+    alice.net.chat_send(bob.pk.clone(), b"foo".to_vec(), "real".into()).unwrap();
+    round(&[&alice, &bob, &alice]);
+    let texts: Vec<_> = bob.net.chat_entries(alice.pk.clone()).unwrap().into_iter().map(|e| e.text.0.clone()).collect();
+    assert!(texts.iter().any(|t| t == "real"), "{texts:?}");
+    let ours = alice.net.chat_entries(bob.pk.clone()).unwrap();
+    let real = ours.iter().find(|e| e.app_id == b"foo").unwrap();
+    assert_eq!((real.text.0.as_str(), real.state), ("real", S::Delivered));
 }
 
 /// The bodies of every `#[uniffi::export]` item in `src`, with their file.
@@ -144,9 +177,20 @@ fn exported_items(dir: &Path, out: &mut Vec<(String, String)>) {
     }
 }
 
+/// The `pub fn` items of an exported body, each up to the next one. Direct
+/// calls only: a helper that calls either method on an exported method's
+/// behalf is not seen here (the network layer's own helpers do, on a receipt).
+fn exported_methods(body: &str) -> Vec<&str> {
+    let starts: Vec<usize> = body.match_indices("pub fn ").map(|(i, _)| i).collect();
+    (0..starts.len())
+        .map(|k| &body[starts[k]..starts.get(k + 1).copied().unwrap_or(body.len())])
+        .collect()
+}
+
 /// The trust boundary itself: no exported method lets Kotlin remove an
-/// outgoing message from the outbox. Generated bindings are checked
-/// separately; this keeps the source from re-exporting either call.
+/// outgoing message from the outbox. A source check: it keeps either
+/// method from being exported again or wrapped directly by an exported
+/// one. The generated bindings themselves are not checked by any test.
 #[test]
 fn neither_outbox_removal_is_exported_through_uniffi() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -157,9 +201,20 @@ fn neither_outbox_removal_is_exported_through_uniffi() {
         names.iter().any(|f| f.ends_with("messaging_api.rs")),
         "the scan must see the exported messaging block: {names:?}"
     );
+    // The one exported method allowed to call either: it marks the texts
+    // not delivered before abandoning them.
+    const ALLOWED: &str = "pub fn resolve_session_conflict";
     for (file, body) in &items {
         for name in ["fn acknowledge_outgoing", "fn abandon_outgoing"] {
             assert!(!body.contains(name), "{name} is exported in {file}");
+        }
+        for method in exported_methods(body) {
+            if method.starts_with(ALLOWED) {
+                continue;
+            }
+            for call in [".acknowledge_outgoing(", ".abandon_outgoing("] {
+                assert!(!method.contains(call), "an exported method in {file} calls {call}");
+            }
         }
     }
     // The scan is not vacuous: it does find exported methods.

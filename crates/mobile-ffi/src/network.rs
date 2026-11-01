@@ -199,11 +199,7 @@ impl NetworkMessenger {
             return Err(CoreError::PeerIdentityMismatch);
         }
         self.core.establish_session_initiator(handle, bundle)?;
-        self.core.send_message(
-            handle,
-            client_id::OPEN.to_vec(),
-            Payload::Open.encode().to_vec(),
-        )?;
+        self.core.send_committed(handle, client_id::OPEN, &Payload::Open.encode())?;
         Ok(())
     }
 
@@ -718,10 +714,10 @@ impl NetworkMessenger {
     }
 
     fn receipt(&self, handle: u64, id: &[u8; 32], round: u64) -> Result<SendResult, CoreError> {
-        self.core.send_message(
+        self.core.send_committed(
             handle,
-            client_id::receipt(id, round),
-            Payload::Receipt(vec![*id]).encode().to_vec(),
+            &client_id::receipt(id, round),
+            &Payload::Receipt(vec![*id]).encode(),
         )
     }
 

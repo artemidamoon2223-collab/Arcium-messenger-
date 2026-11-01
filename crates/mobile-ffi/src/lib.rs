@@ -105,8 +105,9 @@ pub enum CoreError {
     /// No message with this id is recorded for this session.
     #[error("unknown message for session {session_id}")]
     UnknownMessage { session_id: u64 },
-    /// A client message id must be 1 to 64 bytes.
-    #[error("client message id must be 1 to 64 bytes")]
+    /// A client message id must be 1 to 64 bytes, and not one the network
+    /// layer reserves for its own messages (see `send_message`).
+    #[error("client message id must be 1 to 64 bytes and not reserved")]
     InvalidClientMessageId,
     /// The session has accepted a message from the peer, so the peer holds
     /// it too; it cannot be removed locally. Nothing changed.

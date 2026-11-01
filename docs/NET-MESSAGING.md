@@ -180,6 +180,10 @@ Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
   UniFFI. The history reads a text missing from the outbox as delivered, so
   only this layer removes one: on a receipt, or in `resolve_session_conflict`
   after marking the text not delivered.
+- The exported raw `send_message` refuses the client ids this layer sends
+  under (starting with `t` or `r`, or `o` alone), so a caller cannot commit
+  its own message under a text's id and have the receipt for it shown as the
+  text's delivery.
 
 ## 6. State machines
 

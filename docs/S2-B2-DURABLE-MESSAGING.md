@@ -211,7 +211,9 @@ the peer's slot: later handshakes from the peer were refused.
   never encrypts again, and never advances the ratchet.
 - `acknowledge_outgoing(message_id)` removes the record once transport confirms
   delivery. Repeating it is harmless. (There is no transport or peer ACK yet;
-  this is the hook it will call.)
+  this is the hook it will call.) Since the network layer: it calls this on
+  the peer's receipt, and the call is not exported through UniFFI
+  (`docs/NET-MESSAGING.md`, section 5).
 - `abandon_outgoing(message_id)` is the caller's explicit decision to stop
   retransmitting a message without a delivery confirmation. The outbox record
   goes, and the logical id is marked abandoned in the same transaction:
@@ -219,7 +221,9 @@ the peer's slot: later handshakes from the peer were refused.
   outcome survives a crash and the content is only sent again under a new id,
   deliberately. Abandoning claims nothing about the peer, which may or may not
   have the message. An acknowledgement and an abandonment of the same message
-  are serialized; exactly one of them reports it as pending.
+  are serialized; exactly one of them reports it as pending. Not exported
+  through UniFFI either: only the network layer's `resolve_session_conflict`
+  calls it, after marking the texts not delivered.
 
 ## 6. Incoming messages
 
@@ -366,7 +370,8 @@ is accepted on it. It is not migrated in place: it is retired when a new
 handshake from the same peer is recorded (section 4b), and otherwise stays
 until a message authenticates on it. The FFI messaging calls change shape
 (`send_message` takes a client message id and returns an outcome;
-`receive_message` returns a record) and `remove_session` and `abandon_outgoing` are new; the bytes on
+`receive_message` returns a record) and `remove_session` and `abandon_outgoing` are new (later,
+`acknowledge_outgoing` and `abandon_outgoing` stopped being exported); the bytes on
 the wire are identical.
 
 ## 10. Verification plan

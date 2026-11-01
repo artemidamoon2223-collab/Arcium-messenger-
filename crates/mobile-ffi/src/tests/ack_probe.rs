@@ -1,14 +1,17 @@
 //! Who may take an outgoing text out of the outbox, and what the chat history
 //! then shows. `network/chat.rs` reads a text missing from the outbox as
 //! delivered ("absence is a receipt"), which holds only while nothing but an
-//! authenticated receipt (or an abandonment, marked first) removes it. The
-//! exported `ArciumCore::acknowledge_outgoing` removes it unconditionally:
-//! `core_protocol::messaging` leaves confirming delivery to its caller. These
-//! tests pin both sides of that contract; the first one documents the hazard.
+//! authenticated receipt (or an abandonment, marked not delivered first)
+//! removes it. `core_protocol::messaging` leaves confirming delivery to its
+//! caller, so `ArciumCore::acknowledge_outgoing` and `abandon_outgoing` are
+//! crate-private: only the network layer calls them, and they are not
+//! exported through UniFFI. Abandonment through `resolve_session_conflict`
+//! (marked `NotDelivered`) is covered in `tests/chat.rs`.
+
+use std::path::Path;
 
 use super::net_harness::*;
 use crate::network::chat::ChatEntryState as S;
-use core_crypto::session_handle::local_session_handle;
 
 fn round(devices: &[&Device]) {
     for d in devices {
@@ -18,8 +21,8 @@ fn round(devices: &[&Device]) {
 }
 
 /// Alice and Bob with a session, Alice's text to Bob on the relay, and Bob
-/// never syncing again: no receipt can exist.
-fn unreceipted_text(addr: &str) -> (Device, Device, Vec<u8>) {
+/// not syncing since: no receipt can exist.
+fn unreceipted_text(addr: &str) -> (Device, Device) {
     let (alice, bob) = (Device::new(addr, 1), Device::new(addr, 2));
     alice.net.add_named_contact(bob.core.contact_card().unwrap(), "bob".into()).unwrap();
     bob.net.add_named_contact(alice.core.contact_card().unwrap(), "alice".into()).unwrap();
@@ -28,9 +31,8 @@ fn unreceipted_text(addr: &str) -> (Device, Device, Vec<u8>) {
     alice.net.chat_send(bob.pk.clone(), b"t1".to_vec(), text).unwrap();
     round(&[&alice]); // session started, text committed and published
     round(&[&alice]);
-    let pending = alice.net.undelivered(bob.pk.clone()).unwrap();
-    assert_eq!(pending.len(), 1, "the text waits for Bob's receipt");
-    (alice, bob, pending[0].clone())
+    assert_eq!(alice.net.undelivered(bob.pk.clone()).unwrap().len(), 1, "the text waits for Bob's receipt");
+    (alice, bob)
 }
 
 fn state_of_text(alice: &Device, bob: &Device) -> S {
@@ -39,32 +41,13 @@ fn state_of_text(alice: &Device, bob: &Device) -> S {
     e[0].state
 }
 
-#[test]
-fn exported_acknowledge_outgoing_marks_an_unreceipted_text_delivered() {
-    let relay = start_relay();
-    let addr = relay.addr().to_string();
-    let (alice, bob, id) = unreceipted_text(&addr);
-    assert_eq!(state_of_text(&alice, &bob), S::Transmitted);
-    let waiting = stored_messages(&relay, &bob);
-    assert!(!waiting.is_empty(), "the text is on the relay, unfetched");
-
-    // The trigger: the exported call, as Kotlin's MessageRepository.confirmDelivered makes it.
-    let handle = local_session_handle(bob.pk.as_slice().try_into().unwrap());
-    assert!(alice.core.acknowledge_outgoing(handle, id).unwrap());
-
-    assert_eq!(state_of_text(&alice, &bob), S::Delivered, "shown delivered without a receipt");
-    assert!(alice.net.undelivered(bob.pk.clone()).unwrap().is_empty(), "nothing left to retransmit");
-    assert!(bob.net.chat_entries(alice.pk.clone()).unwrap().is_empty(), "Bob has received nothing");
-    round(&[&alice]);
-    assert_eq!(stored_messages(&relay, &bob), waiting, "still unfetched by Bob");
-}
-
-/// Negative control: the same state without the exported call stays undelivered.
+/// Negative control: without a receipt the text is never shown delivered and
+/// stays in the outbox.
 #[test]
 fn without_a_receipt_the_network_path_never_shows_delivered() {
     let relay = start_relay();
     let addr = relay.addr().to_string();
-    let (alice, bob, _) = unreceipted_text(&addr);
+    let (alice, bob) = unreceipted_text(&addr);
     for _ in 0..3 {
         round(&[&alice]);
         assert_eq!(state_of_text(&alice, &bob), S::Transmitted);
@@ -77,11 +60,109 @@ fn without_a_receipt_the_network_path_never_shows_delivered() {
 fn bobs_receipt_delivers_the_text() {
     let relay = start_relay();
     let addr = relay.addr().to_string();
-    let (alice, bob, _) = unreceipted_text(&addr);
+    let (alice, bob) = unreceipted_text(&addr);
     round(&[&bob, &alice]);
     assert_eq!(state_of_text(&alice, &bob), S::Delivered);
     assert!(alice.net.undelivered(bob.pk.clone()).unwrap().is_empty());
     let got = bob.net.chat_entries(alice.pk.clone()).unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].state, S::Received);
+}
+
+/// Without a receipt the text survives a restart in the outbox, the new
+/// process publishes it again, byte for byte, and Bob's later receipt still
+/// delivers it once. (The harness retransmits on every sync, so this shows
+/// the outbox surviving, not the in-memory retransmission clock.)
+#[test]
+fn an_unreceipted_text_is_resent_after_a_restart_and_then_delivered_once() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = unreceipted_text(&addr);
+    let before = stored_messages(&relay, &bob);
+    let (path, byte) = (alice.path.clone(), alice.byte);
+    drop(alice);
+
+    let alice = Device::reopen(&path, byte, &addr);
+    assert_eq!(state_of_text(&alice, &bob), S::Transmitted, "a restart is not a receipt");
+    assert_eq!(alice.net.undelivered(bob.pk.clone()).unwrap().len(), 1);
+    let r = alice.net.sync_conversations();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert!(r.published >= 1, "published again: {}", r.published);
+    // The relay drops an identical envelope, so an unchanged mailbox means
+    // the resend was the stored bytes, not a new ciphertext.
+    assert_eq!(stored_messages(&relay, &bob), before);
+    assert_eq!(state_of_text(&alice, &bob), S::Transmitted);
+
+    round(&[&bob, &alice]);
+    assert_eq!(state_of_text(&alice, &bob), S::Delivered);
+    assert!(alice.net.undelivered(bob.pk.clone()).unwrap().is_empty());
+    assert_eq!(bob.net.chat_entries(alice.pk.clone()).unwrap().len(), 1, "received once");
+}
+
+/// The bodies of every `#[uniffi::export]` item in `src`, with their file.
+fn exported_items(dir: &Path, out: &mut Vec<(String, String)>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n != "tests") {
+                exported_items(&path, out);
+            }
+            continue;
+        }
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).unwrap();
+        let code: String = src
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (at, _) in code.match_indices("#[uniffi::export") {
+            let open = at + code[at..].find('{').expect("an exported item has a body");
+            let mut depth = 0usize;
+            let mut end = open;
+            for (i, c) in code[open..].char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = open + i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert!(end > open, "unbalanced braces in {}", path.display());
+            out.push((path.display().to_string(), code[at..=end].to_string()));
+        }
+    }
+}
+
+/// The trust boundary itself: no exported method lets Kotlin remove an
+/// outgoing message from the outbox. Generated bindings are checked
+/// separately; this keeps the source from re-exporting either call.
+#[test]
+fn neither_outbox_removal_is_exported_through_uniffi() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut items = Vec::new();
+    exported_items(&src, &mut items);
+    let names: Vec<_> = items.iter().map(|(f, _)| f.as_str()).collect();
+    assert!(
+        names.iter().any(|f| f.ends_with("messaging_api.rs")),
+        "the scan must see the exported messaging block: {names:?}"
+    );
+    for (file, body) in &items {
+        for name in ["fn acknowledge_outgoing", "fn abandon_outgoing"] {
+            assert!(!body.contains(name), "{name} is exported in {file}");
+        }
+    }
+    // The scan is not vacuous: it does find exported methods.
+    assert!(items.iter().any(|(_, b)| b.contains("fn pending_outgoing")));
+    assert!(items.iter().any(|(_, b)| b.contains("fn acknowledge_incoming")));
 }

@@ -176,6 +176,10 @@ Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
   receives a duplicate and commits a new receipt (at most one per message per
   minute).
 - A missing receipt is never read as non-delivery; the text stays pending.
+- Neither `acknowledge_outgoing` nor `abandon_outgoing` is exported through
+  UniFFI. The history reads a text missing from the outbox as delivered, so
+  only this layer removes one: on a receipt, or in `resolve_session_conflict`
+  after marking the text not delivered.
 
 ## 6. State machines
 

@@ -113,7 +113,8 @@ pub enum CoreError {
     #[error("session {session_id} is established and cannot be removed")]
     SessionEstablished { session_id: u64 },
     /// The session has outgoing messages that are neither acknowledged nor
-    /// abandoned (`abandon_outgoing`). Nothing changed.
+    /// abandoned. Only the network layer does either, on the peer's receipt
+    /// or in `resolve_session_conflict`. Nothing changed.
     #[error("session {session_id} has {count} pending outgoing messages")]
     PendingOutgoing { session_id: u64, count: u64 },
     /// An acknowledgement, abandonment or removal may or may not have taken

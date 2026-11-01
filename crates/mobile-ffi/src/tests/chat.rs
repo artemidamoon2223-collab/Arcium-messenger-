@@ -185,6 +185,10 @@ fn repeating_a_send_never_records_or_encrypts_it_twice() {
     let alice = {
         super::network_crash::run_child(&alice, &addr, "chat_send", Some("chat_after_outbox"), &bob.pk);
         let alice = alice.restart(&addr);
+        // The child died between the two writes: the entry is still queued
+        // (`conversation` reads it without bringing the history up to date).
+        let last = alice.net.conversation(bob.pk.clone()).unwrap().last.unwrap();
+        assert_eq!((last.app_id.as_slice(), last.state), (&b"crash"[..], S::Queued));
         assert_eq!(alice.undelivered(&bob), 3, "once, y and the crashed text");
         alice
             .net

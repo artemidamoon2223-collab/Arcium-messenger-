@@ -208,7 +208,9 @@ impl NetworkMessenger {
     /// and reports where the first one stands. `sync` transmits it. An id
     /// already used by `chat_send` for this peer is refused, and an id used
     /// here is then refused by `chat_send`: both commit under the same client
-    /// id, and the history must only follow its own messages.
+    /// id, and the history must only follow its own messages. The id stays
+    /// taken by `send_text` even if this call then fails (for example with
+    /// no session yet); repeating it is how to send.
     pub fn send_text(
         &self,
         peer: Vec<u8>,

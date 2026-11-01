@@ -529,8 +529,10 @@ impl NetworkMessenger {
     /// `NotDelivered` (the peer dropped that session's messages and never
     /// accepts it), abandons them, removes that session, and waits for the
     /// peer's, which the peer keeps retransmitting. Texts not yet committed
-    /// stay queued and go out in the peer's session. Every step repeats
-    /// safely after a crash; calling it again completes it.
+    /// when the session is removed stay queued and go out in the peer's
+    /// session; a text the history commits to our session before that (also
+    /// one sent while this runs) is abandoned with it and ends `NotDelivered`.
+    /// Every step repeats safely after a crash; calling it again completes it.
     pub fn resolve_session_conflict(&self, peer: Vec<u8>) -> Result<(), CoreError> {
         let key = peer_key(&peer)?;
         self.require_contact(&key)?;
@@ -891,6 +893,10 @@ impl NetworkMessenger {
                 // is the peer's, so this holds with no session too.
                 ChatEntryState::Pending | ChatEntryState::Transmitted => {
                     if !pending.contains(&e.message_id) {
+                        // The id comparison is defensive: an entry is linked
+                        // to the message its own client id committed, so no
+                        // test reaches a mismatch (a history adopted from a
+                        // `send_text` before claims existed matches, too).
                         let state = match self.core.prior_send(peer, &client_id::text(&e.app_id))? {
                             Some(SendResult::AlreadyAcknowledged { message_id })
                                 if message_id == e.message_id =>

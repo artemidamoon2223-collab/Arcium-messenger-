@@ -193,7 +193,10 @@ Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
   an entry (`chat-o:`), each in an IMMEDIATE transaction that checks for the
   other's record first; `chat_send` also refuses an app id with a text
   already committed and no entry (sent before claims existed). The ids
-  themselves and every stored record are unchanged: no migration.
+  themselves and every stored record are unchanged: no migration. Nor is
+  anything repaired: an entry already shown `Delivered` by the old rule
+  stays so, and an entry a build without claims linked to a `send_text`
+  message keeps following that message.
 
 ## 6. State machines
 

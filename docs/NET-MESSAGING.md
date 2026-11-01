@@ -184,8 +184,11 @@ Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
   by the peer): acknowledged is `Delivered`, abandoned is `NotDelivered`,
   and any other answer, including a record of another message, changes
   nothing. Abandoning rewrites that record in the transaction that empties
-  the outbox, so a text committed while `resolve_session_conflict` runs
-  (after its NotDelivered pass) still ends `NotDelivered`.
+  the outbox, and the record and the outbox are read in one transaction
+  (also inside `send`), so even another connection's abandonment is never
+  read halfway as an acknowledgement. A text committed while
+  `resolve_session_conflict` runs (after its NotDelivered pass) still ends
+  `NotDelivered`.
 - The exported raw `send_message` refuses the client ids this layer sends
   under (starting with `t` or `r`, or `o` alone). `send_text` and
   `chat_send` share the text id space (`t` + app id) and exclude each other

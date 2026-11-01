@@ -699,6 +699,7 @@ fn a_committed_incoming_message_does_not_print_its_plaintext() {
 }
 
 mod acceptance;
+mod concurrent;
 mod crash;
 mod first_contact;
 mod legacy;

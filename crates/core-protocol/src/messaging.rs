@@ -556,10 +556,12 @@ impl Messenger {
     /// never `Sent`. Keyed by the peer, not a session handle, so it still
     /// answers after the session was removed. Acknowledged and abandoned
     /// stay distinguishable: abandoning rewrites the record in the same
-    /// transaction that empties the outbox.
+    /// transaction that empties the outbox, and this reads both in one
+    /// transaction (writing nothing), so another connection's abandonment
+    /// is seen whole or not at all. Takes the store mutably for that.
     pub fn prior_send(
         &self,
-        store: &EncryptedStore,
+        store: &mut EncryptedStore,
         peer: &[u8; 32],
         client_id: &[u8],
     ) -> Result<Option<SendOutcome>, MessagingError> {

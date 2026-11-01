@@ -1,8 +1,8 @@
 //! Who may take an outgoing text out of the outbox, and what the chat history
-//! then shows. `network/chat.rs` reads a text missing from the outbox as
-//! delivered ("absence is a receipt"), which holds only while nothing but an
-//! authenticated receipt (or an abandonment, marked not delivered first)
-//! removes it. `core_protocol::messaging` leaves confirming delivery to its
+//! then shows. `network/chat.rs` shows a text Delivered when its send record
+//! reads acknowledged (the outbox emptied without an abandonment), which is
+//! a receipt only while nothing but an authenticated receipt acknowledges
+//! it. `core_protocol::messaging` leaves confirming delivery to its
 //! caller, so `ArciumCore::acknowledge_outgoing` and `abandon_outgoing` are
 //! crate-private: only the network layer calls them, and they are not
 //! exported through UniFFI. Abandonment through `resolve_session_conflict`

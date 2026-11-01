@@ -223,7 +223,9 @@ the peer's slot: later handshakes from the peer were refused.
   have the message. An acknowledgement and an abandonment of the same message
   are serialized; exactly one of them reports it as pending. Not exported
   through UniFFI either: only the network layer's `resolve_session_conflict`
-  calls it, after marking the texts not delivered.
+  calls it, after marking the texts not delivered; a text committed after
+  that marking is shown not delivered from its abandoned send record
+  (`docs/NET-MESSAGING.md`, section 5).
 
 ## 6. Incoming messages
 

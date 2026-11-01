@@ -217,9 +217,9 @@ impl ArciumCore {
         peer: &[u8; 32],
         client_message_id: &[u8],
     ) -> Result<Option<SendResult>, CoreError> {
-        let (store, messenger) = self.lock()?;
+        let (mut store, messenger) = self.lock()?;
         Ok(messenger
-            .prior_send(&store, peer, client_message_id)
+            .prior_send(&mut store, peer, client_message_id)
             .map_err(|e| {
                 CoreError::messaging(core_crypto::session_handle::local_session_handle(peer), e)
             })?
@@ -273,10 +273,11 @@ impl ArciumCore {
     /// Removes an outgoing message once its delivery is confirmed. Returns
     /// whether it was still pending; repeating it is harmless.
     ///
-    /// Not exported: the chat history reads a text missing from the outbox
-    /// as delivered, so only the network layer may call this, on an
-    /// authenticated receipt from the peer (or for a receipt once the relay
-    /// has accepted it, since receipts are not themselves acknowledged).
+    /// Not exported: the chat history shows a text Delivered when its send
+    /// record reads acknowledged, which this makes it, so only the network
+    /// layer may call this, on an authenticated receipt from the peer (or
+    /// for a receipt once the relay has accepted it, since receipts are not
+    /// themselves acknowledged).
     pub(crate) fn acknowledge_outgoing(
         &self,
         session_id: u64,
@@ -297,8 +298,9 @@ impl ArciumCore {
     ///
     /// Not exported, for the same reason as
     /// [`acknowledge_outgoing`](Self::acknowledge_outgoing): only
-    /// `resolve_session_conflict` calls it, after it has marked the texts
-    /// not delivered in the history.
+    /// `resolve_session_conflict` calls it, after marking the texts not
+    /// delivered in the history; a text committed after that marking is
+    /// shown `NotDelivered` from its send record.
     pub(crate) fn abandon_outgoing(
         &self,
         session_id: u64,

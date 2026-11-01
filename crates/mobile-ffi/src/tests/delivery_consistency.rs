@@ -190,8 +190,10 @@ fn a_resolution_killed_between_its_passes_and_repeated_never_shows_delivered() {
 /// Real threads: one keeps sending from the chat while the other resolves
 /// the conflict, repeated. Whatever the interleaving, nothing sent is lost,
 /// nothing abandoned is shown Delivered, and everything shown Delivered was
-/// received. The run also reports how many texts landed in the abandoned
-/// session, so a run that never hit the window is visible.
+/// received. The run prints how many texts ended NotDelivered; that count
+/// includes texts the marking pass caught, so it does not show the window
+/// between the passes was hit (the hook test above shows that case; with
+/// the old rule this test failed 3 of 3 runs).
 #[test]
 fn concurrent_sends_and_a_resolution_never_show_delivered_without_a_receipt() {
     let mut abandoned = 0;

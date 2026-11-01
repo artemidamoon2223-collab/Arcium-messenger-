@@ -1,6 +1,6 @@
 ---
 name: engineering-code-review
-description: "Concrete engineering requirements for making and reviewing changes in this repository: scope discipline, the pre-delivery verification checklist, the local Karpathy-style review of a change (four principles, every changed file read in full), how claims must be worded, and where things live. Use when writing a non-trivial change, reviewing a diff, or preparing to report a task as done. Describes engineering practice only — it is not a security or cryptographic review, and it authorizes nothing."
+description: "Concrete engineering requirements for making and reviewing changes in this repository: scope discipline, the pre-delivery verification checklist, the local Karpathy-style review of a change (four principles, every changed file read in full), how claims must be worded, and where things live. Use when writing a non-trivial change, reviewing a diff, or preparing to report a task as done, including the three-line header of a final owner report. Describes engineering practice only — it is not a security or cryptographic review, and it authorizes nothing."
 ---
 
 # engineering-code-review
@@ -79,6 +79,27 @@ guards against, all of which have actually occurred in this repository:
   report the conflict, and keep the stricter constraint.
 - Do not present experimental or stub code as production-ready.
 - Long code blocks are hard to read on the reviewer's device — split them.
+
+## Reporting to the owner
+
+A substantial final report — the end of a task, a milestone or a review —
+starts with exactly three lines in plain Russian, before any detail:
+
+```
+СДЕЛАНО: what was completed and how it was verified.
+РЕШЕНИЕ ВЛАДЕЛЬЦА: what needs the owner's authorization, or «нет».
+НЕ ПРОВЕРЕНО: material uncertainty, failures and limits, or «нет».
+```
+
+- СДЕЛАНО names only what is `SOURCE_VERIFIED` or `RUNTIME_VERIFIED`
+  (`CLAUDE.md`, «Границы доказательств»); everything else belongs in
+  НЕ ПРОВЕРЕНО.
+- A failed or red check, a security warning or a scope deviation goes in these
+  lines. The format never hides a problem: if one line is not enough, use two.
+- Evidence — labels, commands, SHAs, `path:line`, review blocks — follows the
+  three lines or sits in a linked artifact. The header summarizes it; it never
+  replaces it.
+- A short answer to a question needs no header.
 
 ## References
 

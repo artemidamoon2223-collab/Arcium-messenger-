@@ -177,13 +177,22 @@ fn exported_items(dir: &Path, out: &mut Vec<(String, String)>) {
     }
 }
 
-/// The `pub fn` items of an exported body, each up to the next one. Direct
+/// The `fn` items of an exported body (an exported `impl` exports every
+/// method, `pub` or not), each with its name, up to the next one. Direct
 /// calls only: a helper that calls either method on an exported method's
 /// behalf is not seen here (the network layer's own helpers do, on a receipt).
-fn exported_methods(body: &str) -> Vec<&str> {
-    let starts: Vec<usize> = body.match_indices("pub fn ").map(|(i, _)| i).collect();
+fn exported_methods(body: &str) -> Vec<(&str, &str)> {
+    let starts: Vec<usize> = body
+        .match_indices("fn ")
+        .map(|(i, _)| i)
+        .filter(|&i| i == 0 || !body.as_bytes()[i - 1].is_ascii_alphanumeric() && body.as_bytes()[i - 1] != b'_')
+        .collect();
     (0..starts.len())
-        .map(|k| &body[starts[k]..starts.get(k + 1).copied().unwrap_or(body.len())])
+        .map(|k| {
+            let item = &body[starts[k]..starts.get(k + 1).copied().unwrap_or(body.len())];
+            let name = item[3..].split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+            (name, item)
+        })
         .collect()
 }
 
@@ -203,17 +212,17 @@ fn neither_outbox_removal_is_exported_through_uniffi() {
     );
     // The one exported method allowed to call either: it marks the texts
     // not delivered before abandoning them.
-    const ALLOWED: &str = "pub fn resolve_session_conflict";
+    const ALLOWED: &str = "resolve_session_conflict";
     for (file, body) in &items {
         for name in ["fn acknowledge_outgoing", "fn abandon_outgoing"] {
             assert!(!body.contains(name), "{name} is exported in {file}");
         }
-        for method in exported_methods(body) {
-            if method.starts_with(ALLOWED) {
+        for (name, method) in exported_methods(body) {
+            if name == ALLOWED {
                 continue;
             }
-            for call in [".acknowledge_outgoing(", ".abandon_outgoing("] {
-                assert!(!method.contains(call), "an exported method in {file} calls {call}");
+            for call in ["acknowledge_outgoing", "abandon_outgoing"] {
+                assert!(!method.contains(call), "exported {name} in {file} refers to {call}");
             }
         }
     }

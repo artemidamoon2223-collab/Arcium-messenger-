@@ -181,9 +181,11 @@ Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
   only this layer removes one: on a receipt, or in `resolve_session_conflict`
   after marking the text not delivered.
 - The exported raw `send_message` refuses the client ids this layer sends
-  under (starting with `t` or `r`, or `o` alone), so a caller cannot commit
-  its own message under a text's id and have the receipt for it shown as the
-  text's delivery.
+  under (starting with `t` or `r`, or `o` alone), so a raw message cannot be
+  committed under a text's id and have the receipt for it shown as the
+  text's delivery. `send_text` and `chat_send` still share the text id
+  space (`t` + app id): a `send_text` under an app id that `chat_send` later
+  uses links the history entry to the `send_text` message. Open.
 
 ## 6. State machines
 

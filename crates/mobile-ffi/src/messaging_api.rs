@@ -319,7 +319,9 @@ impl ArciumCore {
     /// `InvalidClientMessageId`: one starting with `t` (texts) or `r`
     /// (receipts), and `o` alone (the session opener). Otherwise a caller
     /// could commit its own message under a chat text's id, and the peer's
-    /// receipt for that message would show the text as delivered.
+    /// receipt for that message would show the text as delivered. (This
+    /// closes that only for this call: `NetworkMessenger::send_text` shares
+    /// the text id space with `chat_send` by design.)
     ///
     /// The first call encrypts `plaintext` and commits the new session state
     /// and the outbox record together before returning `Sent`. Any later
@@ -335,10 +337,10 @@ impl ArciumCore {
         client_message_id: Vec<u8>,
         plaintext: Vec<u8>,
     ) -> Result<SendResult, CoreError> {
+        let plaintext = Zeroizing::new(plaintext);
         if crate::network::wire::client_id::is_reserved(&client_message_id) {
             return Err(CoreError::InvalidClientMessageId);
         }
-        let plaintext = Zeroizing::new(plaintext);
         self.send_committed(session_id, &client_message_id, &plaintext)
     }
 

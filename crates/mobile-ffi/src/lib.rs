@@ -2202,6 +2202,7 @@ mod tests {
     }
 
     mod responder;
+    mod ack_probe;
     mod chat;
     mod durable;
     mod net_harness;

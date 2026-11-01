@@ -2210,6 +2210,7 @@ mod tests {
     mod net_harness;
     mod network;
     mod network_crash;
+    mod delivery_consistency;
     mod net_peer;
     mod legacy_upgrade;
     mod mailbox_scan;

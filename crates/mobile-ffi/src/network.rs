@@ -205,7 +205,10 @@ impl NetworkMessenger {
 
     /// Commits the text `text` for `peer` under the application's own id for
     /// it (1 to 63 bytes). Repeating a call with the same id sends nothing new
-    /// and reports where the first one stands. `sync` transmits it.
+    /// and reports where the first one stands. `sync` transmits it. An id
+    /// already used by `chat_send` for this peer is refused, and an id used
+    /// here is then refused by `chat_send`: both commit under the same client
+    /// id, and the history must only follow its own messages.
     pub fn send_text(
         &self,
         peer: Vec<u8>,
@@ -214,6 +217,11 @@ impl NetworkMessenger {
     ) -> Result<SentText, CoreError> {
         let text = Zeroizing::new(text);
         let peer = peer_key(&peer)?;
+        self.require_contact(&peer)?;
+        if client_message_id.is_empty() || client_message_id.len() > 63 {
+            return Err(CoreError::InvalidClientMessageId);
+        }
+        self.claim_for_send_text(&peer, &client_message_id)?;
         self.send_committed_text(&peer, &client_message_id, text)
     }
 

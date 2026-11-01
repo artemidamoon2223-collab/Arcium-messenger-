@@ -169,6 +169,23 @@ fn message_id_arg(session_id: u64, id: &[u8]) -> Result<messaging::MessageId, Co
         .map_err(|_| CoreError::UnknownMessage { session_id })
 }
 
+fn send_result(outcome: SendOutcome) -> SendResult {
+    match outcome {
+        SendOutcome::Sent(m) => SendResult::Sent {
+            message: outgoing(m),
+        },
+        SendOutcome::AlreadyPending(m) => SendResult::AlreadyPending {
+            message: outgoing(m),
+        },
+        SendOutcome::AlreadyAcknowledged { message_id } => SendResult::AlreadyAcknowledged {
+            message_id: message_id.to_vec(),
+        },
+        SendOutcome::Abandoned { message_id } => SendResult::Abandoned {
+            message_id: message_id.to_vec(),
+        },
+    }
+}
+
 /// What the network layer needs from the messaging surface without leaving
 /// Rust ownership. These are not exported through UniFFI (an `impl` block
 /// marked `#[uniffi::export]` exports every method in it): they take and return
@@ -189,20 +206,24 @@ impl ArciumCore {
         let outcome = messenger
             .send(&mut store, our, session_id, client_message_id, plaintext)
             .map_err(|e| CoreError::messaging(session_id, e))?;
-        Ok(match outcome {
-            SendOutcome::Sent(m) => SendResult::Sent {
-                message: outgoing(m),
-            },
-            SendOutcome::AlreadyPending(m) => SendResult::AlreadyPending {
-                message: outgoing(m),
-            },
-            SendOutcome::AlreadyAcknowledged { message_id } => SendResult::AlreadyAcknowledged {
-                message_id: message_id.to_vec(),
-            },
-            SendOutcome::Abandoned { message_id } => SendResult::Abandoned {
-                message_id: message_id.to_vec(),
-            },
-        })
+        Ok(send_result(outcome))
+    }
+
+    /// What has been committed to `peer` under `client_message_id`, read
+    /// only (`Messenger::prior_send`): `None`, `AlreadyPending`,
+    /// `AlreadyAcknowledged` or `Abandoned`. Needs no session.
+    pub(crate) fn prior_send(
+        &self,
+        peer: &[u8; 32],
+        client_message_id: &[u8],
+    ) -> Result<Option<SendResult>, CoreError> {
+        let (store, messenger) = self.lock()?;
+        Ok(messenger
+            .prior_send(&store, peer, client_message_id)
+            .map_err(|e| {
+                CoreError::messaging(core_crypto::session_handle::local_session_handle(peer), e)
+            })?
+            .map(send_result))
     }
 
     /// [`receive_message`](Self::receive_message), without converting the

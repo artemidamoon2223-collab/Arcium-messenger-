@@ -147,14 +147,38 @@ class FinalTest(unittest.TestCase):
         with open(path) as f:
             exec(compile(f.read(), path, "exec"), mod.__dict__)
         mod.DEADLINE["pre-tool"] = 1
-        mod.qc.repo_root = lambda start=None: time.sleep(3) or self.r.dir
+        mod.qc.repo_root = lambda start=None: time.sleep(30) or self.r.dir  # longer than any hook timeout
+        t0 = time.time()
         import contextlib
         import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             mod.main("pre-tool", {"cwd": self.r.dir, "tool_name": "Bash", "tool_input": {"command": "git push"}})
+        self.assertLess(time.time() - t0, 10, "the deadline ends the lookup instead of moving to the next clone")
         self.assertEqual(json.loads(buf.getvalue() or "{}").get("hookSpecificOutput", {}).get("permissionDecision"),
                          "deny", buf.getvalue())
+
+    def undecodable_gitfile_dir(self):
+        d = os.path.join(self.parent, "odd")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, ".git"), "wb") as f:
+            f.write(b"\xff\xfe not a gitdir line \x80")
+        return d
+
+    def test_an_undecodable_git_file_in_the_cwd_does_not_hide_the_loop(self):
+        self.active_not_verified()
+        odd = self.undecodable_gitfile_dir()
+        payload = {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}, "cwd": odd}
+        rc, out, err = self.raw_hook("pre-tool", json.dumps(payload).encode(), {"CLAUDE_PROJECT_DIR": self.r.dir})
+        self.assertEqual((rc, json.loads(out or "{}").get("hookSpecificOutput", {}).get("permissionDecision")),
+                         (0, "deny"), err)
+
+    def test_an_undecodable_git_file_with_no_loop_active_does_nothing(self):
+        self.r.locked("t-idle", [PASSING])
+        odd = self.undecodable_gitfile_dir()
+        payload = {"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": odd}
+        self.assertEqual(self.raw_hook("pre-tool", json.dumps(payload).encode(), {"CLAUDE_PROJECT_DIR": odd}),
+                         (0, "", ""))
 
     def test_input_that_never_ends_fails_closed(self):
         self.active_not_verified()

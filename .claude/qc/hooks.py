@@ -30,13 +30,14 @@ is checked. While a loop is active, a guard that cannot decide fails
 closed: an internal error or the internal deadline (below the hook timeout)
 denies the tool call, blocks a stop once, or refuses the task; an
 activation record that is unreadable or fails its integrity check counts as
-active, and so does hook input that is empty, cannot be read within
-READ_DEADLINE, is not a usable JSON object or is larger than MAX_INPUT (it
-is then not parsed). If the guard cannot even find out whether a loop is
-active (its deadline, git or qc.py failing in that clone, any internal
-error), an activation record found on the file system alone counts as
-active, expired or not. The
-Owner releases it by deleting active.json. qc.py is loaded from
+active. Hook input that is empty, cannot be read within READ_DEADLINE, is
+not a usable JSON object or is larger than MAX_INPUT is not parsed: with a
+loop active the step is refused, with none it is ignored. If the guard
+cannot even find out whether a loop is active (its deadline, git or qc.py
+failing in that clone, any internal error), an activation record found on
+the file system alone counts as active, expired or not; a .git file that
+cannot be read or decoded shows none. The Owner releases a loop by deleting
+active.json. qc.py is loaded from
 its source text, never from a cached .pyc; run this file with `python3 -I -B`
 so nothing next to it shadows the standard library. Claude Code's own
 permission mode still applies.
@@ -219,32 +220,41 @@ def fail_closed(event, data, why):
 
 def activation_record_below(start):
     """Whether the clone containing `start` has an activation record, found from the file system alone (no
-    git, no qc.py; an expired record counts too): the fallback when the guard cannot inspect the clone."""
-    d = os.path.abspath(start)
-    while True:
-        dot = os.path.join(d, ".git")
-        gitdir = None
-        if os.path.isdir(dot):
-            gitdir = dot
-        elif os.path.isfile(dot):
-            try:
-                with open(dot) as f:
+    git, no qc.py; an expired record counts too): the fallback when the guard cannot inspect the clone.
+    Never raises: a .git file or directory that cannot be read or decoded shows no record (the other start
+    directories, such as $CLAUDE_PROJECT_DIR, are still looked at), so it never traps a session."""
+    try:
+        d = os.path.abspath(start)
+        while True:
+            dot = os.path.join(d, ".git")
+            gitdir = None
+            if os.path.isdir(dot):
+                gitdir = dot
+            elif os.path.isfile(dot):
+                with open(dot, "rb") as f:
                     line = f.read(4096).strip()
-            except OSError:
-                return True  # unreadable: assume the worst
-            if line.startswith("gitdir:"):
-                gitdir = os.path.join(d, line[len("gitdir:"):].strip())
-        if gitdir is not None:
-            return os.path.lexists(os.path.join(gitdir, "arcium-qc", "active.json"))
-        parent = os.path.dirname(d)
-        if parent == d:
-            return False
-        d = parent
+                if not line.startswith(b"gitdir:"):
+                    return False
+                gitdir = os.path.join(os.fsencode(d), line[len(b"gitdir:"):].strip())
+            if gitdir is not None:
+                return os.path.lexists(os.path.join(os.fsencode(gitdir) if isinstance(gitdir, str) else gitdir,
+                                                    b"arcium-qc", b"active.json"))
+            parent = os.path.dirname(d)
+            if parent == d:
+                return False
+            d = parent
+    except Deadline:
+        raise
+    except Exception:  # noqa: BLE001 - unreadable or undecodable: no record seen here
+        return False
 
 
 def activation_file_exists(data):
     """Whether any clone this call may concern has an activation record (see activation_record_below)."""
-    return any(activation_record_below(x) for x in starts(data))
+    try:
+        return any(activation_record_below(x) for x in starts(data))
+    except Exception:  # noqa: BLE001 - only reachable through a bug; the other paths still decide
+        return False
 
 
 def main(event, data, input_error=None, stop_hint=False):
@@ -400,20 +410,25 @@ if __name__ == "__main__":
     event = sys.argv[1] if len(sys.argv) > 1 else ""
     payload, why, hint = {}, "the hook input could not be read", False
     try:
-        if hasattr(signal, "SIGALRM"):
-            signal.signal(signal.SIGALRM, _deadline)
-            signal.alarm(READ_DEADLINE)  # input that never ends is unusable input
-        payload, why, hint = read_input(sys.stdin.buffer)
-    except BaseException:  # noqa: BLE001 - read_input reports its own errors; anything else is unusable too
-        pass
-    finally:
-        if hasattr(signal, "SIGALRM"):
-            signal.alarm(0)
+        try:
+            if hasattr(signal, "SIGALRM"):
+                signal.signal(signal.SIGALRM, _deadline)
+                signal.alarm(READ_DEADLINE)  # input that never ends is unusable input
+            payload, why, hint = read_input(sys.stdin.buffer)
+        finally:
+            if hasattr(signal, "SIGALRM"):
+                signal.alarm(0)
+    except BaseException:  # noqa: BLE001 - also a deadline firing just as the read ends: the input is unusable
+        payload, why, hint = {}, "the hook input could not be read in time", hint
     try:
         sys.exit(main(event, payload, input_error=why, stop_hint=hint))
     except SystemExit:
         raise
     except BaseException as e:  # noqa: BLE001 - main itself failed: decide from the file system alone
-        if activation_file_exists(payload):
+        try:
+            found = activation_file_exists(payload)
+        except BaseException:  # noqa: BLE001 - a deadline still pending: assume the worst only if asked to
+            found = False
+        if found:
             sys.exit(fail_closed(event, {"stop_hook_active": hint}, "%s: %s" % (type(e).__name__, e)))
         sys.exit(0)

@@ -69,9 +69,14 @@ prints counts.
 What `VERIFIED` does not establish: that the criteria were adequate (the
 Builder wrote them; the reviewer and the Owner judge them), that the
 `owner_authorizes` classes match a real Owner instruction (the verdict names
-them so the Owner can check), or that the reviews were independent (their
+them so the Owner can check), that the reviews were independent (their
 records are signed and must cover every changed path, but a session with
-shell access could still write one).
+shell access could still write one), or that the toolchain and environment
+outside the tree were honest (a run records the program it ran and the
+Cargo configuration outside the repository, and refuses one above it, but
+`~/.cargo/config.toml`, `PATH` and environment variables are only recorded).
+The local state can be deleted as a whole; then nothing records that a loop
+existed.
 
 ## Resuming after an interruption
 

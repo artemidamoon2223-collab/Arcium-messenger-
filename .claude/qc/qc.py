@@ -21,30 +21,49 @@ spec's owner_authorizes and the review text are still written by agents:
                     diff touches an owner-gated area the spec does not cite
                     authority for
 
+What changed is computed from the bytes on disk against the base commit's
+tree, not from `git diff` or `git status`, and git runs without the user's
+global configuration or GIT_* variables: diff and colour settings, external
+diff drivers, attributes, replace refs, fsmonitor, assume-unchanged and
+skip-worktree flags, .git/info/exclude and core.excludesFile hide nothing.
+Only .gitignore files in the tree (part of the diff themselves) do.
+
 A run that is still going, or was interrupted (killed, crashed), leaves
-NOT_VERIFIED until a later run completes; an interrupted run counts against
-the run cap. One run or review-record per spec at a time: a second one is
-refused while the first holds the spec's lock. Unreadable state is BLOCKED,
-and so is any internal error: nothing here turns a crash into VERIFIED.
-A review is recorded only for a tree whose last run passed, and only if its
-block quotes that tree's fingerprint (`qc.py status <id>` prints it).
+NOT_VERIFIED until a later run completes. An interrupted run counts as a
+failed repair round and against the run cap, so killing a run never saves
+budget; a run or review whose signed record was written before the crash
+is kept with its outcome. One run, lock or review-record per spec at a
+time: a second one is refused while the first holds the lock on the spec's
+record directory. Unreadable state is BLOCKED, and so is any internal error:
+nothing here turns a crash into VERIFIED. A review is recorded only for a
+tree whose last run passed, and only if its block quotes that tree's
+fingerprint (`qc.py status <id>` prints it). Each run records the tree
+object of the tree it ran on (for `git diff <base> <tree>`), the program it
+ran and any Cargo configuration outside the repository; a Cargo
+configuration in a directory above the repository (not CARGO_HOME) makes a
+cargo criterion NOT_VERIFIED.
 
 State lives in <git-dir>/arcium-qc/, outside the working tree: it is never
 part of a diff and never committed. Records are HMAC-signed with a per-clone
-key so that a hand-written or edited record is rejected. The key is readable
-by anything with shell access: the signature stops fabricated or stale
-records, not a deliberate forger with this clone's key.
+key so that a hand-written or edited record is rejected, and never
+overwritten. A state file rolled back to an older signed copy, or deleted
+and locked again, is BLOCKED while the later records remain; deleting the
+whole directory (or the records too) cannot be detected locally. The key is
+readable by anything with shell access: the signature stops fabricated or
+stale records, not a deliberate forger with this clone's key.
 
 This script grants nothing. It never commits, pushes, merges or dispatches
 itself. `spec-check` refuses criteria whose program is a shell, `git` (other
 than read-only subcommands), `gh`, `curl`, `wget`, `anchor`, `solana` or
 `arcium`; that checks the program name only. A criterion is code run on this
 machine (`python3 -c ...`, a script, a build) and can do anything its program
-can: the criteria are reviewed, not sandboxed.
+can: the criteria are reviewed, not sandboxed. What it runs with outside the
+tree (the installed toolchain, ~/.cargo/config.toml, environment variables)
+is recorded, not verified.
 """
 
-import codecs
 import contextlib
+import difflib
 import fcntl
 import hashlib
 import hmac
@@ -52,6 +71,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -89,8 +109,8 @@ RULES = [
     (".claude/", {"AGENT_CONTROL"}),
 ]
 SUPPLY_RE = re.compile(r"(^|/)(Cargo\.toml|Cargo\.lock|package\.json|package-lock\.json|"
-                       r"[^/]*\.gradle\.kts|gradle-wrapper\.properties|rust-toolchain(\.toml)?)$|"
-                       r"^\.git(ignore|attributes|modules)$")
+                       r"[^/]*\.gradle\.kts|gradle-wrapper\.properties|rust-toolchain(\.toml)?|"
+                       r"\.git(ignore|attributes|modules)|\.cargo/config(\.toml)?)$")
 # Agent and tooling control files that may not exist yet (so not in RULES).
 CONTROL_RE = re.compile(r"^(\.mcp\.json|\.githooks/)")
 # Changing these needs a separate, explicit Owner instruction (CLAUDE.md).
@@ -105,7 +125,7 @@ OWNER_ONLY_ARGV = [
 OWNER_ONLY_GIT_OK = {"diff", "status", "log", "show", "rev-parse", "ls-files", "grep", "merge-base"}
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "xargs", "eval"}
 # Test runners whose exit code alone does not show that any test ran.
-TEST_RUNNER_RE = re.compile(r"(^|\s)(cargo (\S+ )*(test|nextest)|\S*gradlew? (\S+ )*\S*[tT]est\S*|\S*mocha|"
+TEST_RUNNER_RE = re.compile(r"(^|\s)(cargo (\S+ )*(test|t|nextest)|\S*gradlew? (\S+ )*\S*[tT]est\S*|\S*mocha|"
                             r"\S*pytest|\S*jest|\S*vitest|(npm|pnpm|yarn) (run )?test\S*|go test|make \S*test\S*|"
                             r"\S*python3? (\S+ )*-m (unittest|pytest))(\s|$)")
 
@@ -125,6 +145,13 @@ TEST_FAILED_RE = re.compile(
     r"^FAILED \(|^AssertionError", re.M)
 
 
+def crash_point(name):
+    """Tests only: QC_TEST_CRASH_AT=<name> kills this process here, as a power cut or a kill would.
+    It can only stop qc.py itself, which anyone able to set the variable can already do."""
+    if os.environ.get("QC_TEST_CRASH_AT") == name:
+        os.kill(os.getpid(), 9)
+
+
 class QcError(Exception):
     def __init__(self, state, reason):
         super().__init__(reason)
@@ -132,9 +159,30 @@ class QcError(Exception):
 
 
 # ── Git and state helpers ────────────────────────────────────────────────────
+# Git is asked only for object and path lists, never for a diff or a status:
+# what changed is computed here from the bytes on disk against the commit's
+# tree. Diff options, external diff and textconv drivers, colour, path
+# prefixes, replace refs, fsmonitor and the index's assume-unchanged and
+# skip-worktree flags therefore change nothing. Git runs without the user's
+# global and system configuration and without GIT_* variables; only
+# .gitignore files inside the tree (themselves part of the diff) hide paths,
+# not .git/info/exclude or core.excludesFile.
 
-def git(root, *args, binary=False):
-    p = subprocess.run(["git", "-C", root, *args], capture_output=True)
+GIT_OPTS = ["--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+            "-c", "core.quotePath=false", "-c", "core.excludesFile=" + os.devnull, "-c", "color.ui=never"]
+
+
+def git_env(extra=None):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS="1",
+               GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+    env.update(extra or {})
+    return env
+
+
+def git(root, *args, binary=False, stdin=None, env=None):
+    p = subprocess.run(["git", *GIT_OPTS, "-C", root, *args], capture_output=True, input=stdin,
+                       env=git_env(env))
     if p.returncode != 0:
         raise QcError("BLOCKED", "git %s failed: %s" % (" ".join(args), p.stderr.decode(errors="replace").strip()))
     return p.stdout if binary else p.stdout.decode(errors="replace")
@@ -142,7 +190,8 @@ def git(root, *args, binary=False):
 
 def repo_root(start=None):
     start = start or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    p = subprocess.run(["git", "-C", start, "rev-parse", "--show-toplevel"], capture_output=True)
+    p = subprocess.run(["git", *GIT_OPTS, "-C", start, "rev-parse", "--show-toplevel"], capture_output=True,
+                       env=git_env())
     if p.returncode != 0:
         raise QcError("BLOCKED", "not inside a git repository: %s" % start)
     return p.stdout.decode().strip()
@@ -158,12 +207,23 @@ def state_dir(root):
     return d
 
 
+def fsync_dir(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def key(root):
     path = os.path.join(state_dir(root), "key")
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(os.urandom(32))
+            f.flush()
+            os.fsync(f.fileno())
+        fsync_dir(os.path.dirname(path))
     except FileExistsError:
         pass
     with open(path, "rb") as f:
@@ -190,19 +250,26 @@ def verify_sig(root, obj):
     return hmac.compare_digest(str(mac), good)
 
 
-def write_json(path, obj):
-    """Atomic and durable: the file and its directory entry reach the disk."""
-    tmp = path + ".tmp"
+def write_json(path, obj, exclusive=False):
+    """Atomic and durable: the file and its directory entry reach the disk.
+    `exclusive`: the file must not exist yet; an existing record is never replaced."""
+    tmp = "%s.%d.tmp" % (path, os.getpid())
     with open(tmp, "w") as f:
         json.dump(obj, f, indent=1, sort_keys=True)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
-    fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
     try:
-        os.fsync(fd)
+        if exclusive:
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                raise QcError("BLOCKED", "%s already exists: records are never overwritten" % os.path.basename(path))
+        else:
+            os.replace(tmp, path)
     finally:
-        os.close(fd)
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    fsync_dir(os.path.dirname(path) or ".")
 
 
 def read_json(path):
@@ -235,23 +302,86 @@ def tool_hash():
     return h.hexdigest()
 
 
+def object_format(root):
+    return git(root, "rev-parse", "--show-object-format").strip() or "sha1"
+
+
+def tree_entries(root, rev):
+    """{path: (mode, oid)} for every entry of `rev`'s tree (gitlinks as mode 160000)."""
+    out = {}
+    for rec in git(root, "ls-tree", "-r", "-z", "--full-tree", rev).split("\0"):
+        if rec:
+            meta, path = rec.split("\t", 1)
+            mode, _type, oid = meta.split()
+            out[path] = (mode, oid)
+    return out
+
+
+def listed_paths(root, rev):
+    """Paths in `rev`'s tree, in the index, and untracked ones no tracked-tree .gitignore excludes."""
+    paths = set(tree_entries(root, rev))
+    for args in (("ls-files", "-z", "--cached"),
+                 ("ls-files", "-z", "--others", "--exclude-per-directory=.gitignore")):
+        paths |= {x for x in git(root, *args).split("\0") if x}
+    return paths
+
+
+def disk_entry(root, rel, fmt):
+    """(mode, oid) of the file at `rel` as git would store it without filters; None if absent."""
+    p = os.path.join(root, rel)
+    try:
+        st = os.lstat(p)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        data, mode = os.readlink(p).encode(), "120000"
+    elif stat.S_ISREG(st.st_mode):
+        with open(p, "rb") as f:
+            data = f.read()
+        mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
+    elif stat.S_ISDIR(st.st_mode):
+        return ("160000", "dir")  # a gitlink's checkout; its own commit is not followed
+    else:
+        return ("0", "special")
+    h = hashlib.sha256() if fmt == "sha256" else hashlib.sha1()
+    h.update(b"blob %d\0" % len(data) + data)
+    return (mode, h.hexdigest())
+
+
 def fingerprint(root):
-    """HEAD, the tracked diff against it and every untracked, non-ignored file."""
-    h = hashlib.sha256()
-    h.update(git(root, "rev-parse", "HEAD").strip().encode())
-    h.update(hashlib.sha256(git(root, "diff", "HEAD", "--binary", binary=True)).digest())
-    for rel in sorted(x for x in git(root, "ls-files", "--others", "--exclude-standard", "-z").split("\0") if x):
-        p = os.path.join(root, rel)
-        h.update(rel.encode() + b"\0")
-        h.update(sha256_file(p).encode() if os.path.isfile(p) else b"-")
+    """HEAD and the bytes of every listed path as they are on disk."""
+    fmt = object_format(root)
+    head = git(root, "rev-parse", "HEAD").strip()
+    h = hashlib.sha256(head.encode())
+    for rel in sorted(listed_paths(root, "HEAD")):
+        e = disk_entry(root, rel, fmt)
+        h.update(rel.encode() + b"\0" + ("%s %s" % e if e else "-").encode() + b"\n")
     return h.hexdigest()
 
 
 def changed_paths(root, base):
-    # --no-renames: a moved file counts at its old path too.
-    tracked = [x for x in git(root, "diff", "--name-only", "--no-renames", "-z", base).split("\0") if x]
-    untracked = [x for x in git(root, "ls-files", "--others", "--exclude-standard", "-z").split("\0") if x]
-    return sorted(set(tracked) | set(untracked))
+    """Paths whose bytes or mode on disk differ from `base`'s tree (a deleted or moved file at its old path)."""
+    fmt = object_format(root)
+    base_tree = tree_entries(root, base)
+    changed = []
+    for rel in listed_paths(root, base):
+        if rel in base_tree and base_tree[rel][0] == "160000":
+            continue  # a submodule pointer: not followed (no submodules in this repository)
+        if disk_entry(root, rel, fmt) != base_tree.get(rel):
+            changed.append(rel)
+    return sorted(changed)
+
+
+def blob_text(root, oid):
+    return git(root, "cat-file", "blob", oid, binary=True).decode("utf-8", "replace")
+
+
+def file_text(root, rel):
+    p = os.path.join(root, rel)
+    if os.path.islink(p) or not os.path.isfile(p):
+        return ""
+    with open(p, "rb") as f:
+        return f.read().decode("utf-8", "replace")
 
 
 def classify_paths(paths):
@@ -271,32 +401,66 @@ def classify_paths(paths):
     return out
 
 
-def added_lines(root, base):
-    """(path, line) for every line the tree adds over `base`, new files included."""
-    cur = None
-    # quotePath off keeps non-ASCII names literal; names with control
-    # characters, quotes or backslashes still arrive C-quoted ("b/...").
-    for line in git(root, "-c", "core.quotePath=false", "diff", "-U0", "--no-renames", base).splitlines():
-        if line.startswith("+++ "):
-            name = line[4:]
-            if name.startswith('"') and name.endswith('"'):
-                name = codecs.escape_decode(name[1:-1].encode())[0].decode("utf-8", "replace")
-            cur = name[2:] if name.startswith("b/") else None
-        elif cur and line.startswith("+"):
-            yield cur, line[1:]
-    for rel in (x for x in git(root, "ls-files", "--others", "--exclude-standard", "-z").split("\0") if x):
-        try:
-            with open(os.path.join(root, rel), errors="replace") as f:
-                for line in f:
-                    yield rel, line.rstrip("\n")
-        except (OSError, IsADirectoryError):
+def added_lines(root, base, paths=None):
+    """(path, line) for every line the tree on disk adds over `base`, new files included."""
+    base_tree = tree_entries(root, base)
+    for rel in (changed_paths(root, base) if paths is None else paths):
+        old = blob_text(root, base_tree[rel][1]).splitlines() if rel in base_tree and \
+            base_tree[rel][0] != "160000" else []
+        new = file_text(root, rel).splitlines()
+        for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+            if tag in ("insert", "replace"):
+                for line in new[j1:j2]:
+                    yield rel, line
+
+
+def recorded_tree(root):
+    """The tree object of the tree on disk, or the reason it could not be written."""
+    try:
+        return write_tree(root, listed_paths(root, "HEAD"))
+    except (QcError, OSError) as e:
+        return "not written: %s" % e
+
+
+def write_tree(root, paths):
+    """A git tree object of the tree on disk (the given listed paths), for reproducing a run.
+    Writes blobs and a tree into the object database only; the index and the working tree are untouched."""
+    fmt = object_format(root)
+    entries, batch, single = [], [], []
+    for rel in sorted(paths):
+        e = disk_entry(root, rel, fmt)
+        if e is None or e[0] in ("160000", "0"):
             continue
+        entries.append((rel, e))
+        (single if e[0] == "120000" or "\n" in rel else batch).append(rel)
+    stored = {}
+    if batch:
+        out = git(root, "hash-object", "-w", "--no-filters", "--stdin-paths",
+                  stdin="".join(os.path.join(root, r) + "\n" for r in batch).encode()).split()
+        stored.update(zip(batch, out))
+    for rel in single:
+        p = os.path.join(root, rel)
+        data = os.readlink(p).encode() if os.path.islink(p) else open(p, "rb").read()
+        stored[rel] = git(root, "hash-object", "-w", "--no-filters", "--stdin", stdin=data).strip()
+    lines = []
+    for rel, (mode, oid) in entries:
+        if stored.get(rel) != oid:
+            raise QcError("BLOCKED", "git stored %s as %s, expected %s" % (rel, stored.get(rel), oid))
+        lines.append("%s %s\t%s" % (mode, oid, rel))
+    index = os.path.join(state_dir(root), "tree-index.%d" % os.getpid())
+    try:
+        git(root, "update-index", "-z", "--index-info", stdin="".join(x + "\0" for x in lines).encode(),
+            env={"GIT_INDEX_FILE": index})
+        return git(root, "write-tree", env={"GIT_INDEX_FILE": index}).strip()
+    finally:
+        if os.path.exists(index):
+            os.remove(index)
 
 
-def content_flags(root, base):
+def content_flags(root, base, paths=None):
     """Added lines that CLAUDE.md forbids outright."""
     flags = []
-    for cur, add in added_lines(root, base):
+    for cur, add in added_lines(root, base, paths):
         if cur.startswith(".github/") and re.search(r"continue-on-error:\s*true|\|\|\s*true\b", add):
             flags.append("CI_MASKED_GATE_CANDIDATE %s: %s" % (cur, add.strip()[:120]))
         if cur.startswith("arcium-psi/") and re.search(r"XChaCha|chacha20|Aes(Gcm|256)|aes-gcm", add, re.I):
@@ -327,7 +491,7 @@ def classify(root, base):
         "load_with_security_review": sorted(
             (["mbr-integration"] if "DURABLE_STATE" in classes else [])
             + (["android-uniffi-bridge"] if "FFI" in classes else [])),
-        "flags": content_flags(root, base),
+        "flags": content_flags(root, base, paths),
     }
 
 
@@ -399,10 +563,12 @@ def load_spec(root, sid):
         bad = owner_only(argv)
         if bad:
             errs.append("%s: %s" % (where, bad))
-        if TEST_RUNNER_RE.search(" ".join(argv)) and not c.get("must_match"):
+        # The program by its name, wherever it lives (/usr/bin/python3, ~/.cargo/bin/cargo).
+        runner = TEST_RUNNER_RE.search(" ".join([os.path.basename(argv[0])] + argv[1:]))
+        if runner and not c.get("must_match"):
             errs.append("%s: a test run needs must_match proving tests ran (a filter matching nothing exits 0)"
                         % where)
-        if TEST_RUNNER_RE.search(" ".join(argv)) and c.get("expect_exit", 0) != 0:
+        if runner and c.get("expect_exit", 0) != 0:
             errs.append("%s: a test run must expect_exit 0 (a non-zero expectation passes on failing tests)"
                         % where)
         cwd = c.get("cwd", ".")
@@ -461,18 +627,19 @@ def save_state(root, sid, st):
     write_json(state_path(root, sid), sign(root, st))
 
 
-def lock_file(root, sid):
+def run_dir(root, sid):
     if not ID_RE.match(sid or ""):
         raise QcError("BLOCKED", "invalid spec id %r" % sid)
     d = os.path.dirname(state_path(root, sid))
     os.makedirs(d, mode=0o700, exist_ok=True)
-    return os.path.join(d, ".lock")
+    return d
 
 
 @contextlib.contextmanager
 def spec_lock(root, sid):
-    """One run, lock or review-record per spec at a time; never waits."""
-    fd = os.open(lock_file(root, sid), os.O_RDWR | os.O_CREAT, 0o600)
+    """One run, lock or review-record per spec at a time; never waits. The lock is on the spec's
+    record directory itself, which cannot be deleted while it holds the state."""
+    fd = os.open(run_dir(root, sid), os.O_RDONLY)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -486,7 +653,7 @@ def spec_lock(root, sid):
 
 def lock_held(root, sid):
     """Whether a run (or record) for `sid` holds the spec's lock right now."""
-    fd = os.open(lock_file(root, sid), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(run_dir(root, sid), os.O_RDONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return False
@@ -496,12 +663,72 @@ def lock_held(root, sid):
         os.close(fd)
 
 
-def preconditions(root, sid):
-    """Spec, lock, tool integrity, owner gates, budget. Raises QcError."""
+RECORD_RE = re.compile(r"^(run|review)-([0-9]+)\.json$")
+
+
+def record_ok(root, path, kind, n, spec_sha):
+    """The signed record at `path` if it is this spec's `kind` record number `n`; None if absent."""
+    if not os.path.exists(path):
+        return None
+    rec = read_record(path, os.path.basename(path))
+    if not verify_sig(root, rec) or rec.get("kind") != kind or rec.get("n") != n or \
+            rec.get("spec_sha256") != spec_sha:
+        raise QcError("BLOCKED", "%s fails its integrity check (edited or fabricated)" % os.path.basename(path))
+    return rec
+
+
+def settle(root, sid, st, spec_sha):
+    """A copy of `st` with what a dead process left in flight resolved. A run whose signed record was
+    written is adopted (a FAILED one counts); a run that left none is INTERRUPTED and also counts as
+    a failed round, so killing a run never saves budget. A review whose record was written is adopted
+    (a blocking one counts); one that left none is dropped."""
+    st = json.loads(json.dumps(st))
+    d = run_dir(root, sid)
+    inf = st.pop("inflight", None)
+    if inf:
+        n = inf["n"]
+        rec = record_ok(root, os.path.join(d, "run-%d.json" % n), "run", n, spec_sha)
+        if rec:
+            st["runs"].append({"n": n, "outcome": rec["outcome"], "sha256": sha256_file(os.path.join(d, "run-%d.json" % n))})
+            st["failed_runs"] += rec["outcome"] == "FAILED"
+        else:
+            st["runs"].append({"n": n, "outcome": "INTERRUPTED", "sha256": None})
+            st["failed_runs"] += 1
+    rinf = st.pop("review_inflight", None)
+    if rinf:
+        n = rinf["n"]
+        path = os.path.join(d, "review-%d.json" % n)
+        rec = record_ok(root, path, "review", n, spec_sha)
+        if rec:
+            st.setdefault("reviews", []).append({"n": n, "skill": rec["skill"], "sha256": sha256_file(path)})
+            st["failed_runs"] += bool(rec["blocking"])
+    return st
+
+
+def check_ledger(root, sid, st):
+    """Every record on disk is in the ledger: a state rolled back to an older signed copy, or deleted
+    and locked again, leaves later records behind and is BLOCKED. (Deleting the records too is not
+    detectable locally.)"""
+    runs = {r["n"] for r in st["runs"]} | ({st["inflight"]["n"]} if st.get("inflight") else set())
+    reviews = {r["n"] for r in st.get("reviews", [])} | (
+        {st["review_inflight"]["n"]} if st.get("review_inflight") else set())
+    for name in os.listdir(run_dir(root, sid)):
+        m = RECORD_RE.match(name)
+        if m and int(m.group(2)) not in (runs if m.group(1) == "run" else reviews):
+            raise QcError("BLOCKED", "%s is not in the state ledger: the state was rolled back or replaced" % name)
+
+
+def preconditions(root, sid, check_lock=True):
+    """Spec, lock, tool integrity, owner gates, budget. Raises QcError. With `check_lock`, work in flight
+    under a live lock stays in flight (the caller reports it); otherwise it is settled in the copy
+    returned, which a caller holding the lock saves."""
     spec, spec_sha = load_spec(root, sid)
     st = load_state(root, sid)
     if st is None:
         raise QcError("BLOCKED", "spec %s is not locked: lock it before implementing (qc.py lock)" % sid)
+    check_ledger(root, sid, st)
+    if (st.get("inflight") or st.get("review_inflight")) and not (check_lock and lock_held(root, sid)):
+        st = settle(root, sid, st, spec_sha)
     if st["spec_sha256"] != spec_sha:
         raise QcError("BLOCKED", "spec %s changed after it was locked: criteria cannot move mid-task" % sid)
     if st["tool_sha256"] != tool_hash():
@@ -535,6 +762,33 @@ def network_ok(url, timeout=8):
         return False, "%s" % e
 
 
+def toolchain(root, argv, env):
+    """What a criterion ran besides the tree: the program and the Cargo configuration outside it."""
+    def entry(path):
+        try:
+            return {"path": path, "sha256": sha256_file(path)}
+        except OSError as e:
+            return {"path": path, "error": str(e)}
+    exe = shutil.which(argv[0], path=env.get("PATH"))
+    above = []
+    d = os.path.dirname(os.path.realpath(root))
+    cargo_home = os.path.realpath(env.get("CARGO_HOME") or os.path.join(os.path.expanduser("~"), ".cargo"))
+    while True:
+        for name in ("config", "config.toml"):
+            p = os.path.join(d, ".cargo", name)
+            if os.path.isfile(p) and os.path.realpath(os.path.dirname(p)) != cargo_home:
+                above.append(entry(p))
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    home = [entry(os.path.join(cargo_home, n)) for n in ("config", "config.toml")
+            if os.path.isfile(os.path.join(cargo_home, n))]
+    return {"program": entry(os.path.realpath(exe)) if exe else None, "cargo_config_above_root": above,
+            "cargo_home_config": home,
+            "env": {k: v for k, v in sorted(env.items()) if re.match(r"^(CARGO_|RUSTC|RUSTFLAGS|RUSTDOC)", k)}}
+
+
 def run_criterion(root, c):
     res = {"id": c["id"], "description": c["description"]}
     if c.get("manual"):
@@ -561,6 +815,12 @@ def run_criterion(root, c):
     cwd = os.path.join(root, c.get("cwd", "."))
     env = dict(os.environ)
     env.update({k: str(v) for k, v in c.get("env", {}).items()})
+    res["toolchain"] = toolchain(root, argv, env)
+    if os.path.basename(argv[0]).startswith("cargo") and res["toolchain"]["cargo_config_above_root"]:
+        res.update(status="NOT_VERIFIED", reason="a Cargo configuration outside the repository (%s) can change "
+                   "what cargo runs; it is not part of the diff or the review"
+                   % res["toolchain"]["cargo_config_above_root"][0]["path"])
+        return res
     t0 = time.time()
     try:
         p = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=c.get("timeout", 1800))
@@ -605,13 +865,10 @@ def cmd_run(root, sid):
 
 
 def _run(root, sid):
-    spec, spec_sha, st, cls = preconditions(root, sid)
-    if st.get("inflight"):
-        # The lock is ours, so the run that set this is not running: it was
-        # killed or crashed. It stays in the ledger and counts against the cap.
-        st["runs"].append({"n": st["inflight"]["n"], "outcome": "INTERRUPTED", "sha256": None})
-        del st["inflight"]
-        save_state(root, sid, st)
+    raw = load_state(root, sid)
+    spec, spec_sha, st, cls = preconditions(root, sid, check_lock=False)
+    if raw and (raw.get("inflight") or raw.get("review_inflight")):
+        save_state(root, sid, st)  # the lock is ours: what the dead process left is settled for good
     if len(st["runs"]) >= MAX_RUNS:
         raise QcError("ESCALATE_TO_OWNER", "%d runs recorded: the run cap is reached" % len(st["runs"]))
     fp_before = fingerprint(root)
@@ -632,9 +889,11 @@ def _run(root, sid):
     n = len(st["runs"]) + 1
     ev = sign(root, {"kind": "run", "spec_id": sid, "spec_sha256": spec_sha, "n": n, "time": int(time.time()),
                      "fingerprint": fp_after, "fingerprint_before": fp_before, "head": git(root, "rev-parse", "HEAD").strip(),
+                     "tree": recorded_tree(root),
                      "classification": cls, "results": results, "outcome": outcome, "why": why})
     ev_path = os.path.join(os.path.dirname(state_path(root, sid)), "run-%d.json" % n)
-    write_json(ev_path, ev)
+    write_json(ev_path, ev, exclusive=True)
+    crash_point("run-recorded")
     st["runs"].append({"n": n, "outcome": outcome, "sha256": sha256_file(ev_path)})
     del st["inflight"]
     if outcome == "FAILED":
@@ -684,13 +943,17 @@ def cmd_review_record(root, sid, skill, text):
 
 
 def _review_record(root, sid, skill, text):
-    spec, spec_sha, st, cls = preconditions(root, sid)
+    raw = load_state(root, sid)
+    spec, spec_sha, st, cls = preconditions(root, sid, check_lock=False)
+    if raw and (raw.get("inflight") or raw.get("review_inflight")):
+        save_state(root, sid, st)
     parsed = parse_review(skill, text)
     block = text[text.index(REVIEW_BLOCKS[skill][0]):]
     target = re.search(r"^target:\s*(\S+)", block, re.M)
     if not target or not target.group(1).startswith(spec["base"]):
         raise QcError("NOT_VERIFIED", "review target must start with the spec base %s" % spec["base"])
-    missing = [p for p in cls["paths"] if p not in block]
+    missing = [p for p in cls["paths"]
+               if not re.search(r"(?<![\w./-])" + re.escape(p) + r"(?!\.?[\w/-])", block)]
     if missing:
         raise QcError("NOT_VERIFIED", "review does not name every changed path; missing %s" % missing[:10])
     # The review is of the tree the criteria passed on: the reviewer quotes its
@@ -702,7 +965,7 @@ def _review_record(root, sid, skill, text):
     if quoted.group(1) != fp:
         raise QcError("NOT_VERIFIED", "the review quotes another tree than the current one; review it again")
     last = st["runs"][-1] if st["runs"] else None
-    if not last or last["outcome"] != "PASS" or st.get("inflight"):
+    if not last or last["outcome"] != "PASS":
         raise QcError("NOT_VERIFIED", "no completed passing run for this tree: run the criteria before the review")
     ev = load_record(root, sid, "run-%d.json" % last["n"], last["sha256"])
     if ev["fingerprint"] != fp:
@@ -711,8 +974,12 @@ def _review_record(root, sid, skill, text):
     rec = sign(root, {"kind": "review", "spec_id": sid, "spec_sha256": spec_sha, "skill": skill, "n": n,
                       "time": int(time.time()), "fingerprint": fp, "run_n": last["n"], "text": text, **parsed})
     path = os.path.join(os.path.dirname(state_path(root, sid)), "review-%d.json" % n)
-    write_json(path, rec)
+    st["review_inflight"] = {"n": n}
+    save_state(root, sid, st)
+    write_json(path, rec, exclusive=True)
+    crash_point("review-recorded")
     st.setdefault("reviews", []).append({"n": n, "skill": skill, "sha256": sha256_file(path)})
+    del st["review_inflight"]
     if parsed["blocking"]:
         st["failed_runs"] += 1
     save_state(root, sid, st)
@@ -750,7 +1017,7 @@ def _guarded(fn, root, sid, check_lock):
 
 
 def _verdict(root, sid, check_lock=True):
-    spec, spec_sha, st, cls = preconditions(root, sid)
+    spec, spec_sha, st, cls = preconditions(root, sid, check_lock)
     state, why, needs_run = _assess(root, sid, spec, spec_sha, st, cls, check_lock)
     if needs_run and len(st["runs"]) >= MAX_RUNS:
         # Progress needs another run and none is allowed: the Owner decides.
@@ -762,11 +1029,11 @@ def _verdict(root, sid, check_lock=True):
 def _assess(root, sid, spec, spec_sha, st, cls, check_lock):
     """(state, reason, whether only a new run could change it)."""
     left = 1 + spec.get("max_repair_rounds", MAX_REPAIR_ROUNDS) - st["failed_runs"]
+    # Work in flight is still here only while its process holds the lock (preconditions settles the rest).
     if st.get("inflight"):
-        n = st["inflight"]["n"]
-        if check_lock and lock_held(root, sid):
-            return "NOT_VERIFIED", "run %d is in progress; wait for it" % n, False
-        return "NOT_VERIFIED", "run %d was interrupted before it finished; run again" % n, True
+        return "NOT_VERIFIED", "run %d is in progress; wait for it" % st["inflight"]["n"], False
+    if st.get("review_inflight"):
+        return "NOT_VERIFIED", "a review is being recorded; wait for it", False
     if not st["runs"]:
         return "NOT_VERIFIED", "no evidence: run the criteria (qc.py run %s)" % sid, True
     last = st["runs"][-1]
@@ -837,14 +1104,19 @@ def cmd_status(root, sid):
     reviews = []
     fp = fingerprint(root)
     for r in st.get("reviews", []):
-        rec = load_record(root, sid, "review-%d.json" % r["n"], r["sha256"])
+        try:
+            rec = load_record(root, sid, "review-%d.json" % r["n"], r["sha256"])
+        except QcError as e:
+            reviews.append({"n": r["n"], "skill": r["skill"], "error": e.reason})
+            continue
         reviews.append({"n": r["n"], "skill": r["skill"], "run_n": rec.get("run_n"), "complete": rec["complete"],
                         "blocking": rec["blocking"], "for_current_tree": rec["fingerprint"] == fp})
     state, why = verdict(root, sid)
     return {
         "spec_id": sid, "base": spec["base"], "locked_at": st["locked_at"], "fingerprint": fp,
         "runs": [{"n": r["n"], "outcome": r["outcome"]} for r in st["runs"]],
-        "inflight": st.get("inflight"), "failed_runs": st["failed_runs"],
+        "inflight": st.get("inflight"), "review_inflight": st.get("review_inflight"),
+        "failed_runs": st["failed_runs"],
         "repair_rounds_left": max(0, min(limit - 1, limit - st["failed_runs"])),
         "runs_left": max(0, MAX_RUNS - len(st["runs"])), "reviews": reviews,
         "verdict": {"state": state, "why": why},
@@ -862,11 +1134,17 @@ def _lock(root, sid):
     spec, spec_sha = load_spec(root, sid)
     if load_state(root, sid) is not None:
         raise QcError("BLOCKED", "spec %s is already locked; a new task needs a new id" % sid)
+    left = sorted(f for f in os.listdir(run_dir(root, sid)) if RECORD_RE.match(f))
+    if left:
+        raise QcError("BLOCKED", "spec %s has records from an earlier lock (%s): its state was deleted; "
+                      "a new task needs a new id" % (sid, ", ".join(left[:5])))
     head = git(root, "rev-parse", "HEAD").strip()
     if head != spec["base"]:
         raise QcError("BLOCKED", "lock requires HEAD == base (%s); HEAD is %s" % (spec["base"][:12], head[:12]))
-    if git(root, "status", "--porcelain", "--untracked-files=all").strip():
-        raise QcError("BLOCKED", "lock requires a clean tree: criteria are fixed before implementation")
+    dirty = changed_paths(root, head)
+    if dirty:
+        raise QcError("BLOCKED", "lock requires a clean tree (the bytes on disk equal HEAD): criteria are fixed "
+                      "before implementation; changed: %s" % dirty[:10])
     save_state(root, sid, {"spec_id": sid, "spec_sha256": spec_sha, "tool_sha256": tool_hash(),
                            "locked_at": int(time.time()), "lock_fingerprint": fingerprint(root),
                            "runs": [], "reviews": [], "failed_runs": 0})
@@ -914,6 +1192,12 @@ def main(argv):
         if cmd == "activate":
             sid = args[0]
             load_spec(root, sid)
+            cur = active_loop(root)
+            cur_state = verdict(root, cur)[0] if cur is not None and cur != sid else None
+            if cur_state in ("FAILED", "ESCALATE_TO_OWNER"):
+                # Switching loops would end this one without its report (or hide its escalation).
+                raise QcError(cur_state, "loop %s is %s: report it and deactivate it before activating %s"
+                              % (cur, cur_state, sid))
             write_json(active_path(root), sign(root, {"spec_id": sid, "expires": int(time.time()) + ACTIVE_TTL}))
             print("QC loop %s active for %dh (hooks, if enabled, now apply)" % (sid, ACTIVE_TTL // 3600))
             return 0

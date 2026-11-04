@@ -9,8 +9,10 @@ activated in this clone (qc.py activate <id>, which expires after 8 hours).
                    "QC_STATE: VERIFIED" while qc.py's verdict is something
                    else, or that does not report an ESCALATE_TO_OWNER (no
                    QC_STATE line at all counts as hiding it). A verdict that
-                   cannot be computed is BLOCKED, so a crash in qc.py never
-                   lets a VERIFIED claim through. Never blocks when
+                   cannot be computed is BLOCKED, so an error inside qc.py's
+                   verdict never lets a VERIFIED claim through (an error
+                   before it, such as an unreadable active.json, fails open
+                   like every other hook error). Never blocks when
                    stop_hook_active is true, so it adds at most one turn; a
                    claim still false then is shown to the person as a warning.
   task-completed   TaskCompleted: a task whose subject carries "[qc]" cannot be
@@ -18,8 +20,10 @@ activated in this clone (qc.py activate <id>, which expires after 8 hours).
   pre-tool         PreToolUse: denies owner-only operations (commit, push,
                    merge, PR writes, workflow dispatch, deploy) and edits of the
                    QC tool, its evidence under .git/, agent settings and
-                   CLAUDE.md while the loop is active. Pattern matching on
-                   commands is a guard against mistakes, not a sandbox.
+                   CLAUDE.md while the loop is active. `qc.py review-record`
+                   with a quoted heredoc is let through as data. Pattern
+                   matching on commands is a guard against mistakes, not a
+                   sandbox.
 
 They only ever deny or stay silent: no output here grants a permission. Any
 internal error exits 0 silently (fail-open) so a broken guard cannot trap a
@@ -57,6 +61,15 @@ BASH_WRITES_PROTECTED = re.compile(
     r"\bpython3?\s+-c\b|\bperl\s+-\w*[pie]|\bgit\s+(checkout|restore|reset|clean|stash)\b).*"
     r"(CLAUDE\.md|\.mcp\.json|\.githooks/|\.git/(info|hooks|config)|"
     r"\.claude/(settings|qc|hooks|agents|skills|commands)|arcium-qc)")
+# `qc.py review-record <id> <skill> <<'EOF' ... EOF` and nothing else: with a
+# quoted delimiter the heredoc is passed to qc.py's stdin unexpanded, so its
+# text (which names changed paths such as CLAUDE.md, and arrows such as "->")
+# is data, not a command. The body ends at the first delimiter line, as in
+# the shell; anything else in the command is checked as usual.
+REVIEW_RECORD_RE = re.compile(
+    r"\A\s*python3?\s+(?:\./)?\.claude/qc/qc\.py\s+review-record\s+[a-z0-9][a-z0-9-]*\s+"
+    r"(?:engineering-code-review|arcium-security-review)\s*<<-?\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*\n"
+    r"(?:(?!\2[ \t]*\n).*\n)*\2[ \t]*\n?\s*\Z")
 
 
 def deny(reason):
@@ -109,6 +122,8 @@ def main(event, data):
         ti = data.get("tool_input") or {}
         if tool == "Bash":
             cmd = str(ti.get("command", ""))
+            if REVIEW_RECORD_RE.match(cmd):
+                return 0
             if GIT_OWNER_ONLY.search(cmd) or OTHER_OWNER_ONLY.search(cmd):
                 deny("QC loop %s is active: this is an owner-only operation (commit/push/merge/PR/dispatch/"
                      "deploy). Report to the Owner instead." % sid)

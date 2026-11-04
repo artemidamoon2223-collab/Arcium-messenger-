@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 
-from test_qc import FAILING, PASSING, PY, Repo, eng_pass, load, sec
+from test_qc import FAILING, HIGH, PASSING, PY, Repo, eng_pass, load, sec
 
 FILES = ["src/app.txt"]
 
@@ -174,6 +174,270 @@ class HardeningTest(unittest.TestCase):
         self.assertEqual(s["verdict"]["state"], "FAILED")
         self.assertEqual(s["fingerprint"], self.r.fingerprint())
         self.assertEqual(s["base"], self.r.base)
+
+
+WF = ".github/workflows/ci.yml"
+CRYPTO = "crates/core-crypto/src/x.rs"
+
+
+class ReviewFindingsTest(unittest.TestCase):
+    """Defects an independent review found in 2f3c37b; each test fails there."""
+
+    def setUp(self):
+        self.parent = tempfile.mkdtemp(prefix="qc-parent-")
+        self.r = Repo(parent=self.parent)
+
+    def tearDown(self):
+        shutil.rmtree(self.parent, ignore_errors=True)
+
+    def state(self, sid):
+        rc, line = self.r.qc("verdict", sid)
+        return line.split("|")[0].replace("QC_STATE:", "").strip(), line
+
+    def verified(self, sid, files):
+        self.r.qc("run", sid)
+        self.r.review(sid, "engineering-code-review", eng_pass(self.r.base, files))
+        return self.r.review(sid, "arcium-security-review", sec(self.r.base, files))[1]
+
+    def sdir(self, sid):
+        return os.path.join(self.r.gitdir(), "runs", sid)
+
+    # ── B1: git configuration, index flags and replace refs ───────────────
+
+    def test_git_diff_configuration_cannot_hide_a_masked_gate(self):
+        for i, cfg in enumerate([("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"),
+                                 ("color.diff", "always"), ("color.ui", "always"), ("diff.external", "/bin/true")]):
+            sid = "t-cfg-%d" % i
+            self.r.locked(sid, [PASSING], owner_authorizes=["CI_INTEGRITY"])
+            self.r.git("config", *cfg)
+            self.r.write(WF, "jobs: {}\n# run: cargo test || true\n")
+            st, line = self.state(sid)
+            self.assertEqual(st, "ESCALATE_TO_OWNER", "%s: %s" % (cfg, line))
+            self.r.git("config", "--unset", cfg[0])
+            self.r.write(WF, "jobs: {}\n")
+
+    def test_the_owners_global_git_config_cannot_hide_a_masked_gate(self):
+        cfg = os.path.join(self.parent, "gitconfig")
+        with open(cfg, "w") as f:
+            f.write("[diff]\n\tnoprefix = true\n\texternal = /bin/true\n")
+        self.r.locked("t-glob", [PASSING], owner_authorizes=["CI_INTEGRITY"])
+        self.r.write(WF, "jobs: {}\n# run: cargo test || true\n")
+        rc, line = self.r.qc("verdict", "t-glob", env={"GIT_CONFIG_GLOBAL": cfg})
+        self.assertIn("ESCALATE_TO_OWNER", line)
+
+    def test_an_external_diff_cannot_keep_stale_evidence_verified(self):
+        self.r.locked("t-ext", [PASSING])
+        self.r.git("config", "diff.external", "/bin/true")
+        self.r.write("src/app.txt", "v2\n")
+        self.assertIn("VERIFIED", self.verified("t-ext", ["src/app.txt"]))
+        self.r.write("src/app.txt", "v3 edited after VERIFIED\n")
+        self.assertIn("stale", self.state("t-ext")[1])
+
+    def test_index_flags_cannot_hide_a_change(self):
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            sid = "t-idx" + flag.replace("--", "-")
+            self.r.locked(sid, [PASSING])
+            self.r.git("update-index", flag, CRYPTO)
+            self.r.write(CRYPTO, "// a hidden crypto edit\n")
+            st, line = self.state(sid)
+            self.assertEqual(st, "ESCALATE_TO_OWNER", "%s: %s" % (flag, line))
+            self.assertIn("CRYPTO", line)
+            self.r.write(CRYPTO, "// crypto\n")
+            self.r.git("update-index", flag.replace("--", "--no-"), CRYPTO)
+
+    def test_a_replace_ref_cannot_hide_a_change(self):
+        self.r.locked("t-repl", [PASSING])
+        self.r.write(CRYPTO, "// unauthorized\n")
+        self.r.git("add", "-A")
+        tree = self.r.git("write-tree").strip()
+        commit = self.r.git("commit-tree", tree, "-p", self.r.base, "-m", "x").strip()
+        self.r.git("reset", "-q")
+        self.r.git("replace", self.r.base, commit)
+        st, line = self.state("t-repl")
+        self.assertEqual(st, "ESCALATE_TO_OWNER", line)
+
+    def test_info_exclude_cannot_hide_a_new_file(self):
+        self.r.locked("t-excl", [PASSING])
+        with open(os.path.join(self.r.dir, ".git/info/exclude"), "a") as f:
+            f.write("crates/core-crypto/src/hidden.rs\n")
+        self.r.write("crates/core-crypto/src/hidden.rs", "// hidden new crypto file\n")
+        st, line = self.state("t-excl")
+        self.assertEqual(st, "ESCALATE_TO_OWNER", line)
+
+    def test_a_diff_attribute_cannot_hide_added_lines(self):
+        self.r.write(".gitattributes", "*.yml -diff\n")
+        self.r.git("add", "-A")
+        self.r.git("commit", "-qm", "attrs")
+        self.r.base = self.r.git("rev-parse", "HEAD").strip()
+        self.r.locked("t-attr", [PASSING], owner_authorizes=["CI_INTEGRITY"])
+        self.r.write(WF, "jobs: {}\n# run: cargo test || true\n")
+        st, line = self.state("t-attr")
+        self.assertEqual(st, "ESCALATE_TO_OWNER", line)
+
+    # ── M1: rollback, delete and relock, overwritten records ──────────────
+
+    def test_a_state_rolled_back_to_an_older_signed_copy_is_blocked(self):
+        self.r.locked("t-rb", [FAILING])
+        backup = os.path.join(self.parent, "state-backup.json")
+        shutil.copy(os.path.join(self.sdir("t-rb"), "state.json"), backup)
+        for i in range(4):
+            self.r.write("src/app.txt", "a%d\n" % i)
+            self.r.qc("run", "t-rb")
+        self.assertEqual(self.state("t-rb")[0], "ESCALATE_TO_OWNER")
+        shutil.copy(backup, os.path.join(self.sdir("t-rb"), "state.json"))
+        st, line = self.state("t-rb")
+        self.assertEqual(st, "BLOCKED", line)
+        self.assertIn("rolled back", line)
+
+    def test_a_rollback_cannot_erase_a_blocking_review(self):
+        self.r.locked("t-rr", [PASSING], owner_authorizes=["CRYPTO"])
+        self.r.write(CRYPTO, "// changed\n")
+        self.r.qc("run", "t-rr")
+        self.r.review("t-rr", "engineering-code-review", eng_pass(self.r.base, [CRYPTO]))
+        backup = os.path.join(self.parent, "state-backup.json")
+        shutil.copy(os.path.join(self.sdir("t-rr"), "state.json"), backup)
+        self.assertIn("FAILED", self.r.review("t-rr", "arcium-security-review", sec(self.r.base, [CRYPTO], HIGH))[1])
+        shutil.copy(backup, os.path.join(self.sdir("t-rr"), "state.json"))
+        rc, line = self.r.review("t-rr", "arcium-security-review", sec(self.r.base, [CRYPTO]))
+        self.assertIn("BLOCKED", line)
+        self.assertEqual(self.state("t-rr")[0], "BLOCKED")
+        self.assertIn("HIGH", load(os.path.join(self.sdir("t-rr"), "review-2.json"))["text"])
+
+    def test_deleting_the_state_and_locking_again_is_refused(self):
+        self.r.locked("t-dr", [FAILING])
+        self.r.write("src/app.txt", "v2\n")
+        self.r.qc("run", "t-dr")
+        os.remove(os.path.join(self.sdir("t-dr"), "state.json"))
+        self.r.git("stash", "-u")
+        rc, line = self.r.qc("lock", "t-dr")
+        self.r.git("stash", "pop")
+        self.assertIn("BLOCKED", line)
+        self.assertIn("earlier lock", line)
+
+    # ── m1: interruptions count; records written before a crash are kept ─
+
+    def test_a_criterion_that_kills_its_runner_still_exhausts_the_budget(self):
+        crit = {"id": "ac-kill", "description": "kills its runner",
+                "command": [PY, "-c", "import os,signal\nos.kill(os.getppid(), signal.SIGKILL)"]}
+        self.r.locked("t-kf", [crit])
+        for i in range(5):
+            self.r.write("src/app.txt", "a%d\n" % i)
+            self.r.qc("run", "t-kf")
+        st, line = self.state("t-kf")
+        self.assertEqual(st, "ESCALATE_TO_OWNER", line)
+        self.assertLessEqual(len(os.listdir(self.sdir("t-kf"))), 6)
+
+    def test_a_failed_run_recorded_just_before_a_crash_still_counts(self):
+        self.r.locked("t-kw", [FAILING])
+        self.r.write("src/app.txt", "v2\n")
+        rc, _ = self.r.qc("run", "t-kw", env={"QC_TEST_CRASH_AT": "run-recorded"})
+        self.assertEqual(rc, -9)
+        st, line = self.state("t-kw")
+        self.assertEqual(st, "FAILED", line)
+        self.r.qc("run", "t-kw")
+        runs = load(os.path.join(self.sdir("t-kw"), "state.json"))
+        self.assertEqual([x["outcome"] for x in runs["runs"]], ["FAILED", "FAILED"])
+        self.assertEqual(runs["failed_runs"], 2)
+
+    def test_a_blocking_review_recorded_just_before_a_crash_still_counts(self):
+        self.r.locked("t-kr", [PASSING], owner_authorizes=["CRYPTO"])
+        self.r.write(CRYPTO, "// changed\n")
+        self.r.qc("run", "t-kr")
+        self.r.review("t-kr", "engineering-code-review", eng_pass(self.r.base, [CRYPTO]))
+        text = sec(self.r.base, [CRYPTO], HIGH).replace(
+            "ARCIUM_SECURITY_REVIEW\n", "ARCIUM_SECURITY_REVIEW\nqc_fingerprint: %s\n" % self.r.fingerprint(), 1)
+        rc, _ = self.r.qc("review-record", "t-kr", "arcium-security-review", stdin=text,
+                          env={"QC_TEST_CRASH_AT": "review-recorded"})
+        self.assertEqual(rc, -9)
+        st, line = self.state("t-kr")
+        self.assertEqual(st, "FAILED", line)
+        self.assertIn("HIGH", line)
+
+    # ── m3, m5, path tokens ───────────────────────────────────────────────
+
+    def test_a_test_runner_is_recognised_by_name_and_alias(self):
+        for i, argv in enumerate([["/root/.cargo/bin/cargo", "test", "--workspace"], ["cargo", "t", "--workspace"],
+                                  ["/usr/bin/python3", "-m", "pytest"]]):
+            for extra in ({}, {"must_match": ["ok"], "expect_exit": 101}):
+                sid = "t-rn-%d-%d" % (i, len(extra))
+                self.r.spec(sid, [dict({"id": "ac-x", "description": "x", "command": argv}, **extra)])
+                rc, line = self.r.qc("spec-check", sid)
+                self.assertIn("BLOCKED", line, "%s %s" % (argv, extra))
+
+    def test_activating_another_loop_cannot_end_one_mid_repair(self):
+        self.r.locked("t-a1", [FAILING])
+        self.r.write("src/app.txt", "v2\n")
+        self.r.qc("run", "t-a1")
+        self.r.qc("activate", "t-a1")
+        self.r.spec("t-a2", [PASSING])
+        rc, line = self.r.qc("activate", "t-a2")
+        self.assertIn("FAILED", line)
+        self.assertEqual(load(os.path.join(self.r.gitdir(), "active.json"))["spec_id"], "t-a1")
+        for i in range(3):
+            self.r.write("src/app.txt", "v%d\n" % (i + 3))
+            self.r.qc("run", "t-a1")
+        self.assertEqual(self.state("t-a1")[0], "ESCALATE_TO_OWNER")
+        rc, line = self.r.qc("activate", "t-a2")
+        self.assertIn("ESCALATE_TO_OWNER", line, "an escalation is not hidden by switching loops")
+        self.assertEqual(load(os.path.join(self.r.gitdir(), "active.json"))["spec_id"], "t-a1")
+
+    def test_a_review_must_name_each_path_as_a_whole(self):
+        self.r.locked("t-tok", [PASSING])
+        self.r.write("src/a", "new\n")
+        self.r.qc("run", "t-tok")
+        rc, line = self.r.review("t-tok", "engineering-code-review", eng_pass(self.r.base, ["src/ab.txt"]))
+        self.assertIn("missing", line)
+        self.assertIn("src/a", line)
+
+    # ── m4: the guard and the reviewer's own record ───────────────────────
+
+    def test_the_guard_lets_a_review_record_through_but_not_a_disguised_command(self):
+        self.r.locked("t-g", [PASSING])
+        self.r.qc("activate", "t-g")
+        body = "KARPATHY_REVIEW_RESULT\ntests_run: python3 -m unittest -> 63 OK, read CLAUDE.md .claude/qc/qc.py\n"
+        ok = "python3 .claude/qc/qc.py review-record t-g engineering-code-review <<'EOF'\n%sEOF\n" % body
+        rc, out, _ = self.r.hook("pre-tool", {"tool_name": "Bash", "tool_input": {"command": ok}})
+        self.assertEqual(out, "")
+        for bad in (ok + "rm CLAUDE.md\n",
+                    "python3 .claude/qc/qc.py review-record t-g engineering-code-review <<'EOF'\nx\nEOF\n"
+                    "rm CLAUDE.md\nEOF\n",
+                    "python3 .claude/qc/qc.py review-record t-g engineering-code-review <<EOF\n$(rm CLAUDE.md)\nEOF\n"):
+            rc, out, _ = self.r.hook("pre-tool", {"tool_name": "Bash", "tool_input": {"command": bad}})
+            self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny", bad)
+
+    # ── M2 and m7: what a run depends on outside the tree, and its tree ───
+
+    def test_a_cargo_configuration_above_the_repository_is_not_verified(self):
+        fake = os.path.join(self.parent, "bin", "cargo-qc-fake")
+        os.makedirs(os.path.dirname(fake))
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\necho 'test result: ok. 1 passed; 0 failed'\n")
+        os.chmod(fake, 0o755)
+        crit = {"id": "ac-cargo", "description": "a cargo-named program", "command": [fake, "test"],
+                "must_match": [r"test result: ok\. [1-9][0-9]* passed; 0 failed"]}
+        self.r.locked("t-cfgup", [crit])
+        self.r.write("src/app.txt", "v2\n")
+        os.makedirs(os.path.join(self.parent, ".cargo"))
+        with open(os.path.join(self.parent, ".cargo", "config.toml"), "w") as f:
+            f.write("[target.x86_64-unknown-linux-gnu]\nrunner = \"echo\"\n")
+        rc, line = self.r.qc("run", "t-cfgup")
+        self.assertIn("NOT_VERIFIED", line)
+        self.assertIn("Cargo configuration outside the repository", line)
+        ev = load(os.path.join(self.sdir("t-cfgup"), "run-1.json"))
+        self.assertEqual(ev["results"][0]["toolchain"]["program"]["path"], os.path.realpath(fake))
+
+    def test_a_run_records_the_tree_it_verified(self):
+        self.r.locked("t-tree", [PASSING])
+        self.r.write("src/app.txt", "v2\n")
+        self.r.write("src/new.txt", "new\n")
+        self.r.qc("run", "t-tree")
+        tree = load(os.path.join(self.sdir("t-tree"), "run-1.json"))["tree"]
+        self.assertRegex(tree, r"^[0-9a-f]{40}$")
+        self.assertEqual(self.r.git("show", "%s:src/app.txt" % tree), "v2\n")
+        self.assertEqual(sorted(self.r.git("diff", "--name-only", self.r.base, tree).split()),
+                         ["src/app.txt", "src/new.txt"])
+        self.assertEqual(self.r.git("status", "--porcelain", "--untracked-files=all").split(),
+                         ["M", "src/app.txt", "??", "src/new.txt"], "the index and tree are untouched")
 
 
 if __name__ == "__main__":

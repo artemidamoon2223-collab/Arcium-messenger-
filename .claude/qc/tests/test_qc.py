@@ -71,8 +71,8 @@ def dump(obj, path):
 
 
 class Repo:
-    def __init__(self):
-        self.dir = tempfile.mkdtemp(prefix="qc-test-")
+    def __init__(self, parent=None):
+        self.dir = tempfile.mkdtemp(prefix="qc-test-", dir=parent)
         self.git("init", "-q")
         self.git("config", "user.email", "t@t")
         self.git("config", "user.name", "t")
@@ -100,9 +100,9 @@ class Repo:
         e.pop("CLAUDE_PROJECT_DIR", None)
         return e
 
-    def qc(self, *args, stdin=None):
+    def qc(self, *args, stdin=None, env=None):
         p = subprocess.run([PY, ".claude/qc/qc.py", *args], cwd=self.dir, capture_output=True, text=True,
-                           input=stdin, env=self.env())
+                           input=stdin, env=dict(self.env(), **(env or {})))
         return p.returncode, p.stdout.strip().splitlines()[-1] if p.stdout.strip() else p.stderr
 
     def fingerprint(self):

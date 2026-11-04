@@ -29,7 +29,7 @@
           {
             "type": "command",
             "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/qc/hooks.py\" pre-tool",
-            "timeout": 15
+            "timeout": 20
           }
         ]
       }

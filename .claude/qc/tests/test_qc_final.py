@@ -1,6 +1,6 @@
-"""Regression tests for the fifth review round of .claude/qc: hook input that
-cannot be read, early deactivation, git state read by criteria, and the
-mutants M04, M07 and M17. The tests of the first three groups fail on 4d39c05.
+"""Regression tests for the fifth and sixth review rounds of .claude/qc: hook
+input that cannot be used, a clone the guard cannot inspect, early
+deactivation, git state read by criteria, and the mutants M04, M07 and M17.
 
 Run with the other tests: `python3 -B -m unittest discover -s .claude/qc/tests`.
 """
@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import types
 import unittest
 
@@ -62,6 +63,8 @@ class FinalTest(unittest.TestCase):
         "truncated": b'{"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"',
         "not an object": b'["git push"]',
         "not utf-8": b'{"last_assistant_message": "\xff\xfe QC_STATE: VERIFIED"}',
+        "too deeply nested": b"[" * 200000,
+        "empty": b"",
     }
 
     def bad_inputs(self, payload):
@@ -101,6 +104,74 @@ class FinalTest(unittest.TestCase):
         for event in ("stop", "pre-tool", "task-completed"):
             for name, raw in self.bad_inputs({"x": 1}):
                 self.assertEqual(self.raw_hook(event, raw), (0, "", ""), (event, name))
+
+    # ── a clone the guard cannot inspect, while an activation record exists there ──
+
+    def assert_fails_closed(self, extra_env=None):
+        payloads = {"stop": {"stop_hook_active": False, "last_assistant_message": "QC_STATE: VERIFIED | done"},
+                    "pre-tool": {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}},
+                    "task-completed": {"task_subject": "[qc] t"}}
+        for event, payload in payloads.items():
+            rc, out, err = self.raw_hook(event, json.dumps(payload).encode(), extra_env)
+            got = json.loads(out or "{}")
+            ok = {"stop": got.get("decision") == "block",
+                  "pre-tool": got.get("hookSpecificOutput", {}).get("permissionDecision") == "deny",
+                  "task-completed": rc == 2}[event]
+            self.assertTrue(ok, (event, rc, out, err))
+
+    def no_git_path(self):
+        empty = os.path.join(self.parent, "empty-bin")
+        os.makedirs(empty, exist_ok=True)
+        return {"PATH": empty}
+
+    def test_git_missing_while_a_loop_is_active_fails_closed(self):
+        self.active_not_verified()
+        self.assert_fails_closed(self.no_git_path())
+
+    def test_git_missing_with_no_loop_active_does_nothing(self):
+        self.r.locked("t-idle", [PASSING])
+        self.assertEqual(self.raw_hook("pre-tool", b'{"tool_name": "Bash", "tool_input": {"command": "ls"}}',
+                                       self.no_git_path()), (0, "", ""))
+
+    def test_a_qc_tool_that_does_not_load_fails_closed(self):
+        self.active_not_verified()
+        with open(os.path.join(self.r.dir, ".claude/qc/qc.py"), "a") as f:
+            f.write("\nthis is not python\n")
+        self.assert_fails_closed()
+
+    def test_a_deadline_while_finding_the_loop_fails_closed(self):
+        self.active_not_verified()
+        mod = types.ModuleType("hooks_under_test")
+        path = os.path.join(self.r.dir, ".claude/qc/hooks.py")
+        mod.__file__ = path
+        with open(path) as f:
+            exec(compile(f.read(), path, "exec"), mod.__dict__)
+        mod.DEADLINE["pre-tool"] = 1
+        mod.qc.repo_root = lambda start=None: time.sleep(3) or self.r.dir
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mod.main("pre-tool", {"cwd": self.r.dir, "tool_name": "Bash", "tool_input": {"command": "git push"}})
+        self.assertEqual(json.loads(buf.getvalue() or "{}").get("hookSpecificOutput", {}).get("permissionDecision"),
+                         "deny", buf.getvalue())
+
+    def test_input_that_never_ends_fails_closed(self):
+        self.active_not_verified()
+        with subprocess.Popen([PY, "-I", "-B", os.path.join(self.r.dir, ".claude/qc/hooks.py"), "pre-tool"],
+                              cwd=self.r.dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=self.r.env()) as p:
+            p.stdin.write(b'{"tool_name": "Bash", ')
+            p.stdin.flush()
+            try:
+                p.wait(timeout=30)  # the hook answers without waiting for the rest of its input
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+                self.fail("the hook waited for its input past every deadline")
+            finally:
+                p.stdin.close()
+            out = p.stdout.read().decode()
+        self.assertEqual(json.loads(out or "{}").get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
 
     # ── deactivation only once VERIFIED ──
 
@@ -157,6 +228,18 @@ class FinalTest(unittest.TestCase):
         with open(os.path.join(self.r.dir, ".git/info/attributes"), "w") as f:
             f.write("*.txt diff=qc\n")
         self.assertIn("stale", self.state("t-cfg")[1])
+
+    def test_a_criterion_running_git_status_is_not_a_tree_change(self):
+        status = {"id": "ac-status", "description": "runs git status, which may refresh the index",
+                  "command": ["git", "status", "--porcelain"]}
+        self.r.locked("t-st", [PASSING, status])
+        self.r.write("src/app.txt", "v2\n")
+        self.r.git("add", "src/app.txt")  # the index matches the disk ...
+        past = time.time() - 3600
+        os.utime(os.path.join(self.r.dir, "src/app.txt"), (past, past))  # ... but its stat data is stale
+        rc, line = self.r.qc("run", "t-st")
+        self.assertNotIn("changed while the criteria ran", line)
+        self.assertIn("review pending", line)
 
     def test_read_only_git_commands_do_not_make_the_evidence_stale(self):
         self.r.locked("t-ro", [PASSING])

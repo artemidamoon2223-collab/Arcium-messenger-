@@ -57,8 +57,10 @@ cargo criterion NOT_VERIFIED. An active loop is deactivated, or replaced by
 another activation, only once its verdict is VERIFIED; in every other state
 (and while its activation record is unreadable) the Owner ends it by
 deleting <git-dir>/arcium-qc/active.json, or it expires after 8 hours.
-Besides the files on disk, the fingerprint covers the git state a criterion
-could read: the index entries, the clone's own config and info/attributes.
+Besides the files on disk, the fingerprint covers part of the git state a
+criterion could read: the index entries, the clone's own config and
+info/attributes. Other refs, files a config includes, info/exclude and the
+index's assume-unchanged/skip-worktree flags are not covered.
 
 State lives in <git-dir>/arcium-qc/, outside the working tree: it is never
 part of a diff and never committed. Records are HMAC-signed with a per-clone
@@ -1401,7 +1403,8 @@ def main(argv):
                 # The guards stay armed until the loop is VERIFIED, so a stop or a commit before that cannot
                 # follow an early deactivation; the Owner ends it by deleting active.json, or it expires.
                 raise QcError(cur_state, "loop %s is %s: it is deactivated only once VERIFIED; otherwise only "
-                              "the Owner ends it (delete %s), or it expires" % (sid, cur_state, active_path(root)))
+                              "the Owner ends it (delete %s), or it expires"
+                              % (sid or "(unreadable activation)", cur_state, active_path(root)))
             if os.path.exists(active_path(root)):
                 os.remove(active_path(root))
             print("no QC loop active")

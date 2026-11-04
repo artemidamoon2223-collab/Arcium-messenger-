@@ -30,10 +30,12 @@ is checked. While a loop is active, a guard that cannot decide fails
 closed: an internal error or the internal deadline (below the hook timeout)
 denies the tool call, blocks a stop once, or refuses the task; an
 activation record that is unreadable or fails its integrity check counts as
-active, and so does hook input that cannot be read, is not a JSON object or
-is larger than MAX_INPUT (it is then not parsed). If the guard cannot even
-find out whether a loop is active (its deadline, an internal error), an
-activation record found on the file system alone counts as active. The
+active, and so does hook input that is empty, cannot be read within
+READ_DEADLINE, is not a usable JSON object or is larger than MAX_INPUT (it
+is then not parsed). If the guard cannot even find out whether a loop is
+active (its deadline, git or qc.py failing in that clone, any internal
+error), an activation record found on the file system alone counts as
+active, expired or not. The
 Owner releases it by deleting active.json. qc.py is loaded from
 its source text, never from a cached .pyc; run this file with `python3 -I -B`
 so nothing next to it shadows the standard library. Claude Code's own
@@ -66,9 +68,14 @@ def load_qc():
     return mod
 
 
-qc = load_qc()
+try:
+    qc = load_qc()
+except Exception:  # noqa: BLE001 - a QC tool that does not load: discovery then fails, see roots()
+    qc = None
 # Seconds a hook may spend before it fails closed; each stays below its timeout in hooks.candidate.json.
 DEADLINE = {"stop": 40, "task-completed": 40, "pre-tool": 10}
+# Seconds the hook waits for its input before treating it as unusable (before DEADLINE starts).
+READ_DEADLINE = 5
 
 CLAIM_RE = re.compile(r"QC_STATE:\s*(VERIFIED|FAILED|NOT_VERIFIED|BLOCKED|ESCALATE_TO_OWNER)\b")
 
@@ -166,21 +173,28 @@ def deny(reason):
                                              "permissionDecisionReason": reason}}))
 
 
+def starts(data):
+    """Where this hook call may concern a clone: the payload's cwd, $CLAUDE_PROJECT_DIR, this file's."""
+    cwd = data.get("cwd") if isinstance(data, dict) else None
+    return [x for x in (cwd, os.environ.get("CLAUDE_PROJECT_DIR"), HERE) if isinstance(x, str) and x]
+
+
 def roots(data):
-    """The distinct clones this hook call may concern: the payload's cwd, $CLAUDE_PROJECT_DIR, this file's."""
-    out = []
-    for start in (data.get("cwd"), os.environ.get("CLAUDE_PROJECT_DIR"), HERE):
-        if not start:
-            continue
+    """(the distinct clones this call concerns, the start directories that could not be inspected although
+    an activation record exists there). A directory outside any clone is neither."""
+    out, unknown = [], []
+    for start in starts(data):
         try:
             r = os.path.realpath(qc.repo_root(start))
         except Deadline:
             raise
-        except Exception:  # noqa: BLE001 - not a clone: nothing to guard there
+        except Exception:  # noqa: BLE001 - not a clone, or git/qc.py failing there: the file system decides
+            if activation_record_below(start):
+                unknown.append(start)
             continue
         if r not in out:
             out.append(r)
-    return out
+    return out, unknown
 
 
 def fail_closed(event, data, why):
@@ -203,35 +217,34 @@ def fail_closed(event, data, why):
     return 0
 
 
+def activation_record_below(start):
+    """Whether the clone containing `start` has an activation record, found from the file system alone (no
+    git, no qc.py; an expired record counts too): the fallback when the guard cannot inspect the clone."""
+    d = os.path.abspath(start)
+    while True:
+        dot = os.path.join(d, ".git")
+        gitdir = None
+        if os.path.isdir(dot):
+            gitdir = dot
+        elif os.path.isfile(dot):
+            try:
+                with open(dot) as f:
+                    line = f.read(4096).strip()
+            except OSError:
+                return True  # unreadable: assume the worst
+            if line.startswith("gitdir:"):
+                gitdir = os.path.join(d, line[len("gitdir:"):].strip())
+        if gitdir is not None:
+            return os.path.lexists(os.path.join(gitdir, "arcium-qc", "active.json"))
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
 def activation_file_exists(data):
-    """Whether any clone this call may concern has an activation record, found from the file system alone
-    (no git, no qc.py): the fallback when the guard cannot even find out whether a loop is active."""
-    for start in (data.get("cwd") if isinstance(data, dict) else None, os.environ.get("CLAUDE_PROJECT_DIR"), HERE):
-        if not isinstance(start, str) or not start:
-            continue
-        d = os.path.abspath(start)
-        while True:
-            dot = os.path.join(d, ".git")
-            gitdir = None
-            if os.path.isdir(dot):
-                gitdir = dot
-            elif os.path.isfile(dot):
-                try:
-                    with open(dot) as f:
-                        line = f.read(4096).strip()
-                    if line.startswith("gitdir:"):
-                        gitdir = os.path.join(d, line[len("gitdir:"):].strip())
-                except OSError:
-                    return True  # unreadable: assume the worst
-            if gitdir is not None:
-                if os.path.lexists(os.path.join(gitdir, "arcium-qc", "active.json")):
-                    return True
-                break
-            parent = os.path.dirname(d)
-            if parent == d:
-                break
-            d = parent
-    return False
+    """Whether any clone this call may concern has an activation record (see activation_record_below)."""
+    return any(activation_record_below(x) for x in starts(data))
 
 
 def main(event, data, input_error=None, stop_hint=False):
@@ -253,8 +266,13 @@ def main(event, data, input_error=None, stop_hint=False):
 
 
 def _main(event, data, input_error, stop_hint):
+    found, unknown = roots(data)
+    if unknown:
+        return fail_closed(event, {"stop_hook_active": stop_hint or data.get("stop_hook_active")},
+                           "the clone of %s has an activation record but could not be inspected (git or qc.py "
+                           "failed there)" % unknown[0])
     active = []
-    for root in roots(data):
+    for root in found:
         try:
             sid, invalid = qc.activation(root)
         except Deadline:
@@ -368,11 +386,11 @@ def read_input(stream):
     if len(raw) > MAX_INPUT:
         return {}, "the hook input is larger than %d bytes" % MAX_INPUT, hint
     if not raw.strip():
-        return {}, None, False
+        return {}, "the hook input is empty", False
     try:
         data = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return {}, "the hook input is not valid JSON", hint
+    except Exception:  # noqa: BLE001 - not JSON, not UTF-8, too deeply nested (RecursionError), no memory
+        return {}, "the hook input is not usable JSON", hint
     if not isinstance(data, dict):
         return {}, "the hook input is not a JSON object", hint
     return data, None, hint
@@ -380,7 +398,17 @@ def read_input(stream):
 
 if __name__ == "__main__":
     event = sys.argv[1] if len(sys.argv) > 1 else ""
-    payload, why, hint = read_input(sys.stdin.buffer)
+    payload, why, hint = {}, "the hook input could not be read", False
+    try:
+        if hasattr(signal, "SIGALRM"):
+            signal.signal(signal.SIGALRM, _deadline)
+            signal.alarm(READ_DEADLINE)  # input that never ends is unusable input
+        payload, why, hint = read_input(sys.stdin.buffer)
+    except BaseException:  # noqa: BLE001 - read_input reports its own errors; anything else is unusable too
+        pass
+    finally:
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
     try:
         sys.exit(main(event, payload, input_error=why, stop_hint=hint))
     except SystemExit:

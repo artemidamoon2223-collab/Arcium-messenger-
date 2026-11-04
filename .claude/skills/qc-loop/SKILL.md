@@ -113,9 +113,9 @@ its deadline, an unreadable activation, or hook input that is malformed or
 larger than 16 MiB) denies or blocks instead of letting the step through. See the docstring of `.claude/qc/hooks.py` for exactly what
 each one checks.
 
-While a loop is active and not yet `VERIFIED`, the PreToolUse guard also
-refuses commits and pushes the Owner asks for, and `deactivate` (or
-activating another loop) is refused. The Owner
+While a loop is active (until it is deactivated, VERIFIED included), the
+PreToolUse guard also refuses commits and pushes the Owner asks for; before
+`VERIFIED`, `deactivate` (or activating another loop) is refused too. The Owner
 ends the loop from their own terminal by deleting
 `$(git rev-parse --absolute-git-dir)/arcium-qc/active.json`, or by removing
 the hooks from `.claude/settings.local.json`; the activation also expires

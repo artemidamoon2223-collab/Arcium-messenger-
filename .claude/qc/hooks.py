@@ -30,7 +30,11 @@ is checked. While a loop is active, a guard that cannot decide fails
 closed: an internal error or the internal deadline (below the hook timeout)
 denies the tool call, blocks a stop once, or refuses the task; an
 activation record that is unreadable or fails its integrity check counts as
-active. The Owner releases it by deleting active.json. qc.py is loaded from
+active, and so does hook input that cannot be read, is not a JSON object or
+is larger than MAX_INPUT (it is then not parsed). If the guard cannot even
+find out whether a loop is active (its deadline, an internal error), an
+activation record found on the file system alone counts as active. The
+Owner releases it by deleting active.json. qc.py is loaded from
 its source text, never from a cached .pyc; run this file with `python3 -I -B`
 so nothing next to it shadows the standard library. Claude Code's own
 permission mode still applies.
@@ -170,6 +174,8 @@ def roots(data):
             continue
         try:
             r = os.path.realpath(qc.repo_root(start))
+        except Deadline:
+            raise
         except Exception:  # noqa: BLE001 - not a clone: nothing to guard there
             continue
         if r not in out:
@@ -197,35 +203,81 @@ def fail_closed(event, data, why):
     return 0
 
 
-def main(event, data):
+def activation_file_exists(data):
+    """Whether any clone this call may concern has an activation record, found from the file system alone
+    (no git, no qc.py): the fallback when the guard cannot even find out whether a loop is active."""
+    for start in (data.get("cwd") if isinstance(data, dict) else None, os.environ.get("CLAUDE_PROJECT_DIR"), HERE):
+        if not isinstance(start, str) or not start:
+            continue
+        d = os.path.abspath(start)
+        while True:
+            dot = os.path.join(d, ".git")
+            gitdir = None
+            if os.path.isdir(dot):
+                gitdir = dot
+            elif os.path.isfile(dot):
+                try:
+                    with open(dot) as f:
+                        line = f.read(4096).strip()
+                    if line.startswith("gitdir:"):
+                        gitdir = os.path.join(d, line[len("gitdir:"):].strip())
+                except OSError:
+                    return True  # unreadable: assume the worst
+            if gitdir is not None:
+                if os.path.lexists(os.path.join(gitdir, "arcium-qc", "active.json")):
+                    return True
+                break
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    return False
+
+
+def main(event, data, input_error=None, stop_hint=False):
+    """`input_error` says why the hook's input could not be read; the payload is then {} and only
+    $CLAUDE_PROJECT_DIR and this file's clone are looked at. Any loop active there fails closed."""
+    if hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, _deadline)
+        signal.alarm(DEADLINE.get(event, 10))
+    try:
+        return _main(event, data, input_error, stop_hint)
+    except Deadline as e:
+        # Ran out of time before finding out whether a loop is active.
+        if activation_file_exists(data):
+            return fail_closed(event, {"stop_hook_active": stop_hint or data.get("stop_hook_active")}, str(e))
+        return 0
+    finally:
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
+
+
+def _main(event, data, input_error, stop_hint):
     active = []
     for root in roots(data):
         try:
             sid, invalid = qc.activation(root)
+        except Deadline:
+            raise
         except Exception:  # noqa: BLE001 - an activation that cannot be read counts as active
             sid, invalid = None, True
         if sid is not None or invalid:
             active.append((root, sid))
     if not active:
         return 0  # no active QC loop in any clone this call concerns: the guards do nothing
-    if hasattr(signal, "SIGALRM"):
-        signal.signal(signal.SIGALRM, _deadline)
-        signal.alarm(DEADLINE.get(event, 10))
-    try:
-        for root, sid in active:
-            try:
-                if sid is None:
-                    raise qc.QcError("BLOCKED", "the activation record is unreadable or fails its integrity check")
-                code, text = io_capture(check, event, data, root, sid)
-                if code or text:
-                    sys.stdout.write(text)
-                    return code
-            except Exception as e:  # noqa: BLE001 - an active loop never fails open
-                return fail_closed(event, data, "%s: %s" % (type(e).__name__, e))
-        return 0
-    finally:
-        if hasattr(signal, "SIGALRM"):
-            signal.alarm(0)
+    if input_error:
+        return fail_closed(event, {"stop_hook_active": stop_hint}, input_error)
+    for root, sid in active:
+        try:
+            if sid is None:
+                raise qc.QcError("BLOCKED", "the activation record is unreadable or fails its integrity check")
+            code, text = io_capture(check, event, data, root, sid)
+            if code or text:
+                sys.stdout.write(text)
+                return code
+        except Exception as e:  # noqa: BLE001 - an active loop never fails open
+            return fail_closed(event, data, "%s: %s" % (type(e).__name__, e))
+    return 0
 
 
 def io_capture(fn, *args):
@@ -298,12 +350,42 @@ def check(event, data, root, sid):
     return 0
 
 
-if __name__ == "__main__":
+# Hook input above this size is not parsed: with a loop active it fails closed.
+MAX_INPUT = 16 << 20
+# An unescaped "stop_hook_active": true, as a top-level key would appear (inside a JSON string the quotes
+# would be escaped): lets a payload that cannot be parsed still block a stop only once.
+STOP_ACTIVE_RE = re.compile(rb'(?<!\\)"stop_hook_active"\s*:\s*true')
+
+
+def read_input(stream):
+    """(payload, why it is unusable or None, whether it says stop_hook_active). Reads at most
+    MAX_INPUT + 1 bytes; a payload that is too large, unreadable, not JSON or not an object is unusable."""
     try:
-        raw = sys.stdin.read(1 << 20)
-        payload = json.loads(raw) if raw.strip() else {}
-        sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "", payload))
+        raw = stream.read(MAX_INPUT + 1)
+    except Exception as e:  # noqa: BLE001 - unreadable input is reported, never accepted
+        return {}, "the hook input could not be read (%s)" % type(e).__name__, False
+    hint = bool(STOP_ACTIVE_RE.search(raw))
+    if len(raw) > MAX_INPUT:
+        return {}, "the hook input is larger than %d bytes" % MAX_INPUT, hint
+    if not raw.strip():
+        return {}, None, False
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {}, "the hook input is not valid JSON", hint
+    if not isinstance(data, dict):
+        return {}, "the hook input is not a JSON object", hint
+    return data, None, hint
+
+
+if __name__ == "__main__":
+    event = sys.argv[1] if len(sys.argv) > 1 else ""
+    payload, why, hint = read_input(sys.stdin.buffer)
+    try:
+        sys.exit(main(event, payload, input_error=why, stop_hint=hint))
     except SystemExit:
         raise
-    except Exception:  # noqa: BLE001 - no loop could be found active (main fails closed once one is)
+    except BaseException as e:  # noqa: BLE001 - main itself failed: decide from the file system alone
+        if activation_file_exists(payload):
+            sys.exit(fail_closed(event, {"stop_hook_active": hint}, "%s: %s" % (type(e).__name__, e)))
         sys.exit(0)

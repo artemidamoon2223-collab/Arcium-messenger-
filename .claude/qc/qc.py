@@ -53,8 +53,12 @@ object of the tree it ran on, kept by refs/arcium-qc/<id>/run-<n> (for
 `git diff <base> <tree>`), the program it ran and any Cargo configuration
 outside the repository; a Cargo configuration in a directory above the
 repository (not CARGO_HOME), or a CARGO_TARGET_*_RUNNER variable, makes a
-cargo criterion NOT_VERIFIED. A loop that is FAILED or ESCALATE_TO_OWNER
-cannot be deactivated or replaced by another activation: the Owner ends it.
+cargo criterion NOT_VERIFIED. An active loop is deactivated, or replaced by
+another activation, only once its verdict is VERIFIED; in every other state
+(and while its activation record is unreadable) the Owner ends it by
+deleting <git-dir>/arcium-qc/active.json, or it expires after 8 hours.
+Besides the files on disk, the fingerprint covers the git state a criterion
+could read: the index entries, the clone's own config and info/attributes.
 
 State lives in <git-dir>/arcium-qc/, outside the working tree: it is never
 part of a diff and never committed. Records are HMAC-signed with a per-clone
@@ -465,6 +469,9 @@ def unlisted_target(root, real_root, rel, listed):
     return target
 
 
+GIT_STATE_FILES = ("config", "config.worktree", "info/attributes")
+
+
 def fingerprint(root):
     """HEAD and the bytes of every listed path as they are on disk."""
     fmt = object_format(root)
@@ -480,6 +487,13 @@ def fingerprint(root):
             target = unlisted_target(root, real_root, rel, listed)
             if target:
                 h.update(b"->" + (sha256_file(target).encode() if os.path.isfile(target) else b"-"))
+    # The git state a criterion may read (`git show :path`, a diff driver in the config, attributes) is part
+    # of what ran: the index entries (not their stat data), the clone's config and info/attributes.
+    h.update(b"\0index\0" + git(root, "ls-files", "-z", "--stage", binary=True))
+    for name in GIT_STATE_FILES:
+        p = git(root, "rev-parse", "--git-path", name).strip()
+        p = p if os.path.isabs(p) else os.path.join(root, p)
+        h.update(("\0%s\0%s" % (name, sha256_file(p) if os.path.isfile(p) else "-")).encode())
     return h.hexdigest()
 
 
@@ -1368,23 +1382,26 @@ def main(argv):
         if cmd == "activate":
             sid = args[0]
             load_spec(root, sid)
-            cur = active_loop(root)
+            cur, invalid = activation(root)
+            if invalid:
+                raise QcError("BLOCKED", "the activation record is unreadable or fails its integrity check: "
+                              "only the Owner ends it (delete %s)" % active_path(root))
             cur_state = verdict(root, cur)[0] if cur is not None and cur != sid else None
-            if cur_state in ("FAILED", "ESCALATE_TO_OWNER"):
+            if cur_state not in (None, "VERIFIED"):
                 # Switching loops would end this one without its report (or hide its escalation).
-                raise QcError(cur_state, "loop %s is %s: report it and deactivate it before activating %s"
-                              % (cur, cur_state, sid))
+                raise QcError(cur_state, "loop %s is %s: it is replaced only once VERIFIED; otherwise the Owner "
+                              "ends it (delete %s), or it expires" % (cur, cur_state, active_path(root)))
             write_json(active_path(root), sign(root, {"spec_id": sid, "expires": int(time.time()) + ACTIVE_TTL}))
             print("QC loop %s active for %dh (hooks, if enabled, now apply)" % (sid, ACTIVE_TTL // 3600))
             return 0
         if cmd == "deactivate":
-            sid = active_loop(root)
-            cur_state = verdict(root, sid)[0] if sid is not None else None
-            if cur_state in ("FAILED", "ESCALATE_TO_OWNER"):
-                # An escalated loop stays armed so its escalation cannot be silenced; the Owner ends it by
-                # deleting active.json, or it expires.
-                raise QcError(cur_state, "loop %s is %s: only the Owner ends it (delete %s), or it expires"
-                              % (sid, cur_state, active_path(root)))
+            sid, invalid = activation(root)
+            cur_state = "BLOCKED" if invalid else verdict(root, sid)[0] if sid is not None else None
+            if cur_state not in (None, "VERIFIED"):
+                # The guards stay armed until the loop is VERIFIED, so a stop or a commit before that cannot
+                # follow an early deactivation; the Owner ends it by deleting active.json, or it expires.
+                raise QcError(cur_state, "loop %s is %s: it is deactivated only once VERIFIED; otherwise only "
+                              "the Owner ends it (delete %s), or it expires" % (sid, cur_state, active_path(root)))
             if os.path.exists(active_path(root)):
                 os.remove(active_path(root))
             print("no QC loop active")

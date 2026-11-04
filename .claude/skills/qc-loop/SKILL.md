@@ -58,10 +58,11 @@ own explicit Owner instruction.
    round; repair and return to 3 (new evidence for the new tree is required).
 6. Final state: `python3 .claude/qc/qc.py verdict $ARGUMENTS`. End the report
    with exactly the line it printed, `QC_STATE: <state> | <reason>`, and
-   `python3 .claude/qc/qc.py deactivate` if you activated it (refused while
-   the state is `FAILED` or `ESCALATE_TO_OWNER`: a loop is not switched off
-   mid-repair, and an escalation is not silenced; the Owner ends it, or the
-   activation expires by itself after 8 hours).
+   `python3 .claude/qc/qc.py deactivate` if you activated it. It is refused
+   unless the state is `VERIFIED`: a loop is not switched off before its
+   result, and an escalation is not silenced. In any other state, report it
+   and leave the loop active: the Owner ends it, or the activation expires
+   by itself after 8 hours.
 
 Never write `QC_STATE: VERIFIED` (or "PASS", "all green") from memory, from a
 subagent's prose or from a Markdown file. Only the line `qc.py verdict`
@@ -108,13 +109,13 @@ them is the Owner's decision: copy the `hooks` block into
 `.claude/settings.local.json`. They act only while a loop is activated in
 this clone, and only ever deny or warn (never allow). With no loop active
 they do nothing; while one is active, a guard that cannot decide (an error,
-its deadline, an unreadable activation) denies or blocks instead of letting
-the step through. See the docstring of `.claude/qc/hooks.py` for exactly what
+its deadline, an unreadable activation, or hook input that is malformed or
+larger than 16 MiB) denies or blocks instead of letting the step through. See the docstring of `.claude/qc/hooks.py` for exactly what
 each one checks.
 
-While a loop is active and `FAILED` or `ESCALATE_TO_OWNER`, the PreToolUse
-guard also refuses commits and pushes the Owner asks for, and `deactivate`
-is refused. The Owner
+While a loop is active and not yet `VERIFIED`, the PreToolUse guard also
+refuses commits and pushes the Owner asks for, and `deactivate` (or
+activating another loop) is refused. The Owner
 ends the loop from their own terminal by deleting
 `$(git rev-parse --absolute-git-dir)/arcium-qc/active.json`, or by removing
 the hooks from `.claude/settings.local.json`; the activation also expires

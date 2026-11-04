@@ -42,6 +42,13 @@ jobs:
         run: cargo test --workspace --locked
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --locked -- -D warnings
+      # .cargo/audit.toml ignores RUSTSEC-2026-0387 only while crypto-bigint
+      # stays out of every build graph; this guard is what makes that ignore
+      # conditional, so it must pass before the audit runs.
+      - name: RUSTSEC-2026-0387 guard self-test
+        run: python3 .github/scripts/check_rustsec_2026_0387.py --self-test
+      - name: RUSTSEC-2026-0387 guard (crypto-bigint not in the build graph)
+        run: python3 .github/scripts/check_rustsec_2026_0387.py
       # --version pins cargo-audit itself; --locked alone pins only the
       # dependencies of whichever version is newest on crates.io (F-5).
       - name: Cargo audit (known CVEs)

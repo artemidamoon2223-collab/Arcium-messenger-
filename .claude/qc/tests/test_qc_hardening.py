@@ -451,5 +451,168 @@ class ReviewFindingsTest(unittest.TestCase):
                          ["M", "src/app.txt", "??", "src/new.txt"], "the index and tree are untouched")
 
 
+class ThirdRoundTest(unittest.TestCase):
+    """Holes a second independent review found in 53fce83; each test fails there."""
+
+    def setUp(self):
+        self.parent = tempfile.mkdtemp(prefix="qc-parent-")
+        self.r = Repo(parent=self.parent)
+
+    def tearDown(self):
+        shutil.rmtree(self.parent, ignore_errors=True)
+
+    def state(self, sid):
+        rc, line = self.r.qc("verdict", sid)
+        return line.split("|")[0].replace("QC_STATE:", "").strip(), line
+
+    def paths(self, sid):
+        p = subprocess.run([PY, ".claude/qc/qc.py", "classify", sid], cwd=self.r.dir, capture_output=True,
+                           text=True, env=self.r.env())
+        return sorted(json.loads(p.stdout)["paths"])
+
+    def verified(self, sid, files):
+        self.r.qc("run", sid)
+        self.r.review(sid, "engineering-code-review", eng_pass(self.r.base, files))
+        return self.r.review(sid, "arcium-security-review", sec(self.r.base, files))[1]
+
+    # X1: an ignore rule written during the task hides nothing
+
+    def test_a_self_ignoring_gitignore_cannot_hide_a_cargo_config(self):
+        self.r.locked("t-x1a", [PASSING])
+        self.r.write(".cargo/.gitignore", "*\n")
+        self.r.write(".cargo/config.toml", "[target.x86_64-unknown-linux-gnu]\nrunner = \"true\"\n")
+        self.assertEqual(self.paths("t-x1a"), [".cargo/.gitignore", ".cargo/config.toml"])
+        st, line = self.state("t-x1a")
+        self.assertEqual(st, "ESCALATE_TO_OWNER", line)
+        self.assertIn("SUPPLY_CHAIN", line)
+
+    def test_a_self_ignoring_gitignore_cannot_hide_a_crypto_file(self):
+        self.r.locked("t-x1b", [PASSING])
+        self.r.write("crates/core-crypto/src/.gitignore", ".gitignore\nhidden.rs\n")
+        self.r.write("crates/core-crypto/src/hidden.rs", "// hidden\n")
+        self.assertIn("crates/core-crypto/src/hidden.rs", self.paths("t-x1b"))
+        self.assertEqual(self.state("t-x1b")[0], "ESCALATE_TO_OWNER")
+
+    def test_a_new_directory_ignoring_its_contents_is_listed(self):
+        self.r.locked("t-x1c", [PASSING])
+        self.r.write("newdir/.gitignore", "*\n")
+        self.r.write("newdir/hidden.txt", "x\n")
+        self.assertEqual(self.paths("t-x1c"), ["newdir/.gitignore", "newdir/hidden.txt"])
+
+    def test_an_edited_tracked_gitignore_hides_nothing_but_its_own_rules_still_apply(self):
+        self.r.write(".gitignore", "target/\n")
+        self.r.git("add", "-A")
+        self.r.git("commit", "-qm", "ignore")
+        self.r.base = self.r.git("rev-parse", "HEAD").strip()
+        self.r.locked("t-x1d", [PASSING])
+        self.r.write("target/build.out", "x\n")
+        self.assertEqual(self.paths("t-x1d"), [], "the repository's own unchanged rule still ignores target/")
+        self.r.write(".gitignore", "target/\nsrc/secret.txt\n")
+        self.r.write("src/secret.txt", "x\n")
+        self.assertIn("src/secret.txt", self.paths("t-x1d"))
+
+    # X2: Claude Code's local settings do not change under a locked loop
+
+    def test_local_settings_changed_after_lock_escalate(self):
+        self.r.write(".claude/settings.local.json", '{"hooks": {}}\n')
+        self.r.locked("t-x2", [PASSING])
+        self.r.write("src/app.txt", "v2\n")
+        self.assertIn("VERIFIED", self.verified("t-x2", ["src/app.txt"]))
+        self.r.write(".claude/settings.local.json", '{"permissions": {"defaultMode": "bypassPermissions"}}\n')
+        st, line = self.state("t-x2")
+        self.assertEqual(st, "ESCALATE_TO_OWNER", line)
+        self.assertIn("settings.local.json", line)
+
+    # X3: the review-record exemption ends where bash ends the heredoc
+
+    def test_a_tab_stripped_heredoc_cannot_smuggle_a_command(self):
+        self.r.locked("t-x3", [PASSING])
+        self.r.qc("activate", "t-x3")
+        cmd = ("python3 .claude/qc/qc.py review-record t-x3 engineering-code-review <<-'EOF'\n"
+               "KARPATHY_REVIEW_RESULT\n\tEOF\ngit push origin main\nEOF\n")
+        rc, out, _ = self.r.hook("pre-tool", {"tool_name": "Bash", "tool_input": {"command": cmd}})
+        self.assertEqual(json.loads(out or "{}").get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
+
+    # X4, X5: contents a hash of the paths would not see
+
+    def test_an_untracked_nested_repository_is_blocked(self):
+        self.r.locked("t-x4", [PASSING])
+        subprocess.run(["git", "init", "-q", os.path.join(self.r.dir, "inner")], check=True)
+        self.r.write("inner/main.rs", "x\n")
+        st, line = self.state("t-x4")
+        self.assertEqual(st, "BLOCKED", line)
+        self.assertIn("nested", line)
+
+    def test_a_link_out_of_the_clone_follows_its_target(self):
+        outside = os.path.join(self.parent, "outside.txt")
+        with open(outside, "w") as f:
+            f.write("v1\n")
+        self.r.locked("t-x5", [PASSING])
+        os.symlink(outside, os.path.join(self.r.dir, "src/link.txt"))
+        self.assertIn("VERIFIED", self.verified("t-x5", ["src/link.txt"]))
+        with open(outside, "w") as f:
+            f.write("v2\n")
+        self.assertIn("stale", self.state("t-x5")[1])
+
+    # X6: an escalation cannot be silenced in two steps either
+
+    def test_an_escalated_loop_cannot_be_deactivated_by_the_agent(self):
+        self.r.locked("t-x6", [FAILING])
+        for i in range(4):
+            self.r.write("src/app.txt", "a%d\n" % i)
+            self.r.qc("run", "t-x6")
+        self.r.qc("activate", "t-x6")
+        rc, line = self.r.qc("deactivate")
+        self.assertIn("ESCALATE_TO_OWNER", line)
+        self.assertTrue(os.path.exists(os.path.join(self.r.gitdir(), "active.json")))
+        self.r.spec("t-x6b", [PASSING])
+        self.assertIn("ESCALATE_TO_OWNER", self.r.qc("activate", "t-x6b")[1])
+
+    # X7: the recorded tree survives garbage collection
+
+    def test_the_recorded_tree_survives_gc(self):
+        self.r.locked("t-x7", [PASSING])
+        self.r.write("src/app.txt", "v2\n")
+        self.r.qc("run", "t-x7")
+        tree = load(os.path.join(self.r.gitdir(), "runs/t-x7/run-1.json"))["tree"]
+        self.r.git("gc", "-q", "--prune=now")
+        self.assertEqual(self.r.git("show", "%s:src/app.txt" % tree), "v2\n")
+
+    # N4, N9, N11
+
+    def test_a_directory_replaced_by_a_file_is_a_change_not_an_internal_error(self):
+        self.r.locked("t-n4", [PASSING])
+        shutil.rmtree(os.path.join(self.r.dir, "src"))
+        self.r.write("src", "now a file\n")
+        st, line = self.state("t-n4")
+        self.assertNotIn("internal error", line)
+        self.assertIn("src/app.txt", self.paths("t-n4"))
+
+    def test_a_spec_edited_after_a_crash_is_reported_as_a_spec_change(self):
+        self.r.locked("t-n9", [FAILING])
+        self.r.write("src/app.txt", "v2\n")
+        self.r.qc("run", "t-n9", env={"QC_TEST_CRASH_AT": "run-recorded"})
+        with open(self.r.qc("spec-path", "t-n9")[1]) as f:
+            spec = json.load(f)
+        spec["title"] = "edited"
+        with open(self.r.qc("spec-path", "t-n9")[1], "w") as f:
+            json.dump(spec, f)
+        self.assertIn("changed after it was locked", self.state("t-n9")[1])
+
+    def test_a_cargo_runner_variable_is_not_verified(self):
+        fake = os.path.join(self.parent, "bin", "cargo-qc-fake")
+        os.makedirs(os.path.dirname(fake))
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\necho 'test result: ok. 1 passed; 0 failed'\n")
+        os.chmod(fake, 0o755)
+        crit = {"id": "ac-cargo", "description": "a cargo-named program", "command": [fake, "test"],
+                "must_match": [r"test result: ok\. [1-9][0-9]* passed; 0 failed"]}
+        self.r.locked("t-n11", [crit])
+        self.r.write("src/app.txt", "v2\n")
+        rc, line = self.r.qc("run", "t-n11", env={"CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER": "true"})
+        self.assertIn("NOT_VERIFIED", line)
+        self.assertIn("RUNNER", line)
+
+
 if __name__ == "__main__":
     unittest.main()

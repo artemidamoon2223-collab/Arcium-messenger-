@@ -26,8 +26,13 @@ tree, not from `git diff` or `git status`, and git runs without the user's
 global configuration or GIT_* variables: diff and colour settings, external
 diff drivers, attributes, replace refs, fsmonitor, assume-unchanged and
 skip-worktree flags, .git/info/exclude and core.excludesFile hide nothing.
-Only .gitignore files in the tree (part of the diff themselves) do, and an
-untracked .claude/settings.local.json (where the Owner enables the hooks).
+A .gitignore rule hides a file only if its .gitignore is tracked in HEAD and
+unchanged on disk; a new, self-ignoring or edited one hides nothing. An
+untracked nested git repository is BLOCKED (its contents cannot be checked);
+a symlink out of the clone is fingerprinted with its target's contents.
+An untracked .claude/settings.local.json (where the Owner enables the hooks)
+is not part of the change, but it is hashed at lock: any change to it after
+lock is ESCALATE_TO_OWNER.
 
 A run that is still going, or was interrupted (killed, crashed), leaves
 NOT_VERIFIED until a later run completes. An interrupted run counts as a
@@ -39,10 +44,12 @@ record directory. Unreadable state is BLOCKED, and so is any internal error:
 nothing here turns a crash into VERIFIED. A review is recorded only for a
 tree whose last run passed, and only if its block quotes that tree's
 fingerprint (`qc.py status <id>` prints it). Each run records the tree
-object of the tree it ran on (for `git diff <base> <tree>`), the program it
-ran and any Cargo configuration outside the repository; a Cargo
-configuration in a directory above the repository (not CARGO_HOME) makes a
-cargo criterion NOT_VERIFIED.
+object of the tree it ran on, kept by refs/arcium-qc/<id>/run-<n> (for
+`git diff <base> <tree>`), the program it ran and any Cargo configuration
+outside the repository; a Cargo configuration in a directory above the
+repository (not CARGO_HOME), or a CARGO_TARGET_*_RUNNER variable, makes a
+cargo criterion NOT_VERIFIED. A loop that is FAILED or ESCALATE_TO_OWNER
+cannot be deactivated or replaced by another activation: the Owner ends it.
 
 State lives in <git-dir>/arcium-qc/, outside the working tree: it is never
 part of a diff and never committed. Records are HMAC-signed with a per-clone
@@ -324,13 +331,43 @@ def tree_entries(root, rev):
 LOCAL_ONLY = {".claude/settings.local.json"}
 
 
+def split0(text):
+    return [x for x in text.split("\0") if x]
+
+
+def hidden_by_untrusted_rules(root):
+    """Untracked files that a .gitignore hides, unless that .gitignore is tracked in HEAD and unchanged on
+    disk: an ignore rule written during the task (a new, self-ignoring or edited .gitignore) hides nothing."""
+    entries = split0(git(root, "ls-files", "-z", "--others", "--ignored", "--directory",
+                         "--exclude-per-directory=.gitignore"))
+    if not entries:
+        return set()
+    out = split0(git(root, "check-ignore", "-z", "-v", "--no-index", "--stdin",
+                     stdin="".join(e + "\0" for e in entries).encode()))
+    head, fmt, hidden = tree_entries(root, "HEAD"), object_format(root), set()
+    for i in range(0, len(out) - 3, 4):
+        source, path = out[i], out[i + 3]
+        if source in head and disk_entry(root, source, fmt) == head[source]:
+            continue  # e.g. target/, ignored by the repository's own unchanged rules
+        if path.endswith("/"):
+            for d, dirs, files in os.walk(os.path.join(root, path)):
+                dirs[:] = [x for x in dirs if x != ".git"]
+                hidden |= {os.path.relpath(os.path.join(d, f), root) for f in files}
+        else:
+            hidden.add(path)
+    return hidden
+
+
 def listed_paths(root, rev):
-    """Paths in `rev`'s tree, in the index, and untracked ones no tracked-tree .gitignore excludes."""
+    """Paths in `rev`'s tree, in the index, untracked ones, and ones hidden by an untrusted ignore rule."""
     paths = set(tree_entries(root, rev))
-    paths |= {x for x in git(root, "ls-files", "-z", "--cached").split("\0") if x}
-    untracked = {x for x in git(root, "ls-files", "-z", "--others", "--exclude-per-directory=.gitignore")
-                 .split("\0") if x}
-    return paths | (untracked - LOCAL_ONLY)
+    paths |= set(split0(git(root, "ls-files", "-z", "--cached")))
+    untracked = set(split0(git(root, "ls-files", "-z", "--others", "--exclude-per-directory=.gitignore")))
+    nested = sorted(x for x in untracked if x.endswith("/"))
+    if nested:
+        raise QcError("BLOCKED", "untracked nested git repositories %s: their contents cannot be checked; "
+                      "move them out of the clone" % nested[:5])
+    return paths | (untracked - LOCAL_ONLY) | hidden_by_untrusted_rules(root)
 
 
 def disk_entry(root, rel, fmt):
@@ -338,7 +375,7 @@ def disk_entry(root, rel, fmt):
     p = os.path.join(root, rel)
     try:
         st = os.lstat(p)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return None
     if stat.S_ISLNK(st.st_mode):
         data, mode = os.readlink(p).encode(), "120000"
@@ -360,10 +397,22 @@ def fingerprint(root):
     fmt = object_format(root)
     head = git(root, "rev-parse", "HEAD").strip()
     h = hashlib.sha256(head.encode())
-    for rel in sorted(listed_paths(root, "HEAD")):
+    real_root = os.path.realpath(root)
+    for rel in sorted(listed_paths(root, "HEAD") | LOCAL_ONLY):
         e = disk_entry(root, rel, fmt)
         h.update(rel.encode() + b"\0" + ("%s %s" % e if e else "-").encode() + b"\n")
+        if e and e[0] == "120000":
+            # A link out of the clone: what it points at is part of what ran.
+            target = os.path.realpath(os.path.join(root, rel))
+            if not (target + os.sep).startswith(real_root + os.sep):
+                h.update(b"->" + (sha256_file(target).encode() if os.path.isfile(target) else b"-"))
     return h.hexdigest()
+
+
+def local_settings_hash(root):
+    """sha256 of each LOCAL_ONLY file, or None where absent."""
+    return {rel: sha256_file(os.path.join(root, rel)) if os.path.isfile(os.path.join(root, rel)) else None
+            for rel in sorted(LOCAL_ONLY)}
 
 
 def changed_paths(root, base):
@@ -421,10 +470,13 @@ def added_lines(root, base, paths=None):
                     yield rel, line
 
 
-def recorded_tree(root):
-    """The tree object of the tree on disk, or the reason it could not be written."""
+def recorded_tree(root, sid, n):
+    """The tree object of the tree on disk, kept by refs/arcium-qc/<id>/run-<n> (never pushed by
+    default, but kept by gc), or the reason it could not be written."""
     try:
-        return write_tree(root, listed_paths(root, "HEAD"))
+        tree = write_tree(root, listed_paths(root, "HEAD"))
+        git(root, "update-ref", "refs/arcium-qc/%s/run-%d" % (sid, n), tree)
+        return tree
     except (QcError, OSError) as e:
         return "not written: %s" % e
 
@@ -734,15 +786,20 @@ def preconditions(root, sid, check_lock=True):
     if st is None:
         raise QcError("BLOCKED", "spec %s is not locked: lock it before implementing (qc.py lock)" % sid)
     check_ledger(root, sid, st)
-    if (st.get("inflight") or st.get("review_inflight")) and not (check_lock and lock_held(root, sid)):
-        st = settle(root, sid, st, spec_sha)
     if st["spec_sha256"] != spec_sha:
         raise QcError("BLOCKED", "spec %s changed after it was locked: criteria cannot move mid-task" % sid)
     if st["tool_sha256"] != tool_hash():
         raise QcError("BLOCKED", "the QC tool (qc.py/hooks.py) changed after the spec was locked")
-    if subprocess.run(["git", "-C", root, "merge-base", "--is-ancestor", spec["base"], "HEAD"],
-                      capture_output=True).returncode != 0:
+    if (st.get("inflight") or st.get("review_inflight")) and not (check_lock and lock_held(root, sid)):
+        st = settle(root, sid, st, spec_sha)
+    if subprocess.run(["git", *GIT_OPTS, "-C", root, "merge-base", "--is-ancestor", spec["base"], "HEAD"],
+                      capture_output=True, env=git_env()).returncode != 0:
         raise QcError("BLOCKED", "base %s is not an ancestor of HEAD" % spec["base"][:12])
+    if "local_settings" in st and local_settings_hash(root) != st["local_settings"]:
+        # Claude Code's local settings carry permissions, environment and hooks for the session that
+        # runs the loop: not part of the change, but not to be changed under it either.
+        raise QcError("ESCALATE_TO_OWNER", "%s changed after the spec was locked (AGENT_CONTROL): ask the Owner"
+                      % ", ".join(sorted(LOCAL_ONLY)))
     cls = classify(root, spec["base"])
     missing = sorted(set(cls["owner_gated"]) - set(spec.get("owner_authorizes", [])))
     if missing:
@@ -828,6 +885,11 @@ def run_criterion(root, c):
                    "what cargo runs; it is not part of the diff or the review"
                    % res["toolchain"]["cargo_config_above_root"][0]["path"])
         return res
+    runners = sorted(k for k in env if re.match(r"^CARGO_TARGET_[A-Z0-9_]+_RUNNER$", k))
+    if os.path.basename(argv[0]).startswith("cargo") and runners:
+        res.update(status="NOT_VERIFIED", reason="%s replaces the program cargo runs for tests; unset it"
+                   % runners[0])
+        return res
     t0 = time.time()
     try:
         p = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=c.get("timeout", 1800))
@@ -896,7 +958,7 @@ def _run(root, sid):
     n = len(st["runs"]) + 1
     ev = sign(root, {"kind": "run", "spec_id": sid, "spec_sha256": spec_sha, "n": n, "time": int(time.time()),
                      "fingerprint": fp_after, "fingerprint_before": fp_before, "head": git(root, "rev-parse", "HEAD").strip(),
-                     "tree": recorded_tree(root),
+                     "tree": recorded_tree(root, sid, len(st["runs"]) + 1),
                      "classification": cls, "results": results, "outcome": outcome, "why": why})
     ev_path = os.path.join(os.path.dirname(state_path(root, sid)), "run-%d.json" % n)
     write_json(ev_path, ev, exclusive=True)
@@ -1153,6 +1215,7 @@ def _lock(root, sid):
         raise QcError("BLOCKED", "lock requires a clean tree (the bytes on disk equal HEAD): criteria are fixed "
                       "before implementation; changed: %s" % dirty[:10])
     save_state(root, sid, {"spec_id": sid, "spec_sha256": spec_sha, "tool_sha256": tool_hash(),
+                           "local_settings": local_settings_hash(root),
                            "locked_at": int(time.time()), "lock_fingerprint": fingerprint(root),
                            "runs": [], "reviews": [], "failed_runs": 0})
     return "NOT_VERIFIED", "spec %s locked at %s; implement, then run the criteria" % (sid, head[:12])
@@ -1210,9 +1273,12 @@ def main(argv):
             return 0
         if cmd == "deactivate":
             sid = active_loop(root)
-            if sid is not None and verdict(root, sid)[0] == "FAILED":
-                raise QcError("FAILED", "loop %s is mid-repair: it ends at a terminal report, or when its "
-                              "activation expires" % sid)
+            cur_state = verdict(root, sid)[0] if sid is not None else None
+            if cur_state in ("FAILED", "ESCALATE_TO_OWNER"):
+                # An escalated loop stays armed so its escalation cannot be silenced; the Owner ends it by
+                # deleting active.json, or it expires.
+                raise QcError(cur_state, "loop %s is %s: only the Owner ends it (delete %s), or it expires"
+                              % (sid, cur_state, active_path(root)))
             if os.path.exists(active_path(root)):
                 os.remove(active_path(root))
             print("no QC loop active")

@@ -68,7 +68,7 @@ BASH_WRITES_PROTECTED = re.compile(
 # the shell; anything else in the command is checked as usual.
 REVIEW_RECORD_RE = re.compile(
     r"\A\s*python3?\s+(?:\./)?\.claude/qc/qc\.py\s+review-record\s+[a-z0-9][a-z0-9-]*\s+"
-    r"(?:engineering-code-review|arcium-security-review)\s*<<-?\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*\n"
+    r"(?:engineering-code-review|arcium-security-review)\s*<<\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*\n"
     r"(?:(?!\2[ \t]*\n).*\n)*\2[ \t]*\n?\s*\Z")
 
 

@@ -32,7 +32,9 @@ its state, install anything, use the network beyond what a criterion runs,
 or run git commands that write. If a criterion cannot run (missing tool,
 network, device), that is `NOT_VERIFIED` — report it, do not work around it.
 If `run` says another run is in progress, report that line and stop: do not
-retry in a loop and do not kill anything.
+retry in a loop and do not kill anything. Give `qc.py run` the Bash tool's
+longest timeout (600000 ms), or run it in the background and wait for it: a
+run killed by a tool timeout is INTERRUPTED and costs a repair round.
 
 Reply with:
 

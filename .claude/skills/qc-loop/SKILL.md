@@ -59,8 +59,9 @@ own explicit Owner instruction.
 6. Final state: `python3 .claude/qc/qc.py verdict $ARGUMENTS`. End the report
    with exactly the line it printed, `QC_STATE: <state> | <reason>`, and
    `python3 .claude/qc/qc.py deactivate` if you activated it (refused while
-   the state is `FAILED`: a loop is not switched off mid-repair; the
-   activation also expires by itself after 8 hours).
+   the state is `FAILED` or `ESCALATE_TO_OWNER`: a loop is not switched off
+   mid-repair, and an escalation is not silenced; the Owner ends it, or the
+   activation expires by itself after 8 hours).
 
 Never write `QC_STATE: VERIFIED` (or "PASS", "all green") from memory, from a
 subagent's prose or from a Markdown file. Only the line `qc.py verdict`
@@ -108,8 +109,9 @@ them is the Owner's decision: copy the `hooks` block into
 this clone, only ever deny or warn (never allow), and fail open. See the docstring of
 `.claude/qc/hooks.py` for exactly what each one checks.
 
-While a loop is active and `FAILED`, the PreToolUse guard also refuses
-commits and pushes the Owner asks for, and `deactivate` is refused. The Owner
+While a loop is active and `FAILED` or `ESCALATE_TO_OWNER`, the PreToolUse
+guard also refuses commits and pushes the Owner asks for, and `deactivate`
+is refused. The Owner
 ends the loop from their own terminal by deleting
 `$(git rev-parse --absolute-git-dir)/arcium-qc/active.json`, or by removing
 the hooks from `.claude/settings.local.json`; the activation also expires

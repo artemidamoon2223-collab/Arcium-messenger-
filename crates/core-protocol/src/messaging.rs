@@ -550,6 +550,28 @@ impl Messenger {
         Ok(out)
     }
 
+    /// What `send` with `client_id` to `peer` committed so far, read only:
+    /// `None` if nothing; otherwise the outcome a repeated `send` would
+    /// report (`AlreadyPending`, `AlreadyAcknowledged` or `Abandoned`), and
+    /// never `Sent`. Keyed by the peer, not a session handle, so it still
+    /// answers after the session was removed. Acknowledged and abandoned
+    /// stay distinguishable: abandoning rewrites the record in the same
+    /// transaction that empties the outbox, and this reads both in one
+    /// transaction (writing nothing), so another connection's abandonment
+    /// is seen whole or not at all. Takes the store mutably for that: the
+    /// transaction takes the write lock (`IMMEDIATE`), so another connection
+    /// writing meanwhile can make this fail with `Store` (busy, retryable),
+    /// and a connection calling this in a tight loop delays other
+    /// connections' writes. `send` does the same read before encrypting.
+    pub fn prior_send(
+        &self,
+        store: &mut EncryptedStore,
+        peer: &[u8; 32],
+        client_id: &[u8],
+    ) -> Result<Option<SendOutcome>, MessagingError> {
+        read_prior_send(store, peer, &sendid_key(peer, client_id))
+    }
+
     /// Removes the outgoing message `id` once its delivery is confirmed.
     /// Returns whether it was still pending; repeating it is harmless. The
     /// `client_id` mapping stays, so resending that logical message reports

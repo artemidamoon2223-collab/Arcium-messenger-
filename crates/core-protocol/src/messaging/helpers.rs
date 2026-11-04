@@ -74,12 +74,19 @@ pub(super) fn read_duplicate(
 }
 
 /// What an earlier `send` of the same logical message committed, if any.
+///
+/// Both records are read in one transaction (nothing is written; it rolls
+/// back). `abandon_outgoing` rewrites the send-id record and deletes the
+/// outbox record together, so two separate reads could see the record from
+/// before it and the outbox from after it, from another connection on the
+/// same database, and report an abandoned message as acknowledged.
 pub(super) fn read_prior_send(
-    store: &EncryptedStore,
+    store: &mut EncryptedStore,
     peer: &[u8; 32],
     index_key: &str,
 ) -> Result<Option<SendOutcome>, MessagingError> {
-    let id = match store.get(index_key) {
+    let tx = store.transaction().map_err(MessagingError::Store)?;
+    let id = match tx.get(index_key) {
         Ok(bytes) if bytes.starts_with(ABANDONED_MAGIC) => {
             let message_id = decode_id_record(ABANDONED_MAGIC, &bytes, "sendid")?;
             return Ok(Some(SendOutcome::Abandoned { message_id }));
@@ -88,7 +95,9 @@ pub(super) fn read_prior_send(
         Err(StorageError::NotFound) => return Ok(None),
         Err(e) => return Err(MessagingError::Store(e)),
     };
-    match store.get(&outbox_key(peer, &id)) {
+    #[cfg(test)]
+    prior_send_hook::run();
+    match tx.get(&outbox_key(peer, &id)) {
         Ok(bytes) => Ok(Some(SendOutcome::AlreadyPending(decode_outbox(
             &Zeroizing::new(bytes),
         )?))),
@@ -124,4 +133,25 @@ pub(super) fn keys_under(
         .into_iter()
         .filter(|k| k.starts_with(prefix))
         .collect())
+}
+
+/// Test-only: runs once between the two reads of the next `read_prior_send`
+/// on this thread (a stand-in for another connection committing there).
+#[cfg(test)]
+pub(super) mod prior_send_hook {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    pub(in crate::messaging) fn set(f: impl FnOnce() + 'static) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(super) fn run() {
+        if let Some(f) = HOOK.with(|h| h.borrow_mut().take()) {
+            f();
+        }
+    }
 }

@@ -185,7 +185,8 @@ class MessageRepository(
      * call encrypts [plaintext] and commits it to the durable outbox with the
      * new session state; repeating the call with the same id — after a crash,
      * a restart or an unknown commit outcome — returns what was committed and
-     * never encrypts the message a second time.
+     * never encrypts the message a second time. Ids starting with `t` or `r`,
+     * and `o` alone, are reserved for the network layer and refused.
      *
      * **This does not transmit anything.** Pending bytes are in [pendingOutgoingTo].
      */
@@ -200,8 +201,9 @@ class MessageRepository(
     /**
      * Deletes the session with [peerIdentityPk] — for example after the peer
      * refused its handshake — so a new one can be established. Refused once
-     * the peer has answered, and while messages to it are pending
-     * (see [abandonUndelivered]).
+     * the peer has answered, and while messages to it are pending: nothing
+     * exported to Kotlin takes a message out of the outbox, so a session with
+     * a message committed on it stays until the network layer settles it.
      */
     fun removeSessionWith(peerIdentityPk: ByteArray) {
         core.removeSession(handleFor(peerIdentityPk))
@@ -210,16 +212,6 @@ class MessageRepository(
     /** Committed messages to [peerIdentityPk] not yet confirmed delivered, in send order. */
     fun pendingOutgoingTo(peerIdentityPk: ByteArray): List<uniffi.arcium_core.OutgoingMessage> {
         return core.pendingOutgoing(handleFor(peerIdentityPk))
-    }
-
-    /** Called once delivery of [messageId] is confirmed. Idempotent. */
-    fun confirmDelivered(peerIdentityPk: ByteArray, messageId: ByteArray): Boolean {
-        return core.acknowledgeOutgoing(handleFor(peerIdentityPk), messageId)
-    }
-
-    /** Gives up on [messageId] without a delivery confirmation. Idempotent. */
-    fun abandonUndelivered(peerIdentityPk: ByteArray, messageId: ByteArray): Boolean {
-        return core.abandonOutgoing(handleFor(peerIdentityPk), messageId)
     }
 
     /**

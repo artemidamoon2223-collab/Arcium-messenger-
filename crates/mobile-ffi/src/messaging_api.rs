@@ -169,6 +169,23 @@ fn message_id_arg(session_id: u64, id: &[u8]) -> Result<messaging::MessageId, Co
         .map_err(|_| CoreError::UnknownMessage { session_id })
 }
 
+fn send_result(outcome: SendOutcome) -> SendResult {
+    match outcome {
+        SendOutcome::Sent(m) => SendResult::Sent {
+            message: outgoing(m),
+        },
+        SendOutcome::AlreadyPending(m) => SendResult::AlreadyPending {
+            message: outgoing(m),
+        },
+        SendOutcome::AlreadyAcknowledged { message_id } => SendResult::AlreadyAcknowledged {
+            message_id: message_id.to_vec(),
+        },
+        SendOutcome::Abandoned { message_id } => SendResult::Abandoned {
+            message_id: message_id.to_vec(),
+        },
+    }
+}
+
 /// What the network layer needs from the messaging surface without leaving
 /// Rust ownership. These are not exported through UniFFI (an `impl` block
 /// marked `#[uniffi::export]` exports every method in it): they take and return
@@ -189,20 +206,24 @@ impl ArciumCore {
         let outcome = messenger
             .send(&mut store, our, session_id, client_message_id, plaintext)
             .map_err(|e| CoreError::messaging(session_id, e))?;
-        Ok(match outcome {
-            SendOutcome::Sent(m) => SendResult::Sent {
-                message: outgoing(m),
-            },
-            SendOutcome::AlreadyPending(m) => SendResult::AlreadyPending {
-                message: outgoing(m),
-            },
-            SendOutcome::AlreadyAcknowledged { message_id } => SendResult::AlreadyAcknowledged {
-                message_id: message_id.to_vec(),
-            },
-            SendOutcome::Abandoned { message_id } => SendResult::Abandoned {
-                message_id: message_id.to_vec(),
-            },
-        })
+        Ok(send_result(outcome))
+    }
+
+    /// What has been committed to `peer` under `client_message_id`, read
+    /// only (`Messenger::prior_send`): `None`, `AlreadyPending`,
+    /// `AlreadyAcknowledged` or `Abandoned`. Needs no session.
+    pub(crate) fn prior_send(
+        &self,
+        peer: &[u8; 32],
+        client_message_id: &[u8],
+    ) -> Result<Option<SendResult>, CoreError> {
+        let (mut store, messenger) = self.lock()?;
+        Ok(messenger
+            .prior_send(&mut store, peer, client_message_id)
+            .map_err(|e| {
+                CoreError::messaging(core_crypto::session_handle::local_session_handle(peer), e)
+            })?
+            .map(send_result))
     }
 
     /// [`receive_message`](Self::receive_message), without converting the
@@ -248,6 +269,49 @@ impl ArciumCore {
             .pending_incoming(&store, session_id)
             .map_err(|e| CoreError::messaging(session_id, e))
     }
+
+    /// Removes an outgoing message once its delivery is confirmed. Returns
+    /// whether it was still pending; repeating it is harmless.
+    ///
+    /// Not exported: the chat history shows a text Delivered when its send
+    /// record reads acknowledged, which this makes it, so only the network
+    /// layer may call this, on an authenticated receipt from the peer (or
+    /// for a receipt once the relay has accepted it, since receipts are not
+    /// themselves acknowledged).
+    pub(crate) fn acknowledge_outgoing(
+        &self,
+        session_id: u64,
+        message_id: Vec<u8>,
+    ) -> Result<bool, CoreError> {
+        let id = message_id_arg(session_id, &message_id)?;
+        let (mut store, messenger) = self.lock()?;
+        messenger
+            .acknowledge_outgoing(&mut store, session_id, &id)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// Stops retransmitting an outgoing message without a delivery
+    /// confirmation. Its logical id is recorded as abandoned, so
+    /// `send_message` with it returns `Abandoned`. The peer may or may not
+    /// have the message. Returns whether it was still pending; repeating it
+    /// is harmless.
+    ///
+    /// Not exported, for the same reason as
+    /// [`acknowledge_outgoing`](Self::acknowledge_outgoing): only
+    /// `resolve_session_conflict` calls it, after marking the texts not
+    /// delivered in the history; a text committed after that marking is
+    /// shown `NotDelivered` from its send record.
+    pub(crate) fn abandon_outgoing(
+        &self,
+        session_id: u64,
+        message_id: Vec<u8>,
+    ) -> Result<bool, CoreError> {
+        let id = message_id_arg(session_id, &message_id)?;
+        let (mut store, messenger) = self.lock()?;
+        messenger
+            .abandon_outgoing(&mut store, session_id, &id)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
 }
 
 #[uniffi::export]
@@ -274,6 +338,14 @@ impl ArciumCore {
     /// for it: 1 to 64 bytes, unique per logical message) on the session
     /// under `session_id`.
     ///
+    /// Ids the network layer uses for its own messages are refused with
+    /// `InvalidClientMessageId`: one starting with `t` (texts) or `r`
+    /// (receipts), and `o` alone (the session opener). Otherwise a caller
+    /// could commit its own message under a chat text's id, and the peer's
+    /// receipt for that message would show the text as delivered. (This
+    /// closes that only for this call: `NetworkMessenger::send_text` shares
+    /// the text id space with `chat_send` by design.)
+    ///
     /// The first call encrypts `plaintext` and commits the new session state
     /// and the outbox record together before returning `Sent`. Any later
     /// call with the same `client_message_id` encrypts nothing and returns
@@ -289,6 +361,9 @@ impl ArciumCore {
         plaintext: Vec<u8>,
     ) -> Result<SendResult, CoreError> {
         let plaintext = Zeroizing::new(plaintext);
+        if crate::network::wire::client_id::is_reserved(&client_message_id) {
+            return Err(CoreError::InvalidClientMessageId);
+        }
         self.send_committed(session_id, &client_message_id, &plaintext)
     }
 
@@ -321,37 +396,6 @@ impl ArciumCore {
         messenger
             .pending_outgoing(&store, session_id)
             .map(|v| v.into_iter().map(outgoing).collect())
-            .map_err(|e| CoreError::messaging(session_id, e))
-    }
-
-    /// Removes an outgoing message once its delivery is confirmed. Returns
-    /// whether it was still pending; repeating it is harmless.
-    pub fn acknowledge_outgoing(
-        &self,
-        session_id: u64,
-        message_id: Vec<u8>,
-    ) -> Result<bool, CoreError> {
-        let id = message_id_arg(session_id, &message_id)?;
-        let (mut store, messenger) = self.lock()?;
-        messenger
-            .acknowledge_outgoing(&mut store, session_id, &id)
-            .map_err(|e| CoreError::messaging(session_id, e))
-    }
-
-    /// Stops retransmitting an outgoing message without a delivery
-    /// confirmation. Its logical id is recorded as abandoned, so
-    /// `send_message` with it returns `Abandoned`. The peer may or may not
-    /// have the message. Returns whether it was still pending; repeating it
-    /// is harmless.
-    pub fn abandon_outgoing(
-        &self,
-        session_id: u64,
-        message_id: Vec<u8>,
-    ) -> Result<bool, CoreError> {
-        let id = message_id_arg(session_id, &message_id)?;
-        let (mut store, messenger) = self.lock()?;
-        messenger
-            .abandon_outgoing(&mut store, session_id, &id)
             .map_err(|e| CoreError::messaging(session_id, e))
     }
 

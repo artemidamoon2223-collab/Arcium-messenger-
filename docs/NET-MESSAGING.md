@@ -176,6 +176,30 @@ Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
   receives a duplicate and commits a new receipt (at most one per message per
   minute).
 - A missing receipt is never read as non-delivery; the text stays pending.
+- Neither `acknowledge_outgoing` nor `abandon_outgoing` is exported through
+  UniFFI: only this layer takes a text out of the outbox, on a receipt, or
+  in `resolve_session_conflict`.
+- The history never reads a text missing from the outbox as delivered by
+  itself. It reads the durable send record (`Messenger::prior_send`, keyed
+  by the peer): acknowledged is `Delivered`, abandoned is `NotDelivered`,
+  and any other answer, including a record of another message, changes
+  nothing. Abandoning rewrites that record in the transaction that empties
+  the outbox, and the record and the outbox are read in one transaction
+  (also inside `send`), so even another connection's abandonment is never
+  read halfway as an acknowledgement. A text committed while
+  `resolve_session_conflict` runs (after its NotDelivered pass) still ends
+  `NotDelivered`.
+- The exported raw `send_message` refuses the client ids this layer sends
+  under (starting with `t` or `r`, or `o` alone). `send_text` and
+  `chat_send` share the text id space (`t` + app id) and exclude each other
+  per app id and peer: `send_text` records a claim (`chat-r:`), `chat_send`
+  an entry (`chat-o:`), each in an IMMEDIATE transaction that checks for the
+  other's record first; `chat_send` also refuses an app id with a text
+  already committed and no entry (sent before claims existed). The ids
+  themselves and every stored record are unchanged: no migration. Nor is
+  anything repaired: an entry already shown `Delivered` by the old rule
+  stays so, and an entry a build without claims linked to a `send_text`
+  message keeps following that message.
 
 ## 6. State machines
 
@@ -286,9 +310,9 @@ entry per logical message, never written by the ratchet.
   listed again and skipped: each text appears once in the history. Delivery
   from the inbox stays at least once; the history deduplicates it.
 - **Delivered.** A committed text leaves the outbox only on the peer's receipt
-  or when abandoned; the chat layer abandons only after marking the entry
-  `NotDelivered`. So, while the session exists, a text that left the outbox is
-  delivered.
+  or when abandoned, and the durable send record tells the two apart
+  (section 5). A text that left the outbox is `Delivered` only if its record
+  says acknowledged for its own message id; with or without a session.
 - **Sessions.** `sync_conversations` runs `sync` first, so a waiting handshake
   from the contact and its first message are accepted, and only then starts a
   session for a contact with queued texts and none yet. A recorded handshake
@@ -306,6 +330,10 @@ entry per logical message, never written by the ratchet.
   session (allowed by S2-B2 section 6a: nothing was received on it), and waits
   for the contact's handshake, which the contact retransmits. The user can
   send those texts again as new messages. Nothing is removed automatically.
+  A text committed concurrently, between the marking and the abandoning, is
+  abandoned too and shown `NotDelivered` from its record; one committed after
+  the abandoning makes the removal refuse (`PendingOutgoing`), and calling
+  again completes it.
   A replayed old handshake can raise a false conflict; resolving it then only
   delays the conversation.
 - **Not provided.** Sync while the application is closed; unread state across

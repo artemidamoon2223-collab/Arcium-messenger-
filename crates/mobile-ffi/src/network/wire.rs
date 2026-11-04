@@ -152,6 +152,12 @@ pub mod client_id {
     pub const RECEIPT: u8 = b'r';
     pub const OPEN: &[u8] = b"o";
 
+    /// Whether `id` is in the space of ids above, which only the network
+    /// layer may send under (`ArciumCore::send_message` refuses them).
+    pub fn is_reserved(id: &[u8]) -> bool {
+        id == OPEN || matches!(id.first(), Some(&TEXT) | Some(&RECEIPT))
+    }
+
     pub fn text(app_id: &[u8]) -> Vec<u8> {
         [&[TEXT][..], app_id].concat()
     }

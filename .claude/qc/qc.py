@@ -26,7 +26,8 @@ tree, not from `git diff` or `git status`, and git runs without the user's
 global configuration or GIT_* variables: diff and colour settings, external
 diff drivers, attributes, replace refs, fsmonitor, assume-unchanged and
 skip-worktree flags, .git/info/exclude and core.excludesFile hide nothing.
-Only .gitignore files in the tree (part of the diff themselves) do.
+Only .gitignore files in the tree (part of the diff themselves) do, and an
+untracked .claude/settings.local.json (where the Owner enables the hooks).
 
 A run that is still going, or was interrupted (killed, crashed), leaves
 NOT_VERIFIED until a later run completes. An interrupted run counts as a
@@ -317,13 +318,19 @@ def tree_entries(root, rev):
     return out
 
 
+# Untracked files that are a person's local configuration, never part of a
+# change: Claude Code's per-user settings, where the Owner enables the
+# candidate hooks. Only while untracked; a tracked one is an ordinary path.
+LOCAL_ONLY = {".claude/settings.local.json"}
+
+
 def listed_paths(root, rev):
     """Paths in `rev`'s tree, in the index, and untracked ones no tracked-tree .gitignore excludes."""
     paths = set(tree_entries(root, rev))
-    for args in (("ls-files", "-z", "--cached"),
-                 ("ls-files", "-z", "--others", "--exclude-per-directory=.gitignore")):
-        paths |= {x for x in git(root, *args).split("\0") if x}
-    return paths
+    paths |= {x for x in git(root, "ls-files", "-z", "--cached").split("\0") if x}
+    untracked = {x for x in git(root, "ls-files", "-z", "--others", "--exclude-per-directory=.gitignore")
+                 .split("\0") if x}
+    return paths | (untracked - LOCAL_ONLY)
 
 
 def disk_entry(root, rel, fmt):

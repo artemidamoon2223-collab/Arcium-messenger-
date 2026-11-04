@@ -264,6 +264,17 @@ class ReviewFindingsTest(unittest.TestCase):
         st, line = self.state("t-excl")
         self.assertEqual(st, "ESCALATE_TO_OWNER", line)
 
+    def test_the_owners_local_settings_file_is_not_part_of_the_change(self):
+        self.r.write(".claude/settings.local.json", '{"hooks": {}}\n')
+        self.r.locked("t-local", [PASSING])  # lock accepts the tree
+        self.r.write("src/app.txt", "v2\n")
+        p = subprocess.run([PY, ".claude/qc/qc.py", "classify", "t-local"], cwd=self.r.dir, capture_output=True,
+                           text=True, env=self.r.env())
+        self.assertEqual(sorted(json.loads(p.stdout)["paths"]), ["src/app.txt"])
+        # A tracked one is an ordinary, owner-gated path.
+        self.r.git("add", "-f", ".claude/settings.local.json")
+        self.assertIn("AGENT_CONTROL", self.r.qc("verdict", "t-local")[1])
+
     def test_a_diff_attribute_cannot_hide_added_lines(self):
         self.r.write(".gitattributes", "*.yml -diff\n")
         self.r.git("add", "-A")

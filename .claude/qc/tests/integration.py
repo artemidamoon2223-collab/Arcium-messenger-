@@ -20,9 +20,11 @@ Exits non-zero at the first unmet expectation.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 SRC = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 OK_RE = r"test result: ok\. [1-9][0-9]* passed; 0 failed"
@@ -90,6 +92,11 @@ class Clone:
     def remove(self, rel):
         os.remove(os.path.join(self.dir, rel))
 
+    def status(self, sid):
+        p = subprocess.run([sys.executable, "-B", ".claude/qc/qc.py", "status", sid], cwd=self.dir, env=self.env,
+                           capture_output=True, text=True, check=True)
+        return json.loads(p.stdout)
+
     def evidence(self, sid, n):
         _, path = self.qc("spec-path", sid)
         with open(os.path.join(os.path.dirname(os.path.dirname(path)), "runs", sid, "run-%d.json" % n)) as f:
@@ -107,14 +114,14 @@ def state(line):
     return line.split("|")[0].replace("QC_STATE:", "").strip()
 
 
-def review_blocks(base, path):
-    eng = ("KARPATHY_REVIEW_RESULT\ntarget: %s...WORKTREE\ncomplete: yes\nfiles: %s\n"
+def review_blocks(base, path, fp):
+    eng = ("KARPATHY_REVIEW_RESULT\nqc_fingerprint: %s\ntarget: %s...WORKTREE\ncomplete: yes\nfiles: %s\n"
            "think_before_coding: pass | fixture\nsimplicity_first: pass | fixture\n"
            "surgical_changes: pass | fixture\ngoal_driven: pass | fixture\ntests_run: none\n"
-           "unverified: fixture, not a review\nsummary: fixture\nKARPATHY_REVIEW_END" % (base, path))
-    sec = ("ARCIUM_SECURITY_REVIEW\ntarget: %s...WORKTREE\ncomplete: yes\ncoverage: %s read in full\n"
+           "unverified: fixture, not a review\nsummary: fixture\nKARPATHY_REVIEW_END" % (fp, base, path))
+    sec = ("ARCIUM_SECURITY_REVIEW\nqc_fingerprint: %s\ntarget: %s...WORKTREE\ncomplete: yes\ncoverage: %s read in full\n"
            "areas: fixture\nfindings:\n  (none)\nknown_findings: none\ntests_run: none\n"
-           "not_verified: fixture, not a review\nverdict: fixture\nARCIUM_SECURITY_REVIEW_END" % (base, path))
+           "not_verified: fixture, not a review\nverdict: fixture\nARCIUM_SECURITY_REVIEW_END" % (fp, base, path))
     return eng, sec
 
 
@@ -144,7 +151,7 @@ def scenario_repair_to_verified(c):
     c.write(PROBE, FIXED)
     expect("stale" in c.qc("verdict", "int-a")[1], "evidence for the old tree is stale")
     expect("review pending" in c.qc("run", "int-a")[1], "passing criteria wait for the reviews")
-    eng, sec = review_blocks(c.base, PROBE)
+    eng, sec = review_blocks(c.base, PROBE, c.status("int-a")["fingerprint"])
     c.qc("review-record", "int-a", "engineering-code-review", stdin=eng)
     line = c.qc("review-record", "int-a", "arcium-security-review", stdin=sec)[1]
     expect(state(line) == "VERIFIED" and "self-declared" in line, "VERIFIED, naming the self-declared CRYPTO")
@@ -211,6 +218,31 @@ def scenario_owner_gate(c):
     c.remove("crates/core-crypto/src/qc_note.rs")
 
 
+def scenario_interrupted(c):
+    print("E: qc.py killed in the middle of a real cargo run -> NOT_VERIFIED, counted, then recovers")
+    c.spec("int-e", cargo_criteria()[:1], owner_authorizes=["CRYPTO"])
+    c.qc("lock", "int-e")
+    c.write(PROBE, FIXED)
+    env = dict(c.env, CARGO_TARGET_DIR=c.env["CARGO_TARGET_DIR"] + "-int-e")  # a cold build: time to kill it
+    p = subprocess.Popen([sys.executable, "-B", ".claude/qc/qc.py", "run", "int-e"], cwd=c.dir, env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    deadline = time.time() + 120
+    while time.time() < deadline and not c.status("int-e")["inflight"]:
+        time.sleep(0.2)
+    expect(c.status("int-e")["inflight"] is not None, "the run is recorded as in flight")
+    expect("in progress" in c.qc("verdict", "int-e")[1], "while it runs, the verdict says so")
+    expect("in progress" in c.qc("run", "int-e")[1], "a second run is refused")
+    time.sleep(2)
+    os.killpg(p.pid, signal.SIGKILL)
+    p.wait()
+    line = c.qc("verdict", "int-e")[1]
+    expect(state(line) == "NOT_VERIFIED" and "interrupted" in line, "a killed run is NOT_VERIFIED (interrupted)")
+    expect("review pending" in c.qc("run", "int-e")[1], "the next run completes")
+    expect([r["outcome"] for r in c.status("int-e")["runs"]] == ["INTERRUPTED", "PASS"],
+           "the interrupted run stays in the ledger")
+    c.remove(PROBE)
+
+
 def main():
     if shutil.which("cargo") is None:
         print("NOT_VERIFIED: cargo is not installed")
@@ -222,6 +254,7 @@ def main():
         scenario_repair_to_verified(c)
         scenario_budget(c)
         scenario_owner_gate(c)
+        scenario_interrupted(c)
         expect(c.git("status", "--porcelain", "--untracked-files=all") == "", "the clone is clean again")
     print("ALL INTEGRATION EXPECTATIONS MET")
     return 0

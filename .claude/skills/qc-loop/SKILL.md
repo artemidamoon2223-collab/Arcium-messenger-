@@ -46,7 +46,11 @@ own explicit Owner instruction.
      budget (≤ 3 repair rounds) the state becomes `ESCALATE_TO_OWNER`.
    - `NOT_VERIFIED` because a tool, the network, a device or a manual check
      is missing → stop and report it. Do not substitute a weaker check.
-   - `NOT_VERIFIED` because the evidence is stale → run the verifier again.
+   - `NOT_VERIFIED` because the evidence is stale, or a run was
+     interrupted → run the verifier again (an interrupted run counts
+     against the run cap of 8).
+   - `NOT_VERIFIED` because a run is in progress → wait; never start a
+     second one (it is refused) and never kill it.
    - `NOT_VERIFIED` with "review pending" → step 5.
    - `BLOCKED` or `ESCALATE_TO_OWNER` → stop and report to the Owner.
 5. Review: delegate to `qc-reviewer` with the spec id and the base SHA. A
@@ -69,9 +73,22 @@ them so the Owner can check), or that the reviews were independent (their
 records are signed and must cover every changed path, but a session with
 shell access could still write one).
 
+## Resuming after an interruption
+
+The loop's state lives in `<git-dir>/arcium-qc/` and survives a lost
+session, a crash or a killed command. To resume, run
+`python3 .claude/qc/qc.py status $ARGUMENTS`: it prints the base, the
+current tree's fingerprint, every run with its outcome (including
+`INTERRUPTED`), the repair rounds and runs left, the recorded reviews and the
+computed verdict. Continue from that verdict with step 4. Never lock the
+spec again or under a new id to get a fresh budget, never delete the state,
+and never write the state yourself: the verdict comes only from `qc.py`.
+
 ## Report to the Owner
 
 - spec id, base SHA, the classes from `qc.py classify`, `owner_authorizes`;
+- the run history and budget from `qc.py status` (runs and their outcomes,
+  repair rounds left);
 - per criterion: PASS/FAIL/NOT_VERIFIED with the evidence tail for failures;
 - the review result blocks (they are analysis, not proof);
 - what was not verified and what would verify it;

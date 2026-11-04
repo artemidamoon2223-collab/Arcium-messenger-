@@ -7,7 +7,10 @@ activated in this clone (qc.py activate <id>, which expires after 8 hours).
 
   stop             Stop: refuses a final message that claims
                    "QC_STATE: VERIFIED" while qc.py's verdict is something
-                   else, or that hides an ESCALATE_TO_OWNER. Never blocks when
+                   else, or that does not report an ESCALATE_TO_OWNER (no
+                   QC_STATE line at all counts as hiding it). A verdict that
+                   cannot be computed is BLOCKED, so a crash in qc.py never
+                   lets a VERIFIED claim through. Never blocks when
                    stop_hook_active is true, so it adds at most one turn; a
                    claim still false then is shown to the person as a warning.
   task-completed   TaskCompleted: a task whose subject carries "[qc]" cannot be
@@ -84,7 +87,7 @@ def main(event, data):
             print(json.dumps({"decision": "block", "reason":
                               "QC loop %s: you reported QC_STATE: VERIFIED, but qc.py verdict is %s (%s). "
                               "Report the computed state; never write VERIFIED yourself." % (sid, state, why)}))
-        elif state == "ESCALATE_TO_OWNER" and claims and claims[-1] not in ("ESCALATE_TO_OWNER", "BLOCKED"):
+        elif state == "ESCALATE_TO_OWNER" and (not claims or claims[-1] not in ("ESCALATE_TO_OWNER", "BLOCKED")):
             print(json.dumps({"decision": "block", "reason":
                               "QC loop %s is ESCALATE_TO_OWNER (%s). Stop repairing and report that state "
                               "to the Owner." % (sid, why)}))

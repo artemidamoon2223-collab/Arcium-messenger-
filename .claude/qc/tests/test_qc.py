@@ -105,6 +105,19 @@ class Repo:
                            input=stdin, env=self.env())
         return p.returncode, p.stdout.strip().splitlines()[-1] if p.stdout.strip() else p.stderr
 
+    def fingerprint(self):
+        """The tree fingerprint qc.py computes (as `qc.py status` prints it)."""
+        p = subprocess.run([PY, "-B", "-c", "import sys; sys.path.insert(0, '.claude/qc'); import qc; "
+                            "print(qc.fingerprint('.'))"], cwd=self.dir, capture_output=True, text=True,
+                           check=True, env=self.env())
+        return p.stdout.strip()
+
+    def review(self, sid, skill, text, fp=None):
+        """Record a review block quoting the tree it reviewed (the current one by default)."""
+        start = "KARPATHY_REVIEW_RESULT\n" if skill == "engineering-code-review" else "ARCIUM_SECURITY_REVIEW\n"
+        text = text.replace(start, start + "qc_fingerprint: %s\n" % (fp or self.fingerprint()), 1)
+        return self.qc("review-record", sid, skill, stdin=text)
+
     def hook(self, event, payload, cwd=None):
         p = subprocess.run([PY, os.path.join(self.dir, ".claude/qc/hooks.py"), event], cwd=cwd or self.dir,
                            capture_output=True, text=True, input=json.dumps(payload), env=self.env())
@@ -188,8 +201,8 @@ class QcTest(unittest.TestCase):
         self.r.locked("t-stale", [PASSING])
         self.r.write("src/app.txt", "v2\n")
         self.r.qc("run", "t-stale")
-        self.r.qc("review-record", "t-stale", "engineering-code-review", stdin=eng_pass(self.r.base, ["src/app.txt"]))
-        self.r.qc("review-record", "t-stale", "arcium-security-review", stdin=sec(self.r.base, ["src/app.txt"]))
+        self.r.review("t-stale", "engineering-code-review", eng_pass(self.r.base, ["src/app.txt"]))
+        self.r.review("t-stale", "arcium-security-review", sec(self.r.base, ["src/app.txt"]))
         self.assertEqual(self.state("t-stale")[0], "VERIFIED")
         self.r.write("src/app.txt", "v3\n")
         st, line = self.state("t-stale")
@@ -211,7 +224,7 @@ class QcTest(unittest.TestCase):
         self.r.write("src/app.txt", "v2\n")
         rc, line = self.r.qc("run", "t-fail")
         self.assertEqual(rc, 10)
-        self.r.qc("review-record", "t-fail", "engineering-code-review", stdin=eng_pass(self.r.base, ["src/app.txt"]))
+        self.r.review("t-fail", "engineering-code-review", eng_pass(self.r.base, ["src/app.txt"]))
         self.assertEqual(self.state("t-fail")[0], "FAILED")
 
     def test_zero_tests_run_is_a_failure(self):
@@ -248,8 +261,8 @@ class QcTest(unittest.TestCase):
         self.r.write("crates/core-crypto/src/x.rs", "// changed\n")
         self.r.qc("run", "t-review")
         x = ["crates/core-crypto/src/x.rs"]
-        self.r.qc("review-record", "t-review", "engineering-code-review", stdin=eng_pass(self.r.base, x))
-        rc, line = self.r.qc("review-record", "t-review", "arcium-security-review", stdin=sec(self.r.base, x, HIGH))
+        self.r.review("t-review", "engineering-code-review", eng_pass(self.r.base, x))
+        rc, line = self.r.review("t-review", "arcium-security-review", sec(self.r.base, x, HIGH))
         self.assertIn("FAILED", line)
 
     # ── environment ───────────────────────────────────────────────────────
@@ -340,7 +353,7 @@ class QcTest(unittest.TestCase):
         self.r.locked("t-auth", [PASSING], owner_authorizes=["CRYPTO"])
         self.r.write("crates/core-crypto/src/x.rs", "// changed\n")
         self.r.qc("run", "t-auth")
-        self.r.qc("review-record", "t-auth", "engineering-code-review", stdin=eng_pass(self.r.base, ["crates/core-crypto/src/x.rs"]))
+        self.r.review("t-auth", "engineering-code-review", eng_pass(self.r.base, ["crates/core-crypto/src/x.rs"]))
         st, line = self.state("t-auth")
         self.assertEqual(st, "NOT_VERIFIED")
         self.assertIn("arcium-security-review", line)
@@ -362,8 +375,8 @@ class QcTest(unittest.TestCase):
         self.r.write("src/app.txt", "v2\n")
         for _ in range(8):
             self.r.qc("run", "t-cap")
-        self.r.qc("review-record", "t-cap", "engineering-code-review", stdin=eng_pass(self.r.base, ["src/app.txt"]))
-        self.r.qc("review-record", "t-cap", "arcium-security-review", stdin=sec(self.r.base, ["src/app.txt"]))
+        self.r.review("t-cap", "engineering-code-review", eng_pass(self.r.base, ["src/app.txt"]))
+        self.r.review("t-cap", "arcium-security-review", sec(self.r.base, ["src/app.txt"]))
         self.assertEqual(self.state("t-cap")[0], "VERIFIED")
         rc, line = self.r.qc("run", "t-cap")
         self.assertIn("ESCALATE_TO_OWNER", line)
@@ -396,7 +409,7 @@ class QcTest(unittest.TestCase):
         self.r.locked("t-unk", [PASSING])
         self.r.write("tools/new.sh", "echo hi\n")
         self.r.qc("run", "t-unk")
-        self.r.qc("review-record", "t-unk", "engineering-code-review", stdin=eng_pass(self.r.base, ["tools/new.sh"]))
+        self.r.review("t-unk", "engineering-code-review", eng_pass(self.r.base, ["tools/new.sh"]))
         st, line = self.state("t-unk")
         self.assertEqual(st, "NOT_VERIFIED")
         self.assertIn("arcium-security-review", line)
@@ -427,9 +440,9 @@ class QcTest(unittest.TestCase):
         self.r.write("crates/core-crypto/src/x.rs", "// changed\n")
         self.r.qc("run", "t-layout")
         x = ["crates/core-crypto/src/x.rs"]
-        self.r.qc("review-record", "t-layout", "engineering-code-review", stdin=eng_pass(self.r.base, x))
-        rc, line = self.r.qc("review-record", "t-layout", "arcium-security-review",
-                             stdin=sec(self.r.base, x, "  * [HIGH] replay accepted at crates/core-crypto/src/x.rs:1"))
+        self.r.review("t-layout", "engineering-code-review", eng_pass(self.r.base, x))
+        rc, line = self.r.review("t-layout", "arcium-security-review",
+                                 sec(self.r.base, x, "  * [HIGH] replay accepted at crates/core-crypto/src/x.rs:1"))
         self.assertIn("FAILED", line)
 
     def test_a_security_review_without_a_findings_section_is_refused(self):
@@ -437,7 +450,7 @@ class QcTest(unittest.TestCase):
         self.r.write("crates/core-crypto/src/x.rs", "// changed\n")
         self.r.qc("run", "t-nofind")
         block = sec(self.r.base, ["crates/core-crypto/src/x.rs"]).replace("findings:\n  (none)\n", "")
-        rc, line = self.r.qc("review-record", "t-nofind", "arcium-security-review", stdin=block)
+        rc, line = self.r.review("t-nofind", "arcium-security-review", block)
         self.assertIn("findings section", line)
 
     def test_a_later_clean_review_does_not_erase_a_blocking_one(self):
@@ -445,9 +458,9 @@ class QcTest(unittest.TestCase):
         self.r.write("crates/core-crypto/src/x.rs", "// changed\n")
         self.r.qc("run", "t-erase")
         x = ["crates/core-crypto/src/x.rs"]
-        self.r.qc("review-record", "t-erase", "engineering-code-review", stdin=eng_pass(self.r.base, x))
-        self.r.qc("review-record", "t-erase", "arcium-security-review", stdin=sec(self.r.base, x, HIGH))
-        rc, line = self.r.qc("review-record", "t-erase", "arcium-security-review", stdin=sec(self.r.base, x))
+        self.r.review("t-erase", "engineering-code-review", eng_pass(self.r.base, x))
+        self.r.review("t-erase", "arcium-security-review", sec(self.r.base, x, HIGH))
+        rc, line = self.r.review("t-erase", "arcium-security-review", sec(self.r.base, x))
         self.assertIn("FAILED", line)
 
     def test_git_read_commands_with_side_effect_flags_are_refused(self):
@@ -462,8 +475,8 @@ class QcTest(unittest.TestCase):
         self.r.write("crates/core-crypto/src/x.rs", "// changed\n")
         self.r.qc("run", "t-own")
         x = ["crates/core-crypto/src/x.rs"]
-        self.r.qc("review-record", "t-own", "engineering-code-review", stdin=eng_pass(self.r.base, x))
-        self.r.qc("review-record", "t-own", "arcium-security-review", stdin=sec(self.r.base, x))
+        self.r.review("t-own", "engineering-code-review", eng_pass(self.r.base, x))
+        self.r.review("t-own", "arcium-security-review", sec(self.r.base, x))
         st, line = self.state("t-own")
         self.assertEqual(st, "VERIFIED")
         self.assertIn("self-declared", line)
@@ -555,8 +568,8 @@ class QcTest(unittest.TestCase):
         self.r.locked("t-true", [PASSING])
         self.r.write("src/app.txt", "v2\n")
         self.r.qc("run", "t-true")
-        self.r.qc("review-record", "t-true", "engineering-code-review", stdin=eng_pass(self.r.base, ["src/app.txt"]))
-        self.r.qc("review-record", "t-true", "arcium-security-review", stdin=sec(self.r.base, ["src/app.txt"]))
+        self.r.review("t-true", "engineering-code-review", eng_pass(self.r.base, ["src/app.txt"]))
+        self.r.review("t-true", "arcium-security-review", sec(self.r.base, ["src/app.txt"]))
         self.r.qc("activate", "t-true")
         rc, out, _ = self.r.hook("stop", {"last_assistant_message": "QC_STATE: VERIFIED | run 1"})
         self.assertEqual((rc, out), (0, ""))

@@ -31,6 +31,8 @@ You must not edit, create or delete files, change the spec, the QC tool or
 its state, install anything, use the network beyond what a criterion runs,
 or run git commands that write. If a criterion cannot run (missing tool,
 network, device), that is `NOT_VERIFIED` — report it, do not work around it.
+If `run` says another run is in progress, report that line and stop: do not
+retry in a loop and do not kill anything.
 
 Reply with:
 

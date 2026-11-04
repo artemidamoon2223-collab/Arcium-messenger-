@@ -16,8 +16,18 @@ spec's owner_authorizes and the review text are still written by agents:
                     error, a manual criterion, or a review not yet recorded
   BLOCKED           the spec is missing, invalid, unlocked or changed after
                     lock; the evidence or the QC tool itself fails integrity
-  ESCALATE_TO_OWNER repair rounds exhausted, or the diff touches an
-                    owner-gated area the spec does not cite authority for
+  ESCALATE_TO_OWNER repair rounds exhausted, the run cap reached without a
+                    result that a review alone could still complete, or the
+                    diff touches an owner-gated area the spec does not cite
+                    authority for
+
+A run that is still going, or was interrupted (killed, crashed), leaves
+NOT_VERIFIED until a later run completes; an interrupted run counts against
+the run cap. One run or review-record per spec at a time: a second one is
+refused while the first holds the spec's lock. Unreadable state is BLOCKED,
+and so is any internal error: nothing here turns a crash into VERIFIED.
+A review is recorded only for a tree whose last run passed, and only if its
+block quotes that tree's fingerprint (`qc.py status <id>` prints it).
 
 State lives in <git-dir>/arcium-qc/, outside the working tree: it is never
 part of a diff and never committed. Records are HMAC-signed with a per-clone
@@ -34,6 +44,8 @@ can: the criteria are reviewed, not sandboxed.
 """
 
 import codecs
+import contextlib
+import fcntl
 import hashlib
 import hmac
 import json
@@ -179,15 +191,31 @@ def verify_sig(root, obj):
 
 
 def write_json(path, obj):
+    """Atomic and durable: the file and its directory entry reach the disk."""
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(obj, f, indent=1, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
+    fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def read_json(path):
     with open(path) as f:
         return json.load(f)
+
+
+def read_record(path, what):
+    """A record written by this tool. Unreadable or cut short is BLOCKED, never a crash."""
+    try:
+        return read_json(path)
+    except (OSError, ValueError) as e:
+        raise QcError("BLOCKED", "%s is unreadable (corrupt or cut short): %s" % (what, e))
 
 
 def sha256_file(path):
@@ -374,6 +402,9 @@ def load_spec(root, sid):
         if TEST_RUNNER_RE.search(" ".join(argv)) and not c.get("must_match"):
             errs.append("%s: a test run needs must_match proving tests ran (a filter matching nothing exits 0)"
                         % where)
+        if TEST_RUNNER_RE.search(" ".join(argv)) and c.get("expect_exit", 0) != 0:
+            errs.append("%s: a test run must expect_exit 0 (a non-zero expectation passes on failing tests)"
+                        % where)
         cwd = c.get("cwd", ".")
         if os.path.isabs(cwd) or ".." in cwd.split("/"):
             errs.append("%s: cwd must be relative to the repository root" % where)
@@ -419,7 +450,7 @@ def load_state(root, sid):
     p = state_path(root, sid)
     if not os.path.exists(p):
         return None
-    st = read_json(p)
+    st = read_record(p, "the state of %s" % sid)
     if not verify_sig(root, st):
         raise QcError("BLOCKED", "state of %s fails its integrity check (edited or forged)" % sid)
     return st
@@ -428,6 +459,41 @@ def load_state(root, sid):
 def save_state(root, sid, st):
     os.makedirs(os.path.dirname(state_path(root, sid)), mode=0o700, exist_ok=True)
     write_json(state_path(root, sid), sign(root, st))
+
+
+def lock_file(root, sid):
+    if not ID_RE.match(sid or ""):
+        raise QcError("BLOCKED", "invalid spec id %r" % sid)
+    d = os.path.dirname(state_path(root, sid))
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return os.path.join(d, ".lock")
+
+
+@contextlib.contextmanager
+def spec_lock(root, sid):
+    """One run, lock or review-record per spec at a time; never waits."""
+    fd = os.open(lock_file(root, sid), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise QcError("NOT_VERIFIED", "another qc.py run or review-record for %s is in progress; "
+                          "wait for it to finish" % sid)
+        yield
+    finally:
+        os.close(fd)  # releases the lock
+
+
+def lock_held(root, sid):
+    """Whether a run (or record) for `sid` holds the spec's lock right now."""
+    fd = os.open(lock_file(root, sid), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return False
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
 
 
 def preconditions(root, sid):
@@ -534,10 +600,23 @@ def run_criterion(root, c):
 
 
 def cmd_run(root, sid):
+    with spec_lock(root, sid):
+        return _run(root, sid)
+
+
+def _run(root, sid):
     spec, spec_sha, st, cls = preconditions(root, sid)
+    if st.get("inflight"):
+        # The lock is ours, so the run that set this is not running: it was
+        # killed or crashed. It stays in the ledger and counts against the cap.
+        st["runs"].append({"n": st["inflight"]["n"], "outcome": "INTERRUPTED", "sha256": None})
+        del st["inflight"]
+        save_state(root, sid, st)
     if len(st["runs"]) >= MAX_RUNS:
         raise QcError("ESCALATE_TO_OWNER", "%d runs recorded: the run cap is reached" % len(st["runs"]))
     fp_before = fingerprint(root)
+    st["inflight"] = {"n": len(st["runs"]) + 1, "time": int(time.time()), "fingerprint": fp_before}
+    save_state(root, sid, st)
     results = [run_criterion(root, c) for c in spec["criteria"]]
     fp_after = fingerprint(root)
     statuses = {r["status"] for r in results}
@@ -557,10 +636,11 @@ def cmd_run(root, sid):
     ev_path = os.path.join(os.path.dirname(state_path(root, sid)), "run-%d.json" % n)
     write_json(ev_path, ev)
     st["runs"].append({"n": n, "outcome": outcome, "sha256": sha256_file(ev_path)})
+    del st["inflight"]
     if outcome == "FAILED":
         st["failed_runs"] += 1
     save_state(root, sid, st)
-    return verdict(root, sid)
+    return _verdict_unlocked(root, sid)
 
 
 # ── Reviews ──────────────────────────────────────────────────────────────────
@@ -599,6 +679,11 @@ def parse_review(skill, text):
 def cmd_review_record(root, sid, skill, text):
     if skill not in REVIEW_BLOCKS:
         raise QcError("BLOCKED", "unknown review skill %s" % skill)
+    with spec_lock(root, sid):
+        return _review_record(root, sid, skill, text)
+
+
+def _review_record(root, sid, skill, text):
     spec, spec_sha, st, cls = preconditions(root, sid)
     parsed = parse_review(skill, text)
     block = text[text.index(REVIEW_BLOCKS[skill][0]):]
@@ -608,16 +693,30 @@ def cmd_review_record(root, sid, skill, text):
     missing = [p for p in cls["paths"] if p not in block]
     if missing:
         raise QcError("NOT_VERIFIED", "review does not name every changed path; missing %s" % missing[:10])
+    # The review is of the tree the criteria passed on: the reviewer quotes its
+    # fingerprint (qc.py status) before reading, and nothing changed since.
+    fp = fingerprint(root)
+    quoted = re.search(r"^qc_fingerprint:\s*([0-9a-f]{64})\s*$", block, re.M)
+    if not quoted:
+        raise QcError("NOT_VERIFIED", "review block lacks the line qc_fingerprint: <hex> (qc.py status %s)" % sid)
+    if quoted.group(1) != fp:
+        raise QcError("NOT_VERIFIED", "the review quotes another tree than the current one; review it again")
+    last = st["runs"][-1] if st["runs"] else None
+    if not last or last["outcome"] != "PASS" or st.get("inflight"):
+        raise QcError("NOT_VERIFIED", "no completed passing run for this tree: run the criteria before the review")
+    ev = load_record(root, sid, "run-%d.json" % last["n"], last["sha256"])
+    if ev["fingerprint"] != fp:
+        raise QcError("NOT_VERIFIED", "the tree changed after run %d passed: run the criteria again" % last["n"])
     n = len(st.get("reviews", [])) + 1
     rec = sign(root, {"kind": "review", "spec_id": sid, "spec_sha256": spec_sha, "skill": skill, "n": n,
-                      "time": int(time.time()), "fingerprint": fingerprint(root), "text": text, **parsed})
+                      "time": int(time.time()), "fingerprint": fp, "run_n": last["n"], "text": text, **parsed})
     path = os.path.join(os.path.dirname(state_path(root, sid)), "review-%d.json" % n)
     write_json(path, rec)
     st.setdefault("reviews", []).append({"n": n, "skill": skill, "sha256": sha256_file(path)})
     if parsed["blocking"]:
         st["failed_runs"] += 1
     save_state(root, sid, st)
-    return verdict(root, sid)
+    return _verdict_unlocked(root, sid)
 
 
 # ── Verdict ──────────────────────────────────────────────────────────────────
@@ -626,58 +725,86 @@ def load_record(root, sid, name, expect_sha):
     path = os.path.join(os.path.dirname(state_path(root, sid)), name)
     if not os.path.exists(path) or sha256_file(path) != expect_sha:
         raise QcError("BLOCKED", "%s is missing or differs from the state ledger" % name)
-    rec = read_json(path)
+    rec = read_record(path, name)
     if not verify_sig(root, rec):
         raise QcError("BLOCKED", "%s fails its integrity check (edited or fabricated)" % name)
     return rec
 
 
 def verdict(root, sid):
+    return _guarded(_verdict, root, sid, True)
+
+
+def _verdict_unlocked(root, sid):
+    """The verdict from inside a command that holds the spec's lock itself."""
+    return _guarded(_verdict, root, sid, False)
+
+
+def _guarded(fn, root, sid, check_lock):
     try:
-        return _verdict(root, sid)
+        return fn(root, sid, check_lock)
     except QcError as e:
         return e.state, e.reason
+    except Exception as e:  # noqa: BLE001 - an internal error is never a pass
+        return "BLOCKED", "internal error in qc.py (%s: %s): fix the tool or its state" % (type(e).__name__, e)
 
 
-def _verdict(root, sid):
+def _verdict(root, sid, check_lock=True):
     spec, spec_sha, st, cls = preconditions(root, sid)
+    state, why, needs_run = _assess(root, sid, spec, spec_sha, st, cls, check_lock)
+    if needs_run and len(st["runs"]) >= MAX_RUNS:
+        # Progress needs another run and none is allowed: the Owner decides.
+        return "ESCALATE_TO_OWNER", "%d runs recorded, the run cap is reached; last state %s: %s" % (
+            len(st["runs"]), state, why)
+    return state, why
+
+
+def _assess(root, sid, spec, spec_sha, st, cls, check_lock):
+    """(state, reason, whether only a new run could change it)."""
+    left = 1 + spec.get("max_repair_rounds", MAX_REPAIR_ROUNDS) - st["failed_runs"]
+    if st.get("inflight"):
+        n = st["inflight"]["n"]
+        if check_lock and lock_held(root, sid):
+            return "NOT_VERIFIED", "run %d is in progress; wait for it" % n, False
+        return "NOT_VERIFIED", "run %d was interrupted before it finished; run again" % n, True
     if not st["runs"]:
-        return "NOT_VERIFIED", "no evidence: run the criteria (qc.py run %s)" % sid
+        return "NOT_VERIFIED", "no evidence: run the criteria (qc.py run %s)" % sid, True
     last = st["runs"][-1]
+    if last["outcome"] == "INTERRUPTED":
+        return "NOT_VERIFIED", "run %d was interrupted before it finished; run again" % last["n"], True
     ev = load_record(root, sid, "run-%d.json" % last["n"], last["sha256"])
     if ev["spec_sha256"] != spec_sha:
-        return "BLOCKED", "the evidence is for another version of the spec"
+        return "BLOCKED", "the evidence is for another version of the spec", False
     fp = fingerprint(root)
     if ev["fingerprint"] != fp:
-        return "NOT_VERIFIED", "stale evidence: the tree changed after run %d; run again" % ev["n"]
+        return "NOT_VERIFIED", "stale evidence: the tree changed after run %d; run again" % ev["n"], True
     if ev["outcome"] == "FAILED":
-        left = 1 + spec.get("max_repair_rounds", MAX_REPAIR_ROUNDS) - st["failed_runs"]
-        return "FAILED", "%s; %d repair round(s) left" % (ev["why"], left)
+        return "FAILED", "%s; %d repair round(s) left" % (ev["why"], left), True
     if ev["outcome"] != "PASS":
-        return "NOT_VERIFIED", ev["why"]
+        return "NOT_VERIFIED", ev["why"], True
     pending, incomplete = [], []
     for skill in cls["required_reviews"]:
         recs = [load_record(root, sid, "review-%d.json" % r["n"], r["sha256"])
                 for r in st.get("reviews", []) if r["skill"] == skill]
-        current = [r for r in recs if r["fingerprint"] == fp]
+        current = [r for r in recs if r["fingerprint"] == fp and r.get("spec_sha256") == spec_sha]
         if not current:
             pending.append(skill + (" (stale)" if recs else ""))
             continue
         # A later record never erases a blocking one for the same tree.
         blocking = [b for r in current for b in r["blocking"]]
         if blocking:
-            left = 1 + spec.get("max_repair_rounds", MAX_REPAIR_ROUNDS) - st["failed_runs"]
-            return "FAILED", "%s found %s; %d repair round(s) left" % (skill, blocking, left)
+            return "FAILED", "%s found %s; %d repair round(s) left" % (skill, blocking, left), True
         if not current[-1]["complete"]:
             incomplete.append(skill)
     if pending or incomplete:
         return "NOT_VERIFIED", "criteria passed; review %s%s" % (
-            ("pending: %s" % pending) if pending else "", (" incomplete: %s" % incomplete) if incomplete else "")
+            ("pending: %s" % pending) if pending else "",
+            (" incomplete: %s" % incomplete) if incomplete else ""), False
     granted = sorted(set(cls["owner_gated"]) & set(spec.get("owner_authorizes", [])))
     return "VERIFIED", "run %d passed every criterion on this tree; reviews recorded: %s%s" % (
         ev["n"], cls["required_reviews"] or "none required",
         ("; owner authority self-declared in the spec for %s: confirm it against the Owner's instruction"
-         % granted) if granted else "")
+         % granted) if granted else ""), False
 
 
 # ── Activation (for the optional hooks) ─────────────────────────────────────
@@ -700,9 +827,38 @@ def active_loop(root):
     return a.get("spec_id")
 
 
+def cmd_status(root, sid):
+    """Read-only progress report for the Owner and for resuming a loop."""
+    spec, _ = load_spec(root, sid)
+    st = load_state(root, sid)
+    if st is None:
+        raise QcError("BLOCKED", "spec %s is not locked" % sid)
+    limit = 1 + spec.get("max_repair_rounds", MAX_REPAIR_ROUNDS)
+    reviews = []
+    fp = fingerprint(root)
+    for r in st.get("reviews", []):
+        rec = load_record(root, sid, "review-%d.json" % r["n"], r["sha256"])
+        reviews.append({"n": r["n"], "skill": r["skill"], "run_n": rec.get("run_n"), "complete": rec["complete"],
+                        "blocking": rec["blocking"], "for_current_tree": rec["fingerprint"] == fp})
+    state, why = verdict(root, sid)
+    return {
+        "spec_id": sid, "base": spec["base"], "locked_at": st["locked_at"], "fingerprint": fp,
+        "runs": [{"n": r["n"], "outcome": r["outcome"]} for r in st["runs"]],
+        "inflight": st.get("inflight"), "failed_runs": st["failed_runs"],
+        "repair_rounds_left": max(0, min(limit - 1, limit - st["failed_runs"])),
+        "runs_left": max(0, MAX_RUNS - len(st["runs"])), "reviews": reviews,
+        "verdict": {"state": state, "why": why},
+    }
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def cmd_lock(root, sid):
+    with spec_lock(root, sid):
+        return _lock(root, sid)
+
+
+def _lock(root, sid):
     spec, spec_sha = load_spec(root, sid)
     if load_state(root, sid) is not None:
         raise QcError("BLOCKED", "spec %s is already locked; a new task needs a new id" % sid)
@@ -770,12 +926,17 @@ def main(argv):
                 os.remove(active_path(root))
             print("no QC loop active")
             return 0
+        if cmd == "status":
+            print(json.dumps(cmd_status(root, args[0]), indent=1))
+            return 0
         if cmd == "evidence":
             st = load_state(root, args[0])
             if not st or not st["runs"]:
                 raise QcError("NOT_VERIFIED", "no evidence for %s" % args[0])
             last = st["runs"][-1]
             n = last["n"]
+            if last["outcome"] == "INTERRUPTED":
+                raise QcError("NOT_VERIFIED", "run %d was interrupted: it left no evidence" % n)
             rec = load_record(root, args[0], "run-%d.json" % n, last["sha256"])
             for r in rec["results"]:
                 print("%-24s %-12s %s" % (r["id"], r["status"], r.get("reason", "")))
@@ -799,6 +960,8 @@ def main(argv):
     except IndexError:
         print("usage: qc.py <command> <spec-id> (see the module docstring)", file=sys.stderr)
         return 2
+    except Exception as e:  # noqa: BLE001 - an internal error is never a pass
+        state, why = "BLOCKED", "internal error in qc.py (%s: %s)" % (type(e).__name__, e)
     print("QC_STATE: %s | %s" % (state, why))
     return EXIT[state]
 

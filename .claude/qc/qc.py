@@ -66,8 +66,10 @@ than read-only subcommands), `gh`, `curl`, `wget`, `anchor`, `solana` or
 `arcium`; that checks the program name only. A criterion is code run on this
 machine (`python3 -c ...`, a script, a build) and can do anything its program
 can: the criteria are reviewed, not sandboxed. What it runs with outside the
-tree (the installed toolchain, ~/.cargo/config.toml, environment variables)
-is recorded, not verified.
+tree (the installed toolchain, ~/.cargo/config.toml, environment variables
+such as RUSTC_WRAPPER) is recorded, not verified. A Claude Code permission
+rule saved into an untracked .claude/settings.local.json during a loop
+changes its hash and escalates, by design.
 """
 
 import contextlib
@@ -336,23 +338,29 @@ def split0(text):
 
 
 def hidden_by_untrusted_rules(root):
-    """Untracked files that a .gitignore hides, unless that .gitignore is tracked in HEAD and unchanged on
-    disk: an ignore rule written during the task (a new, self-ignoring or edited .gitignore) hides nothing."""
+    """Untracked files that a .gitignore rule hides, unless that rule (its pattern line) is in the HEAD
+    version of the same tracked .gitignore: a rule written during the task (in a new, self-ignoring or
+    edited .gitignore) hides nothing, and the repository's own rules (target/) keep hiding what they hid."""
     entries = split0(git(root, "ls-files", "-z", "--others", "--ignored", "--directory",
                          "--exclude-per-directory=.gitignore"))
     if not entries:
         return set()
     out = split0(git(root, "check-ignore", "-z", "-v", "--no-index", "--stdin",
                      stdin="".join(e + "\0" for e in entries).encode()))
-    head, fmt, hidden = tree_entries(root, "HEAD"), object_format(root), set()
+    head, hidden, head_rules = tree_entries(root, "HEAD"), set(), {}
     for i in range(0, len(out) - 3, 4):
-        source, path = out[i], out[i + 3]
-        if source in head and disk_entry(root, source, fmt) == head[source]:
-            continue  # e.g. target/, ignored by the repository's own unchanged rules
+        source, pattern, path = out[i], out[i + 2], out[i + 3]
+        if source in head and head[source][0] != "160000":
+            if source not in head_rules:
+                head_rules[source] = {x.rstrip() for x in blob_text(root, head[source][1]).splitlines()}
+            if pattern.rstrip() in head_rules[source]:
+                continue  # e.g. target/: a rule the repository already had
         if path.endswith("/"):
             for d, dirs, files in os.walk(os.path.join(root, path)):
                 dirs[:] = [x for x in dirs if x != ".git"]
-                hidden |= {os.path.relpath(os.path.join(d, f), root) for f in files}
+                # A link to a directory is listed as the link itself (os.walk does not follow it).
+                hidden |= {os.path.relpath(os.path.join(d, f), root) for f in files
+                           + [x for x in dirs if os.path.islink(os.path.join(d, x))]}
         else:
             hidden.add(path)
     return hidden
@@ -392,6 +400,17 @@ def disk_entry(root, rel, fmt):
     return (mode, h.hexdigest())
 
 
+def outside_target(root, real_root, rel):
+    """The target of the link `rel` if it points out of the clone; BLOCKED if that target is a directory."""
+    target = os.path.realpath(os.path.join(root, rel))
+    if (target + os.sep).startswith(real_root + os.sep):
+        return None
+    if os.path.isdir(target):
+        raise QcError("BLOCKED", "%s links to a directory outside the clone (%s): its contents cannot be "
+                      "checked; copy them in or remove the link" % (rel, target))
+    return target
+
+
 def fingerprint(root):
     """HEAD and the bytes of every listed path as they are on disk."""
     fmt = object_format(root)
@@ -403,8 +422,8 @@ def fingerprint(root):
         h.update(rel.encode() + b"\0" + ("%s %s" % e if e else "-").encode() + b"\n")
         if e and e[0] == "120000":
             # A link out of the clone: what it points at is part of what ran.
-            target = os.path.realpath(os.path.join(root, rel))
-            if not (target + os.sep).startswith(real_root + os.sep):
+            target = outside_target(root, real_root, rel)
+            if target:
                 h.update(b"->" + (sha256_file(target).encode() if os.path.isfile(target) else b"-"))
     return h.hexdigest()
 
@@ -420,10 +439,14 @@ def changed_paths(root, base):
     fmt = object_format(root)
     base_tree = tree_entries(root, base)
     changed = []
+    real_root = os.path.realpath(root)
     for rel in listed_paths(root, base):
         if rel in base_tree and base_tree[rel][0] == "160000":
             continue  # a submodule pointer: not followed (no submodules in this repository)
-        if disk_entry(root, rel, fmt) != base_tree.get(rel):
+        e = disk_entry(root, rel, fmt)
+        if e and e[0] == "120000":
+            outside_target(root, real_root, rel)
+        if e != base_tree.get(rel):
             changed.append(rel)
     return sorted(changed)
 
@@ -471,8 +494,9 @@ def added_lines(root, base, paths=None):
 
 
 def recorded_tree(root, sid, n):
-    """The tree object of the tree on disk, kept by refs/arcium-qc/<id>/run-<n> (never pushed by
-    default, but kept by gc), or the reason it could not be written."""
+    """The tree object of the tree on disk, kept by refs/arcium-qc/<id>/run-<n> (kept by gc; not pushed
+    by `git push` or `--all`, but `git push --mirror` would publish it, untracked files included), or the
+    reason it could not be written."""
     try:
         tree = write_tree(root, listed_paths(root, "HEAD"))
         git(root, "update-ref", "refs/arcium-qc/%s/run-%d" % (sid, n), tree)

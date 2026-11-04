@@ -510,6 +510,7 @@ class ThirdRoundTest(unittest.TestCase):
         self.r.write(".gitignore", "target/\nsrc/secret.txt\n")
         self.r.write("src/secret.txt", "x\n")
         self.assertIn("src/secret.txt", self.paths("t-x1d"))
+        self.assertNotIn("target/build.out", self.paths("t-x1d"), "target/ is still the repository's own rule")
 
     # X2: Claude Code's local settings do not change under a locked loop
 
@@ -542,6 +543,14 @@ class ThirdRoundTest(unittest.TestCase):
         st, line = self.state("t-x4")
         self.assertEqual(st, "BLOCKED", line)
         self.assertIn("nested", line)
+
+    def test_a_link_to_a_directory_out_of_the_clone_is_blocked(self):
+        os.makedirs(os.path.join(self.parent, "outdir"))
+        self.r.locked("t-f7", [PASSING])
+        os.symlink(os.path.join(self.parent, "outdir"), os.path.join(self.r.dir, "src/linkdir"))
+        st, line = self.state("t-f7")
+        self.assertEqual(st, "BLOCKED", line)
+        self.assertIn("outside the clone", line)
 
     def test_a_link_out_of_the_clone_follows_its_target(self):
         outside = os.path.join(self.parent, "outside.txt")

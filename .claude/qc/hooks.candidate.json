@@ -5,8 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/qc/hooks.py\" stop",
-            "timeout": 30
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/qc/hooks.py\" stop",
+            "timeout": 60
           }
         ]
       }
@@ -16,8 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/qc/hooks.py\" task-completed",
-            "timeout": 30
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/qc/hooks.py\" task-completed",
+            "timeout": 60
           }
         ]
       }
@@ -28,8 +28,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/qc/hooks.py\" pre-tool",
-            "timeout": 10
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/qc/hooks.py\" pre-tool",
+            "timeout": 15
           }
         ]
       }

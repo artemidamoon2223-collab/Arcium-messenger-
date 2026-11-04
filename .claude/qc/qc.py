@@ -26,10 +26,15 @@ tree, not from `git diff` or `git status`, and git runs without the user's
 global configuration or GIT_* variables: diff and colour settings, external
 diff drivers, attributes, replace refs, fsmonitor, assume-unchanged and
 skip-worktree flags, .git/info/exclude and core.excludesFile hide nothing.
-A .gitignore rule hides a file only if its .gitignore is tracked in HEAD and
-unchanged on disk; a new, self-ignoring or edited one hides nothing. An
-untracked nested git repository is BLOCKED (its contents cannot be checked);
-a symlink out of the clone is fingerprinted with its target's contents.
+No ignore rule hides anything: every file on disk is part of the tree
+except the root's .git and the exact build-output directories in
+TRUSTED_BUILD_DIRS (target/, the Gradle and Anchor build directories,
+node_modules/). A nested git repository anywhere, or a gitlink (submodule or
+embedded repository) in the tree or the index, is BLOCKED: its contents
+cannot be checked. A link to a file whose contents are not listed at a path
+of their own (out of the clone, in .git or in a trusted build directory) is
+fingerprinted with that file's contents; a link to such a directory is
+BLOCKED.
 An untracked .claude/settings.local.json (where the Owner enables the hooks)
 is not part of the change, but it is hashed at lock: any change to it after
 lock is ESCALATE_TO_OWNER.
@@ -122,7 +127,7 @@ SUPPLY_RE = re.compile(r"(^|/)(Cargo\.toml|Cargo\.lock|package\.json|package-loc
                        r"[^/]*\.gradle\.kts|gradle-wrapper\.properties|rust-toolchain(\.toml)?|"
                        r"\.git(ignore|attributes|modules)|\.cargo/config(\.toml)?)$")
 # Agent and tooling control files that may not exist yet (so not in RULES).
-CONTROL_RE = re.compile(r"^(\.mcp\.json|\.githooks/)")
+CONTROL_RE = re.compile(r"^(\.mcp\.json|\.githooks/|\.pi/)|(^|/)(CLAUDE[^/]*\.md|AGENTS\.md)$")
 # Changing these needs a separate, explicit Owner instruction (CLAUDE.md).
 OWNER_GATED = {"CRYPTO", "PROTOCOL", "PSI", "CI_INTEGRITY", "SUPPLY_CHAIN", "AGENT_CONTROL"}
 SECURITY_CLASSES = OWNER_GATED | {"DURABLE_STATE", "IDENTITY", "NETWORK", "FFI", "ANDROID_LIFECYCLE"}
@@ -152,7 +157,7 @@ NETWORK_ERR_RE = re.compile(
 # ...unless it also shows that tests ran and failed: then it is a real failure.
 TEST_FAILED_RE = re.compile(
     r"^test result: FAILED|^---- \S+ stdout ----$|There were failing tests|tests completed, \d+ failed|"
-    r"^FAILED \(|^AssertionError", re.M)
+    r"^FAILED \(|^AssertionError|^\s*[1-9][0-9]* failing$", re.M)
 
 
 def crash_point(name):
@@ -174,12 +179,13 @@ class QcError(Exception):
 # tree. Diff options, external diff and textconv drivers, colour, path
 # prefixes, replace refs, fsmonitor and the index's assume-unchanged and
 # skip-worktree flags therefore change nothing. Git runs without the user's
-# global and system configuration and without GIT_* variables; only
-# .gitignore files inside the tree (themselves part of the diff) hide paths,
-# not .git/info/exclude or core.excludesFile.
+# global and system configuration, without GIT_* variables and without
+# hooks. No ignore rule hides a path: the files on disk are listed by walking
+# the tree (TRUSTED_BUILD_DIRS aside), not by asking git which are ignored.
 
 GIT_OPTS = ["--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
-            "-c", "core.quotePath=false", "-c", "core.excludesFile=" + os.devnull, "-c", "color.ui=never"]
+            "-c", "core.quotePath=false", "-c", "core.excludesFile=" + os.devnull, "-c", "color.ui=never",
+            "-c", "core.hooksPath=" + os.devnull]
 
 
 def git_env(extra=None):
@@ -332,50 +338,87 @@ def tree_entries(root, rev):
 # candidate hooks. Only while untracked; a tracked one is an ordinary path.
 LOCAL_ONLY = {".claude/settings.local.json"}
 
+# The trusted build-output policy. These exact directories (from the root, real
+# directories only, never a link) hold build output that the repository's own
+# tracked .gitignore files exclude; their untracked contents are not part of the
+# tree or its fingerprint. Nothing else is trusted: every other file on disk,
+# ignored or not, is listed, fingerprinted and classified, and a file tracked
+# inside one of these directories is still checked. `self-test` checks that each
+# one is ignored by a tracked .gitignore and that its parent directory exists.
+TRUSTED_BUILD_DIRS = (
+    "target",
+    "android/.gradle", "android/build", "android/app/build", "android/app/.cxx",
+    "android/app/.externalNativeBuild",
+    "arcium-psi/target", "arcium-psi/programs/arcium-psi/target", "arcium-psi/encrypted-ixs/target",
+    "arcium-psi/.anchor", "arcium-psi/build", "arcium-psi/encrypted-ixs/build", "arcium-psi/artifacts",
+    "arcium-psi/test-ledger", "arcium-psi/tests/node_modules", "arcium-psi/tests/dist",
+)
+# Above this many files outside the trusted directories, listing is refused rather than slow.
+MAX_LISTED = 100000
+
 
 def split0(text):
     return [x for x in text.split("\0") if x]
 
 
-def hidden_by_untrusted_rules(root):
-    """Untracked files that a .gitignore rule hides, unless that rule (its pattern line) is in the HEAD
-    version of the same tracked .gitignore: a rule written during the task (in a new, self-ignoring or
-    edited .gitignore) hides nothing, and the repository's own rules (target/) keep hiding what they hid."""
-    entries = split0(git(root, "ls-files", "-z", "--others", "--ignored", "--directory",
-                         "--exclude-per-directory=.gitignore"))
-    if not entries:
-        return set()
-    out = split0(git(root, "check-ignore", "-z", "-v", "--no-index", "--stdin",
-                     stdin="".join(e + "\0" for e in entries).encode()))
-    head, hidden, head_rules = tree_entries(root, "HEAD"), set(), {}
-    for i in range(0, len(out) - 3, 4):
-        source, pattern, path = out[i], out[i + 2], out[i + 3]
-        if source in head and head[source][0] != "160000":
-            if source not in head_rules:
-                head_rules[source] = {x.rstrip() for x in blob_text(root, head[source][1]).splitlines()}
-            if pattern.rstrip() in head_rules[source]:
-                continue  # e.g. target/: a rule the repository already had
-        if path.endswith("/"):
-            for d, dirs, files in os.walk(os.path.join(root, path)):
-                dirs[:] = [x for x in dirs if x != ".git"]
-                # A link to a directory is listed as the link itself (os.walk does not follow it).
-                hidden |= {os.path.relpath(os.path.join(d, f), root) for f in files
-                           + [x for x in dirs if os.path.islink(os.path.join(d, x))]}
-        else:
-            hidden.add(path)
-    return hidden
+def in_trusted_dir(rel):
+    return any(rel == d or rel.startswith(d + "/") for d in TRUSTED_BUILD_DIRS)
+
+
+def _walk_error(e):
+    raise QcError("BLOCKED", "cannot read %s (%s): its contents cannot be checked" % (e.filename, e.strerror))
+
+
+def disk_paths(root):
+    """Every file, link and special file on disk, except the root's own .git and the trusted build
+    directories. A .git anywhere else is a nested repository, whose contents cannot be checked: BLOCKED.
+    Links are listed as themselves (never followed here); an unreadable directory is BLOCKED."""
+    out = set()
+    for d, dirs, files in os.walk(root, onerror=_walk_error):
+        rel_d = os.path.relpath(d, root)
+        rel_d = "" if rel_d == "." else rel_d + "/"
+        if not rel_d:
+            dirs[:] = [x for x in dirs if x != ".git"]
+            files = [x for x in files if x != ".git"]
+        elif ".git" in dirs or ".git" in files:
+            raise QcError("BLOCKED", "nested git repository %s: its contents cannot be checked; move it out "
+                          "of the clone" % rel_d)
+        keep = []
+        for x in dirs:
+            if os.path.islink(os.path.join(d, x)):
+                out.add(rel_d + x)
+            elif (rel_d + x) not in TRUSTED_BUILD_DIRS:
+                keep.append(x)
+        dirs[:] = keep
+        out.update(rel_d + f for f in files)
+        if len(out) > MAX_LISTED:
+            raise QcError("BLOCKED", "more than %d files outside the trusted build directories: remove them "
+                          "or move them out of the clone" % MAX_LISTED)
+    return out
+
+
+def index_entries(root):
+    """{path: mode} of the index."""
+    out = {}
+    for rec in split0(git(root, "ls-files", "-z", "--cached", "--stage")):
+        meta, path = rec.split("\t", 1)
+        out[path] = meta.split()[0]
+    return out
 
 
 def listed_paths(root, rev):
-    """Paths in `rev`'s tree, in the index, untracked ones, and ones hidden by an untrusted ignore rule."""
-    paths = set(tree_entries(root, rev))
-    paths |= set(split0(git(root, "ls-files", "-z", "--cached")))
-    untracked = set(split0(git(root, "ls-files", "-z", "--others", "--exclude-per-directory=.gitignore")))
-    nested = sorted(x for x in untracked if x.endswith("/"))
-    if nested:
-        raise QcError("BLOCKED", "untracked nested git repositories %s: their contents cannot be checked; "
-                      "move them out of the clone" % nested[:5])
-    return paths | (untracked - LOCAL_ONLY) | hidden_by_untrusted_rules(root)
+    """Paths in `rev`'s tree, in the index, and every path on disk outside the trusted build directories.
+    A gitlink (a submodule or an added embedded repository) anywhere is BLOCKED: its contents are another
+    repository's and cannot be checked here."""
+    tree, index = tree_entries(root, rev), index_entries(root)
+    head = tree if rev == "HEAD" else tree_entries(root, "HEAD")
+    gitlinks = sorted({p for t in (tree, head) for p, (m, _o) in t.items() if m == "160000"}
+                      | {p for p, m in index.items() if m == "160000"})
+    if gitlinks:
+        raise QcError("BLOCKED", "gitlinks (submodules or embedded repositories) %s: their contents cannot be "
+                      "checked; remove them from the index and the tree" % gitlinks[:5])
+    tracked = set(tree) | set(index)
+    return tracked | (disk_paths(root) - (LOCAL_ONLY - tracked))
 
 
 def disk_entry(root, rel, fmt):
@@ -392,7 +435,7 @@ def disk_entry(root, rel, fmt):
             data = f.read()
         mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
     elif stat.S_ISDIR(st.st_mode):
-        return ("160000", "dir")  # a gitlink's checkout; its own commit is not followed
+        return ("040000", "dir")  # a listed path that is now a directory: its files are listed themselves
     else:
         return ("0", "special")
     h = hashlib.sha256() if fmt == "sha256" else hashlib.sha1()
@@ -400,14 +443,25 @@ def disk_entry(root, rel, fmt):
     return (mode, h.hexdigest())
 
 
-def outside_target(root, real_root, rel):
-    """The target of the link `rel` if it points out of the clone; BLOCKED if that target is a directory."""
+def unlisted_target(root, real_root, rel, listed):
+    """The target of the link `rel` if its contents are not fingerprinted at a path of their own: a file
+    out of the clone, in its .git or in a trusted build directory. BLOCKED if such a target is a
+    directory. None for a link to a listed file, a listed directory's contents, or nothing."""
     target = os.path.realpath(os.path.join(root, rel))
+    where = "outside the clone"
     if (target + os.sep).startswith(real_root + os.sep):
+        inside = os.path.relpath(target, real_root)
+        if inside == ".git" or inside.startswith(".git/"):
+            where = "in the clone's .git"
+        elif in_trusted_dir(inside):
+            where = "in a trusted build directory"
+        elif os.path.isdir(target) or not os.path.exists(target) or inside in listed:
+            return None  # a listed file, or a directory whose files are walked and listed at their own paths
+    elif not os.path.exists(target):
         return None
     if os.path.isdir(target):
-        raise QcError("BLOCKED", "%s links to a directory outside the clone (%s): its contents cannot be "
-                      "checked; copy them in or remove the link" % (rel, target))
+        raise QcError("BLOCKED", "%s links to a directory %s (%s): its contents cannot be checked; copy them "
+                      "in or remove the link" % (rel, where, target))
     return target
 
 
@@ -417,12 +471,13 @@ def fingerprint(root):
     head = git(root, "rev-parse", "HEAD").strip()
     h = hashlib.sha256(head.encode())
     real_root = os.path.realpath(root)
-    for rel in sorted(listed_paths(root, "HEAD") | LOCAL_ONLY):
+    listed = listed_paths(root, "HEAD") | LOCAL_ONLY
+    for rel in sorted(listed):
         e = disk_entry(root, rel, fmt)
         h.update(rel.encode() + b"\0" + ("%s %s" % e if e else "-").encode() + b"\n")
         if e and e[0] == "120000":
-            # A link out of the clone: what it points at is part of what ran.
-            target = outside_target(root, real_root, rel)
+            # A link to contents not listed elsewhere: what it points at is part of what ran.
+            target = unlisted_target(root, real_root, rel, listed)
             if target:
                 h.update(b"->" + (sha256_file(target).encode() if os.path.isfile(target) else b"-"))
     return h.hexdigest()
@@ -440,12 +495,11 @@ def changed_paths(root, base):
     base_tree = tree_entries(root, base)
     changed = []
     real_root = os.path.realpath(root)
-    for rel in listed_paths(root, base):
-        if rel in base_tree and base_tree[rel][0] == "160000":
-            continue  # a submodule pointer: not followed (no submodules in this repository)
+    listed = listed_paths(root, base)
+    for rel in listed:
         e = disk_entry(root, rel, fmt)
         if e and e[0] == "120000":
-            outside_target(root, real_root, rel)
+            unlisted_target(root, real_root, rel, listed)
         if e != base_tree.get(rel):
             changed.append(rel)
     return sorted(changed)
@@ -512,7 +566,7 @@ def write_tree(root, paths):
     entries, batch, single = [], [], []
     for rel in sorted(paths):
         e = disk_entry(root, rel, fmt)
-        if e is None or e[0] in ("160000", "0"):
+        if e is None or e[0] in ("040000", "0"):
             continue
         entries.append((rel, e))
         (single if e[0] == "120000" or "\n" in rel else batch).append(rel)
@@ -540,6 +594,13 @@ def write_tree(root, paths):
             os.remove(index)
 
 
+# Rust source taken from a path literal (#[path], include!, include_str!, include_bytes!): a build-output
+# directory is never a source directory, and its contents are not fingerprinted.
+RUST_INCLUDE_RE = re.compile(r'(?:#\s*!?\[\s*path\s*=|\binclude(?:_str|_bytes)?!\s*\()\s*r?#*"([^"]*)"')
+BUILD_DIR_COMPONENT_RE = re.compile(r"(^|/)(%s)(/|$)" % "|".join(
+    sorted({re.escape(d.rsplit("/", 1)[-1]) for d in TRUSTED_BUILD_DIRS})))
+
+
 def content_flags(root, base, paths=None):
     """Added lines that CLAUDE.md forbids outright."""
     flags = []
@@ -551,6 +612,9 @@ def content_flags(root, base, paths=None):
         if (cur.startswith("crates/core-crypto/src/ratchet") or cur.startswith("crates/core-protocol/")) \
                 and re.search(r"RescueCipher|rescue::", add):
             flags.append("CRYPTO_LAYERING RescueCipher on the message path %s" % cur)
+        if cur.endswith(".rs") and any(BUILD_DIR_COMPONENT_RE.search(lit) for lit in RUST_INCLUDE_RE.findall(add)):
+            flags.append("BUILD_OUTPUT_INCLUDE source compiled from a build-output directory %s: %s"
+                         % (cur, add.strip()[:120]))
         if re.search(r"#\[ignore\b|@Ignore\b|@Disabled\b|\b(it|describe|test)\.skip\(|\bx(it|describe)\(", add):
             flags.append("TEST_MASKING_CANDIDATE %s: %s" % (cur, add.strip()[:120]))
     return flags
@@ -1003,12 +1067,17 @@ REVIEW_BLOCKS = {
 }
 
 
-def parse_review(skill, text):
+def review_block(skill, text):
+    """The text between the skill's start and end lines: only it counts, never text around it."""
     start, end = REVIEW_BLOCKS[skill]
     m = re.search(re.escape(start) + r"\n(.*?)\n" + re.escape(end), text, re.S)
     if not m:
         raise QcError("NOT_VERIFIED", "no %s ... %s block in the review" % (start, end))
-    block = m.group(1)
+    return m.group(1)
+
+
+def parse_review(skill, text):
+    block = review_block(skill, text)
     complete = re.search(r"^complete:\s*(yes|no)\s*$", block, re.M)
     blocking = []
     if skill == "engineering-code-review":
@@ -1041,7 +1110,7 @@ def _review_record(root, sid, skill, text):
     if raw and (raw.get("inflight") or raw.get("review_inflight")):
         save_state(root, sid, st)
     parsed = parse_review(skill, text)
-    block = text[text.index(REVIEW_BLOCKS[skill][0]):]
+    block = review_block(skill, text)
     target = re.search(r"^target:\s*(\S+)", block, re.M)
     if not target or not target.group(1).startswith(spec["base"]):
         raise QcError("NOT_VERIFIED", "review target must start with the spec base %s" % spec["base"])
@@ -1173,18 +1242,26 @@ def active_path(root):
     return os.path.join(state_dir(root), "active.json")
 
 
-def active_loop(root):
-    """The active spec id, or None. Creates nothing."""
+def activation(root):
+    """(spec id or None, whether an activation record exists that is unreadable or fails its integrity
+    check). An expired activation is simply inactive. Creates nothing."""
     p = os.path.join(qc_dir(root), "active.json")
     if not os.path.exists(p):
-        return None
+        return None, False
     try:
         a = read_json(p)
-    except (OSError, ValueError):
-        return None
-    if not verify_sig(root, a) or time.time() > a.get("expires", 0):
-        return None
-    return a.get("spec_id")
+        if not isinstance(a, dict) or not verify_sig(root, a):
+            return None, True
+    except (OSError, ValueError, TypeError, KeyError):
+        return None, True
+    if time.time() > a.get("expires", 0):
+        return None, False
+    return a.get("spec_id"), False
+
+
+def active_loop(root):
+    """The active spec id, or None. Creates nothing."""
+    return activation(root)[0]
 
 
 def cmd_status(root, sid):
@@ -1281,8 +1358,13 @@ def main(argv):
             return 0
         if cmd == "self-test":
             missing = [p for p, _ in RULES if not os.path.exists(os.path.join(root, p.rstrip("/")))]
-            print(json.dumps({"stale_rules": missing}))
-            return 1 if missing else 0
+            # Each trusted build directory is one the repository's own tracked .gitignore files exclude.
+            untrusted = [d for d in TRUSTED_BUILD_DIRS
+                         if not os.path.isdir(os.path.join(root, os.path.dirname(d) or "."))
+                         or subprocess.run(["git", *GIT_OPTS, "check-ignore", "-q", "--no-index", d + "/"],
+                                           cwd=root, env=git_env(), capture_output=True).returncode != 0]
+            print(json.dumps({"stale_rules": missing, "untrusted_build_dirs": untrusted}))
+            return 1 if missing or untrusted else 0
         if cmd == "activate":
             sid = args[0]
             load_spec(root, sid)

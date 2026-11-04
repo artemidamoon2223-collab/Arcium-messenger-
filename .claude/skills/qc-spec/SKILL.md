@@ -55,10 +55,11 @@ never committed.
      `npx mocha` checks of `CLAUDE.md` («Команды проверки»).
 5. `python3 .claude/qc/qc.py spec-check <id>` until it reports valid.
 6. `python3 .claude/qc/qc.py lock <id>` — refuses unless HEAD equals `base`
-   and the bytes on disk equal HEAD (ignored files aside), so the criteria
-   are locked before the implementation is visible in the tree. That shows
-   when they were locked, not that nothing was prepared elsewhere (a stash,
-   an ignored file). After lock, editing the spec or the QC tool turns every
+   and the bytes on disk equal HEAD (only the trusted build directories,
+   such as `target/`, aside; ignored files count), so the criteria are
+   locked before the implementation is visible in the tree. That shows when
+   they were locked, not that nothing was prepared elsewhere (a stash, a
+   file outside the clone, build output). After lock, editing the spec or the QC tool turns every
    verdict into `BLOCKED`. A different task needs a new id; a spec id whose
    state was deleted cannot be locked again.
 

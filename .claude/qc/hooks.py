@@ -10,9 +10,7 @@ activated in this clone (qc.py activate <id>, which expires after 8 hours).
                    else, or that does not report an ESCALATE_TO_OWNER (no
                    QC_STATE line at all counts as hiding it). A verdict that
                    cannot be computed is BLOCKED, so an error inside qc.py's
-                   verdict never lets a VERIFIED claim through (an error
-                   before it, such as an unreadable active.json, fails open
-                   like every other hook error). Never blocks when
+                   verdict never lets a VERIFIED claim through. Never blocks when
                    stop_hook_active is true, so it adds at most one turn; a
                    claim still false then is shown to the person as a warning.
   task-completed   TaskCompleted: a task whose subject carries "[qc]" cannot be
@@ -25,20 +23,48 @@ activated in this clone (qc.py activate <id>, which expires after 8 hours).
                    matching on commands is a guard against mistakes, not a
                    sandbox.
 
-They only ever deny or stay silent: no output here grants a permission. Any
-internal error exits 0 silently (fail-open) so a broken guard cannot trap a
-session; Claude Code's own permission mode still applies.
+They only ever deny or stay silent: no output here grants a permission.
+The loop is looked up in the clone of the payload's cwd, of
+$CLAUDE_PROJECT_DIR and of this file. With no loop active anywhere, nothing
+is checked. While a loop is active, a guard that cannot decide fails
+closed: an internal error or the internal deadline (below the hook timeout)
+denies the tool call, blocks a stop once, or refuses the task; an
+activation record that is unreadable or fails its integrity check counts as
+active. The Owner releases it by deleting active.json. qc.py is loaded from
+its source text, never from a cached .pyc; run this file with `python3 -I -B`
+so nothing next to it shadows the standard library. Claude Code's own
+permission mode still applies.
 """
 
+import io
 import json
 import os
 import re
+import shlex
+import signal
 import sys
+import types
 
 # No __pycache__ in the working tree: it would change the tree fingerprint.
 sys.dont_write_bytecode = True
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import qc  # noqa: E402
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_qc():
+    """qc.py compiled from its source: a planted __pycache__/qc.*.pyc is never imported."""
+    path = os.path.join(HERE, "qc.py")
+    mod = types.ModuleType("qc")
+    mod.__file__ = path
+    with open(path, "rb") as f:
+        code = compile(f.read(), path, "exec", dont_inherit=True)
+    sys.modules["qc"] = mod
+    exec(code, mod.__dict__)  # noqa: S102 - the QC tool's own source, next to this file
+    return mod
+
+
+qc = load_qc()
+# Seconds a hook may spend before it fails closed; each stays below its timeout in hooks.candidate.json.
+DEADLINE = {"stop": 40, "task-completed": 40, "pre-tool": 10}
 
 CLAIM_RE = re.compile(r"QC_STATE:\s*(VERIFIED|FAILED|NOT_VERIFIED|BLOCKED|ESCALATE_TO_OWNER)\b")
 
@@ -54,13 +80,21 @@ OTHER_OWNER_ONLY = re.compile(
 MCP_WRITE = re.compile(
     r"^mcp__github__(merge_|create_|update_|delete_|push_|fork_|enable_|disable_|add_|resolve_|unresolve_|"
     r"request_|actions_run_trigger|issue_write|sub_issue_write|pull_request_review_write)")
-PROTECTED = re.compile(r"(^|/)(CLAUDE\.md|\.mcp\.json|\.githooks/|\.git/|"
+PROTECTED = re.compile(r"(^|/)(CLAUDE[^/]*\.md|AGENTS\.md|\.mcp\.json|\.githooks/|\.git/|\.pi/|"
                        r"\.claude/(settings[^/]*\.json|qc/|hooks/|agents/|skills/|commands/))")
 BASH_WRITES_PROTECTED = re.compile(
-    r"((?<![0-9&])>(?!&)|\btee\b|\bsed\s+-i|\bmv\b|\bcp\b|\brm\b|\bchmod\b|\btruncate\b|"
-    r"\bpython3?\s+-c\b|\bperl\s+-\w*[pie]|\bgit\s+(checkout|restore|reset|clean|stash)\b).*"
-    r"(CLAUDE\.md|\.mcp\.json|\.githooks/|\.git/(info|hooks|config)|"
-    r"\.claude/(settings|qc|hooks|agents|skills|commands)|arcium-qc)")
+    r"((?<![0-9&])>(?!&)|\btee\b|\bsed\s+-i|\bmv\b|\bcp\b|\brm\b|\bchmod\b|\btruncate\b|\binstall\b|"
+    r"\bln\b|\bdd\b|\brsync\b|\bunlink\b|"
+    r"\bpython3?\s+-c\b|\bperl\s+-\w*[pie]|\bgit\b.*\b(checkout|restore|reset|clean|stash|apply|switch)\b).*"
+    r"(%(targets)s)|\bfind\b.*(%(targets)s).*\s-(delete|exec|execdir|ok|okdir|fprint)\b" % {"targets":
+    r"CLAUDE[^/\s]*\.md|AGENTS\.md|\.mcp\.json|\.githooks/|\.git/(info|hooks|config)|\.pi/|"
+    r"\.claude/(settings|qc|hooks|agents|skills|commands)|arcium-qc"})
+# git subcommands that are owner-only, and the global options that take a separate argument.
+GIT_OWNER_SUBCOMMANDS = {"commit", "push", "merge", "rebase", "tag", "cherry-pick", "am", "revert", "update-ref",
+                         "filter-branch", "filter-repo", "replace"}
+GIT_OPTS_WITH_ARG = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix",
+                     "--exec-path", "--attr-source"}
+WRAPPERS = {"command", "exec", "nice", "nohup", "time", "env", "sudo", "doas", "builtin"}
 # `qc.py review-record <id> <skill> <<'EOF' ... EOF` and nothing else: with a
 # quoted delimiter the heredoc is passed to qc.py's stdin unexpanded, so its
 # text (which names changed paths such as CLAUDE.md, and arrows such as "->")
@@ -72,17 +106,140 @@ REVIEW_RECORD_RE = re.compile(
     r"(?:(?!\2[ \t]*\n).*\n)*\2[ \t]*\n?\s*\Z")
 
 
+def git_owner_only_tokens(cmd):
+    """Whether any simple command in `cmd`, split as the shell would, is an owner-only git subcommand,
+    whatever global options precede it. Commands that cannot be split are left to the regexes."""
+    try:
+        lex = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>")
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        return False
+    segments, cur = [], []
+    for t in tokens:
+        if t and all(c in ";&|()<>" for c in t):
+            segments.append(cur)
+            cur = []
+        else:
+            cur.append(t)
+    segments.append(cur)
+    for seg in segments:
+        i = 0
+        while i < len(seg) and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", seg[i]) or seg[i] in WRAPPERS
+                                or (i and seg[i - 1] in WRAPPERS and seg[i].startswith("-"))):
+            i += 1
+        if i >= len(seg) or os.path.basename(seg[i].strip("$`")) != "git":
+            continue
+        i += 1
+        while i < len(seg) and seg[i].startswith("-"):
+            opt = seg[i]
+            if opt in GIT_OPTS_WITH_ARG:
+                if opt == "-c" and i + 1 < len(seg) and seg[i + 1].lower().startswith("alias."):
+                    return True  # an alias defined for this command could name any subcommand
+                i += 2
+            else:
+                if opt.startswith("-c") and opt[2:].lower().startswith("alias."):
+                    return True
+                i += 1
+        if i < len(seg):
+            sub = seg[i]
+            if sub in GIT_OWNER_SUBCOMMANDS and not (sub == "tag" and len(seg) > i + 1
+                                                     and seg[i + 1] in ("-l", "--list")):
+                return True
+    return False
+
+
+class Deadline(Exception):
+    pass
+
+
+def _deadline(_signum, _frame):
+    raise Deadline("the QC guard ran out of time")
+
+
 def deny(reason):
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                              "permissionDecisionReason": reason}}))
 
 
-def main(event, data):
-    root = qc.repo_root(data.get("cwd") or None)
-    sid = qc.active_loop(root)
-    if sid is None:
-        return 0  # no active QC loop in this clone: the guards do nothing
+def roots(data):
+    """The distinct clones this hook call may concern: the payload's cwd, $CLAUDE_PROJECT_DIR, this file's."""
+    out = []
+    for start in (data.get("cwd"), os.environ.get("CLAUDE_PROJECT_DIR"), HERE):
+        if not start:
+            continue
+        try:
+            r = os.path.realpath(qc.repo_root(start))
+        except Exception:  # noqa: BLE001 - not a clone: nothing to guard there
+            continue
+        if r not in out:
+            out.append(r)
+    return out
 
+
+def fail_closed(event, data, why):
+    """While a loop is active and the guard cannot decide: never let the step through silently."""
+    msg = "QC guard could not check this step (%s). The Owner releases the loop by deleting " \
+          "<git-dir>/arcium-qc/active.json." % why
+    if event == "pre-tool":
+        deny(msg)
+        return 0
+    if event == "stop":
+        if data.get("stop_hook_active"):
+            print(json.dumps({"systemMessage": "QC WARNING: " + msg}))
+        else:
+            print(json.dumps({"decision": "block", "reason": msg + " Report the computed state with "
+                              "qc.py verdict, never VERIFIED from memory."}))
+        return 0
+    if event == "task-completed":
+        sys.stderr.write(msg + "\n")
+        return 2
+    return 0
+
+
+def main(event, data):
+    active = []
+    for root in roots(data):
+        try:
+            sid, invalid = qc.activation(root)
+        except Exception:  # noqa: BLE001 - an activation that cannot be read counts as active
+            sid, invalid = None, True
+        if sid is not None or invalid:
+            active.append((root, sid))
+    if not active:
+        return 0  # no active QC loop in any clone this call concerns: the guards do nothing
+    if hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, _deadline)
+        signal.alarm(DEADLINE.get(event, 10))
+    try:
+        for root, sid in active:
+            try:
+                if sid is None:
+                    raise qc.QcError("BLOCKED", "the activation record is unreadable or fails its integrity check")
+                code, text = io_capture(check, event, data, root, sid)
+                if code or text:
+                    sys.stdout.write(text)
+                    return code
+            except Exception as e:  # noqa: BLE001 - an active loop never fails open
+                return fail_closed(event, data, "%s: %s" % (type(e).__name__, e))
+        return 0
+    finally:
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
+
+
+def io_capture(fn, *args):
+    """(exit code, stdout text) of fn: output is written only once the check finished without error."""
+    buf, old = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        code = fn(*args)
+    finally:
+        sys.stdout = old
+    return code, buf.getvalue()
+
+
+def check(event, data, root, sid):
     if event == "stop":
         msg = data.get("last_assistant_message") or ""
         claims = CLAIM_RE.findall(msg)
@@ -124,7 +281,8 @@ def main(event, data):
             cmd = str(ti.get("command", ""))
             if REVIEW_RECORD_RE.match(cmd):
                 return 0
-            if GIT_OWNER_ONLY.search(cmd) or OTHER_OWNER_ONLY.search(cmd):
+            cmd = re.sub(r"\\\r?\n", "", cmd)  # a line continuation joins its lines, as in the shell
+            if GIT_OWNER_ONLY.search(cmd) or OTHER_OWNER_ONLY.search(cmd) or git_owner_only_tokens(cmd):
                 deny("QC loop %s is active: this is an owner-only operation (commit/push/merge/PR/dispatch/"
                      "deploy). Report to the Owner instead." % sid)
             elif BASH_WRITES_PROTECTED.search(cmd):
@@ -147,5 +305,5 @@ if __name__ == "__main__":
         sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "", payload))
     except SystemExit:
         raise
-    except Exception:  # noqa: BLE001 - fail open, never trap a session
+    except Exception:  # noqa: BLE001 - no loop could be found active (main fails closed once one is)
         sys.exit(0)

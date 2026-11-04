@@ -105,15 +105,17 @@ pub enum CoreError {
     /// No message with this id is recorded for this session.
     #[error("unknown message for session {session_id}")]
     UnknownMessage { session_id: u64 },
-    /// A client message id must be 1 to 64 bytes.
-    #[error("client message id must be 1 to 64 bytes")]
+    /// A client message id must be 1 to 64 bytes, and not one the network
+    /// layer reserves for its own messages (see `send_message`).
+    #[error("client message id must be 1 to 64 bytes and not reserved")]
     InvalidClientMessageId,
     /// The session has accepted a message from the peer, so the peer holds
     /// it too; it cannot be removed locally. Nothing changed.
     #[error("session {session_id} is established and cannot be removed")]
     SessionEstablished { session_id: u64 },
     /// The session has outgoing messages that are neither acknowledged nor
-    /// abandoned (`abandon_outgoing`). Nothing changed.
+    /// abandoned. Only the network layer does either, on the peer's receipt
+    /// or in `resolve_session_conflict`. Nothing changed.
     #[error("session {session_id} has {count} pending outgoing messages")]
     PendingOutgoing { session_id: u64, count: u64 },
     /// An acknowledgement, abandonment or removal may or may not have taken
@@ -2202,11 +2204,13 @@ mod tests {
     }
 
     mod responder;
+    mod ack_probe;
     mod chat;
     mod durable;
     mod net_harness;
     mod network;
     mod network_crash;
+    mod delivery_consistency;
     mod net_peer;
     mod legacy_upgrade;
     mod mailbox_scan;

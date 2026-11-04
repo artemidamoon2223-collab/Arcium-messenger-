@@ -166,27 +166,49 @@ fn repeating_a_send_never_records_or_encrypts_it_twice() {
         "one ciphertext for the logical message"
     );
 
-    // State left by a crash between the outbox commit and the history update:
-    // the outbox holds the text, the history only the queued record.
+    // A text committed by `send_text` is not one the history may adopt: the
+    // same app id is refused rather than linked to that message.
     alice
         .net
         .send_text(bob.pk.clone(), b"y".to_vec(), b"committed".to_vec())
         .unwrap();
-    say(&alice, &bob, "y", "committed");
-    assert_eq!(
-        alice.undelivered(&bob),
-        2,
-        "the committed message was reused"
-    );
+    assert!(invalid(alice.net.chat_send(
+        bob.pk.clone(),
+        b"y".to_vec(),
+        "committed".into()
+    )));
+
+    // State left by a crash between the outbox commit and the history update
+    // (a real process death at that point): the outbox holds the text, the
+    // history only the queued record. Sending again reuses the message.
+    #[cfg(unix)]
+    let alice = {
+        super::network_crash::run_child(&alice, &addr, "chat_send", Some("chat_after_outbox"), &bob.pk);
+        let alice = alice.restart(&addr);
+        // The child died between the two writes: the entry is still queued
+        // (`conversation` reads it without bringing the history up to date).
+        let last = alice.net.conversation(bob.pk.clone()).unwrap().last.unwrap();
+        assert_eq!((last.app_id.as_slice(), last.state), (&b"crash"[..], S::Queued));
+        assert_eq!(alice.undelivered(&bob), 3, "once, y and the crashed text");
+        alice
+            .net
+            .chat_send(bob.pk.clone(), b"crash".to_vec(), "ignored on a repeat".into())
+            .unwrap();
+        assert_eq!(alice.undelivered(&bob), 3, "the committed message was reused");
+        alice
+    };
 
     rounds(&[&alice, &bob, &alice], 1);
     let texts: Vec<_> = chat(&bob, &alice).into_iter().map(|e| e.2).collect();
     assert_eq!(texts.iter().filter(|t| *t == "once").count(), 1);
+    #[cfg(unix)]
     assert_eq!(
-        texts.iter().filter(|t| t.starts_with("committed")).count(),
+        texts.iter().filter(|t| t.starts_with("sent from the chat")).count(),
         1
     );
     assert_eq!(chat(&alice, &bob)[before].1, S::Delivered);
+    #[cfg(unix)]
+    assert_eq!(chat(&alice, &bob)[before + 1].1, S::Delivered);
     relay.stop();
 }
 

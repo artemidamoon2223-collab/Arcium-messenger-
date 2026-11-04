@@ -341,12 +341,10 @@ fn forged_and_cross_session_receipts_confirm_nothing() {
     let carol_handle = local_session_handle(alice.pk.clone()).unwrap();
     let receipt = carol
         .core
-        .send_message(
+        .send_committed(
             carol_handle,
-            b"rX".to_vec(),
-            Payload::Receipt(vec![id.clone().try_into().unwrap()])
-                .encode()
-                .to_vec(),
+            b"rX",
+            &Payload::Receipt(vec![id.clone().try_into().unwrap()]).encode(),
         )
         .unwrap();
     let SendResult::Sent { message } = receipt else {

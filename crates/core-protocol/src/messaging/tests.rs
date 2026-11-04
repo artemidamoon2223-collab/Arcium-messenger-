@@ -499,6 +499,9 @@ fn concurrent_instances_never_release_two_messages_for_one_position() {
                         Err(MessagingError::Conflict(_)) => conflicts += 1,
                         // Lock contention beyond the busy timeout: nothing written.
                         Err(MessagingError::NotCommitted(_)) => conflicts += 1,
+                        // The busy store refused the read transaction of the
+                        // repeat check: nothing was staged or written.
+                        Err(MessagingError::Store(StorageError::Db(_))) => conflicts += 1,
                         Err(e) => panic!("unexpected {e:?}"),
                     }
                 }
@@ -699,6 +702,7 @@ fn a_committed_incoming_message_does_not_print_its_plaintext() {
 }
 
 mod acceptance;
+mod concurrent;
 mod crash;
 mod first_contact;
 mod legacy;

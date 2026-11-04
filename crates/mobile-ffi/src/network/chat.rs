@@ -24,7 +24,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use core_storage::StorageError;
 use zeroize::Zeroizing;
 
+use super::wire::client_id;
 use super::{crash_point, handle_of, peer_key, NetworkMessenger, SyncReport, TextState};
+use crate::messaging_api::SendResult;
 use crate::contacts::contact_card_fingerprint;
 use crate::{CoreError, PlaintextText};
 
@@ -168,8 +170,9 @@ pub struct Conversation {
 // Keys: `chat-meta:v1/<peer hex>`, `chat-e.v1.<peer hex>:<seq, 20 digits>`
 // (entries; one store namespace per contact, so they can be listed),
 // `chat-o:v1/<peer hex>/<app id hex>` and `chat-i:v1/<peer hex>/<message id
-// hex>` (index → seq). Values are encrypted by the store; integers are
-// big-endian.
+// hex>` (index → seq), and `chat-r:v1/<peer hex>/<app id hex>` (the app id is
+// taken by `send_text`; empty value). Values are encrypted by the store;
+// integers are big-endian.
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -190,6 +193,15 @@ fn entry_key(peer: &[u8; 32], seq: u64) -> String {
 
 fn out_key(peer: &[u8; 32], app_id: &[u8]) -> String {
     format!("chat-o:v1/{}/{}", hex(peer), hex(app_id))
+}
+
+/// `send_text` and the chat history share one client id per app id
+/// (`client_id::text`). Whichever takes an app id first keeps it: `send_text`
+/// records this claim, `chat_send` an entry, each in an IMMEDIATE store
+/// transaction that first checks for the other's record, so the two never
+/// commit under each other's id, also from separate connections.
+fn raw_claim_key(peer: &[u8; 32], app_id: &[u8]) -> String {
+    format!("chat-r:v1/{}/{}", hex(peer), hex(app_id))
 }
 
 fn in_key(peer: &[u8; 32], message_id: &[u8]) -> String {
@@ -442,6 +454,7 @@ impl NetworkMessenger {
     /// entry as it stands and never records or encrypts it a second time, so
     /// after an error the caller repeats the call with the same id.
     /// `sync_conversations` starts a session if none exists, and transmits.
+    /// An id `send_text` used for this peer is refused (see `send_text`).
     pub fn chat_send(
         &self,
         peer: Vec<u8>,
@@ -457,11 +470,23 @@ impl NetworkMessenger {
         if text.is_empty() || text.len() > MAX_TEXT_LEN {
             return Err(invalid("text must be 1 to 16384 bytes"));
         }
+        // A text committed under this app id without a chat entry came from
+        // `send_text` (one from before the claim record existed has no claim);
+        // any later one is preceded by its claim, checked below.
+        let sent_raw = self
+            .core
+            .prior_send(&key, &client_id::text(&app_id))?
+            .is_some();
+        #[cfg(test)]
+        test_hooks::chat_send_before_record();
         let seq = {
             let mut store = self.core.store.lock().map_err(|_| poisoned())?;
             let tx = store.transaction()?;
             match get_opt(tx.get(&out_key(&key, &app_id)))? {
                 Some(seq) => decode_seq(&seq)?,
+                None if sent_raw || get_opt(tx.get(&raw_claim_key(&key, &app_id)))?.is_some() => {
+                    return Err(invalid("app id already used by send_text"));
+                }
                 None => {
                     let mut meta = match get_opt(tx.get(&meta_key(&key)))? {
                         Some(m) => Meta::decode(&m)?,
@@ -504,8 +529,10 @@ impl NetworkMessenger {
     /// `NotDelivered` (the peer dropped that session's messages and never
     /// accepts it), abandons them, removes that session, and waits for the
     /// peer's, which the peer keeps retransmitting. Texts not yet committed
-    /// stay queued and go out in the peer's session. Every step repeats
-    /// safely after a crash; calling it again completes it.
+    /// when the session is removed stay queued and go out in the peer's
+    /// session; a text the history commits to our session before that (also
+    /// one sent while this runs) is abandoned with it and ends `NotDelivered`.
+    /// Every step repeats safely after a crash; calling it again completes it.
     pub fn resolve_session_conflict(&self, peer: Vec<u8>) -> Result<(), CoreError> {
         let key = peer_key(&peer)?;
         self.require_contact(&key)?;
@@ -522,8 +549,9 @@ impl NetworkMessenger {
                 // The peer accepted this session after all: nothing to do.
                 return self.update_meta(&key, |m| m.flags &= !FLAG_CONFLICT);
             }
-            // Before anything leaves the outbox, so the history never reads a
-            // missing outbox record as a receipt.
+            // Marked before anything leaves the outbox. A text committed
+            // after this pass is abandoned below unmarked; `refresh` then
+            // reads the abandonment from its send record, never a receipt.
             self.update_meta(&key, |m| m.flags |= FLAG_ACCEPT_ONLY)?;
             for e in self.entries(&key)? {
                 if e.outgoing
@@ -535,9 +563,13 @@ impl NetworkMessenger {
                     self.advance(&key, e.seq, ChatEntryState::NotDelivered, None)?;
                 }
             }
+            #[cfg(test)]
+            test_hooks::between_resolve_passes();
+            crash_point("resolve_after_mark");
             for m in self.core.pending_outgoing(handle)? {
                 self.core.abandon_outgoing(handle, m.message_id)?;
             }
+            crash_point("resolve_after_abandon");
             self.core.remove_session(handle)?;
         }
         self.update_meta(&key, |m| {
@@ -788,6 +820,21 @@ impl NetworkMessenger {
         Ok(())
     }
 
+    /// Takes `app_id` for `send_text` (see [`raw_claim_key`]); refused if a
+    /// chat entry has it. Repeating it is harmless.
+    pub(super) fn claim_for_send_text(&self, peer: &[u8; 32], app_id: &[u8]) -> Result<(), CoreError> {
+        let mut store = self.core.store.lock().map_err(|_| poisoned())?;
+        let tx = store.transaction()?;
+        if get_opt(tx.get(&out_key(peer, app_id)))?.is_some() {
+            return Err(invalid("app id already used by the chat history"));
+        }
+        if get_opt(tx.get(&raw_claim_key(peer, app_id)))?.is_none() {
+            tx.put(&raw_claim_key(peer, app_id), &[])?;
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
     /// Brings the history of `peer` up to date with the local stores. No
     /// network I/O.
     fn refresh(&self, peer: &[u8; 32]) -> Result<Refresh, CoreError> {
@@ -837,12 +884,33 @@ impl NetworkMessenger {
                     result.committed += 1;
                 }
                 ChatEntryState::Queued => result.waiting += 1,
-                // A committed text leaves the outbox only on the peer's
-                // receipt (or when abandoned, which marks it NotDelivered
-                // first), so while the session exists, absence is a receipt.
-                ChatEntryState::Pending | ChatEntryState::Transmitted if has_session => {
+                // Out of the outbox: the send record says why. Acknowledged
+                // (the peer's receipt) is Delivered, abandoned NotDelivered;
+                // anything else, including a record for another message,
+                // changes nothing. Absence alone is never read as a receipt:
+                // a text committed while `resolve_session_conflict` runs is
+                // abandoned after that call's NotDelivered pass. The record
+                // is the peer's, so this holds with no session too.
+                ChatEntryState::Pending | ChatEntryState::Transmitted => {
                     if !pending.contains(&e.message_id) {
-                        self.advance(peer, e.seq, ChatEntryState::Delivered, None)?;
+                        // The id comparison is defensive: an entry is linked
+                        // to the message its own client id committed, so no
+                        // test reaches a mismatch (a history adopted from a
+                        // `send_text` before claims existed matches, too).
+                        let state = match self.core.prior_send(peer, &client_id::text(&e.app_id))? {
+                            Some(SendResult::AlreadyAcknowledged { message_id })
+                                if message_id == e.message_id =>
+                            {
+                                Some(ChatEntryState::Delivered)
+                            }
+                            Some(SendResult::Abandoned { message_id }) if message_id == e.message_id => {
+                                Some(ChatEntryState::NotDelivered)
+                            }
+                            _ => None,
+                        };
+                        if let Some(state) = state {
+                            self.advance(peer, e.seq, state, None)?;
+                        }
                     } else if e.state == ChatEntryState::Pending && self.was_sent(&e.message_id) {
                         self.advance(peer, e.seq, ChatEntryState::Transmitted, None)?;
                     }
@@ -873,5 +941,41 @@ impl NetworkMessenger {
             });
         }
         Ok(ChatSessionState::AwaitingPeer)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static BETWEEN: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+        static BEFORE_RECORD: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    /// Runs `f` once, on this thread, in the next `chat_send` on this thread
+    /// after its check for a text `send_text` committed and before the
+    /// transaction that records the entry.
+    pub(crate) fn set_chat_send_before_record(f: impl FnOnce() + 'static) {
+        BEFORE_RECORD.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(super) fn chat_send_before_record() {
+        if let Some(f) = BEFORE_RECORD.with(|h| h.borrow_mut().take()) {
+            f();
+        }
+    }
+
+    /// Runs `f` once, on this thread, between the NotDelivered pass and the
+    /// abandon pass of the next `resolve_session_conflict` on this thread:
+    /// a deterministic stand-in for another thread's call landing there.
+    pub(crate) fn set_between_resolve_passes(f: impl FnOnce() + 'static) {
+        BETWEEN.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(super) fn between_resolve_passes() {
+        if let Some(f) = BETWEEN.with(|h| h.borrow_mut().take()) {
+            f();
+        }
     }
 }

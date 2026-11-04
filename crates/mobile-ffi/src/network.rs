@@ -199,17 +199,18 @@ impl NetworkMessenger {
             return Err(CoreError::PeerIdentityMismatch);
         }
         self.core.establish_session_initiator(handle, bundle)?;
-        self.core.send_message(
-            handle,
-            client_id::OPEN.to_vec(),
-            Payload::Open.encode().to_vec(),
-        )?;
+        self.core.send_committed(handle, client_id::OPEN, &Payload::Open.encode())?;
         Ok(())
     }
 
     /// Commits the text `text` for `peer` under the application's own id for
     /// it (1 to 63 bytes). Repeating a call with the same id sends nothing new
-    /// and reports where the first one stands. `sync` transmits it.
+    /// and reports where the first one stands. `sync` transmits it. An id
+    /// already used by `chat_send` for this peer is refused, and an id used
+    /// here is then refused by `chat_send`: both commit under the same client
+    /// id, and the history must only follow its own messages. The id stays
+    /// taken by `send_text` even if this call then fails (for example with
+    /// no session yet); repeating it is how to send.
     pub fn send_text(
         &self,
         peer: Vec<u8>,
@@ -218,6 +219,11 @@ impl NetworkMessenger {
     ) -> Result<SentText, CoreError> {
         let text = Zeroizing::new(text);
         let peer = peer_key(&peer)?;
+        self.require_contact(&peer)?;
+        if client_message_id.is_empty() || client_message_id.len() > 63 {
+            return Err(CoreError::InvalidClientMessageId);
+        }
+        self.claim_for_send_text(&peer, &client_message_id)?;
         self.send_committed_text(&peer, &client_message_id, text)
     }
 
@@ -718,10 +724,10 @@ impl NetworkMessenger {
     }
 
     fn receipt(&self, handle: u64, id: &[u8; 32], round: u64) -> Result<SendResult, CoreError> {
-        self.core.send_message(
+        self.core.send_committed(
             handle,
-            client_id::receipt(id, round),
-            Payload::Receipt(vec![*id]).encode().to_vec(),
+            &client_id::receipt(id, round),
+            &Payload::Receipt(vec![*id]).encode(),
         )
     }
 

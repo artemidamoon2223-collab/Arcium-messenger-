@@ -197,7 +197,7 @@ fn the_first_authenticated_message_creates_the_session_exactly_once() {
         accepted(bob.core.receive_message(h, m2.wire)).plaintext.0,
         b"second"
     );
-    let reply = says(&bob, &alice, b"r", b"reply");
+    let reply = says(&bob, &alice, b"b", b"reply");
     assert_eq!(
         accepted(alice.core.receive_message(handle(&bob), reply.wire))
             .plaintext

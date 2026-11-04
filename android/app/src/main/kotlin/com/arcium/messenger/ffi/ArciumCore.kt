@@ -149,7 +149,8 @@ class ArciumCoreWrapper {
      * Any later call with the same id encrypts nothing and returns the stored
      * message (`AlreadyPending`), `AlreadyAcknowledged` or `Abandoned` — so
      * after a crash or CoreException.CommitOutcomeUnknown, call again with
-     * the same id.
+     * the same id. Ids the network layer reserves (starting with `t` or `r`,
+     * or `o` alone) fail with CoreException.InvalidClientMessageId.
      */
     fun sendMessage(
         sessionId: ULong,
@@ -164,7 +165,9 @@ class ArciumCoreWrapper {
      * can be established. Only a session with nothing left to settle is
      * removed: it fails with CoreException.SessionEstablished once a message
      * from the peer was accepted, and with CoreException.PendingOutgoing
-     * while outgoing messages are neither acknowledged nor abandoned.
+     * while outgoing messages are neither acknowledged nor abandoned. Only
+     * the Rust network layer does either (on the peer's receipt, or in
+     * `resolveSessionConflict`); neither is exported to Kotlin.
      */
     fun removeSession(sessionId: ULong) {
         requireCore().removeSession(sessionId)
@@ -173,20 +176,6 @@ class ArciumCoreWrapper {
     /** Committed, unacknowledged outgoing messages for [sessionId], in send order. */
     fun pendingOutgoing(sessionId: ULong): List<uniffi.arcium_core.OutgoingMessage> {
         return requireCore().pendingOutgoing(sessionId)
-    }
-
-    /** Drops an outgoing message once delivery is confirmed. Idempotent. */
-    fun acknowledgeOutgoing(sessionId: ULong, messageId: ByteArray): Boolean {
-        return requireCore().acknowledgeOutgoing(sessionId, messageId)
-    }
-
-    /**
-     * Stops retransmitting an outgoing message without a delivery
-     * confirmation; its logical id is then reported as `Abandoned`. The peer
-     * may or may not have it. Idempotent.
-     */
-    fun abandonOutgoing(sessionId: ULong, messageId: ByteArray): Boolean {
-        return requireCore().abandonOutgoing(sessionId, messageId)
     }
 
     /**

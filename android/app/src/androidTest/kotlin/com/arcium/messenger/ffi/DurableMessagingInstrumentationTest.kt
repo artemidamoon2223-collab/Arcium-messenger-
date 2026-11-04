@@ -70,13 +70,16 @@ class DurableMessagingInstrumentationTest {
         val bobIdentity: ByteArray,
         val aliceHandle: ULong, // Alice's handle for Bob
         val bobHandle: ULong,   // Bob's handle for Alice
+        val firstId: ByteArray, // Alice's first message, still in her outbox
     )
 
     /**
      * Creates both identities and the session, then closes both stores. A
      * handshake alone creates no session on Bob's side: Alice's first message
-     * does, once it authenticates there. It is settled on both sides, so
-     * nothing is left pending.
+     * does, once it authenticates there. Bob has settled it; Alice has not and
+     * cannot: an outgoing message leaves the outbox only on the peer's
+     * receipt, which the Rust network layer processes, and no call exported
+     * to Kotlin removes it. So it stays pending as [Pair.firstId].
      */
     private fun establish(w: Workspace): Pair {
         val alice = open(w.aliceDb, ALICE_KEY)
@@ -90,20 +93,20 @@ class DurableMessagingInstrumentationTest {
         val handshake = MessageRepository(alice).startSessionAsInitiator(bobIdentity, bundle)
         val aliceIdentity = identityAt(handshake)
         bobRepo.acceptSessionAsResponder(aliceIdentity, handshake)
-        val pair = Pair(
-            aliceIdentity,
-            bobIdentity,
-            alice.localSessionHandle(bobIdentity),
-            bob.localSessionHandle(aliceIdentity),
-        )
-        val first = sendNew(alice, pair.aliceHandle, bytes("first"))
-        assertArrayEquals(bytes("first"), accepted(bob.receiveMessage(pair.bobHandle, first.wire)))
-        assertTrue(bob.acknowledgeIncoming(pair.bobHandle, first.messageId))
-        assertTrue(alice.acknowledgeOutgoing(pair.aliceHandle, first.messageId))
+        val aliceHandle = alice.localSessionHandle(bobIdentity)
+        val bobHandle = bob.localSessionHandle(aliceIdentity)
+        val first = sendNew(alice, aliceHandle, bytes("first"))
+        assertArrayEquals(bytes("first"), accepted(bob.receiveMessage(bobHandle, first.wire)))
+        assertTrue(bob.acknowledgeIncoming(bobHandle, first.messageId))
+        assertEquals(listOf(hex(first.messageId)), ids(alice.pendingOutgoing(aliceHandle)))
         alice.closeEncryptedDb()
         bob.closeEncryptedDb()
-        return pair
+        return Pair(aliceIdentity, bobIdentity, aliceHandle, bobHandle, first.messageId)
     }
+
+    private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
+
+    private fun ids(messages: List<uniffi.arcium_core.OutgoingMessage>) = messages.map { hex(it.messageId) }
 
     private fun accepted(r: ReceiveResult): ByteArray = when (r) {
         is ReceiveResult.Accepted -> r.message.plaintext.bytes
@@ -160,12 +163,15 @@ class DurableMessagingInstrumentationTest {
         val a1 = open(w.aliceDb, ALICE_KEY)
         val a2 = open(w.aliceDb, ALICE_KEY)
         val bob = open(w.bobDb, BOB_KEY)
+        val sent = mutableListOf(hex(p.firstId))
         for (i in 0 until 6) {
             val sender = if (i % 2 == 0) a1 else a2
             val m = sendNew(sender, p.aliceHandle, bytes("m$i"))
             assertArrayEquals(bytes("m$i"), accepted(bob.receiveMessage(p.bobHandle, m.wire)))
+            sent += hex(m.messageId)
         }
-        assertEquals(6, a1.pendingOutgoing(p.aliceHandle).size)
+        assertEquals(sent, ids(a1.pendingOutgoing(p.aliceHandle)))
+        assertEquals(sent, ids(a2.pendingOutgoing(p.aliceHandle)))
     }
 
     // ── Process death ─────────────────────────────────────────────────────────
@@ -174,6 +180,8 @@ class DurableMessagingInstrumentationTest {
      * Killed after the message was committed and handed out, before any
      * acknowledgement. After restart the outbox holds the byte-identical
      * message, the peer accepts it once, and both directions keep working.
+     * The peer accepting it is not a receipt: it stays pending, so it is
+     * still retransmitted.
      */
     @Test
     fun killedAfterSendingTheMessageIsResentByteForByte() {
@@ -187,21 +195,24 @@ class DurableMessagingInstrumentationTest {
         val alice = open(w.aliceDb, ALICE_KEY)
         val bob = open(w.bobDb, BOB_KEY)
         val pending = alice.pendingOutgoing(p.aliceHandle)
-        assertEquals(1, pending.size)
-        assertArrayEquals("byte-identical across the crash", published, pending[0].wire)
+        assertEquals(2, pending.size)
+        assertArrayEquals(p.firstId, pending[0].messageId)
+        val crashed = pending[1]
+        assertArrayEquals("byte-identical across the crash", published, crashed.wire)
         // The restarted app, unsure whether its send took effect, sends the
         // same logical message again: it gets the stored bytes, not a new
         // ciphertext.
         val repeated = alice.sendMessage(p.aliceHandle, bytes("logical-send-1"), bytes("sent before the crash"))
         assertTrue("a repeated logical send must not encrypt again", repeated is SendResult.AlreadyPending)
         assertArrayEquals(published, (repeated as SendResult.AlreadyPending).message.wire)
-        assertEquals(1, alice.pendingOutgoing(p.aliceHandle).size)
+        assertEquals(ids(pending), ids(alice.pendingOutgoing(p.aliceHandle)))
 
         assertArrayEquals(bytes("sent before the crash"), accepted(bob.receiveMessage(p.bobHandle, published)))
-        val again = bob.receiveMessage(p.bobHandle, pending[0].wire)
+        val again = bob.receiveMessage(p.bobHandle, crashed.wire)
         assertTrue("a retransmission is a duplicate", again is ReceiveResult.Duplicate)
-        assertTrue(alice.acknowledgeOutgoing(p.aliceHandle, pending[0].messageId))
-        assertTrue(alice.pendingOutgoing(p.aliceHandle).isEmpty())
+        val still = alice.pendingOutgoing(p.aliceHandle)
+        assertEquals("no receipt, so still pending", ids(pending), ids(still))
+        assertArrayEquals("and resent byte for byte", published, still[1].wire)
 
         val reply = sendNew(bob, p.bobHandle, bytes("reply after restart"))
         assertArrayEquals(bytes("reply after restart"), accepted(alice.receiveMessage(p.aliceHandle, reply.wire)))
@@ -281,14 +292,16 @@ class DurableMessagingInstrumentationTest {
 
     /**
      * The responder refuses the initiator's handshake because its prekeys
-     * rotated first. The initiator abandons what it sent, removes the stranded
-     * session in a process that is then killed, and after the restart
-     * establishes a working one with the peer's fresh bundle. The abandoned
-     * logical message is not encrypted again, and once both sides have
-     * talked neither session can be removed.
+     * rotated first, after the initiator had already committed a message on
+     * it. That message stays pending, byte for byte, across a reopen, and the
+     * session cannot be removed or replaced from Kotlin: no exported call
+     * takes a message out of the outbox without the peer's receipt.
+     * Abandoning it is the Rust network layer's `resolveSessionConflict`,
+     * which marks the text not delivered first (Rust tests cover that, and
+     * that the abandoned logical id is not encrypted again).
      */
     @Test
-    fun aRefusedHandshakeIsReplacedAfterRemovingTheSession() {
+    fun aMessageOnARefusedHandshakeStaysPending() {
         val w = workspace()
         val alice = open(w.aliceDb, ALICE_KEY)
         val bob = open(w.bobDb, BOB_KEY)
@@ -314,7 +327,52 @@ class DurableMessagingInstrumentationTest {
         assertThrows(CoreException.PendingOutgoing::class.java) {
             aliceRepo.removeSessionWith(bobIdentity)
         }
-        assertTrue(aliceRepo.abandonUndelivered(bobIdentity, orphan.messageId))
+        alice.closeEncryptedDb()
+
+        val restarted = open(w.aliceDb, ALICE_KEY)
+        assertTrue(restarted.hasSession(aliceHandle))
+        val pending = restarted.pendingOutgoing(aliceHandle)
+        assertEquals(listOf(hex(orphan.messageId)), ids(pending))
+        assertArrayEquals(orphan.wire, pending.single().wire)
+        val repeated = restarted.sendMessage(aliceHandle, bytes("orphan"), bytes("never read"))
+        assertTrue("still pending, not encrypted again", repeated is SendResult.AlreadyPending)
+        assertArrayEquals(orphan.wire, (repeated as SendResult.AlreadyPending).message.wire)
+        assertThrows(CoreException.PendingOutgoing::class.java) {
+            MessageRepository(restarted).removeSessionWith(bobIdentity)
+        }
+    }
+
+    /**
+     * The responder refuses the initiator's handshake because its prekeys
+     * rotated first, before the initiator sent anything on it. The initiator
+     * removes the stranded session in a process that is then killed, and
+     * after the restart establishes a working one with the peer's fresh
+     * bundle. Once both sides have talked neither session can be removed.
+     */
+    @Test
+    fun aRefusedHandshakeIsReplacedAfterRemovingTheSession() {
+        val w = workspace()
+        val alice = open(w.aliceDb, ALICE_KEY)
+        val bob = open(w.bobDb, BOB_KEY)
+        alice.generateAndSaveIdentity()
+        bob.generateAndSaveIdentity()
+        val bobRepo = MessageRepository(bob)
+        val aliceRepo = MessageRepository(alice)
+        bobRepo.publishOwnPrekeys()
+        val bundle = bobRepo.ownPrekeyBundle()
+        val bobIdentity = identityAt(bundle)
+        val handshake = aliceRepo.startSessionAsInitiator(bobIdentity, bundle)
+        val aliceIdentity = identityAt(handshake)
+        val aliceHandle = alice.localSessionHandle(bobIdentity)
+        bobRepo.publishOwnPrekeys() // rotation before the handshake arrives
+        assertThrows(CoreException.StaleSignedPrekey::class.java) {
+            bobRepo.acceptSessionAsResponder(aliceIdentity, handshake)
+        }
+        val fresh = bobRepo.ownPrekeyBundle()
+        assertThrows(CoreException.SessionAlreadyExists::class.java) {
+            aliceRepo.startSessionAsInitiator(bobIdentity, fresh)
+        }
+        assertTrue(alice.pendingOutgoing(aliceHandle).isEmpty())
         alice.closeEncryptedDb()
 
         runVictim(w, CrashVictimProvider.SCENARIO_REMOVE, w.aliceDb, ALICE_KEY, aliceHandle)
@@ -324,8 +382,6 @@ class DurableMessagingInstrumentationTest {
         val restartedRepo = MessageRepository(restarted)
         val handshake2 = restartedRepo.startSessionAsInitiator(bobIdentity, fresh)
         bobRepo.acceptSessionAsResponder(aliceIdentity, handshake2)
-        val repeated = restarted.sendMessage(aliceHandle, bytes("orphan"), bytes("never read"))
-        assertTrue("an abandoned logical message must not be encrypted again", repeated is SendResult.Abandoned)
         val m = sendNew(restarted, aliceHandle, bytes("after replacement"))
         val bobHandle = bob.localSessionHandle(aliceIdentity)
         assertArrayEquals(bytes("after replacement"), accepted(bob.receiveMessage(bobHandle, m.wire)))

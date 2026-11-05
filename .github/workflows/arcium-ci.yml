@@ -78,6 +78,35 @@ jobs:
           npx tsc --noEmit
           npx mocha --require ts-node/register 'src/crypto.test.ts'
 
+  # ── Job 2b: QC V1 unit tests — deterministic, stdlib Python, no model ──
+  # Runs only the test*.py files in .claude/qc/tests. cli_hooks.py (it starts
+  # `claude -p`, a model call) and integration.py (real cargo builds) are local
+  # and opt-in; the scope check fails the job if either could be discovered
+  # here, or if a discovered file starts a model call. Every step is blocking.
+  qc-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: QC test scope self-test
+        run: python3 .github/scripts/check_qc_test_scope.py --self-test
+      - name: QC test scope (no model-calling test in CI)
+        run: python3 .github/scripts/check_qc_test_scope.py
+      - name: QC unit tests
+        run: |
+          set -eo pipefail  # explicit: a failing test stops the step whatever the shell defaults are
+          python3 --version
+          git --version
+          python3 -B -m unittest discover -s .claude/qc/tests -v 2>&1 | tee qc-unit.log
+          # unittest exits non-zero on any failure or error; also require that tests ran.
+          grep -qE '^Ran [1-9][0-9]* tests? in ' qc-unit.log || {
+            echo "::error::no QC unit tests ran"
+            exit 1
+          }
+        shell: bash
+      - name: QC self-test (classification rules and trusted build directories match the tree)
+        run: python3 -B .claude/qc/qc.py self-test
+
   # ── Job 3: Arcium build — circuit, SBF program, IDL, borsh tests ──
   # Every step fails the job on a nonzero exit (F-11: this job used to swallow
   # `arcium build` failures and skip the borsh tests silently).

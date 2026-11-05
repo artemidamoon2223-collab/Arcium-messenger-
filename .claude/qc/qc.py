@@ -66,8 +66,11 @@ State lives in <git-dir>/arcium-qc/, outside the working tree: it is never
 part of a diff and never committed. Records are HMAC-signed with a per-clone
 key so that a hand-written or edited record is rejected, and never
 overwritten. A state file rolled back to an older signed copy, or deleted
-and locked again, is BLOCKED while the later records remain; deleting the
-whole directory (or the records too) cannot be detected locally. The key is
+and locked again, is BLOCKED while the later records remain. Every run and
+review the signed state lists, older ones included, is checked on every
+verdict: missing, edited, substituted or inconsistent history is BLOCKED.
+Deleting the whole directory (the state and all its records) cannot be
+detected locally. The key is
 readable by anything with shell access: the signature stops fabricated or
 stale records, not a deliberate forger with this clone's key.
 
@@ -881,6 +884,45 @@ def check_ledger(root, sid, st):
             raise QcError("BLOCKED", "%s is not in the state ledger: the state was rolled back or replaced" % name)
 
 
+def verify_history(root, sid, st, spec_sha):
+    """Every run and review the signed ledger names is on disk, unchanged (the sha256 the ledger holds),
+    signed, and is that record of this spec: its kind, number, spec id and spec version, and the outcome
+    or skill the ledger lists. A run the ledger records as INTERRUPTED left no record, so a record that
+    appears for it later is forged. The failed-round count must follow from the history. Anything else is
+    BLOCKED, whatever the latest run and reviews say: older evidence cannot be edited, swapped or removed
+    under a verdict. (Records in flight are checked by settle, which adopts them.)"""
+    d = run_dir(root, sid)
+    counted = 0
+    for r in st["runs"]:
+        name = "run-%d.json" % r["n"]
+        if r.get("sha256") is None:
+            if r.get("outcome") != "INTERRUPTED":
+                raise QcError("BLOCKED", "ledger entry for %s has no record hash and is not INTERRUPTED" % name)
+            if os.path.lexists(os.path.join(d, name)):
+                raise QcError("BLOCKED", "%s exists for a run the ledger records as interrupted (no record was "
+                              "written): forged or substituted" % name)
+            counted += 1
+            continue
+        rec = load_record(root, sid, name, r["sha256"])
+        if rec.get("kind") != "run" or rec.get("n") != r["n"] or rec.get("spec_id") != sid or \
+                rec.get("spec_sha256") != spec_sha or rec.get("outcome") != r["outcome"]:
+            raise QcError("BLOCKED", "%s does not match its ledger entry (kind, number, spec or outcome)" % name)
+        counted += rec["outcome"] == "FAILED"
+    for r in st.get("reviews", []):
+        name = "review-%d.json" % r["n"]
+        rec = load_record(root, sid, name, r.get("sha256"))
+        if rec.get("kind") != "review" or rec.get("n") != r["n"] or rec.get("spec_id") != sid or \
+                rec.get("spec_sha256") != spec_sha or rec.get("skill") != r.get("skill"):
+            raise QcError("BLOCKED", "%s does not match its ledger entry (kind, number, spec or skill)" % name)
+        counted += bool(rec.get("blocking"))
+    if [r["n"] for r in st["runs"]] != list(range(1, len(st["runs"]) + 1)) or \
+            [r["n"] for r in st.get("reviews", [])] != list(range(1, len(st.get("reviews", [])) + 1)):
+        raise QcError("BLOCKED", "the state ledger's record numbers are not consecutive")
+    if counted != st["failed_runs"]:
+        raise QcError("BLOCKED", "the state ledger counts %d failed round(s) but its records show %d"
+                      % (st["failed_runs"], counted))
+
+
 def preconditions(root, sid, check_lock=True):
     """Spec, lock, tool integrity, owner gates, budget. Raises QcError. With `check_lock`, work in flight
     under a live lock stays in flight (the caller reports it); otherwise it is settled in the copy
@@ -894,6 +936,7 @@ def preconditions(root, sid, check_lock=True):
         raise QcError("BLOCKED", "spec %s changed after it was locked: criteria cannot move mid-task" % sid)
     if st["tool_sha256"] != tool_hash():
         raise QcError("BLOCKED", "the QC tool (qc.py/hooks.py) changed after the spec was locked")
+    verify_history(root, sid, st, spec_sha)
     if (st.get("inflight") or st.get("review_inflight")) and not (check_lock and lock_held(root, sid)):
         st = settle(root, sid, st, spec_sha)
     if subprocess.run(["git", *GIT_OPTS, "-C", root, "merge-base", "--is-ancestor", spec["base"], "HEAD"],

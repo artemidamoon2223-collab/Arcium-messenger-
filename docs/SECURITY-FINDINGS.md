@@ -280,7 +280,7 @@ All commands ran on 2026-11-06 in a disposable clone of TARGET_SHA:
   - relay: 17.
 - `cargo audit --file Cargo.lock` (cargo-audit 0.22.2, advisory-db `26fd2d43` of
   2026-11-05, 1409 advisories, 502 crates): exit 0, 0 vulnerabilities, 6 allowed warnings.
-- Five temporary probe tests, run once and then removed. They are not in this PR:
+- Five temporary probe tests, run and then removed again. They are not part of the test suite:
   - three in core-storage, for D-009;
   - two in mobile-ffi, for D-007.
 - One bounded run of the ignored test `new_fails_gracefully_without_tor` (D-008).
@@ -289,6 +289,10 @@ All commands ran on 2026-11-06 in a disposable clone of TARGET_SHA:
 
 Each item below states its exact command or outcome. The evidence labels are those of
 `CLAUDE.md`.
+
+The exact probe code, the commands to re-run every reproduction and their full output
+are kept in [`RECONCILIATION-2026-11-06-PROBES.md`](./RECONCILIATION-2026-11-06-PROBES.md).
+That file is documentation: nothing in it is compiled or run by `cargo test` or CI.
 
 ### Merged since the last tracker update
 

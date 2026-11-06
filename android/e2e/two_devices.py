@@ -237,6 +237,12 @@ def main():
 
     print(r.summary())
 
+    print("9. D-007: master-key loss and corruption across real restarts, on Alice's emulator")
+    restart = subprocess.run([sys.executable, str(Path(__file__).with_name("master_key_restart.py")),
+                              "--serial", r.serial["alice"], "--out", str(r.out / "master-key-restart")])
+    if restart.returncode != 0:
+        raise SystemExit("the D-007 restart scenario failed (see master-key-restart in --out)")
+
 
 if __name__ == "__main__":
     main()

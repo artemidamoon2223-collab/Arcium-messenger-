@@ -23,12 +23,15 @@ Usage: two_devices.py --alice SERIAL --bob SERIAL --relay HOST:PORT --out DIR
 """
 
 import argparse
+import os
 import shlex
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+
+from emulator_guard import require_emulators
 
 APP = "com.arcium.messenger"
 RUNNER = f"{APP}.test/androidx.test.runner.AndroidJUnitRunner"
@@ -185,7 +188,15 @@ def main():
     p.add_argument("--bob", required=True)
     p.add_argument("--relay", required=True, help="the relay as the emulators reach it")
     p.add_argument("--out", required=True)
-    r = Run(p.parse_args())
+    args = p.parse_args()
+    # The fake-adb regression check of the target guard runs first, with no
+    # device involved; then both targets are verified before either is touched.
+    if os.environ.get("ARCIUM_E2E_GUARD_SELFTEST") != "running":
+        selftest = Path(__file__).with_name("test_emulator_guard.py")
+        if subprocess.run([sys.executable, str(selftest)]).returncode != 0:
+            raise SystemExit("the emulator-guard regression check failed; no device was touched")
+    require_emulators(args.alice, args.bob)
+    r = Run(args)
 
     for who in ("alice", "bob"):
         r.adb(who, "shell", "pm", "clear", APP)

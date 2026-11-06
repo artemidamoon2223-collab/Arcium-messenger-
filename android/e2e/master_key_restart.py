@@ -34,6 +34,8 @@ import sys
 import time
 from pathlib import Path
 
+from emulator_guard import require_emulators
+
 APP = "com.arcium.messenger"
 RUNNER = f"{APP}.test/androidx.test.runner.AndroidJUnitRunner"
 CLASS = f"{APP}.e2e.MasterKeyRestartTest"
@@ -136,6 +138,8 @@ def main():
     p.add_argument("--out", required=True)
     a = p.parse_args()
     d = Driver(a.serial, a.out)
+    # Before any adb command that changes the device: only a verified emulator.
+    require_emulators(a.serial)
 
     print("Device:", d.shell("getprop ro.build.fingerprint"), "| SDK", d.shell("getprop ro.build.version.sdk"))
     try:

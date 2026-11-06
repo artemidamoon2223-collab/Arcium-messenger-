@@ -3,6 +3,7 @@
 **Reconciled against `main` @ `087b9c8c550e0b96d7b451d3f953e4860cd7765c` (the merge of PR #103), 2026-09-29.**
 The previous snapshot was `main` @ `492c5d1f6385ddf698cf210ec29f0d67fb6a1d8f`, 2026-07-19.
 F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note at the end of it.
+**Partially reconciled against `main` @ `7455da8440521a14bbb09baf8d646243a8b5d6c6`, 2026-11-06:** the PRs merged since PR #121 and the leads D-007…D-011 only. See "Reconciliation 2026-11-06"; every other row keeps the SHA it cites.
 
 ## What this file is — and is not
 
@@ -81,13 +82,13 @@ Rules for readers, and for reviews that use this file:
 | **F-6** | MED | `hybrid_encaps` panics on a malformed peer public key (future FFI DoS) | **FIXED** | Commit `3dcd9c81` (PR #52). `crates/core-crypto/src/hybrid.rs:78` returns `Result<_, HybridError>`; the former `.expect()` calls on peer input are `.map_err(\|_\| HybridError)?` (`:85-90`). Tests `encaps_rejects_wrong_length_ml_kem_key`, `encaps_rejects_empty_ml_kem_key`, `encaps_rejects_right_length_but_invalid_ml_kem_key` pass. (The return type now carries a `Zeroizing<[u8; 64]>`, A-3.) |
 | **F-7** | LOW | The hybrid KEM combiner does not bind ciphertexts and public keys into the KDF | **FIXED** (dormant) | PR #56 (merge `88243800`). `combine_secrets` (`hybrid.rs:158-188`) binds `eph_pk`, `ml_ct` and the recipient's X25519 and ML-KEM public keys; test `real_encaps_binds_recipient_identity_not_just_shared_secrets` passes. **Caveat:** `hybrid_encaps`/`hybrid_decaps` have no callers outside `core-crypto` (a search of `crates/` finds none) and are not exported through UniFFI, so the binding is correct at code level and has no effect until the module is wired into session establishment. |
 | **F-8** | LOW | Transient secret copies are not zeroized | **PARTIAL** *(corrected 2026-09-29)* | **Fixed:** the transients of the 2026-07 sweep (identity blob in `load_identity`, `derive_root`'s `ikm`, hybrid seeds, `ArciumCore::new`'s master-key `Vec`; PR #54 and `d68ab02`) and, in A-3 (PR #103), the secrets that `core-crypto` owns in the ratchet, KDFs, X3DH, hybrid and checkpoint paths and the FFI temporaries in `mobile-ffi` — see A-3 for what is wiped and where. **Before A-3.5, residual outside this crate's control:** secret-derived state inside `hmac 0.12.1`, `hkdf 0.12.4` and `sha2 0.10.9` values was not wiped by those crates — none of them depends on `zeroize` or implements `Drop`; a keyed `Hmac` keeps `K ⊕ ipad` and `K ⊕ opad` compression states and its output block, `Hkdf` keeps a PRK-keyed HMAC core, and their stack locals are not wiped either (`hmac-0.12.1/src/optim.rs:152-173, 207-219`, `hkdf-0.12.4/src/lib.rs:150-170, 228-262`, `sha2-0.10.9/src/core_api.rs:60-68`). A-3.5 enables partial upstream cleanup with `hmac 0.13.0` and `sha2 0.11.0`'s `zeroize` features; `hkdf 0.13.0` benefits transitively and has no `zeroize` feature of its own. The audited stock versions still leave local residuals, and complete safe-Rust source-level remediation has not been established or proven impossible; see H-9. (As of A-3.5, merged in PR #110 (`f72043e`), Arcium's own call sites use the 0.13/0.11 lines; see H-9 for what is and is not wiped.) Other transients still not wiped are H-2, H-6 and H-7 (H-1, H-3, H-4 and H-5 were closed by A-3.1, merged in PR #105). |
-| **F-9** | LOW | `load_identity` panics on a poisoned mutex; masks wrong-key decryption as "no identity" | **FIXED — merged (PR #120)**, scoped to the store's own master key *(updated 2026-10-06; was PARTIAL)* | Evidence at `main` @ `e0e825c` (merge commit `e0e825c858d017f5158229a8df9d0ff81ae14dd9`, parents `28406b8` and PR HEAD `6fdb90d`; the merge tree equals the PR HEAD tree). **Both conditions of the review's definition are closed for `load_identity`:** (1) a poisoned mutex returns `Err(CoreError::Storage)` instead of panicking or returning `None` (`crates/mobile-ffi/src/lib.rs:664-671`); (2) errors are no longer collapsed into "no identity": `load_identity` returns `Result<Option<Arc<Identity>>, CoreError>` (`:664`), and its classifier `identity_from_record` (`:241-265`) maps only `StorageError::NotFound` to `Ok(None)` (`:244`). `Decryption` and a record that is not 64 bytes are the new `IdentityUnreadable` (`:151`, `:245-256`); every other storage error is `Storage` (`:250`). The error text names only the cause and, for a wrong length, the length; it carries no record content. **The overwrite the review described is closed on this path:** `save_identity` (`:638-654`) is create-only. One `store.transaction()` (`BEGIN IMMEDIATE`, `crates/core-storage/src/lib.rs:224-228`) reads the record and writes only on `NotFound` (`mobile-ffi/src/lib.rs:647-652`). A readable record is the new `IdentityAlreadyExists` (`:156`, `:649`); an unreadable record or any read error aborts, and nothing is written. `require_identity` propagates load errors and keeps `InvalidKey("no identity saved …")` for absence only (`:1030-1033`). **Android:** `IdentityState` is Loading, Present, Absent or Failed (`android/app/src/main/kotlin/com/arcium/messenger/data/IdentityRepository.kt:8-17`); a `CoreException` becomes `Failed`, never `Absent` (`:31-35`). `startDestinationFor` gives Loading and Failed no start destination and sends only Absent to onboarding (`ui/navigation/IdentityGate.kt:56-60`); the gate's retry only calls `load()` again (`:43-47`). Onboarding's `createOrLoadExisting` loads the stored identity on `IdentityAlreadyExists` and proceeds only once it has loaded (`data/IdentityRepository.kt:44-48`, `ui/onboarding/OnboardingViewModel.kt:33`). `MessengerService` catches the load error, reports `IdentityUnavailable` and keeps its loop running without creating anything (`messaging/MessengerService.kt:136`, `:150-156`). The bridge's generated-string inventory classifies the new `CoreException.IdentityUnreadable.msg` as `F`, Rust error text (`.github/actions/uniffi-android-bridge/generated-string-fields.txt:20`). **Verified (RUNTIME_VERIFIED) on `e0e825c`:** Arcium CI run 37415175397 (push, attempt 1, success). Its `core-rust` job runs `cargo test --workspace --locked`, which includes the ten tests in `crates/mobile-ffi/src/tests/identity.rs`: absence; a store locked by another connection; a poisoned mutex; corrupt ciphertext; record lengths 0, 1, 32, 63, 65 and 128; creation in an empty store; creation over a readable record; 10 rounds of racing creators; a failed creation. The failure and conflict tests compare the raw stored rows before and after. The per-test lines of that log were not read. Android Instrumentation run 37415175416 (push, attempt 1, success, `tests=23 failures=0`) names the six new tests: `IdentityInstrumentationTest.anEmptyStoreHasNoIdentity`, `aStoreThatCannotBeReadIsAnErrorAndRecoversUnchanged` and `aStoredIdentityIsNeverReplacedAndIsLoadedInstead` (native path; a read failure is injected by overwriting the database header), and `IdentityGateInstrumentationTest.aFailedReadShowsARetryAndNeverOnboarding`, `aRetryRecoversFromATransientFailure` and `onlyAStoreWithNoIdentityStartsOnboarding`. Android CI 37415175378, Native Bridge 37415175451 and two-device 37415175490: push, attempt 1, success. Records in the existing 64-byte format still load: `a_record_written_in_the_existing_format_loads_with_the_same_keys`, and the `legacy_upgrade` fixtures written by an older build. **Executor-reported only:** the mutation controls and disposable experiments of PR #120 were not reproduced for this row. These include a COMMIT refused before its commit point, after which nothing was stored and a retry stored the identity it returned. **Not verified:** the JVM `IdentityRepositoryTest` belongs to Android CI's `testDebugUnitTest` step, which succeeded, but no per-class result is available, so its execution is NOT_VERIFIED. A COMMIT that takes effect but reports an error has no fault injection; by source, a retry gets `IdentityAlreadyExists` and onboarding loads the stored identity (INFERRED). Physical devices and power loss are not covered. **Scope — read before citing:** FIXED covers load errors and identity creation under the master key the store was opened with. Record names are derived from the master key (`key_name_hash`, `storage_key`, `crates/core-storage/src/lib.rs:318`, `:330`; see F-10). Under a wrong, lost or replaced master key the lookup misses, and `load_identity` returns `Ok(None)`, which cannot be told apart from a first run. The app then onboards and creates a new identity in a separate row; the old row stays on disk, unreadable under that key, and peers see a new identity. `MasterKeyProvider` still creates a new master key when its blob is missing (`android/app/src/main/kotlin/com/arcium/messenger/security/MasterKeyProvider.kt:42-58`); PR #120 does not change this. This master-key-lifecycle path is **unresolved** and is not claimed here. Also unchanged: there is no reset or recovery flow for an unreadable identity, so onboarding stays blocked with an error and a retry. Overlapping retry loads can publish a stale gate state, and cancellation and double-tap handling are recorded observations, not fixed (INFERRED; none of them creates or replaces an identity). |
-| **F-10** | LOW | Storage: plaintext key names, size/pattern metadata leak, no rollback or secure-delete | **FIXED** *(scope stated 2026-09-29)* | PR #58 (merge `b2d3c5db`). **Covered:** (a) key names — `kv.k` is a `BLOB` of two HKDF-derived hashes and the name itself is stored encrypted in `ek` (`crates/core-storage/src/lib.rs:103-107`, `key_name_hash` `:286`, `storage_key` `:298`, `encrypt_key_name` `:320`); (b) `PRAGMA secure_delete = ON` (`:102`). Tests `key_names_are_not_stored_in_plaintext` (`:709`), `secure_delete_pragma_is_enabled` (`:775`), `deleted_row_bytes_are_overwritten_on_disk` (`:787`) pass. **Not covered, and not claimed:** row count and ciphertext length (no padding); rollback protection — an older copy of the database file is accepted (module doc `:15-21`; `docs/S2-B2-DURABLE-MESSAGING.md` §8, "malicious rollback … not provided"); `VACUUM`/`auto_vacuum`. The review itself called padding and rollback counters optional. FIXED here means the two sub-issues the review's fix named, not that the store is metadata-private against someone holding the file. |
+| **F-9** | LOW | `load_identity` panics on a poisoned mutex; masks wrong-key decryption as "no identity" | **FIXED — merged (PR #120)**, scoped to the store's own master key *(updated 2026-10-06; was PARTIAL)* | Evidence at `main` @ `e0e825c` (merge commit `e0e825c858d017f5158229a8df9d0ff81ae14dd9`, parents `28406b8` and PR HEAD `6fdb90d`; the merge tree equals the PR HEAD tree). **Both conditions of the review's definition are closed for `load_identity`:** (1) a poisoned mutex returns `Err(CoreError::Storage)` instead of panicking or returning `None` (`crates/mobile-ffi/src/lib.rs:664-671`); (2) errors are no longer collapsed into "no identity": `load_identity` returns `Result<Option<Arc<Identity>>, CoreError>` (`:664`), and its classifier `identity_from_record` (`:241-265`) maps only `StorageError::NotFound` to `Ok(None)` (`:244`). `Decryption` and a record that is not 64 bytes are the new `IdentityUnreadable` (`:151`, `:245-256`); every other storage error is `Storage` (`:250`). The error text names only the cause and, for a wrong length, the length; it carries no record content. **The overwrite the review described is closed on this path:** `save_identity` (`:638-654`) is create-only. One `store.transaction()` (`BEGIN IMMEDIATE`, `crates/core-storage/src/lib.rs:224-228`) reads the record and writes only on `NotFound` (`mobile-ffi/src/lib.rs:647-652`). A readable record is the new `IdentityAlreadyExists` (`:156`, `:649`); an unreadable record or any read error aborts, and nothing is written. `require_identity` propagates load errors and keeps `InvalidKey("no identity saved …")` for absence only (`:1030-1033`). **Android:** `IdentityState` is Loading, Present, Absent or Failed (`android/app/src/main/kotlin/com/arcium/messenger/data/IdentityRepository.kt:8-17`); a `CoreException` becomes `Failed`, never `Absent` (`:31-35`). `startDestinationFor` gives Loading and Failed no start destination and sends only Absent to onboarding (`ui/navigation/IdentityGate.kt:56-60`); the gate's retry only calls `load()` again (`:43-47`). Onboarding's `createOrLoadExisting` loads the stored identity on `IdentityAlreadyExists` and proceeds only once it has loaded (`data/IdentityRepository.kt:44-48`, `ui/onboarding/OnboardingViewModel.kt:33`). `MessengerService` catches the load error, reports `IdentityUnavailable` and keeps its loop running without creating anything (`messaging/MessengerService.kt:136`, `:150-156`). The bridge's generated-string inventory classifies the new `CoreException.IdentityUnreadable.msg` as `F`, Rust error text (`.github/actions/uniffi-android-bridge/generated-string-fields.txt:20`). **Verified (RUNTIME_VERIFIED) on `e0e825c`:** Arcium CI run 37415175397 (push, attempt 1, success). Its `core-rust` job runs `cargo test --workspace --locked`, which includes the ten tests in `crates/mobile-ffi/src/tests/identity.rs`: absence; a store locked by another connection; a poisoned mutex; corrupt ciphertext; record lengths 0, 1, 32, 63, 65 and 128; creation in an empty store; creation over a readable record; 10 rounds of racing creators; a failed creation. The failure and conflict tests compare the raw stored rows before and after. The per-test lines of that log were not read. Android Instrumentation run 37415175416 (push, attempt 1, success, `tests=23 failures=0`) names the six new tests: `IdentityInstrumentationTest.anEmptyStoreHasNoIdentity`, `aStoreThatCannotBeReadIsAnErrorAndRecoversUnchanged` and `aStoredIdentityIsNeverReplacedAndIsLoadedInstead` (native path; a read failure is injected by overwriting the database header), and `IdentityGateInstrumentationTest.aFailedReadShowsARetryAndNeverOnboarding`, `aRetryRecoversFromATransientFailure` and `onlyAStoreWithNoIdentityStartsOnboarding`. Android CI 37415175378, Native Bridge 37415175451 and two-device 37415175490: push, attempt 1, success. Records in the existing 64-byte format still load: `a_record_written_in_the_existing_format_loads_with_the_same_keys`, and the `legacy_upgrade` fixtures written by an older build. **Executor-reported only:** the mutation controls and disposable experiments of PR #120 were not reproduced for this row. These include a COMMIT refused before its commit point, after which nothing was stored and a retry stored the identity it returned. **Not verified:** the JVM `IdentityRepositoryTest` belongs to Android CI's `testDebugUnitTest` step, which succeeded, but no per-class result is available, so its execution is NOT_VERIFIED. A COMMIT that takes effect but reports an error has no fault injection; by source, a retry gets `IdentityAlreadyExists` and onboarding loads the stored identity (INFERRED). Physical devices and power loss are not covered. **Scope — read before citing:** FIXED covers load errors and identity creation under the master key the store was opened with. Record names are derived from the master key (`key_name_hash`, `storage_key`, `crates/core-storage/src/lib.rs:318`, `:330`; see F-10). Under a wrong, lost or replaced master key the lookup misses, and `load_identity` returns `Ok(None)`, which cannot be told apart from a first run. The app then onboards and creates a new identity in a separate row; the old row stays on disk, unreadable under that key, and peers see a new identity. `MasterKeyProvider` still creates a new master key when its blob is missing (`android/app/src/main/kotlin/com/arcium/messenger/security/MasterKeyProvider.kt:42-58`); PR #120 does not change this. This master-key-lifecycle path is **unresolved** and is not claimed here. Also unchanged: there is no reset or recovery flow for an unreadable identity, so onboarding stays blocked with an error and a retry. Overlapping retry loads can publish a stale gate state, and cancellation and double-tap handling are recorded observations, not fixed (INFERRED; none of them creates or replaces an identity). **Cross-ref (2026-11-06, `7455da8`):** the master-key path above is re-confirmed at `7455da8` (D-007 in "Reconciliation 2026-11-06"): a missing blob, a corrupted blob and a wrong key are now told apart there, and a Rust-level probe shows a new key on an existing database reads as `Ok(None)`, lets a second identity be saved, and leaves the original row readable under the old key. Status unchanged. |
+| **F-10** | LOW | Storage: plaintext key names, size/pattern metadata leak, no rollback or secure-delete | **FIXED** *(scope stated 2026-09-29)* | PR #58 (merge `b2d3c5db`). **Covered:** (a) key names — `kv.k` is a `BLOB` of two HKDF-derived hashes and the name itself is stored encrypted in `ek` (`crates/core-storage/src/lib.rs:103-107`, `key_name_hash` `:286`, `storage_key` `:298`, `encrypt_key_name` `:320`); (b) `PRAGMA secure_delete = ON` (`:102`). Tests `key_names_are_not_stored_in_plaintext` (`:709`), `secure_delete_pragma_is_enabled` (`:775`), `deleted_row_bytes_are_overwritten_on_disk` (`:787`) pass. **Not covered, and not claimed:** row count and ciphertext length (no padding); rollback protection — an older copy of the database file is accepted (module doc `:15-21`; `docs/S2-B2-DURABLE-MESSAGING.md` §8, "malicious rollback … not provided"); `VACUUM`/`auto_vacuum`. The review itself called padding and rollback counters optional. FIXED here means the two sub-issues the review's fix named, not that the store is metadata-private against someone holding the file. **Cross-ref (2026-11-06, `7455da8`):** besides the whole-file case, a single record can be rolled back by writing its older ciphertext into its own row; this is accepted, while moving a ciphertext into another record's row is refused (D-009 in "Reconciliation 2026-11-06", RUNTIME_VERIFIED by temporary probes). Status unchanged. |
 | **F-11** | LOW | CI integrity: `arcium test` failure swallowed; dead `CLAUDE_SUCCESS`; Pi reviews a truncated diff | **FIXED** *(corrected 2026-09-29)* | `.github/workflows/arcium-ci.yml`: `arcium build` and its verification steps are plain commands that fail the job (`:53-54`, `:67-90`); the borsh tests run under `set -o pipefail` with a required-tests-ran check (`:81-90`); `arcium test` runs under `set -o pipefail` and `tee`, and fails on no passing test or any pending test (`:114-128`). The other two sub-items belonged to workflows that were deleted (`17682c5`, see F-5). The `\|\| true` that remain are diagnostics and gate nothing: tool versions (`:62-66`) and an `if: failure()` log dump (`:129-136`). CI evidence on `087b9c8`: Arcium CI run 36488538945, `arcium-build` and `arcium-test` `success`, `arcium-test` log `6 passing`. |
 | **F-12** | LOW | Kotlin crypto stubs return plaintext as "ciphertext" | **FIXED** *(corrected 2026-09-29)* | `android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt` no longer contains `ratchetEncrypt`, `ratchetDecrypt` or `x3dhInit` (a search of `android/app/src/main` finds none). Messaging methods forward to the generated UniFFI calls (`:63-250`); `submitPsiQuery` (`:257-263`) and `startTorTransport` (`:270-276`) throw `NotImplementedError` instead of returning a value that could be mistaken for a result. This is a static read; no Android tooling was used for this row (the Android CI jobs exercise the wrapper, but their results are not cited here). |
 | **F-13** | INFO | X3DH: SPK signature lacks domain separation; OPK single-use unenforced | **FIXED** *(corrected 2026-09-29)* | (a) Domain separation: see F-2 (`x3dh.rs:17`, `:69-82`); a raw-key signature does not verify (test `signatures_from_other_contexts_are_rejected`). (b) One-time-prekey single use: `accept_first_message` (`mobile-ffi/src/lib.rs:849-927`) takes the one-time prekey (`:879`), rotates the prekey record (`:880-883`) and replaces it through a conditional `SideWrite::replace` (`:905-911`) in the same transaction that promotes the session; a lost race is `OneTimePrekeyUnavailable` (`:922`); `check_answerable` (`:824-838`) refuses a wrong id or a stripped one-time prekey. Tests `matching_one_time_prekey_is_consumed_and_replaced`, `replaying_an_accepted_handshake_is_rejected_and_changes_nothing`, `concurrent_first_messages_create_one_session_and_consume_the_prekey_once`, `stripping_the_one_time_prekey_is_refused_rather_than_downgraded`, `wrong_one_time_prekey_id_does_not_consume_the_current_one` pass. **Scope:** single use is enforced only where the responder holds a one-time prekey; a handshake answered without one has no replay property (`mobile-ffi/src/lib.rs:769-772`). |
 | **F-14** | INFO | On-chain placeholders and result-delivery gap (pre-deploy) | **NOT-FIXED (pre-deploy)** · behavior `NEEDS-HOME` | `arcium-psi/programs/arcium-psi/src/lib.rs:7` — placeholder `declare_id!("PSiArc1um111…")`. The callback verifies the output signature (`:133-136`) but only `msg!`-logs the client's encryption key (`:141-144`); the match vector is written to no account or event. Legacy `submit_query` (`:21-32`) still ignores `encrypted_contacts` (`:30`). Access control on the implemented instructions read sound statically (payer-seeded `init_user` PDA `:153-158`, `has_one = owner` `:167`, monotonic nonce `:27`); MXE authority semantics are `NEEDS-HOME`. |
-| **F-15** | INFO | Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir` | **NOT-FIXED (design)** · `NEEDS-HOME` *(scope clarified 2026-09-29)* | (a) `android/app/src/main/kotlin/com/arcium/messenger/network/SolanaClient.kt:7` uses `BuildConfig.SOLANA_RPC_URL` directly (clearnet). (b) `crates/core-transport/src/lib.rs:23-24` — `new(_state_dir)` ignores its argument and uses `TorClientConfig::default()`. **Scope:** the review wrote "messaging rides Tor (arti)"; that is not true of current code. `core-transport` is a `mobile-ffi` dependency in `Cargo.toml` but no source in `crates/` calls it, and `docs/NET-MESSAGING.md` records Tor as a stub and future work (`:25`) and states the relay path has "no anonymity and no Tor" (`:138-139`, `:231`). So F-15 covers the unwired Tor transport and the PSI/Solana RPC path only; the relay path's lack of anonymity is a documented design limit, not something this row tracks or claims to fix. |
+| **F-15** | INFO | Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir` | **NOT-FIXED (design)** · `NEEDS-HOME` *(scope clarified 2026-09-29)* | (a) `android/app/src/main/kotlin/com/arcium/messenger/network/SolanaClient.kt:7` uses `BuildConfig.SOLANA_RPC_URL` directly (clearnet). (b) `crates/core-transport/src/lib.rs:23-24` — `new(_state_dir)` ignores its argument and uses `TorClientConfig::default()`. **Scope:** the review wrote "messaging rides Tor (arti)"; that is not true of current code. `core-transport` is a `mobile-ffi` dependency in `Cargo.toml` but no source in `crates/` calls it, and `docs/NET-MESSAGING.md` records Tor as a stub and future work (`:25`) and states the relay path has "no anonymity and no Tor" (`:138-139`, `:231`). So F-15 covers the unwired Tor transport and the PSI/Solana RPC path only; the relay path's lack of anonymity is a documented design limit, not something this row tracks or claims to fix. **Cross-ref (2026-11-06, `7455da8`):** `TorTransport::new` also has no bootstrap timeout and still has no production caller (D-008 in "Reconciliation 2026-11-06"). Status unchanged. |
 | **F-16** | INFO | TS client: raw ECDH output used directly as the `RescueCipher` key | **VERIFIED-BENIGN** at `@arcium-hq/client` 0.10.4 *(resolved 2026-09-29)* | The 2026-07 row was `CANNOT-VERIFY-FROM-CODE` because the library's derivation was not read. It can be read: `RescueCipher`'s constructor derives the key with `RescuePrimeHash` over `counter ‖ sharedSecret ‖ L`, a single-step KDF after NIST SP 800-56C Option 1 (`@arcium-hq/client@0.10.4`, `src/cryptography/rescueCipher.ts:13-20` and `rescueCipherCommon.ts:38-75`; source obtained with `npm pack` of the pinned version). `arcium-psi/tests/src/client.ts:16` still returns the raw X25519 output and `:28`, `:47` pass it to `new RescueCipher(...)`, so the raw point is not itself the cipher key. **Limits:** verified for 0.10.4 only — `package.json:10` allows `^0.10.4` and the lockfile pins 0.10.4; the review's other two notes stand unchanged — no contributory-behavior (low-order point) check exists in this repository's code, and nonces are caller-supplied (`client.ts:19-23`, `:36-40`), so a production caller must guarantee per-query uniqueness (the tests reuse fixed nonces). This client lives under `arcium-psi/tests/`. |
 | **F-17** | INFO | `CLAUDE.md` carries derived-from-source content that drifts and is loaded as authoritative every session | **FIXED** | **Closed by inspection at `main` @ `1a7b1904`** — `CLAUDE.md` (blob `4a860dd3`, 171 lines) read in full against the closure condition below: no file/workflow counts, no directory trees, no listings of function signatures or APIs, and — applying the condition's general term rather than only its three named examples — no status tables, branch lists, or PR history either. The file additionally now carries a standing rule against re-introducing such content («Правила работы» → «Не инвентаризируй состояние репозитория»), so the state is asserted as a rule and not only as an absence. The edits landed in PRs #60, #62, #64, #65, #66, all merged before this tracker update per the fix-first rule; this row's PR changes no code and does not touch `CLAUDE.md`. Verification basis, how independent the check was, the four borderline cases weighed, and the scope limit of this closure: see [F-17 closure record](#f-17-closure-record) below. **Original defect and closure condition, retained verbatim:** The defect is not that specific counts are stale — it's that `CLAUDE.md` holds content *derived from* the repo (workflow tables, repo-structure trees, API signature listings) with nothing that re-derives it when the source changes, and this file is read into every session as ground truth. Concrete case, already in this repo's history: before PR #60, `CLAUDE.md`'s "Ключевые API" section documented `hybrid_encaps` as returning a plain tuple; `crates/core-crypto/src/hybrid.rs` had by then returned `Result<(Vec<u8>, [u8; 64]), HybridError>` since F-6 (PR #52). A session loading that section would write code against a signature roughly 8 PRs out of date, with no signal that it had drifted short of reading the source directly — sharper than a workflow-count mismatch, since it teaches a wrong API rather than an outdated inventory. PR #60 resolved that one instance by deleting the section rather than re-deriving it; the same class of content (repo-structure map, workflow table) is still present elsewhere in the file. **Closure condition, checkable by inspection and independent of any specific number:** `CLAUDE.md` contains no inventories of repository state — no file/workflow counts, no directory trees, no listings of function signatures or APIs. A single version constraint recorded as a warning is not an inventory. |
 
@@ -258,9 +259,291 @@ the source at the cited SHA; it is not evidence that the implementation is secur
 
 ---
 
+## Reconciliation 2026-11-06 (`main` @ `7455da8`)
+
+**TARGET_SHA: `7455da8440521a14bbb09baf8d646243a8b5d6c6`** (the merge of PR #130), resolved
+from `origin/main` at the start of this pass and re-checked unchanged before it was written.
+This pass covers the PRs merged since the last tracker update (PR #121, `620aea7`) and five
+historical leads. Every other row keeps the SHA and evidence it cites; this pass did not
+re-check them.
+
+### Evidence basis
+
+All commands ran on 2026-11-06 in a disposable clone of TARGET_SHA:
+
+- `cargo test --workspace --locked`: exit 0. 443 passed, 0 failed, 3 ignored:
+  - core-crypto: 105 unit tests and 2 `feature_graph` tests;
+  - core-protocol: 117 unit tests and 4 doctests;
+  - core-storage: 43 (+2 ignored);
+  - core-transport: 5 (+1 ignored);
+  - mobile-ffi (`arcium_core`): 150;
+  - relay: 17.
+- `cargo audit --file Cargo.lock` (cargo-audit 0.22.2, advisory-db `26fd2d43` of
+  2026-11-05, 1409 advisories, 502 crates): exit 0, 0 vulnerabilities, 6 allowed warnings.
+- Five temporary probe tests, run once and then removed. They are not in this PR:
+  - three in core-storage, for D-009;
+  - two in mobile-ffi, for D-007.
+- One bounded run of the ignored test `new_fails_gracefully_without_tor` (D-008).
+- A shell reproduction of the license pipeline (D-011).
+- A Python re-computation of `hash_contact` (D-010).
+
+Each item below states its exact command or outcome. The evidence labels are those of
+`CLAUDE.md`.
+
+### Merged since the last tracker update
+
+| PR | Merge | What changed (source read at the merge) | Tracker implication |
+|----|-------|------------------------------------------|---------------------|
+| #122 | `88e6957` | `Cargo.lock` only: rustls 0.23.45 → 0.23.46, plus one `tempfile` edge, `getrandom` 0.4.3 → 0.3.4 (`git diff 88e6957^1 88e6957`). | None for any row. The advisory IDs RUSTSEC-2026-0346…0349 come from the PR title; this pass did not look them up. The local `cargo audit` above reports no vulnerability at TARGET_SHA (RUNTIME_VERIFIED). |
+| #125 | `2e09986` | `Cargo.lock`: ctutils 0.4.4, rustls-webpki 0.103.16, zstd 0.14.3, zstd-safe 8.2.0, zstd-sys 2.1.2. `.cargo/audit.toml` adds an ignore for RUSTSEC-2026-0387 (crypto-bigint 0.5.5), valid only together with the guard `.github/scripts/check_rustsec_2026_0387.py`. `arcium-ci.yml:48-51` runs the guard's self-test, then the guard, before `cargo audit` (`:54-58`). | None for an F/A/H row. The new ignore is a supply-chain residual alongside the two in `CLAUDE.md`. The guard's own result on TARGET_SHA was not run in this pass: it is a CI step (NOT_VERIFIED here). |
+| #127 | `a075240` | Delivery consistency, recorded as **X-4** below. | New row X-4. |
+| #123, #124, #128, #129, #130 | — | `.claude/` (hooks, QC, skills, agents, commands, settings), `CLAUDE.md`, a QC test-scope script and job in `arcium-ci.yml`, `docs/QC-V1-OPERATIONS.md` (`git diff --name-only` of each merge). | None. Agent tooling only; no runtime code changes. |
+
+### Historical leads D-007 … D-011
+
+These leads come from the `continuity` branch (`decisions.md`, recorded 2026-10-19 at
+`fb9cf32`). That record is not stored on `main`. Here it was used as a lead only: each item
+below was re-derived at TARGET_SHA. None of them is a new vulnerability class. Three refine
+the stated scope of existing rows (F-9, F-10, F-15), and two are recorded here for the
+first time.
+
+**D-007 · Missing `master_key.blob` with an existing database → new identity.** Home:
+**F-9 scope (unresolved residual)**. F-9's status is unchanged.
+- *Source (SOURCE_VERIFIED).*
+  - `MasterKeyProvider.getOrCreateMasterKey`
+    (`android/app/src/main/kotlin/com/arcium/messenger/security/MasterKeyProvider.kt:42-68`)
+    decides between unwrap and create only on `blobFile.exists()` (`:45`). It never looks at
+    `arcium.db`.
+  - `ArciumApp.onCreate` opens `arcium.db` with whatever key it gets (`ArciumApp.kt:18-20`).
+  - Records are found under a master-key-derived name (`storage_key`,
+    `crates/core-storage/src/lib.rs:330`; `get_row` `:450`). So under another key the
+    identity read is `NotFound`, which `identity_from_record` maps to `Ok(None)`
+    (`crates/mobile-ffi/src/lib.rs:243-246`).
+  - `IdentityRepository.load` turns that into `Absent`
+    (`android/.../data/IdentityRepository.kt:31-32`). `IdentityGate` routes `Absent` to
+    onboarding (`ui/navigation/IdentityGate.kt:58`). Onboarding's `createOrLoadExisting`
+    (`data/IdentityRepository.kt:44`, `ui/onboarding/OnboardingViewModel.kt:33`) reaches the
+    create-only `save_identity` (`lib.rs:640`). Under the new key that finds no record, so it
+    writes a second identity row.
+- *The three cases are distinct:*
+  1. **Missing blob:** a new random master key is created silently (`:51-58`). That is the
+     path above.
+  2. **Corrupted blob:** the version and length check (`:97-99`) or the GCM tag
+     (`cipher.doFinal`, `:104`) throws. `ArciumApp.onCreate` does not catch it, so startup
+     fails visibly (INFERRED from the source; not run on Android). Nothing is created.
+  3. **Wrong key:** for example, the Keystore alias is gone and `getOrCreateWrapKey`
+     (`:70-87`) generates a new wrap key. The existing blob then fails GCM authentication and
+     throws as in case 2 (INFERRED from source). A wrong key that reaches Rust some other way
+     behaves like case 1 (INFERRED from the storage lookup above).
+
+  Separately, a corrupted identity *row* under the right key is `IdentityUnreadable`, not
+  absence (probe 2 below; the F-9 tests).
+- *Runtime (RUNTIME_VERIFIED, Rust level only).* Temporary probe
+  `probe_new_master_key_on_existing_db_reads_as_no_identity_and_allows_a_second_identity`
+  (mobile-ffi):
+  - save an identity under key A, open the same file under key B;
+  - `load_identity` → `Ok(None)`, and `save_identity` of a new identity → `Ok`;
+  - reopen under key A → the original identity is still present.
+
+  The old identity is orphaned, not deleted. Probe `probe_corrupted_identity_row_is_an_error`:
+  a zeroed row under the right key gives `Err(IdentityUnreadable)`. The committed test
+  `core_with_wrong_key_fails` (`lib.rs:1108`) passed in the workspace run and pins the
+  `Ok(None)` half.
+- *Not verified.* The Android path end to end: deleting the blob on a device or emulator
+  and observing onboarding. Also cases 2 and 3 at runtime, which need the Android Keystore.
+- *Smallest next task.* Task 1 below.
+
+**D-008 · `TorTransport::new` has no bootstrap timeout.** Home: **F-15 scope**. F-15's
+status is unchanged.
+- *Source (SOURCE_VERIFIED).* `TorTransport::new` awaits
+  `TorClient::create_bootstrapped(TorClientConfig::default())` with no timeout
+  (`crates/core-transport/src/lib.rs:23-27`). It ignores `_state_dir` (`:23`; F-15(b)) and
+  hard-codes `"TODO.onion"` (`:30`).
+- *Production caller.* None.
+  - `mobile-ffi` lists `core-transport` as a dependency (`crates/mobile-ffi/Cargo.toml:16`),
+    but nothing under `crates/mobile-ffi/src` names `core_transport` or `TorTransport`
+    (`grep`, no match).
+  - The Kotlin `startTorTransport` throws `NotImplementedError`
+    (`android/.../ffi/ArciumCore.kt:263-269`).
+  - Today the missing timeout cannot block any shipped path (SOURCE_VERIFIED by the absence
+    of callers).
+- *Runtime (RUNTIME_VERIFIED, cause INFERRED).*
+  `timeout 120 cargo test --locked -p core-transport new_fails_gracefully_without_tor -- --ignored`
+  printed `has been running for over 60 seconds` and was killed by `timeout` (exit 124). The
+  test binary ran about 99 s of the 120 s; the build took 21 s. So the call did not return
+  an error within that bound in this sandbox. That the cause is the missing timeout, and not
+  this sandbox's network policy, is inferred.
+- *Smallest next task.* Task 3 below. It is not urgent while there is no caller.
+
+**D-009 · Storage rollback.** Home: **F-10 scope** and `docs/S2-B2-DURABLE-MESSAGING.md`
+§8. F-10's status is unchanged. Three different properties need to be kept apart.
+- *Single-record rollback (RUNTIME_VERIFIED).* A row's value is AEAD-encrypted under a
+  per-key subkey, with only the key name as AAD (`crates/core-storage/src/lib.rs:406-419`).
+  No version or counter is bound into it. Probe `probe_single_record_rollback_is_accepted`:
+  - write `session:bob` = v1 and keep the raw row;
+  - write v2, then put the old ciphertext back into the same row with plain SQL;
+  - `get` → v1, accepted without error.
+- *Cross-record substitution is refused (RUNTIME_VERIFIED).* Probe
+  `probe_cross_record_swap_is_refused` copies one record's ciphertext into another record's
+  row. That read fails with `Decryption`; the untouched record still reads.
+- *Whole-file rollback (RUNTIME_VERIFIED).* Probe `probe_whole_file_rollback_is_accepted`:
+  - snapshot the file after v1, then write v2 and a new record;
+  - copy the snapshot back and reopen;
+  - result: v1, and the new record is `NotFound`.
+
+  This is the case F-10 and S2-B2 §8 (`docs/S2-B2-DURABLE-MESSAGING.md:351`, "malicious
+  rollback (older database file) — not provided; needs an external authority") already list
+  as not covered. The single-record case is a narrower attack: it needs write access to one
+  row, not a whole-file restore. It was not spelled out in the F-10 row before.
+- *Crash consistency is a separate property.* It is covered by rollback-journal mode,
+  `synchronous = EXTRA` and the transaction rules (`crates/core-storage/src/lib.rs:87-122`;
+  S2-B2 §§3, 7, 8). None of the probes above concerns it. Passing crash tests says nothing
+  about rollback resistance, and the reverse is also true.
+- *Not established.* Whether a single-record rollback of a ratchet or outbox record can be
+  turned into nonce or key reuse. This pass did not analyse it (NOT_VERIFIED); it belongs to
+  the design decision in task 4. No witness or other trust mechanism is selected here.
+
+**D-010 · No phone normalization before `hash_contact`.** Home: **scope note N-3** below.
+This is a behaviour and compatibility fact, not a vulnerability.
+- *Source (SOURCE_VERIFIED).*
+  - `hash_contact` hashes the raw UTF-8 bytes it is given
+    (`crates/core-crypto/src/contact_hash.rs:38-41`). The TS twin `hashPhoneWithTruncation`
+    does the same (`arcium-psi/tests/src/utils.ts:8-11`).
+  - There is no normalization step anywhere in Rust, TS or Kotlin (`grep` for
+    `normaliz`/`E.164`, no match in source).
+  - The only callers are tests and the TS test harness (`arcium-psi/tests/src/*.ts`). There
+    is no production caller in `crates/` or `android/`.
+- *Runtime (RUNTIME_VERIFIED).* A Python re-computation reproduces the canonical vector
+  `+1234567890` → `5364562789390625858`. That vector also passes in the committed Rust test
+  `matches_canonical_vector` (`contact_hash.rs:62`). The same computation gives six different
+  values for `+1234567890`, ` +1234567890`, `1234567890`, `+1 234 567 890`, `+1-234-567-890`
+  and the full-width digits form.
+- *Compatibility (INFERRED).*
+  - Normalization would be applied to the input before hashing, so the hash function, the
+    truncation and the circuit's u64 comparison stay as they are.
+  - Any normalization must be identical in every client. Otherwise equal contacts stop
+    matching.
+  - No hashes are stored today, because there is no caller, so nothing would need
+    migrating.
+  - This pass does not choose a format.
+- *Smallest next task.* Task 5 below. It is a decision, needed before the first production
+  caller.
+
+**D-011 · SDK-license steps that mask failure.** Home: new row **A-4** below.
+- *Source (SOURCE_VERIFIED).* Two steps end the license pipeline in `|| true`:
+  - `.github/workflows/android-ci.yml:32`
+    (`yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true`) runs
+    in the default `bash -e` shell, without `pipefail`. The step has no `shell:` key and the
+    file sets no `defaults:`.
+  - `.github/workflows/android-two-device-e2e.yml:90` runs after `set -euo pipefail` (`:88`).
+  - `.github/workflows/native-artifact-baseline.yml:38-42` already handles this correctly:
+    `set +e`, then the pipeline, then `sdk_rc="${PIPESTATUS[1]}"`, `set -e`, and
+    `test "${sdk_rc}" -eq 0`.
+  - The other `|| true` uses in the workflows guard log printing and process cleanup, not a
+    verdict. That includes `android-instrumentation.yml:155-158`,
+    `android-two-device-e2e.yml:111-140` and `arcium-ci.yml:122-124, 225-240`.
+- *Runtime (RUNTIME_VERIFIED, local shell, fake `sdkmanager` that reads 4 bytes and
+  exits).*
+
+  | Shell | Fake `sdkmanager` exits 0 | Fake `sdkmanager` exits 1 |
+  |---|---|---|
+  | `bash -e` | step exits 0 | step exits 1 |
+  | `pipefail` | step exits **141**: `yes` gets SIGPIPE, so the step fails although sdkmanager succeeded | step exits 1 |
+  | either, with `\|\| true` | step exits 0 | step exits **0** |
+
+  In `android-ci.yml:32`, `yes`'s SIGPIPE never matters, so `|| true` only hides an
+  sdkmanager failure. In `android-two-device-e2e.yml:90`, `|| true` hides the producer's
+  SIGPIPE and an sdkmanager failure alike. The baseline pattern keeps the sdkmanager exit
+  code and drops only the producer's.
+- *Impact (INFERRED).* In the two-device job the next line, `sdkmanager --install` (`:91`),
+  would most likely fail on an unaccepted license, so a later step probably fails closed. In
+  `android-ci` a missing license would surface in Gradle only if a component had to be
+  installed. The step's own green proves nothing either way (`CLAUDE.md`, "Границы
+  доказательств").
+- *Smallest next task.* Task 2 below.
+
+### Rows added by this reconciliation
+
+| ID | Description | Status | Evidence (`main` @ `7455da8`) |
+|----|-------------|--------|-------------------------------|
+| **A-4** | CI integrity: the Android SDK license step ends in `\|\| true`, so a failing `sdkmanager --licenses` cannot fail the step (D-011). | **NOT-FIXED** · LOW | `.github/workflows/android-ci.yml:32`; `.github/workflows/android-two-device-e2e.yml:90`. Shell reproduction and the existing correct pattern (`native-artifact-baseline.yml:38-42`) in D-011 above. |
+| **X-4** | Delivery consistency (PR #127). (a) A text missing from the outbox was read as `Delivered`. (b) `acknowledge_outgoing` and `abandon_outgoing` were exported through UniFFI. (c) `read_prior_send` read the send record and the outbox in two queries, so another connection's abandonment could be read as an acknowledgement. (d) `send_text` and `chat_send` could collide on one client id. | **FIXED — merged (PR #127, `a075240`)**, scoped as below | Neither removal is exported: `acknowledge_outgoing`/`abandon_outgoing` are `pub(crate)` in the plain `impl` (`crates/mobile-ffi/src/messaging_api.rs:194`, `:281`, `:304`), separate from the exported block (`:317-318`; X-3). `Delivered` comes only from the durable send record (`docs/NET-MESSAGING.md` §5, `:182-191`). Tests passing in the workspace run at TARGET_SHA (RUNTIME_VERIFIED): `ack_probe::neither_outbox_removal_is_exported_through_uniffi`, `ack_probe::without_a_receipt_the_network_path_never_shows_delivered`, `delivery_consistency::concurrent_sends_and_a_resolution_never_show_delivered_without_a_receipt`, `messaging::tests::concurrent::an_abandonment_from_another_connection_is_never_read_as_an_acknowledgement`, `…::concurrent_abandonments_are_never_read_as_acknowledgements`. **Scope:** no stored record is repaired; an entry already shown `Delivered` under the old rule stays so (`docs/NET-MESSAGING.md:199-202`). Two-device qualification on the new rule is open (PR #126 predates it). Physical devices are not covered. |
+
+**N-3 · Contact-hash input is not normalized (D-010).** `hash_contact` and its TS twin hash
+the exact input bytes. Formatting variants of one number hash differently (D-010 above).
+This is intended behaviour of the function as written, not a defect in it. Which canonical
+input form the clients must produce is an open product and protocol decision, to be made
+before the first production caller. Until then the canonical standard in `CLAUDE.md`
+(`u64::from_le_bytes(sha256(phone.as_bytes())[0..8])`) describes the hash, not the input
+form. This note opens no finding.
+
+### Next engineering tasks (2026-11-06)
+
+These five supersede the ordering of the 2026-09-29 list below for new work; that list is
+kept as history. Every item still needs its own owner task and PR. A fix PR must add a
+counterexample that fails on the unfixed baseline (TARGET_SHA or the then-current `main`)
+and passes after the repair. The tracker row changes in a separate PR after the fix
+(`repo-change-protocol` §9).
+
+1. **Fail closed when the master key is missing but a database exists (D-007, F-9
+   residual).**
+   - *Scope:* `MasterKeyProvider` and `ArciumApp` startup on Android. When
+     `master_key.blob` is absent and `arcium.db` exists, do not generate a new key. Surface
+     a distinct, non-onboarding state. No recovery or reset flow, no change to key
+     derivation or the storage format.
+   - *Prerequisites:* an owner decision on what the user sees (error screen only).
+     Security review (key lifecycle, durable identity).
+   - *Acceptance:* an instrumentation test creates a store and an identity, deletes the
+     blob, restarts the provider and app start-up, and asserts no onboarding and no second
+     identity row. On the baseline it reaches onboarding or creates a second row, as the
+     Rust probe above shows. After the fix it passes. The first-run path, with no blob and
+     no database, still creates a key.
+2. **Make the license step fail on an sdkmanager failure (D-011, A-4).**
+   - *Scope:* `android-ci.yml:32` and `android-two-device-e2e.yml:90` only. Replace
+     `|| true` with the `PIPESTATUS[1]` pattern of `native-artifact-baseline.yml:38-42`.
+   - *Prerequisites:* an owner task that permits a workflow change. It is a CI-integrity
+     change, so it gets security review.
+   - *Acceptance:*
+     - the pipeline shape the PR introduces, run with a fake `sdkmanager` that exits 1,
+       fails the step on both files; the baseline form exits 0;
+     - with a fake that exits 0 under `pipefail`, it passes; the bare `pipefail` form
+       exits 141;
+     - both workflows are green on the PR head.
+3. **Bound Tor bootstrap (D-008).**
+   - *Scope:* `TorTransport::new` returns a `Bootstrap` error within a fixed bound instead
+     of waiting indefinitely. `state_dir` handling (F-15(b)) is a separate item.
+   - *Prerequisites:* do it together with, or before, the first production caller. The
+     bound is an owner choice.
+   - *Acceptance:* with no reachable Tor network, a non-ignored test completes with
+     `Err(TransportError::Bootstrap(_))` inside the bound. On the baseline the same test
+     does not return within 120 s (this pass: killed after about 99 s of running).
+4. **Rollback-resistance design decision (D-009, F-10).** Design only; no implementation
+   in this task.
+   - *Scope:* a written decision on which of the following, if any, the store must resist,
+     and against which attacker:
+     - single-record rollback within one file;
+     - whole-file rollback;
+     - and whether a single-record rollback of ratchet or outbox state is exploitable.
+
+     Crash consistency is already specified and stays out of scope. Choosing a witness or
+     another external trust mechanism is part of the decision, not of this tracker.
+   - *Prerequisites:* the `mbr-integration` skill's evidence and an owner decision.
+   - *Acceptance:* the decision is recorded in `docs/S2-B2-DURABLE-MESSAGING.md` §8. Any
+     later fix PR adds the three probes above as tests: the two rollback probes fail after
+     the fix where the decision requires it, and the cross-record probe keeps passing.
+5. **Decide the canonical contact-hash input (D-010, N-3).** A decision, not a fix.
+   - *Scope:* the input form both clients must produce before calling `hash_contact`.
+   - *Prerequisites:* an owner decision before the first production caller. It is a
+     protocol change: both clients must apply it identically.
+   - *Acceptance:* the decision is recorded next to the canonical standard. A shared vector
+     set (raw input → normalized input → u64) passes in Rust and in TS. The existing vector
+     `+1234567890` → `5364562789390625858` is unchanged.
+
+---
+
 ## Prioritized remaining work
 
-Regenerated 2026-09-29 from the tables above; the 2026-07-19 list is superseded. Order is
+For new work, see "Next engineering tasks (2026-11-06)" above; this list is kept as history. Regenerated 2026-09-29 from the tables above; the 2026-07-19 list is superseded. Order is
 the reviewer's suggestion, not a commitment, and every item needs its own task, its own PR
 and an explicit owner instruction (crypto and protocol changes are never bundled).
 
@@ -292,3 +575,5 @@ describes PR #108, merged as `5d61d5a`, and the A-3.5 row (and H-9's partial sta
 `main` @ `1a7b1904` (2026-07-28) with the re-check note above. Re-verify a row against the
 source at your own target SHA before relying on it, and do not read a `FIXED` here as a
 statement about anything the row does not name. A-3 itself stays **PARTIAL** (see that row).*
+
+*The "Reconciliation 2026-11-06" section, its rows A-4 and X-4, note N-3 and the cross-reference notes dated 2026-11-06 in F-9, F-10 and F-15 describe `main` @ `7455da8`.*

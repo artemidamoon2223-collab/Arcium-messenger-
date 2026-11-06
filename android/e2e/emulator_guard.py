@@ -13,24 +13,41 @@ A target is verified only if all of these hold:
   3. `getprop ro.kernel.qemu` or `getprop ro.boot.qemu` is exactly `1`;
   4. `getprop ro.hardware` is `ranchu` or `goldfish` (the emulator boards).
 
-Any failed, timed-out or unexpected answer counts as "not verified".
+Every query the guard sends must succeed: a query that fails or times out
+refuses the target, even when another query already answered `1`. A
+successful empty answer (property not set) is a different case from a
+failed query, and only the former can count toward check 3.
 """
 
+import os
 import re
 import subprocess
 
 EMULATOR_SERIAL = re.compile(r"emulator-\d+")
 EMULATOR_HARDWARE = {"ranchu", "goldfish"}
+# Seconds per query; the regression check lowers it to exercise timeouts quickly.
+TIMEOUT = float(os.environ.get("ARCIUM_E2E_ADB_TIMEOUT", "30"))
+
+
+class QueryFailed(Exception):
+    """An adb query that did not complete successfully."""
 
 
 def _read(serial, *command):
-    """Runs one read-only adb query; returns its stripped stdout, or None on any failure."""
+    """Runs one read-only adb query and returns its stripped stdout (possibly empty).
+
+    Raises QueryFailed if adb cannot be run, times out or exits non-zero, so
+    a failure can never be mistaken for an empty answer.
+    """
+    what = " ".join(command)
     try:
-        r = subprocess.run(["adb", "-s", serial, *command], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None
+        r = subprocess.run(["adb", "-s", serial, *command], capture_output=True, text=True, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise QueryFailed(f"{serial}: `adb {what}` timed out after {TIMEOUT:g} s")
+    except (OSError, subprocess.SubprocessError) as e:
+        raise QueryFailed(f"{serial}: `adb {what}` could not run ({e.__class__.__name__})")
     if r.returncode != 0:
-        return None
+        raise QueryFailed(f"{serial}: `adb {what}` failed with exit status {r.returncode}")
     return r.stdout.strip()
 
 
@@ -38,16 +55,20 @@ def why_not_emulator(serial):
     """None if `serial` is a verified emulator, else the reason it is not."""
     if not EMULATOR_SERIAL.fullmatch(serial or ""):
         return f"serial {serial!r} is not an emulator serial (emulator-<port>)"
-    state = _read(serial, "get-state")
-    if state != "device":
-        return f"{serial}: adb get-state answered {state!r}, not 'device'"
-    qemu = (_read(serial, "shell", "getprop", "ro.kernel.qemu"),
-            _read(serial, "shell", "getprop", "ro.boot.qemu"))
-    if "1" not in qemu:
-        return f"{serial}: ro.kernel.qemu/ro.boot.qemu are {qemu!r}, not an emulator"
-    hardware = _read(serial, "shell", "getprop", "ro.hardware")
-    if hardware not in EMULATOR_HARDWARE:
-        return f"{serial}: ro.hardware is {hardware!r}, not an emulator board"
+    try:
+        state = _read(serial, "get-state")
+        if state != "device":
+            return f"{serial}: adb get-state answered {state!r}, not 'device'"
+        # Both are always queried, and both must answer; either may be the one set.
+        qemu = (_read(serial, "shell", "getprop", "ro.kernel.qemu"),
+                _read(serial, "shell", "getprop", "ro.boot.qemu"))
+        if "1" not in qemu:
+            return f"{serial}: ro.kernel.qemu/ro.boot.qemu are {qemu!r}, not an emulator"
+        hardware = _read(serial, "shell", "getprop", "ro.hardware")
+        if hardware not in EMULATOR_HARDWARE:
+            return f"{serial}: ro.hardware is {hardware!r}, not an emulator board"
+    except QueryFailed as e:
+        return str(e)
     return None
 
 

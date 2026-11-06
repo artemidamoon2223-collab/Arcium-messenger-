@@ -50,11 +50,22 @@ FAKE_ADB = textwrap.dedent(r'''
         if profile == "unknown":
             sys.stderr.write("error: device offline\n"); sys.exit(1)
         print("device"); sys.exit(0)
+    # Profiles of the form "<prop>:fail" or "<prop>:hang" answer like a
+    # verified emulator except for that one property query, which exits
+    # non-zero or never returns. "emulator-boot" sets only ro.boot.qemu=1
+    # (ro.kernel.qemu answers successfully, but empty).
+    import time
+    broken, _, mode = profile.partition(":")
     def getprop(name):
         if profile == "noprops":
             sys.exit(1)
-        emu = profile == "emulator"
-        values = {"ro.kernel.qemu": "1" if emu else "", "ro.boot.qemu": "",
+        if mode and name == broken:
+            if mode == "fail":
+                sys.exit(1)
+            time.sleep(60); sys.exit(0)
+        emu = profile in ("emulator", "emulator-boot") or bool(mode)
+        values = {"ro.kernel.qemu": "1" if emu and profile != "emulator-boot" else "",
+                  "ro.boot.qemu": "1" if profile == "emulator-boot" else "",
                   "ro.hardware": "ranchu" if emu else "qcom",
                   "ro.build.fingerprint": "fake/" + profile, "ro.build.version.sdk": "30"}
         print(values.get(name, ""))
@@ -122,6 +133,7 @@ class Harness:
                         FAKE_ADB_PROFILES=json.dumps(profiles),
                         FAKE_ADB_STATE=str(self.dir / "files.json"),
                         FAKE_ADB_LOG=str(self.log),
+                        ARCIUM_E2E_ADB_TIMEOUT="2",
                         ARCIUM_E2E_GUARD_SELFTEST="running")
 
     def run(self, script, *args):
@@ -170,6 +182,34 @@ class GuardTest(unittest.TestCase):
         self.assertTrue(any("pm clear" in a for a in args))
         first_mutation = next(i for i, a in enumerate(args) if not a.startswith(READ_ONLY))
         self.assertTrue(any(a == "get-state" for a in args[:first_mutation]), "verification comes first")
+
+    # A query that fails or hangs refuses the target even when the other
+    # QEMU property already answered "1" (the gap in 8a20d66: the failed
+    # answer was read as "not set" and the other "1" was accepted).
+    PARTIAL = ("ro.boot.qemu:fail", "ro.boot.qemu:hang", "ro.kernel.qemu:fail", "ro.kernel.qemu:hang",
+               "ro.hardware:fail", "ro.hardware:hang")
+
+    def test_restart_driver_refuses_a_partially_failing_or_hanging_query(self):
+        for profile in self.PARTIAL:
+            with self.subTest(profile=profile):
+                h = Harness({"emulator-5554": profile})
+                self.assertRefusedUntouched(h, h.run("master_key_restart.py", "--serial", "emulator-5554"))
+
+    def test_two_device_driver_refuses_a_partially_failing_or_hanging_query_on_either_target(self):
+        for profile in self.PARTIAL:
+            for alice, bob in ((profile, "emulator"), ("emulator", profile)):
+                with self.subTest(alice=alice, bob=bob):
+                    h = Harness({"emulator-5554": alice, "emulator-5556": bob})
+                    r = h.run("two_devices.py", "--alice", "emulator-5554", "--bob", "emulator-5556",
+                              "--relay", "10.0.2.2:7700")
+                    self.assertRefusedUntouched(h, r)
+
+    def test_an_emulator_that_sets_only_ro_boot_qemu_is_accepted(self):
+        # ro.kernel.qemu answers successfully but empty: not a failure.
+        h = Harness({"emulator-5554": "emulator-boot"})
+        r = h.run("master_key_restart.py", "--serial", "emulator-5554")
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+        self.assertIn("targets verified as emulators: emulator-5554", r.stdout)
 
     def test_two_device_driver_touches_neither_target_if_one_is_not_verified(self):
         for alice, bob in (("emulator", "physical"), ("physical", "emulator"),

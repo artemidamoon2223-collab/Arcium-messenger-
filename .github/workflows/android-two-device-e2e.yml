@@ -87,7 +87,13 @@ jobs:
         run: |
           set -euo pipefail
           SDKM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKM" --licenses > /dev/null || true
+          # `yes` dies of SIGPIPE once sdkmanager stops reading; only
+          # sdkmanager's own status (PIPESTATUS[1]) decides.
+          set +e
+          yes | "$SDKM" --licenses > /dev/null
+          sdk_rc="${PIPESTATUS[1]}"
+          set -e
+          test "$sdk_rc" -eq 0
           "$SDKM" --install emulator platform-tools "$SYSTEM_IMAGE" > /dev/null
           echo "$ANDROID_SDK_ROOT/emulator" >> "$GITHUB_PATH"
           echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"

@@ -140,7 +140,7 @@ def main():
     print("Device:", d.shell("getprop ro.build.fingerprint"), "| SDK", d.shell("getprop ro.build.version.sdk"))
     try:
         version = subprocess.run(["emulator", "-version"], capture_output=True, text=True, check=False)
-        print("Emulator:", (version.stdout.splitlines() or ["unknown"])[0])
+        print("Emulator:", ((version.stdout + version.stderr).splitlines() or ["unknown"])[0])
     except FileNotFoundError:
         print("Emulator: `emulator` is not on PATH; version unknown")
 
@@ -158,7 +158,8 @@ def main():
     d.step("anIntactRestartOpensTheSameIdentity", expectedIdentity=identity)
 
     print("3. The blob is deleted; the store stays")
-    d.run_as(f"cp {BLOB} {SAVED}")
+    # Files written through run-as keep the app's own mode (0600), like the app's.
+    d.run_as(f"cp {BLOB} {SAVED} && chmod 600 {SAVED}")
     d.check(d.app_file(SAVED) == d.app_file(BLOB), "the original blob was saved aside")
     d.run_as(f"rm {BLOB}")
     db_before = d.digest(DB)
@@ -170,7 +171,7 @@ def main():
     d.check(d.app_file("files/master_key.blob.tmp") is None, "no temporary blob was written")
 
     print("4. The blob is replaced with garbage; the store stays")
-    d.run_as(f"printf %s {shlex.quote(GARBAGE)} > {BLOB}")
+    d.run_as(f"printf %s {shlex.quote(GARBAGE)} > {BLOB} && chmod 600 {BLOB}")
     db_before, blob_before = d.digest(DB), d.digest(BLOB)
     print("  before: db", db_before, "| blob", blob_before)
     d.step("aCorruptedKeyBlocksStartupAcrossRetries")
@@ -179,7 +180,7 @@ def main():
     d.check(d.digest(DB) == db_before, "the store is byte for byte unchanged")
 
     print("5. The original blob is put back")
-    d.run_as(f"cp {SAVED} {BLOB}")
+    d.run_as(f"cp {SAVED} {BLOB} && chmod 600 {BLOB}")
     d.step("anIntactRestartOpensTheSameIdentity", expectedIdentity=identity)
 
     print("  files:\n    " + d.files().replace("\n", "\n    "))

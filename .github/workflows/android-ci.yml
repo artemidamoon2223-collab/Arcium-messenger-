@@ -28,8 +28,15 @@ jobs:
 
       # ubuntu-latest ships with Android SDK including platforms;android-34
       # and build-tools;34.0.0. compileSdk=34 requires no extra installation.
+      # `yes` is killed by SIGPIPE once sdkmanager stops reading; only
+      # sdkmanager's own status (PIPESTATUS[1]) decides the step.
       - name: Accept Android SDK licenses
-        run: yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
+        run: |
+          set +e
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
+          sdk_rc="${PIPESTATUS[1]}"
+          set -e
+          test "$sdk_rc" -eq 0
 
       - name: Write local.properties
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties

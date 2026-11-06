@@ -124,12 +124,13 @@ object MasterKeyProvider {
             val tmp = File(dir, "$BLOB_FILE_NAME.tmp")
             tmp.writeBytes(wrap(masterKey, wrapKey))
             check(tmp.renameTo(blobFile)) { "failed to persist wrapped master key" }
-        } catch (e: Exception) {
-            // Best-effort scrub: the caller never receives the key on this
-            // path. Deliberately not a finally block — on the success path
-            // the array is handed to the caller live.
+        } catch (t: Throwable) {
+            // Best-effort scrub on every failure, errors included: the caller
+            // never receives the key on this path. Deliberately not a finally
+            // block — on the success path the array is handed to the caller live.
             masterKey.fill(0)
-            return MasterKeyResult.Unavailable("a new master key could not be stored (${e.javaClass.simpleName})")
+            if (t !is Exception) throw t
+            return MasterKeyResult.Unavailable("a new master key could not be stored (${t.javaClass.simpleName})")
         }
         return MasterKeyResult.Available(masterKey)
     }

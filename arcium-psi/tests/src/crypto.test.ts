@@ -1,7 +1,9 @@
 import { expect } from 'chai';
 import { Keypair } from '@solana/web3.js';
 import { RescueCipher } from '@arcium-hq/client';
-import { hashPhoneWithTruncation } from './utils';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { hashPhoneWithTruncation, normalizeE164, hashPhoneE164 } from './utils';
 import {
   BATCH_SIZE, CIPHERTEXTS, PsiRequest,
   generateX25519Keypair, computeSharedSecret,
@@ -54,6 +56,27 @@ describe('Client Crypto (local, no devnet)', () => {
     // Cross-language canonical vector — must match Rust contact_hash::hash_contact("+1234567890").
     // sha256("+1234567890")[0..8] as little-endian u64
     expect(a).to.equal(5364562789390625858n);
+  });
+
+  it('canonical E.164 input matches the shared vectors (D-010)', () => {
+    // Shared with Rust core_crypto::contact_hash (shared_e164_vectors).
+    const file = join(__dirname, '../../../crates/core-crypto/tests/contact_hash_e164.tsv');
+    const lines = readFileSync(file, 'utf8').split('\n').filter(l => l !== '' && !l.startsWith('#'));
+    for (const line of lines) {
+      const cols = line.split('\t');
+      expect(cols.length, `malformed vector line ${JSON.stringify(line)}`).to.equal(3);
+      const [raw, canonical, hash] = cols;
+      if (canonical === '-') {
+        expect(hash, JSON.stringify(raw)).to.equal('-');
+        expect(normalizeE164(raw), JSON.stringify(raw)).to.equal(null);
+        expect(hashPhoneE164(raw), JSON.stringify(raw)).to.equal(null);
+      } else {
+        expect(normalizeE164(raw), JSON.stringify(raw)).to.equal(canonical);
+        expect(hashPhoneE164(raw), JSON.stringify(raw)).to.equal(BigInt(hash));
+        expect(hashPhoneWithTruncation(canonical)).to.equal(BigInt(hash));
+      }
+    }
+    expect(lines.length, 'every vector line must be checked').to.equal(25);
   });
 
   it('X25519 ECDH is symmetric', () => {

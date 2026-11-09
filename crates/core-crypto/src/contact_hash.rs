@@ -1,6 +1,15 @@
 //! Contact hashing for PSI (Private Set Intersection).
 //! MUST match the TypeScript client exactly (tests/src/utils.ts):
 //!   u64::from_le_bytes(sha256(phone)[0..8])
+//!
+//! Canonical input (D-010, decided 2026-11-08): the phone number in strict
+//! E.164 form, `+` then 2–15 ASCII digits with a non-zero first digit, for
+//! example `+79991234567`. [`normalize_e164`] produces it by removing the
+//! separators ` `, `-`, `.`, `(` and `)`; anything else, including a number
+//! without `+` (a national form such as `8 999 …`) or an `00` prefix, has no
+//! canonical form and is not hashed. A client that knows the user's region may
+//! first format a national number as E.164 itself. The same rule is in TS
+//! `normalizeE164`; both are checked against `tests/contact_hash_e164.tsv`.
 
 use sha2::{Digest, Sha256};
 
@@ -41,9 +50,66 @@ pub fn hash_contact(phone: &str) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
+/// Separators [`normalize_e164`] removes; any other non-digit is refused.
+const E164_SEPARATORS: [char; 5] = [' ', '-', '.', '(', ')'];
+
+/// Returns the canonical E.164 form of `raw`, or `None` if it has none.
+///
+/// Removes [`E164_SEPARATORS`]; the rest must be `+` followed by 2–15 ASCII
+/// digits whose first digit is not `0`. No country is guessed.
+pub fn normalize_e164(raw: &str) -> Option<String> {
+    let canonical: String = raw
+        .chars()
+        .filter(|c| !E164_SEPARATORS.contains(c))
+        .collect();
+    let digits = canonical.strip_prefix('+')?;
+    let valid = (2..=15).contains(&digits.len())
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && !digits.starts_with('0');
+    valid.then_some(canonical)
+}
+
+/// [`hash_contact`] of the canonical form of `raw`, or `None` if `raw` has no
+/// canonical E.164 form.
+pub fn hash_contact_e164(raw: &str) -> Option<u64> {
+    normalize_e164(raw).map(|canonical| hash_contact(&canonical))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shared with the TS client (`arcium-psi/tests/src/crypto.test.ts`).
+    const E164_VECTORS: &str = include_str!("../tests/contact_hash_e164.tsv");
+
+    #[test]
+    fn shared_e164_vectors() {
+        let mut checked = 0;
+        for line in E164_VECTORS
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+        {
+            let cols: Vec<&str> = line.split('\t').collect();
+            assert_eq!(cols.len(), 3, "malformed vector line {line:?}");
+            let (raw, canonical, hash) = (cols[0], cols[1], cols[2]);
+            if canonical == "-" {
+                assert_eq!(hash, "-", "rejected input with a hash: {raw:?}");
+                assert_eq!(normalize_e164(raw), None, "must be rejected: {raw:?}");
+                assert_eq!(hash_contact_e164(raw), None, "must not be hashed: {raw:?}");
+            } else {
+                assert_eq!(
+                    normalize_e164(raw).as_deref(),
+                    Some(canonical),
+                    "for {raw:?}"
+                );
+                let expected: u64 = hash.parse().unwrap();
+                assert_eq!(hash_contact_e164(raw), Some(expected), "for {raw:?}");
+                assert_eq!(hash_contact(canonical), expected, "for {canonical:?}");
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 25, "every vector line must be checked");
+    }
 
     #[test]
     fn hash_is_deterministic() {

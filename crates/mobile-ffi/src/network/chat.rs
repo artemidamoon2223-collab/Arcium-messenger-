@@ -840,6 +840,11 @@ impl NetworkMessenger {
     fn refresh(&self, peer: &[u8; 32]) -> Result<Refresh, CoreError> {
         let mut result = Refresh::default();
         let handle = handle_of(peer);
+        // Committing a queued text below is a send, refused while the
+        // session is unresolved. This runs before `sync` in a round and on
+        // every `chat_send` and `chat_entries`, so recovery cannot wait for
+        // the next received message.
+        self.core.recover_if_unresolved(handle)?;
         let has_session = self.core.has_session(handle)?;
         if has_session {
             // Received texts: into the history, then marked read.

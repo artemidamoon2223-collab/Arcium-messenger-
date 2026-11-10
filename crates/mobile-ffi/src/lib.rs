@@ -2217,4 +2217,5 @@ mod tests {
     mod debug_redaction;
     mod outgoing;
     mod identity;
+    mod unresolved;
 }

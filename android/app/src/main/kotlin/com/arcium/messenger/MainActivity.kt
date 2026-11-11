@@ -7,21 +7,29 @@ import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.arcium.messenger.startup.StartupState
 import com.arcium.messenger.ui.navigation.AppNavigation
+import com.arcium.messenger.ui.startup.StartupGate
 import com.arcium.messenger.ui.theme.ArciumTheme
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // Messages are synced only while the app is visible; see MessengerService.
+        // Messages are synced only while the app is visible (MessengerService),
+        // and only once start-up is Ready: before that, the messenger does not
+        // exist.
         lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) { ArciumApp.messenger.syncWhileVisible() }
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                ArciumApp.startup.state.first { it == StartupState.Ready }
+                ArciumApp.messenger.syncWhileVisible()
+            }
         }
         setContent {
             ArciumTheme {
-                AppNavigation()
+                StartupGate(ArciumApp.startup) { AppNavigation() }
             }
         }
     }

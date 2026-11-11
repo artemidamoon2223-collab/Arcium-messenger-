@@ -85,6 +85,9 @@ X3DH + Double Ratchet, шифрованный SQLite (XChaCha20-Poly1305), Arciu
 u64::from_le_bytes( sha256(phone.as_bytes())[0..8] )
 ```
 Little-endian, первые 8 байт.
+Вход — номер строго в E.164 (`+79991234567`): `normalize_e164` в Rust и
+`normalizeE164` в TS, общие векторы `crates/core-crypto/tests/contact_hash_e164.tsv`
+(D-010). Номер без канонической формы не хэшируется.
 
 ### OffChainCircuitSource
 - .arcis circuit хостится на IPFS/CDN, НЕ загружается on-chain

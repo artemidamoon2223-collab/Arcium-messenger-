@@ -30,4 +30,4 @@ uniffi = { version = "0.28", features = ["build"] }
 tempfile = "3"
 # Raw access to the store's SQLite file in the F-9 identity tests, to inject
 # lock and corruption failures. The same version and features as core-storage.
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }

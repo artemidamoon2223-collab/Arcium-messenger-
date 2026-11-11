@@ -148,6 +148,9 @@ def copy_workspace(src, dst):
     shutil.copy2(src / "Cargo.toml", dst / "Cargo.toml")
     shutil.copy2(src / "Cargo.lock", dst / "Cargo.lock")
     shutil.copytree(src / "crates", dst / "crates", ignore=shutil.ignore_patterns("target"))
+    # Path dependencies patched in from the root manifest ([patch.crates-io]).
+    if (src / "vendor").is_dir():
+        shutil.copytree(src / "vendor", dst / "vendor", ignore=shutil.ignore_patterns("target"))
 
 
 def add_dependency(ws, dependencies, extra):

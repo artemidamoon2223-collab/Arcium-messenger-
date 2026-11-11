@@ -8,6 +8,9 @@ members = [
     "crates/mobile-ffi",
     "crates/relay",
 ]
+# A path dependency inside the workspace directory would otherwise become a
+# member; the vendored crate is patched in below, not developed here.
+exclude = ["vendor/tor-dirmgr"]
 
 [workspace.package]
 edition = "2021"
@@ -30,3 +33,13 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true 
+
+# RUSTSEC-2026-0459: libsqlite3-sys before 0.39 bundles a vulnerable SQLite.
+# tor-dirmgr 0.21 (via arti-client) requires rusqlite 0.31, and every arti
+# release so far caps it below 0.41, so the workspace could not resolve
+# rusqlite 0.41 (libsqlite3-sys "links" allows one version). vendor/tor-dirmgr
+# is the published 0.21.0 crate with only its rusqlite requirement raised to
+# 0.41. Remove this patch and vendor/tor-dirmgr once an arti release accepts
+# rusqlite >= 0.41. See vendor/README.md.
+[patch.crates-io]
+tor-dirmgr = { path = "vendor/tor-dirmgr" }

@@ -12,6 +12,21 @@ export function hashPhoneWithTruncation(phone: string): bigint {
   return bytesToU64LE(hash.slice(0, 8));
 }
 
+// Canonical contact-hash input (D-010): strict E.164. Remove ' ', '-', '.', '('
+// and ')'; the rest must be '+' then 2-15 ASCII digits, the first not '0'.
+// Anything else has no canonical form and is not hashed. Must match Rust
+// core_crypto::contact_hash::normalize_e164; both are checked against
+// crates/core-crypto/tests/contact_hash_e164.tsv.
+export function normalizeE164(raw: string): string | null {
+  const canonical = raw.replace(/[ \-.()]/g, '');
+  return /^\+[1-9][0-9]{1,14}$/.test(canonical) ? canonical : null;
+}
+
+export function hashPhoneE164(raw: string): bigint | null {
+  const canonical = normalizeE164(raw);
+  return canonical === null ? null : hashPhoneWithTruncation(canonical);
+}
+
 export function formatSol(lamports: number): string {
   return (lamports / 1e9).toFixed(4) + ' SOL';
 }

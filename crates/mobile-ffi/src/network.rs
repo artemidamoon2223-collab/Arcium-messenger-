@@ -105,6 +105,31 @@ pub struct NetworkMessenger {
     /// is sent once more, and the backoff starts again.
     last_sent: Mutex<HashMap<[u8; 32], (Instant, u32)>>,
     limits: Mutex<Limits>,
+    /// Where the mailbox passes of the next round start, after a round the
+    /// budget cut short. In memory only; `(0, 0)` otherwise.
+    resume: Mutex<Resume>,
+}
+
+/// The relay sequence numbers after which the two mailbox passes of the next
+/// round start. Both are zero (the beginning) unless the last round was cut
+/// short by its budget. They are positions chosen by the untrusted relay and
+/// are used only as a starting point: any error, and every round that runs
+/// to the end, puts them back to zero, so everything skipped is read again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Resume {
+    handshakes: u64,
+    messages: u64,
+}
+
+/// How one mailbox pass ended.
+#[derive(Debug, Clone, Copy)]
+struct ScanEnd {
+    /// The last sequence number the pass reached (where it started, if it
+    /// saw nothing).
+    reached: u64,
+    /// Whether it ran to the end of its part of the mailbox. False only when
+    /// the round's budget stopped it.
+    complete: bool,
 }
 
 /// Time bounds of the network layer (docs/NET-MESSAGING.md, section 7).
@@ -140,15 +165,36 @@ pub(crate) const ROUND_BUDGET: Duration = Duration::from_secs(120);
 /// (L3). The wait starts at `retransmit_after` and doubles with every send.
 pub(crate) const RETRANSMIT_CAP: Duration = Duration::from_secs(5 * 60);
 
-/// The deadline of one round's relay requests.
-#[derive(Debug, Clone, Copy)]
-struct Budget(Instant);
+/// The deadline of one round's relay requests, and whether it stopped any
+/// work in this round.
+#[derive(Debug)]
+struct Budget {
+    deadline: Instant,
+    cut: std::cell::Cell<bool>,
+}
 
 impl Budget {
+    fn new(budget: Duration) -> Self {
+        Self {
+            deadline: Instant::now() + budget,
+            cut: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Whether more work may start. A `false` is remembered: the round then
+    /// reports that it was cut short.
     fn left(&self) -> bool {
-        Instant::now() < self.0
+        let left = Instant::now() < self.deadline;
+        if !left {
+            self.cut.set(true);
+        }
+        left
     }
 }
+
+/// The report line of a round its budget cut short. Not a network error: the
+/// relay was reached, and the next round continues.
+pub(crate) const BUDGET_EXHAUSTED: &str = "round budget exhausted: the rest follows in the next round";
 
 /// A received text and its message id, the text in a wiping owner.
 pub(crate) type PendingText = (MessageId, Zeroizing<Vec<u8>>);
@@ -215,6 +261,7 @@ impl NetworkMessenger {
             retransmit_after: Duration::from_millis(retransmit_after_ms),
             last_sent: Mutex::new(HashMap::new()),
             limits: Mutex::new(Limits::default()),
+            resume: Mutex::new(Resume::default()),
         })
     }
 
@@ -418,7 +465,10 @@ impl NetworkMessenger {
     }
 
     fn sync_round(&self, report: &mut SyncReport) -> Result<(), CoreError> {
-        let budget = Budget(Instant::now() + self.limits().round_budget);
+        let budget = Budget::new(self.limits().round_budget);
+        // Taken, so that a round that fails anywhere starts the next one
+        // from the beginning; set again below only by a round cut short.
+        let from = std::mem::take(&mut *self.resume.lock().expect("resume"));
         let sessions = self.sessions()?;
         // Local recovery first: receipts or OPEN messages committed before a
         // crash, and receipts for texts accepted before one.
@@ -427,24 +477,40 @@ impl NetworkMessenger {
         }
         let mut conn = self.connect()?;
         self.put_bundle(&mut conn)?;
-        self.publish_pending(&mut conn, &sessions, budget, report)?;
+        self.publish_pending(&mut conn, &sessions, &budget, report)?;
 
         let our = self.core.our_identity_pk()?;
         // Handshakes before messages, so a session exists for what follows:
         // first every handshake in the part of the mailbox scanned, then
         // everything else in that same part.
-        if let Some(end) = self.scan(&mut conn, our, Pass::Handshakes, u64::MAX, budget, report)? {
-            self.scan(&mut conn, our, Pass::Messages, end, budget, report)?;
+        let handshakes =
+            self.scan(&mut conn, our, Pass::Handshakes, from.handshakes, u64::MAX, &budget, report)?;
+        // Messages only as far as the handshakes were read (in this round or,
+        // after a cut, in the rounds before it).
+        let messages = if handshakes.reached > 0 {
+            self.scan(&mut conn, our, Pass::Messages, from.messages, handshakes.reached, &budget, report)?
+        } else {
+            ScanEnd {
+                reached: from.messages,
+                complete: true,
+            }
+        };
+        if !(handshakes.complete && messages.complete) {
+            // Cut short: the next round continues where each pass stopped,
+            // so both move on even when a page holds nothing but kept
+            // envelopes. Once both reach the end, a round starts over.
+            *self.resume.lock().expect("resume") = Resume {
+                handshakes: handshakes.reached,
+                messages: messages.reached,
+            };
         }
         // Receipts produced above, and the first messages of new sessions.
         let sessions = self.sessions()?;
-        self.publish_pending(&mut conn, &sessions, budget, report)?;
-        if !budget.left() {
+        self.publish_pending(&mut conn, &sessions, &budget, report)?;
+        if budget.cut.get() {
             // What this round processed is committed and deleted; the rest
             // stays on the relay (or in the outbox) for the next round.
-            return Err(CoreError::Network {
-                msg: "round budget exhausted".into(),
-            });
+            report.errors.push(BUDGET_EXHAUSTED.into());
         }
         Ok(())
     }
@@ -458,33 +524,36 @@ impl NetworkMessenger {
     ///
     /// At most [`MAX_SCAN_PAGES`] pages and [`MAX_SCAN_ENVELOPES`] envelopes;
     /// the pass ends early on a page shorter than [`MIN_PAGE`], which the relay
-    /// only returns when nothing follows, and on reaching `until`. The cursor
-    /// exists only in this call:
-    /// sequence numbers are transport positions chosen by the untrusted relay,
-    /// never evidence of anything, and a new round starts from the beginning.
-    /// A relay that does not return strictly increasing numbers after the
-    /// cursor ends the round with an error.
+    /// only returns when nothing follows, and on reaching `until`. The pass
+    /// starts after `from`: zero, the beginning, except in the round after
+    /// one its budget cut short (see [`Resume`]). Sequence numbers are
+    /// transport positions chosen by the untrusted relay, never evidence of
+    /// anything. A relay that does not return strictly increasing numbers
+    /// after the cursor ends the round with an error.
     ///
-    /// Returns the last sequence number this pass reached, if any.
+    /// The first page is always read; before each later one the round's
+    /// budget is checked, and a pass it stops returns `complete: false`.
     fn scan(
         &self,
         conn: &mut Connection,
         our: [u8; 32],
         pass: Pass,
+        from: u64,
         until: u64,
-        budget: Budget,
+        budget: &Budget,
         report: &mut SyncReport,
-    ) -> Result<Option<u64>, CoreError> {
-        let mut after = 0u64;
+    ) -> Result<ScanEnd, CoreError> {
+        let mut after = from;
+        let mut complete = true;
         let mut seen = 0usize;
         let mut delete = Vec::new();
         'pages: for page in 0..MAX_SCAN_PAGES {
-            // Out of time: stop after the page in hand, as at the end of
-            // the mailbox, and delete what was processed. The first page of
-            // a pass is always read, so each round moves both passes on:
-            // otherwise a slow handshake pass could use the whole budget in
-            // every round and messages would never be processed.
+            // Out of time: stop after the page in hand and delete what was
+            // processed. The first page of a pass is always read, so each
+            // round moves both passes on by at least a page; the next round
+            // starts after it.
             if page > 0 && !budget.left() {
+                complete = false;
                 break;
             }
             let items = conn.fetch_after(our, after, MAX_FETCH).map_err(network)?;
@@ -545,7 +614,10 @@ impl NetworkMessenger {
                 crash_point("after_delete");
             }
         }
-        Ok((after > 0).then_some(after))
+        Ok(ScanEnd {
+            reached: after,
+            complete,
+        })
     }
 
     /// Whether the session under `handle` has accepted a message from the
@@ -595,7 +667,7 @@ impl NetworkMessenger {
         &self,
         conn: &mut Connection,
         sessions: &[([u8; 32], u64)],
-        budget: Budget,
+        budget: &Budget,
         report: &mut SyncReport,
     ) -> Result<(), CoreError> {
         let our = self.core.our_identity_pk()?;

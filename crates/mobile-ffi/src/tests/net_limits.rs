@@ -9,8 +9,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::net_harness::*;
-use crate::network::NetworkMessenger;
-use relay::protocol::{read_frame, write_frame};
+use crate::network::wire::Envelope;
+use crate::network::{scan_hook, NetworkMessenger, Pass, BUDGET_EXHAUSTED};
+use relay::protocol::{read_frame, write_frame, MAX_FETCH};
 
 /// A relay that answers every request with a frame header announcing 1 MiB
 /// and then sends one byte every 100 ms: each read succeeds within any
@@ -91,9 +92,11 @@ fn a_trickling_relay_cannot_hold_a_round_past_the_request_deadline() {
 
 /// L2 and progress on a slow link. Every relay answer takes 150 ms and a
 /// round may spend 1 s on the relay. 300 texts wait in the mailbox (two
-/// pages). A round runs out of budget, ends with the budget error, and keeps
-/// what it processed; the following rounds continue. Every text arrives
-/// exactly once.
+/// pages). A round runs out of budget, says so in its report, and keeps what
+/// it processed; the following rounds continue. Every text arrives exactly
+/// once. The report line is not a network error: the application treats a
+/// line starting with `network:` as an unreachable relay (shows the link as
+/// offline and slows its rounds down, `MessengerService.NETWORK_ERROR`).
 #[test]
 fn a_slow_relay_ends_rounds_at_the_budget_and_every_text_still_arrives_once() {
     let relay = start_relay();
@@ -116,9 +119,10 @@ fn a_slow_relay_ends_rounds_at_the_budget_and_every_text_still_arrives_once() {
         rounds += 1;
         accepted += r.accepted;
         duplicates += r.duplicates;
-        budget_errors += r.errors.iter().filter(|e| e.contains("round budget exhausted")).count();
+        budget_errors += r.errors.len();
         for e in &r.errors {
-            assert!(e.contains("round budget exhausted"), "unexpected error: {e}");
+            assert_eq!(e, BUDGET_EXHAUSTED, "unexpected error");
+            assert!(!e.starts_with("network:"), "the relay was reached: {e}");
         }
     }
     assert_eq!(accepted, N as u32, "every text accepted, in {rounds} rounds");
@@ -130,6 +134,61 @@ fn a_slow_relay_ends_rounds_at_the_budget_and_every_text_still_arrives_once() {
         assert!(texts.contains(&format!("text {i}")), "text {i}");
     }
     println!("{N} texts over a slow relay: {rounds} rounds, {budget_errors} ran out of budget");
+    relay.stop();
+}
+
+/// L2, progress past kept envelopes. Bob's mailbox starts with a full page
+/// of envelopes that stay there (messages "from" a pinned contact without a
+/// session, which anyone who knows both keys can store), and Alice's text
+/// lies behind them. Every message pass spends more than the round's budget
+/// on its first page, so no round reads a second one. Before the passes
+/// continued from where they stopped, every round read that same first page
+/// again and the text was never processed (review of 2026-11-12). Now the
+/// round after a cut one starts behind the page already read.
+#[test]
+fn a_cut_round_continues_past_a_page_of_kept_envelopes() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let carol = Device::new(&addr, 3);
+    bob.knows(&carol);
+    let carol_key: [u8; 32] = carol.pk.as_slice().try_into().unwrap();
+    const KEPT: u32 = MAX_FETCH as u32;
+    for i in 0..KEPT {
+        let wire = [&i.to_be_bytes()[..], &[7u8; 80]].concat();
+        inject(&addr, &bob, Envelope::Message { sender: carol_key, wire }.encode());
+    }
+    alice.send(&bob, "a1", "behind the kept page");
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+
+    let net = NetworkMessenger::new(bob.core.clone(), addr, 0, 2000);
+    net.set_limits(Duration::from_secs(2), Duration::from_millis(400), Duration::from_secs(300));
+    scan_hook::set(|pass, page| {
+        if pass == Pass::Messages && page == 0 {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    });
+    let (mut accepted, mut cut, mut rounds) = (0, 0, 0);
+    while accepted == 0 && rounds < 5 {
+        let r = net.sync();
+        rounds += 1;
+        accepted += r.accepted;
+        cut += r.errors.len();
+        for e in &r.errors {
+            assert_eq!(e, BUDGET_EXHAUSTED, "unexpected error");
+        }
+    }
+    scan_hook::clear();
+    assert_eq!(accepted, 1, "the text behind the kept page, in {rounds} rounds");
+    assert!(cut >= 1, "at least one round was cut short");
+    assert_eq!(bob.texts(&alice), ["behind the kept page"]);
+
+    // Both passes reached the end, so the next round reads the mailbox from
+    // the beginning again: every kept envelope is seen once more.
+    let r = net.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.fetched, r.deferred), (KEPT, KEPT), "{r:?}");
     relay.stop();
 }
 

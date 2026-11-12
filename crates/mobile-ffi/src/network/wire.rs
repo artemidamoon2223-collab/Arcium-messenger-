@@ -7,6 +7,7 @@
 //! "ARN1"(4) kind(1) sender_identity_dh_pk(32) body
 //!   kind 1: body = INITIATOR_HANDSHAKE_V1 (84 bytes)
 //!   kind 2: body = header(40) || ciphertext   (the unchanged message format)
+//!   kind 3: body = HANDSHAKE_REFUSAL_V1 (193 bytes, signed by the sender)
 //! ```
 //!
 //! `PAYLOAD_V1` is the plaintext inside a ratchet message, so the relay never
@@ -27,6 +28,7 @@ use zeroize::Zeroizing;
 pub const MAGIC: &[u8; 4] = b"ARN1";
 const KIND_HANDSHAKE: u8 = 1;
 const KIND_MESSAGE: u8 = 2;
+const KIND_REFUSAL: u8 = 3;
 
 const TYPE_TEXT: u8 = 1;
 const TYPE_RECEIPT: u8 = 2;
@@ -45,12 +47,20 @@ pub enum Envelope {
         sender: [u8; 32],
         wire: Vec<u8>,
     },
+    /// The sender could not answer a handshake of ours. The body is checked
+    /// (signature, keys, which handshake) by whoever receives it, not here.
+    Refusal {
+        sender: [u8; 32],
+        refusal: Vec<u8>,
+    },
 }
 
 impl Envelope {
     pub fn sender(&self) -> [u8; 32] {
         match self {
-            Envelope::Handshake { sender, .. } | Envelope::Message { sender, .. } => *sender,
+            Envelope::Handshake { sender, .. }
+            | Envelope::Message { sender, .. }
+            | Envelope::Refusal { sender, .. } => *sender,
         }
     }
 
@@ -58,6 +68,7 @@ impl Envelope {
         let (kind, sender, body) = match self {
             Envelope::Handshake { sender, handshake } => (KIND_HANDSHAKE, sender, handshake),
             Envelope::Message { sender, wire } => (KIND_MESSAGE, sender, wire),
+            Envelope::Refusal { sender, refusal } => (KIND_REFUSAL, sender, refusal),
         };
         let mut out = Vec::with_capacity(37 + body.len());
         out.extend_from_slice(MAGIC);
@@ -80,6 +91,10 @@ impl Envelope {
                 handshake: body,
             }),
             KIND_MESSAGE => Some(Envelope::Message { sender, wire: body }),
+            KIND_REFUSAL if body.len() == crate::HANDSHAKE_REFUSAL_V1_LEN => Some(Envelope::Refusal {
+                sender,
+                refusal: body,
+            }),
             _ => None,
         }
     }
@@ -150,12 +165,28 @@ impl Payload {
 pub mod client_id {
     pub const TEXT: u8 = b't';
     pub const RECEIPT: u8 = b'r';
-    pub const OPEN: &[u8] = b"o";
+    pub const OPEN: u8 = b'o';
+    /// Bytes of the handshake hash an OPEN id carries after `b'o'`.
+    const OPEN_TAG_LEN: usize = 8;
 
     /// Whether `id` is in the space of ids above, which only the network
-    /// layer may send under (`ArciumCore::send_message` refuses them).
+    /// layer may send under (`ArciumCore::send_message` refuses them): any
+    /// text or receipt id, and an OPEN id in either form, `b"o"` alone
+    /// (builds before per-session OPEN ids) or [`open`].
     pub fn is_reserved(id: &[u8]) -> bool {
-        id == OPEN || matches!(id.first(), Some(&TEXT) | Some(&RECEIPT))
+        match id.first() {
+            Some(&TEXT) | Some(&RECEIPT) => true,
+            Some(&OPEN) => id.len() == 1 || id.len() == 1 + OPEN_TAG_LEN,
+            _ => false,
+        }
+    }
+
+    /// The OPEN message of the session started with `handshake`: one per
+    /// session, so a session that replaces an abandoned one with the same
+    /// contact commits an OPEN of its own.
+    pub fn open(handshake: &[u8]) -> Vec<u8> {
+        let tag = crate::handshake_hash(handshake);
+        [&[OPEN][..], &tag[..OPEN_TAG_LEN]].concat()
     }
 
     pub fn text(app_id: &[u8]) -> Vec<u8> {
@@ -189,8 +220,17 @@ mod tests {
                 sender: [3; 32],
                 wire: vec![4; 60],
             },
+            Envelope::Refusal {
+                sender: [5; 32],
+                refusal: vec![6; crate::HANDSHAKE_REFUSAL_V1_LEN],
+            },
         ] {
             assert_eq!(Envelope::decode(&e.encode()), Some(e));
+        }
+        // A refusal has exactly one length.
+        for len in [0, crate::HANDSHAKE_REFUSAL_V1_LEN - 1, crate::HANDSHAKE_REFUSAL_V1_LEN + 1] {
+            let bytes = [b"ARN1".as_slice(), &[3], &[5; 32], &vec![6; len]].concat();
+            assert_eq!(Envelope::decode(&bytes), None, "refusal of {len} bytes");
         }
         assert_eq!(Envelope::decode(b"ARN1"), None);
         assert_eq!(
@@ -226,6 +266,12 @@ mod tests {
         assert!(client_id::receipt(&[0; 32], 7).len() <= 64);
         assert_eq!(client_id::receipt(&[0; 32], 0).len(), 33);
         assert_eq!(client_id::text(b"x"), b"tx");
+        // One OPEN id per session: `o` and eight bytes of the handshake hash.
+        let (a, b) = (client_id::open(&[1; 84]), client_id::open(&[2; 84]));
+        assert_eq!((a.len(), a[0]), (9, b'o'));
+        assert_ne!(a, b);
+        assert!(client_id::is_reserved(&a) && client_id::is_reserved(b"o"));
+        assert!(!client_id::is_reserved(b"orphan") && !client_id::is_reserved(b"o1234567890"));
     }
 
     /// The bytes a payload encodes to, pinned: the outgoing path may change

@@ -17,7 +17,7 @@
 pub(crate) mod chat;
 pub(crate) mod wire;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -30,7 +30,10 @@ use zeroize::Zeroizing;
 use crate::contacts::{pinned, Card};
 use core_protocol::messaging::{MessageId, Received};
 
-use crate::{unpack_prekey_bundle, ArciumCore, CoreError, PlaintextBytes, SendResult, PREKEYS_KEY};
+use crate::{
+    handshake_hash, unpack_prekey_bundle, ArciumCore, CoreError, HandshakeRefusal, PlaintextBytes,
+    RefusalReason, SendResult, PREKEYS_KEY,
+};
 use wire::{client_id, Envelope, Payload};
 
 /// What one [`NetworkMessenger::sync`] did. Counters only; nothing here is a
@@ -103,7 +106,36 @@ pub struct NetworkMessenger {
     /// When each message or handshake was last accepted by the relay. In
     /// memory only: after a restart everything pending is sent once more.
     last_sent: Mutex<HashMap<[u8; 32], Instant>>,
+    /// Handshake refusals to send, and which were sent. In memory only.
+    refusals: Mutex<Refusals>,
 }
+
+/// Refusals this process owes or sent (docs/NET-MESSAGING.md, section 6).
+struct Refusals {
+    /// Signed refusals not yet accepted by the relay: recipient, envelope
+    /// body, refused handshake's hash.
+    queued: Vec<([u8; 32], Vec<u8>, [u8; 32])>,
+    /// Hashes of the handshakes a refusal was sent for: one each.
+    sent_for: HashSet<[u8; 32]>,
+    /// When a refusal was last sent to each contact.
+    last_to: HashMap<[u8; 32], Instant>,
+    /// Least time between two refusals to one contact.
+    interval: Duration,
+}
+
+impl Default for Refusals {
+    fn default() -> Self {
+        Self {
+            queued: Vec::new(),
+            sent_for: HashSet::new(),
+            last_to: HashMap::new(),
+            interval: REFUSAL_INTERVAL,
+        }
+    }
+}
+
+/// Least time between two refusals to one contact.
+pub(crate) const REFUSAL_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// A received text and its message id, the text in a wiping owner.
 pub(crate) type PendingText = (MessageId, Zeroizing<Vec<u8>>);
@@ -166,6 +198,7 @@ impl NetworkMessenger {
             timeout: Duration::from_millis(timeout_ms),
             retransmit_after: Duration::from_millis(retransmit_after_ms),
             last_sent: Mutex::new(HashMap::new()),
+            refusals: Mutex::new(Refusals::default()),
         })
     }
 
@@ -198,8 +231,12 @@ impl NetworkMessenger {
         {
             return Err(CoreError::PeerIdentityMismatch);
         }
-        self.core.establish_session_initiator(handle, bundle)?;
-        self.core.send_committed(handle, client_id::OPEN, &Payload::Open.encode())?;
+        let handshake = self.core.establish_session_initiator(handle, bundle)?;
+        // The OPEN message's id names the handshake: a session that replaces
+        // an abandoned one (after a refusal) needs an OPEN of its own, and
+        // the abandoned one's send record would answer for a shared id.
+        self.core
+            .send_committed(handle, &client_id::open(&handshake), &Payload::Open.encode())?;
         Ok(())
     }
 
@@ -370,6 +407,7 @@ impl NetworkMessenger {
         if let Some(end) = self.scan(&mut conn, our, Pass::Handshakes, u64::MAX, report)? {
             self.scan(&mut conn, our, Pass::Messages, end, report)?;
         }
+        self.send_refusals(&mut conn, report)?;
         // Receipts produced above, and the first messages of new sessions.
         let sessions = self.sessions()?;
         self.publish_pending(&mut conn, &sessions, report)
@@ -586,7 +624,7 @@ impl NetworkMessenger {
                 }
                 // Recorded as provisional only: the session is created when
                 // the initiator's first message authenticates under it.
-                match self.core.establish_session_responder(handle, handshake) {
+                match self.core.establish_session_responder(handle, handshake.clone()) {
                     Ok(()) => Ok(Fate::Delete),
                     Err(e) if transient(&e) => {
                         report.errors.push(e.to_string());
@@ -604,11 +642,21 @@ impl NetworkMessenger {
                     }
                     Err(e) => {
                         chat::set_flag(self, &sender, chat::HANDSHAKE_REFUSED)?;
+                        // No session holds this handshake and its prekeys are
+                        // gone: tell the initiator, so it can start again.
+                        if let Some(reason) = RefusalReason::of(&e) {
+                            self.queue_refusal(sender, &handshake, reason)?;
+                        }
                         report.dropped += 1;
                         report.errors.push(format!("handshake refused: {e}"));
                         Ok(Fate::Delete)
                     }
                 }
+            }
+            Envelope::Refusal { refusal, .. } => {
+                let card = card.expect("checked above");
+                self.take_refusal(&sender, &card, &refusal, report)?;
+                Ok(Fate::Delete)
             }
             Envelope::Message { wire, .. } => {
                 // Without a session, the message is either the first one of a
@@ -659,6 +707,101 @@ impl NetworkMessenger {
                 }
             }
         }
+    }
+
+    /// Test aid: the least time between two refusals to one contact
+    /// ([`REFUSAL_INTERVAL`] otherwise).
+    #[cfg(test)]
+    pub(crate) fn set_refusal_interval(&self, interval: Duration) {
+        self.refusals.lock().expect("refusals").interval = interval;
+    }
+
+    /// Signs a refusal of `handshake` for `peer` and queues it, unless one
+    /// was sent for this handshake already in this process or to this peer
+    /// less than [`REFUSAL_INTERVAL`] ago.
+    fn queue_refusal(
+        &self,
+        peer: [u8; 32],
+        handshake: &[u8],
+        reason: RefusalReason,
+    ) -> Result<(), CoreError> {
+        let hash = handshake_hash(handshake);
+        {
+            let r = self.refusals.lock().expect("refusals");
+            let recent = r
+                .last_to
+                .get(&peer)
+                .is_some_and(|t| t.elapsed() < r.interval);
+            if recent
+                || r.sent_for.contains(&hash)
+                || r.queued.iter().any(|(to, _, h)| *to == peer || *h == hash)
+            {
+                return Ok(());
+            }
+        }
+        let body = self.core.sign_handshake_refusal(peer, handshake, reason)?;
+        self.refusals
+            .lock()
+            .expect("refusals")
+            .queued
+            .push((peer, body, hash));
+        Ok(())
+    }
+
+    /// Sends the queued refusals. One the relay did not accept is not
+    /// retried: the initiator retransmits its handshake, which is refused
+    /// again.
+    fn send_refusals(&self, conn: &mut Connection, report: &mut SyncReport) -> Result<(), CoreError> {
+        let queued = std::mem::take(&mut self.refusals.lock().expect("refusals").queued);
+        if queued.is_empty() {
+            return Ok(());
+        }
+        let our = self.core.our_identity_pk()?;
+        for (peer, refusal, hash) in queued {
+            let env = Envelope::Refusal {
+                sender: our,
+                refusal,
+            };
+            conn.send(peer, env.encode()).map_err(network)?;
+            let mut r = self.refusals.lock().expect("refusals");
+            r.sent_for.insert(hash);
+            r.last_to.insert(peer, Instant::now());
+            report.published += 1;
+        }
+        Ok(())
+    }
+
+    /// Acts on a refusal from the pinned contact `peer`. It counts only if
+    /// it is signed by the contact's pinned key, names the contact's and our
+    /// identity keys, and names the handshake of our own session with the
+    /// contact, which nothing confirmed yet. Then that session can never
+    /// be accepted: it is given up and a new one started. Anything else is
+    /// dropped and changes nothing.
+    fn take_refusal(
+        &self,
+        peer: &[u8; 32],
+        card: &Card,
+        refusal: &[u8],
+        report: &mut SyncReport,
+    ) -> Result<(), CoreError> {
+        let our = self.core.our_identity_pk()?;
+        let handle = handle_of(peer);
+        let valid = match HandshakeRefusal::open(refusal, &card.signing_pk) {
+            Some(r) if r.refuser_dh_pk == *peer && r.refuser_dh_pk == card.dh_pk && r.initiator_dh_pk == our => {
+                self.core.has_session(handle)?
+                    && !self.confirmed(handle)?
+                    && self
+                        .core
+                        .initiator_handshake(handle)?
+                        .is_some_and(|hs| handshake_hash(&hs) == r.handshake_hash)
+            }
+            _ => false,
+        };
+        if !valid {
+            report.dropped += 1;
+            return Ok(());
+        }
+        chat::restart_after_refusal(self, peer, report)
     }
 
     /// Applies every accepted message still in the inbox that the network

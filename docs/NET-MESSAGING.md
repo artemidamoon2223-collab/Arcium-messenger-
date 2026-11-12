@@ -128,13 +128,16 @@ delivery.
 `ENVELOPE_V1` (what the relay stores):
 `"ARN1" || kind(1) || sender_x25519_pk(32) || body`, kind 1 = the unchanged
 84-byte `INITIATOR_HANDSHAKE_V1`, kind 2 = the unchanged
-`header(40) || ciphertext`. The sender field is unauthenticated and only picks
-the session; a message decrypts only under the session (keys and AD) that
-produced it.
+`header(40) || ciphertext`, kind 3 = a 193-byte `HANDSHAKE_REFUSAL_V1`
+(section 6). The sender field is unauthenticated and only picks the session; a
+message decrypts only under the session (keys and AD) that produced it, and a
+refusal counts only if it verifies against the sender's pinned card.
 
 **What the relay and the network see:** the recipient's and sender's X25519
 identity keys, when each device connects, envelope sizes and timing, every
-published bundle, and the handshake bytes. They do not see plaintext, identity
+published bundle, the handshake bytes, and that a refusal was sent (not why: the reason is
+inside the signed bytes, which the relay can read but not change). They do
+not see plaintext, identity
 or prekey secrets, ratchet state or checkpoints. There is no anonymity and no
 Tor: a network observer sees the same as the relay, and the relay can link
 sender, recipient and time of every message.
@@ -154,7 +157,10 @@ OPEN is the initiator's first message. It lets the responder send before the
 initiator's first text (a responder has no sending chain until it receives).
 
 Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
-`r || message_id [|| round]` (receipts), `o` (OPEN).
+`r || message_id [|| round]` (receipts), `o || sha256(handshake)[0..8]`
+(OPEN: one per session, so a session that replaces an abandoned one commits
+its own; builds before this one used `o` alone). `send_message` refuses all
+of these.
 
 ## 5. Acknowledgements
 
@@ -235,6 +241,54 @@ handshake recorded). If the prekeys the recorded handshake names rotated or
 were consumed by another contact's first message since, the message is
 deleted and the handshake flagged as refused.
 
+**Refusals.** When a handshake can never be answered (the prekeys it names
+were consumed or rotated, and no session holds it), the responder says so.
+Typical case: two contacts write to a device for the first time while it is
+offline; both handshakes name the one one-time prekey its bundle carried, and
+only the first can be accepted.
+
+- When the responder refuses a handshake from a pinned contact with no
+  session holding it, with `OneTimePrekeyUnavailable`, `OneTimePrekeyRequired` or
+  `StaleSignedPrekey`, it sends `HANDSHAKE_REFUSAL_V1`, signed with its
+  identity Ed25519 key:
+
+  ```text
+    0  32  refuser_identity_dh_pk
+   32  32  refuser_signing_pk
+   64  32  initiator_identity_dh_pk
+   96  32  sha256(INITIATOR_HANDSHAKE_V1 bytes)
+  128   1  reason   1 one-time prekey unavailable, 2 required, 3 stale signed prekey
+  129  64  Ed25519 signature over "arcium/handshake-refusal/v1" || bytes 0..129
+  ```
+
+  The domain differs from the signed-prekey object's (`arcium/x3dh-spk/v1`),
+  so neither signature can stand for the other. A refusal is sent at most
+  once per refused handshake and at most once per contact per 10 minutes, in
+  memory (a restart may send one more). A first message refused for its
+  prekeys sends none; the initiator's next retransmission of the handshake
+  is refused and answered.
+- The initiator acts on a refusal only if it verifies against the sender's
+  pinned signing key, names the pinned keys of the sender and our own
+  identity key, and names the handshake of our own session with the sender,
+  on which nothing was received yet. Anything else is dropped and changes
+  nothing (a forged, foreign, replayed or late refusal).
+- Acting on it, the initiator gives its session up as
+  `resolve_session_conflict` does: committed texts `NotDelivered`, then
+  abandoned, then the session removed (S2-B2 section 6a). It ends a conflict
+  with that contact and starts a new session from the contact's current
+  bundle at once. Texts still queued go out in the new one; texts marked
+  `NotDelivered` are not sent again (the user can send them again). If the
+  new session cannot start then (no bundle, no relay, a crash), the next
+  queued text starts it. Each step repeats safely after a crash: the refusal
+  stays on the relay until the round deletes it, and once the dead session is
+  gone it no longer matches.
+- A genuine refusal is final: the responder sends it only where the
+  handshake cannot become answerable later (a consumed one-time prekey is
+  never reissued, a rotated signed prekey never returns). The responder's
+  bundle is published at the start of every round, before handshakes are
+  processed, so the bundle the initiator fetches after a refusal names the
+  current prekeys.
+
 ## 7. Failure handling
 
 | failure | result |
@@ -256,16 +310,21 @@ deleted and the handshake flagged as refused.
 - Authentication of relay clients: anyone reaching a relay can read (only
   ciphertext) or delete a mailbox, or replace a bundle (refused by the
   initiator's identity check). Denial of service is possible.
-- Refusal feedback for handshakes: a responder that refuses a handshake
-  (stale prekey) tells nobody; the initiator keeps retrying until the user
-  removes the session (S2-B2 section 6a).
+- Refusal feedback beyond the refusal of section 6: a relay can withhold a
+  refusal (the initiator then keeps retransmitting, as before refusals
+  existed), and a refusal lost after the relay accepted it is sent again only
+  after 10 minutes, or after the responder restarts.
+- Automatic resending of texts a refusal or a conflict resolution marked
+  `NotDelivered`.
 - One provisional handshake per contact. Whoever can put envelopes in the
   mailbox (the relay has no authentication) can keep replacing a contact's
   recorded handshake before its first message arrives; the genuine one is then
   retransmitted and takes over. That delays first contact; it creates no
   session and consumes no prekey. Each such first message costs the responder
   one X3DH and one ratchet step.
-- A second initiator racing for the same one-time prekey fails the same way.
+- A second initiator racing for the same one-time prekey is refused and
+  starts again (section 6). With k contacts racing, the k-th may wait up to
+  about 10 minutes per further refusal (the per-contact limit).
 - Simultaneous initiation: if both users start a session with each other
   before either handshake arrives, each device holds an unconfirmed initiator
   session and drops the other's handshake, so neither proceeds (no fork: each
@@ -356,4 +415,5 @@ entry per logical message, never written by the ratchet.
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |
 | conversation history, states, repeats, replays, forged bundle, conflict | `tests::chat` | runtime |
+| first contact to an offline recipient: 2, 3 and 5 contenders, both key orders, a conflict after a refusal; refusal limits; forged, foreign, mismatched, replayed and late refusals; domain separation both ways; process death at each restart step | `tests::first_contact` | runtime, local relay over TCP; process crash |
 | process death while sending from or receiving into the history | `tests::network_crash` (`chat_*` points) | process crash |

@@ -379,6 +379,33 @@ pub(super) fn set_flag(
     messenger.update_meta(peer, |m| m.flags |= flag)
 }
 
+/// The contact refused our handshake with a valid refusal
+/// (`NetworkMessenger::take_refusal`): our unconfirmed session with it can
+/// never be accepted. Gives it up as `resolve_session_conflict` does, ends a
+/// conflict (the contact holds no session with us, or it would not have
+/// refused), and starts a new session from the contact's current bundle.
+/// Texts not yet committed go out in the new session. If the new session
+/// cannot be started now, the next queued text starts it.
+pub(super) fn restart_after_refusal(
+    messenger: &NetworkMessenger,
+    peer: &[u8; 32],
+    report: &mut SyncReport,
+) -> Result<(), CoreError> {
+    messenger.retire_unconfirmed_session(peer, "refusal")?;
+    crash_point("refusal_after_remove");
+    messenger.update_meta(peer, |m| m.flags &= !FLAG_CONFLICT)?;
+    let started = messenger.start_session(peer.to_vec());
+    crash_point("refusal_after_restart");
+    match started {
+        Ok(()) | Err(CoreError::SessionAlreadyExists { .. }) => Ok(()),
+        Err(e) if matches!(e, CoreError::Storage { .. }) => Err(e),
+        Err(e) => {
+            report.errors.push(format!("restarting the session: {e}"));
+            Ok(())
+        }
+    }
+}
+
 pub(super) const CONFLICT: u8 = FLAG_CONFLICT;
 pub(super) const HANDSHAKE_REFUSED: u8 = FLAG_HANDSHAKE_REFUSED;
 
@@ -549,28 +576,8 @@ impl NetworkMessenger {
                 // The peer accepted this session after all: nothing to do.
                 return self.update_meta(&key, |m| m.flags &= !FLAG_CONFLICT);
             }
-            // Marked before anything leaves the outbox. A text committed
-            // after this pass is abandoned below unmarked; `refresh` then
-            // reads the abandonment from its send record, never a receipt.
             self.update_meta(&key, |m| m.flags |= FLAG_ACCEPT_ONLY)?;
-            for e in self.entries(&key)? {
-                if e.outgoing
-                    && matches!(
-                        e.state,
-                        ChatEntryState::Pending | ChatEntryState::Transmitted
-                    )
-                {
-                    self.advance(&key, e.seq, ChatEntryState::NotDelivered, None)?;
-                }
-            }
-            #[cfg(test)]
-            test_hooks::between_resolve_passes();
-            crash_point("resolve_after_mark");
-            for m in self.core.pending_outgoing(handle)? {
-                self.core.abandon_outgoing(handle, m.message_id)?;
-            }
-            crash_point("resolve_after_abandon");
-            self.core.remove_session(handle)?;
+            self.retire_unconfirmed_session(&key, "resolve")?;
         }
         self.update_meta(&key, |m| {
             m.flags = (m.flags | FLAG_ACCEPT_ONLY) & !FLAG_CONFLICT;
@@ -692,6 +699,36 @@ impl NetworkMessenger {
             }
         }
         Ok(())
+    }
+
+    /// Gives up our own unconfirmed session with `peer`: marks the texts
+    /// committed to it `NotDelivered`, abandons them and removes the
+    /// session (S2-B2 section 6a: nothing was received on it). Marked before
+    /// anything leaves the outbox: a text committed after the marking pass
+    /// is abandoned unmarked, and `refresh` then reads the abandonment from
+    /// its send record, never a receipt. Every step repeats safely after a
+    /// crash. `stage` names its crash points (`{stage}_after_mark`,
+    /// `{stage}_after_abandon`).
+    fn retire_unconfirmed_session(&self, peer: &[u8; 32], stage: &str) -> Result<(), CoreError> {
+        let handle = handle_of(peer);
+        for e in self.entries(peer)? {
+            if e.outgoing
+                && matches!(
+                    e.state,
+                    ChatEntryState::Pending | ChatEntryState::Transmitted
+                )
+            {
+                self.advance(peer, e.seq, ChatEntryState::NotDelivered, None)?;
+            }
+        }
+        #[cfg(test)]
+        test_hooks::between_resolve_passes();
+        crash_point(&format!("{stage}_after_mark"));
+        for m in self.core.pending_outgoing(handle)? {
+            self.core.abandon_outgoing(handle, m.message_id)?;
+        }
+        crash_point(&format!("{stage}_after_abandon"));
+        self.core.remove_session(handle)
     }
 
     fn meta(&self, peer: &[u8; 32]) -> Result<Meta, CoreError> {

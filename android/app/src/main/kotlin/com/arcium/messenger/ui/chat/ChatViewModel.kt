@@ -54,8 +54,9 @@ internal fun loadWindow(count: Int, fetch: (before: ULong?, limit: UInt) -> List
         if (page.isEmpty()) break
         pages.addFirst(page)
         have += page.size
-        before = page.first().seq
-        if (before <= 1uL) break
+        val first = page.first().seq
+        before = first
+        if (first <= 1uL) break
     }
     return pages.flatten()
 }

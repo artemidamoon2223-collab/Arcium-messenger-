@@ -50,7 +50,7 @@ class LoadWindowTest {
     fun aShortHistoryIsReadWhole() {
         for (size in listOf(0uL, 1uL, 49uL, 50uL, 51uL)) {
             val h = FakeHistory(size, ::entry)
-            val want = if (size == 0uL) emptyList() else (maxOf(1uL, size.coerceAtLeast(1uL) - 49uL)..size).toList()
+            val want = if (size == 0uL) emptyList() else ((if (size > 50uL) size - 49uL else 1uL)..size).toList()
             assertEquals("size $size", want, seqs(loadWindow(PAGE, h::page)))
         }
         val h = FakeHistory(120uL, ::entry)

@@ -34,6 +34,28 @@ data class ChatState(
             "input=<redacted>, sending=$sending, error=$error)"
 }
 
+/** Prefix of the error a failed reload shows; a later successful one clears it. */
+internal const val READ_ERROR_PREFIX = "Could not read the conversation: "
+
+/**
+ * The state after a failed reload: the read error, replacing any error
+ * shown before.
+ */
+internal fun ChatState.afterFailedReload(message: String?): ChatState =
+    copy(error = READ_ERROR_PREFIX + message)
+
+/**
+ * The state after a successful reload. A read error a failed reload left is
+ * cleared, because the conversation was read now; any other error (a text
+ * not saved, a conflict not resolved) stays until the user acts on it.
+ */
+internal fun ChatState.afterReload(conversation: Conversation, entries: List<ChatEntry>): ChatState =
+    copy(
+        conversation = conversation,
+        entries = entries,
+        error = error?.takeUnless { it.startsWith(READ_ERROR_PREFIX) },
+    )
+
 /**
  * One conversation. The history, every message state and the session come
  * from Rust (`network/chat.rs`); this class holds only what the user is
@@ -70,9 +92,9 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
                 m.markSeen(peer)
                 m.conversation(peer) to entries
             }
-            _state.value = _state.value.copy(conversation = conversation, entries = entries)
+            _state.value = _state.value.afterReload(conversation, entries)
         } catch (e: CoreException) {
-            _state.value = _state.value.copy(error = "Could not read the conversation: ${e.message}")
+            _state.value = _state.value.afterFailedReload(e.message)
         }
     }
 

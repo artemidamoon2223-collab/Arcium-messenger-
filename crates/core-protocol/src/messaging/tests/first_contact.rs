@@ -279,6 +279,32 @@ fn a_provisional_handshake_is_replaced_by_a_newer_one_and_repeats_change_nothing
     );
 }
 
+/// Alice's handshake recorded under a second handle too, before any
+/// session. Her first message creates the session under the first handle;
+/// a first message accepted under the second handle then finds her session
+/// but not its own handle, and is refused, not received on a handle the
+/// session does not have.
+#[test]
+fn a_first_message_under_a_second_handle_of_a_peer_with_a_session_is_refused() {
+    const SECOND: u64 = 0xB0B2;
+    let mut f = memory_first_contact();
+    record_hs(&f.bm, &mut f.b, f.bob_pk, SECOND, &provisional(&f.alice_pk, b"hs1")).unwrap();
+    let m1 = f.alice_sends(b"first");
+    let m2 = f.alice_sends(b"second");
+    accepted(f.accept(&m1.wire).unwrap());
+    let record = f.session_record();
+    let mut second = f.first(b"hs1");
+    second.handle = SECOND;
+    second.extra.clear();
+    assert!(matches!(
+        f.bm.accept_first_message(&mut f.b, f.bob_pk, second, &m2.wire),
+        Err(MessagingError::AlreadyExists { handle: SECOND })
+    ));
+    assert_eq!(f.session_record(), record, "the session did not move");
+    assert_eq!(f.bm.peer_of(&f.b, SECOND).unwrap(), None);
+    assert_eq!(f.bm.pending_incoming(&f.b, BOB_HANDLE).unwrap().len(), 1);
+}
+
 #[test]
 fn an_acceptance_for_another_peer_s_handshake_is_refused() {
     let mut f = memory_first_contact();

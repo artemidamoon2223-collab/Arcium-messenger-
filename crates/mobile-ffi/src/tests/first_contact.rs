@@ -94,16 +94,13 @@ fn refusals_for(relay: &relay::server::RelayHandle, to: &Device) -> usize {
 /// one one-time prekey his bundle carried). `greater` picks whether the
 /// writers' identity keys are greater than Bob's.
 fn offline_recipient(addr: &str, n: usize, writers_greater: bool) -> (Device, Vec<Device>) {
-    let bob = Device::new(addr, 2);
-    let mut writers = Vec::new();
-    let mut byte = 10;
-    while writers.len() < n {
-        let w = Device::new(addr, byte);
-        byte += 1;
-        if (w.pk > bob.pk) == writers_greater {
-            writers.push(w);
-        }
-    }
+    let writers: Vec<Device> = (0..n as u8).map(|i| Device::new(addr, 10 + i)).collect();
+    // Bob is drawn until his key is below (or above) every writer's: one
+    // draw in n + 1 succeeds, so 150 draws fail with probability < 1e-11.
+    let bob = (100..=250u8)
+        .map(|byte| Device::new(addr, byte))
+        .find(|b| writers.iter().all(|w| (w.pk > b.pk) == writers_greater))
+        .expect("a key order this improbable means the generator is broken");
     for w in &writers {
         meet(w, &bob);
     }

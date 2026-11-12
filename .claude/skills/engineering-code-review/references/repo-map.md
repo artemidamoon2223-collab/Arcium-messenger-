@@ -61,8 +61,9 @@ citing them; they drift.
 | `core-crypto` | X3DH, Double Ratchet, hybrid KEM, contact hash, RescueCipher stub |
 | `core-storage` | Encrypted SQLite key-value store |
 | `core-transport` | Tor client (arti) |
-| `core-protocol` | Session manager over the ratchet |
-| `mobile-ffi` | UniFFI cdylib, `[lib] name = "arcium_core"` → `libarcium_core.so` |
+| `core-protocol` | Durable sessions over the ratchet: staged transitions with a conditional commit, the outbox and inbox, session removal (S2-B2) |
+| `mobile-ffi` | UniFFI cdylib, `[lib] name = "arcium_core"` → `libarcium_core.so`; `src/network.rs` is `NetworkMessenger`, the app's sync and chat path over the relay |
+| `relay` | Untrusted store-and-forward relay: wire protocol, client, and the `arcium-relay` server binary (dev: no TLS, no client authentication) |
 
 Crypto layering rules for these crates are in `CLAUDE.md` and are not repeated
 here.
@@ -77,6 +78,11 @@ here.
 - `docs/SECURITY-REVIEW-2026-06-deep.md` — historical snapshot of the 2026-06
   review, kept for the original finding definitions. Its status language
   reflects 2026-06-09 and is not current.
+- `docs/S2-B2-DURABLE-MESSAGING.md` — the durable messaging lifecycle: staged
+  ratchet transitions, outbox and inbox, recovery after an unknown commit
+  outcome.
+- `docs/NET-MESSAGING.md` — network messaging over the relay, built on S2-B2:
+  the relay protocol, `NetworkMessenger`, and the documented limits.
 - `docs/HOME-DEPLOY.md` — devnet deploy, which needs open network and toolchain
   the agent sandbox does not have.
 - `PROJECT_CONTEXT.md` — PSI architecture detail at the repository root.

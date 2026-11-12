@@ -89,8 +89,14 @@ mailbox (a newer handshake behind an older first message, or behind many
 kept envelopes) finds it recorded. After each pass the client deletes exactly
 the envelopes that pass processed to completion (accepted, duplicate, or
 dropped); envelopes kept for a missing handshake and envelopes of the other
-kind stay, and paging moves past them. The cursor lives only in that call; a
-new round starts again from the beginning.
+kind stay, and paging moves past them. A round starts again from the
+beginning, with one exception: after a round its time budget cut short
+(section 7), the next round's passes start where that round's passes stopped,
+so that both move on even when whole pages hold only kept envelopes. These
+positions are held in memory only. They are a starting point chosen by the
+untrusted relay, never evidence of anything: any failed round, and every
+round that reaches the end of the mailbox, puts them back to the beginning,
+and everything skipped is read again.
 
 Bounds per round, whatever the relay does: each pass reads at most 4096
 envelopes (`MAX_SCAN_ENVELOPES`, a whole mailbox) and at most 274 pages
@@ -104,6 +110,11 @@ upper bound, so a mailbox of fewer than 15 envelopes costs two FETCH_AFTER
 requests (one if it is empty). A relay that
 returns more than asked for, or numbers that do not increase past the cursor,
 ends the round with an error.
+
+Bounds in time (section 7): every request, from writing it to reading the
+whole answer, ends within 30 s; a round stops starting requests after 120 s.
+Each pass still reads its first page, so a round that ran out moves both
+passes on, and the next round continues with what is left.
 
 The price: kept envelopes are read again in both passes of every round, so a
 round transfers up to twice the scanned part of the mailbox (at most
@@ -122,7 +133,8 @@ stored twice.
 
 **Delivery does not depend on retention.** The sender keeps every text until
 the recipient's receipt arrives, and sends it again after
-`retransmit_after_ms`. A relay that loses, withholds or restarts only delays
+`retransmit_after_ms`, then after twice as long each time, up to 5 minutes
+(section 7). A relay that loses, withholds or restarts only delays
 delivery.
 
 `ENVELOPE_V1` (what the relay stores):
@@ -237,8 +249,39 @@ deleted and the handshake flagged as refused.
 
 ## 7. Failure handling
 
+Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
+`network::RETRANSMIT_CAP`):
+
+- **One request: 30 s.** Every read and write on the connection waits at most
+  `timeout_ms`, and the request as a whole (writing it, reading the whole
+  answer) at most 30 s; past that it fails as a lost connection. A relay that
+  trickles bytes cannot hold a round open. A page (at most one 1 MiB frame)
+  therefore needs a link of about 35 KiB/s to arrive; on a slower link a
+  full page of large envelopes cannot be read (no adaptive paging).
+- **One round: 120 s of relay requests.** The budget is checked before every
+  page of a pass after its first, and before every send. When it runs out,
+  the pass stops after the page in hand, deletes what it processed, and the
+  round's report carries the line `round budget exhausted: the rest follows
+  in the next round`. That line is not a network error (it does not start
+  with `network:`): the relay was reached, and the application neither shows
+  the link as offline nor slows its rounds down for it. Nothing processed is
+  lost or processed again. The next round continues after the last sequence
+  number each pass reached (section 3), so a mailbox larger than one round
+  can read is worked through over several rounds; once both passes reach the
+  end, rounds start from the beginning again. A round that ran out ends
+  within the budget plus a few request deadlines (the request in flight, each
+  pass's first page and deletion).
+- **Retransmission: 5 s, doubling, at most 5 minutes apart.** Each message or
+  handshake waits `retransmit_after_ms` after its first send and twice as
+  long after each further one, up to 5 minutes: at most 9 sends in 10
+  minutes instead of about 120. Kept in memory: after a restart everything
+  pending is sent once more and the waits start again. This spaces the
+  sends only; what is sent, and when a text leaves the outbox, is unchanged.
+
 | failure | result |
 |---|---|
+| relay too slow for a request, or trickling bytes | the request fails after 30 s; the round ends as for a lost connection |
+| round budget exhausted | processed envelopes are deleted, the report says so (not as a network error), the next round continues where the passes stopped |
 | relay unreachable, connection lost | `sync` reports it; nothing local changes; next sync repeats |
 | SEND answer lost | the envelope may be stored; it is sent again (the relay stores it once, or the recipient sees a duplicate) |
 | FETCH_AFTER answer lost (any page), connection lost between pages | the round stops; what the current pass processed is committed but not yet deleted, and comes back next round as a duplicate |
@@ -368,6 +411,7 @@ entry per logical message, never written by the ratchet.
 | kept envelopes never hide later ones: prefixes of 0–4095 entries, large envelopes, handshakes behind or after the prefix, mixed kept and deleted, deletes, appends and expiry between pages, a mailbox that never runs dry, a relay that breaks paging, lost answers, a stopped relay, process death between pages | `tests::mailbox_scan`; relay paging and the refusal of a capacity above 4096 in `crates/relay` tests | runtime, local relay over TCP; process crash |
 | relay outage; broken SEND/FETCH/DELETE/receipt | `a_relay_outage…`, `broken_connections_at_each_step…` (TCP proxy) | runtime; faults injected at the socket |
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
+| request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt | `tests::network` V6 tests | runtime |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |

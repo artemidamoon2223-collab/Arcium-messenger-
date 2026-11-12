@@ -336,9 +336,26 @@ entry per logical message, never written by the ratchet.
   again completes it.
   A replayed old handshake can raise a false conflict; resolving it then only
   delays the conversation.
+- **Reading in pages.** Entries are numbered 1, 2, … per contact: each takes
+  the next number in the transaction that writes it, and none is deleted.
+  `chat_entries_page(peer, before_seq, limit)` returns the `limit` entries
+  (1 to 200) before `before_seq`, or the newest ones, oldest first, read by
+  number. `chat_entries` still returns the whole history.
+- **What a round reads.** A record per contact, `chat-open:v1`, lists the
+  numbers of outgoing entries not yet final (`Queued`, `Pending`,
+  `Transmitted`). It changes in the transaction of every entry change that
+  adds or removes one. Rounds, sends and the giving up of a session walk it
+  instead of the history. A history written before it existed has none; it
+  is built once, in one transaction, from the entries. The conversation list
+  reads the last entry and the entries not yet seen, not the history.
+  Listing a store namespace (the outbox, the inbox, the contacts) is still a
+  scan of the whole SQLite table on every call (`list_keys_with_prefix`), so
+  a round keeps a cost that grows with the store's size; it no longer
+  decrypts the history.
 - **Not provided.** Sync while the application is closed; unread state across
   devices; a sender timestamp (entries carry the local time they were
-  recorded).
+  recorded); a conversation screen that loads in pages (the app still reads
+  the whole history).
 
 ## 9. Verification
 
@@ -356,4 +373,5 @@ entry per logical message, never written by the ratchet.
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |
 | conversation history, states, repeats, replays, forged bundle, conflict | `tests::chat` | runtime |
+| history pages (sizes 1, 7, 200, new entries while paging), the open-entry record against a full scan (random steps, a history from before the record, a conflict), process death after its writes | `tests::history_paging` | runtime; process crash |
 | process death while sending from or receiving into the history | `tests::network_crash` (`chat_*` points) | process crash |

@@ -121,6 +121,14 @@ struct Resume {
     messages: u64,
 }
 
+/// The part of the mailbox one pass reads: sequence numbers after `from`, up
+/// to and including `until`.
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    from: u64,
+    until: u64,
+}
+
 /// How one mailbox pass ended.
 #[derive(Debug, Clone, Copy)]
 struct ScanEnd {
@@ -483,12 +491,19 @@ impl NetworkMessenger {
         // Handshakes before messages, so a session exists for what follows:
         // first every handshake in the part of the mailbox scanned, then
         // everything else in that same part.
-        let handshakes =
-            self.scan(&mut conn, our, Pass::Handshakes, from.handshakes, u64::MAX, &budget, report)?;
+        let all = Span {
+            from: from.handshakes,
+            until: u64::MAX,
+        };
+        let handshakes = self.scan(&mut conn, our, Pass::Handshakes, all, &budget, report)?;
         // Messages only as far as the handshakes were read (in this round or,
         // after a cut, in the rounds before it).
         let messages = if handshakes.reached > 0 {
-            self.scan(&mut conn, our, Pass::Messages, from.messages, handshakes.reached, &budget, report)?
+            let read = Span {
+                from: from.messages,
+                until: handshakes.reached,
+            };
+            self.scan(&mut conn, our, Pass::Messages, read, &budget, report)?
         } else {
             ScanEnd {
                 reached: from.messages,
@@ -538,11 +553,11 @@ impl NetworkMessenger {
         conn: &mut Connection,
         our: [u8; 32],
         pass: Pass,
-        from: u64,
-        until: u64,
+        span: Span,
         budget: &Budget,
         report: &mut SyncReport,
     ) -> Result<ScanEnd, CoreError> {
+        let Span { from, until } = span;
         let mut after = from;
         let mut complete = true;
         let mut seen = 0usize;

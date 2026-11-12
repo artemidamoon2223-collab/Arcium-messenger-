@@ -277,6 +277,42 @@ mod tests {
         old.join().unwrap();
     }
 
+    /// Waits up to 2 s for the relay to track exactly `n` open connections.
+    fn wait_for_connections(relay: &super::server::RelayHandle, n: usize) -> usize {
+        let started = std::time::Instant::now();
+        while relay.open_connections() != n && started.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        relay.open_connections()
+    }
+
+    /// Every connection kept a clone of its socket, and with it a file
+    /// descriptor, until the relay stopped: 600 short connections left 600
+    /// descriptors open, and a relay at its descriptor limit stopped
+    /// answering concurrent clients. A closed connection now releases it.
+    #[test]
+    fn a_closed_connection_releases_its_descriptor() {
+        let relay = start(RelayConfig::default());
+        for i in 0..300u32 {
+            let mut c = conn(&relay);
+            c.send([2; 32], i.to_be_bytes().to_vec()).unwrap();
+        }
+        assert_eq!(wait_for_connections(&relay, 0), 0, "every closed connection released");
+
+        // Open connections are still tracked, so `stop` can close them.
+        let mut held: Vec<_> = (0..3).map(|_| conn(&relay)).collect();
+        for c in &mut held {
+            c.get_bundle([1; 32]).unwrap();
+        }
+        assert_eq!(wait_for_connections(&relay, 3), 3);
+        drop(held.pop());
+        assert_eq!(wait_for_connections(&relay, 2), 2);
+        relay.stop();
+        for mut c in held {
+            assert!(c.get_bundle([1; 32]).is_err(), "stop closed the open connections");
+        }
+    }
+
     #[test]
     fn the_canary_is_detected() {
         let relay = start(RelayConfig {

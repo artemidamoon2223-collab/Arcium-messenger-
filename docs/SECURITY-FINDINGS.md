@@ -3,6 +3,7 @@
 **Reconciled against `main` @ `087b9c8c550e0b96d7b451d3f953e4860cd7765c` (the merge of PR #103), 2026-09-29.**
 The previous snapshot was `main` @ `492c5d1f6385ddf698cf210ec29f0d67fb6a1d8f`, 2026-07-19.
 F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note at the end of it.
+**Rows added 2026-11-12 against `main` @ `a4a8479`:** D-008, D-010, R-1 … R-7, X-5, X-6 (see "Update 2026-11-12"); no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -255,6 +256,65 @@ the source at the cited SHA; it is not evidence that the implementation is secur
 | **X-1** | Identity-persistence silent key-loss (the Kotlin-side consequence of F-9: a `None` on wrong-key/`NotFound` leads onboarding to generate and overwrite a real identity) | **MERGED** *(corrected 2026-09-29; was «FIXED / UNMERGED»)* | PR #48 merged (`98ad3a2`). `ArciumCore.kt:309` now has a real `openEncryptedDb`; `ArciumApp.kt:20` calls it with the master key from `security/MasterKeyProvider.kt`. Read statically; the startup flow was not exercised here (the emulator manual test the old row waited for is not evidenced in this snapshot), and the Rust-side gap of F-9 is unchanged. **Cross-ref (F-9, 2026-10-06):** that Rust-side gap is closed by PR #120 (`e0e825c`): read errors no longer become "no identity", identity creation no longer overwrites a stored record, and Android no longer starts onboarding after a failed read. A wrong, lost or replaced master key still reads as "no identity", and onboarding then creates a new identity in a separate row (see F-9, scope). This row's status is unchanged. |
 | **X-2** | `require_identity()` — a private helper — was exported to Kotlin as callable `requireIdentity(): Identity` because it sat inside a `#[uniffi::export] impl` block | **FIXED / MERGED** | PR #50 (merge `492c5d1`). `require_identity` is defined at `crates/mobile-ffi/src/lib.rs:971`, inside a plain `impl ArciumCore` (`:932`) separate from the exported block (`:563-564`). (The 2026-07-19 row cited `:389-390`; the code has moved.) |
 | **X-3** | **Lesson (guidance, not a bug):** `#[uniffi::export]` applies to an entire `impl` block — every method in it is exported regardless of Rust `pub`/private visibility. Private helpers must live in a separate non-exported `impl` block. | **N/A (standing guidance)** | Root cause of X-2. Applies to any future `#[uniffi::export] impl` in `crates/mobile-ffi`. |
+
+---
+
+## Update 2026-11-12 (`main` @ `a4a8479`)
+
+**Snapshot:** `main` @ `a4a847914cc4d65042e80e024872abe880f55de9`, the merge commit of
+PR #141. This section adds rows and changes no row above it; every row above keeps its own
+snapshot. Each `path:line` below was re-read at `a4a8479`. Labels: `SV`
+SOURCE_VERIFIED, `RV` RUNTIME_VERIFIED, `INF` INFERRED, `NV` NOT_VERIFIED.
+
+**Where the D-numbers come from.** D-007 … D-011 are the agent's lead records of
+2026-10-19 on the `continuity` branch (`decisions.md`). They are leads, not tracker IDs;
+PR #132 (open) proposes homes for them in this file. Only D-008 and D-010 are recorded
+here, because their fixes have merged.
+
+**Runtime evidence for this section**, run locally at `a4a8479` on 2026-11-12:
+`cargo test -p core-transport bootstrap_within` (3 passed);
+`cargo test -p core-crypto contact_hash` (4 passed, including `shared_e164_vectors`);
+`npx mocha --require ts-node/register src/crypto.test.ts` in `arcium-psi/tests`
+(18 passing, including "canonical E.164 input matches the shared vectors (D-010)").
+The R-rows rest on probes run at `fe7f3b5` on 2026-11-09/10 (synthetic data, a local
+relay, a debug build, probes not committed). PR #141, merged between `fe7f3b5` and
+`a4a8479`, changed dependencies, `vendor/` and CI only (`git diff --stat fe7f3b5 a4a8479`),
+so the probed code paths are the same; the probes were not re-run at `a4a8479` (`INF`).
+
+### D-008 and D-010: fixed or decided
+
+| ID | Item | Status | Evidence (`main` @ `a4a8479`) |
+|----|------|--------|-------------------------------|
+| **D-008** | `TorTransport::new` had no bootstrap bound: arti keeps retrying its directory download, so an unreachable Tor network made `new` wait for hours. | **FIXED — merged** in PR #137 (merge commit `04968d3`). Scope: the bootstrap only. | `BOOTSTRAP_TIMEOUT` = 120 s (`crates/core-transport/src/lib.rs:15`); `new` calls `new_within` with it (`:35-37`); `bootstrap_within` wraps the bootstrap in `tokio::time::timeout` and maps a timeout to `TransportError::Bootstrap` (`:59-71`). Tests `bootstrap_within_times_out_on_a_bootstrap_that_never_finishes`, `…_reports_a_bootstrap_error_as_bootstrap`, `…_returns_a_finished_bootstrap` pass (`RV`). **Not changed:** `state_dir` is still ignored (`_state_dir`, `:40`), so **F-15(b) stays open**; the transport is still not called by the app (`ArciumCore.kt:263-269`, F-15). `new_fails_gracefully_without_tor` stays `#[ignore]` (`:166`) and was not run here (`NV`). |
+| **D-010** | No phone-number normalization before `hash_contact`: formatting variants of one number hashed differently. | **DECIDED and implemented — merged** in PR #139 (merge commit `fe7f3b5`). **No production caller yet.** | Strict E.164 input: `normalize_e164` (`crates/core-crypto/src/contact_hash.rs:60`) accepts `+` then 2–15 ASCII digits with a non-zero first digit after removing listed separators, and refuses anything else (doc `:6-12`); `hash_contact_e164` hashes only the canonical form (`:74-75`); `hash_contact` itself is unchanged (`:47`), so the canonical hash rule in `CLAUDE.md` still holds. TS twin `normalizeE164` (`arcium-psi/tests/src/utils.ts:20`). Both sides check the same vector file `crates/core-crypto/tests/contact_hash_e164.tsv` (Rust test `shared_e164_vectors`, `contact_hash.rs:86`; TS `crypto.test.ts:62-72`) (`RV`). No caller outside tests: the only other mentions are comments (`crates/mobile-ffi/src/lib.rs:193`, `crates/core-crypto/src/session_handle.rs:9`, `MessageRepository.kt:57`) (`SV`). National-format input (no `+`) is refused, not guessed; a caller must format it as E.164 first. |
+
+### R-series: architecture review of 2026-11-10 (open)
+
+Found in the architecture review at `main` @ `fe7f3b5`. A fix for any of them needs its own
+owner task; R-1, R-4, R-5 and R-6 need a design decision first. Severity is the reviewer's
+estimate. (The review's own letters are kept in brackets; its finding B, the red
+`cargo audit`, is closed by PR #141 and has no row.)
+
+| ID | Sev | Item | Status | Evidence (`main` @ `a4a8479`) | Label |
+|----|-----|------|--------|-------------------------------|-------|
+| **R-1** (A) | MED | **Second first contact to an offline recipient is refused; one key order dead-ends.** Trigger: Bob is offline; Alice and Carol both write to him for the first time. His bundle holds one one-time prekey, and both handshakes name it. Consequence: Bob accepts Alice's first message, which consumes and replaces the prekey; Carol's handshake is refused on every round. Carol's text stays "sent to relay" for good. Neither side can restart: removal is refused while a text is pending. If Bob then writes to Carol, the two get a session conflict. When Carol's key is the greater, a manual resolve recovers and her first text is marked not delivered. When Bob's key is the greater, both sides are stuck: Bob waits for Carol's handshake, which is always refused, and `resolve_session_conflict` refuses both. | **OPEN** — needs a protocol decision | Refusal: `check_answerable` (`crates/mobile-ffi/src/lib.rs:885-900`), `OneTimePrekeyUnavailable` at `:894-896`; consume and replace at `:940-944`; the network layer flags `HANDSHAKE_REFUSED` and reports "handshake refused" (`crates/mobile-ffi/src/network.rs:638-649`). Removal refused with a pending text: `PendingOutgoing` (`crates/core-protocol/src/messaging/removal.rs:78-81`). Resolve refusals: `crates/mobile-ffi/src/network/chat.rs:536-545`. The refusal of a second initiator is documented (`docs/NET-MESSAGING.md:259-268`); how often it happens and the dead end are not. | `RV` at `fe7f3b5` (two-key-order probe); `SV` at `a4a8479` |
+| **R-2** (C) | MED | **An unknown COMMIT outcome stalled the exchange for every contact.** Trigger: a COMMIT whose outcome is unknown (reproduced with `SQLITE_BUSY`) leaves a session unresolved. Consequence: `recover_session` runs only when a message is received on that session, but the round sends first, and a send on the unresolved session fails the whole round. No contact sends or receives until the app restarts; the envelopes stay on the relay. | **OPEN — fix in review** (PR #140, not merged) | Recovery only on the receive path: `crates/mobile-ffi/src/network.rs:651-652`; the error `SessionUnresolved` (`crates/mobile-ffi/src/lib.rs:98-99`); the contract that the network layer recovers (`docs/NET-MESSAGING.md:251`). Probe at `fe7f3b5`: six rounds with `fetched=0`, two envelopes left on the relay, everything delivered after a manual `recover_session`. PR #140's regression test fails on the base and passes with the fix. | `RV` at `fe7f3b5`; `SV` at `a4a8479` |
+| **R-3** (D) | LOW | **Cost grows linearly with history length.** Every send, every sync round and every conversation-list refresh reads and decrypts the whole history of a conversation; listing entries is a full prefix scan of the table. There is no paged read in the API or the UI. Measured (debug build, server): idle round 87 ms at 50 messages, 498 ms at 500. A round runs every 1.5–4 s. | **OPEN** — needs a design decision (paging, index) | `entries` (`crates/mobile-ffi/src/network/chat.rs:727`), called per send (`:423`), per conversation (`:556`) and per round (`:867`); `list_keys_with_prefix` scans with `substr(k, …)` (`crates/core-storage/src/lib.rs:241-247`). | `RV` (debug, up to 500 entries, at `fe7f3b5`); phone `NV` |
+| **R-4** (E) | LOW | **No time bound on a relay operation or a sync round.** `timeout_ms` is a per-syscall socket timeout, not a per-operation bound, while the doc comment promises one. A relay that trickles bytes keeps a round running indefinitely: with `timeout_ms = 300` and 1 byte per 100 ms, sync had not returned after 20 s; one 1 MiB frame would take about 29 hours. Sync runs on one thread, so changing the relay in settings does not help until a restart. | **OPEN** — needs limits chosen | `set_read_timeout` / `set_write_timeout` (`crates/relay/src/client.rs:45-46`); doc "Every network operation times out after `timeout_ms`" (`crates/mobile-ffi/src/network.rs:155`); one sync thread (`MessengerService.kt:76`). | `RV` (trickle probe at `fe7f3b5`); single-thread consequence `INF` |
+| **R-5** (F) | LOW | **Retransmission without backoff.** Every unacknowledged message or handshake is sent again every 5 s while the app is open, with no limit and no backoff, including the refused handshake of R-1. Traffic and battery cost not measured. | **OPEN** — needs limits chosen | `due` compares against a fixed `retransmit_after` (`crates/mobile-ffi/src/network.rs:486-490`); default `retransmitAfterMs = 5_000u` (`android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt:297`). | `SV`; cost `NV` |
+| **R-6** (G) | LOW | **The signed prekey is never rotated.** Prekeys are created once, when none exist, and the signed prekey then stays for the life of the identity. Only the one-time prekey rotates. | **OPEN** — crypto-policy decision, separate owner task | `put_bundle` calls `establish_prekeys` only when `PREKEYS_KEY` is absent (`crates/mobile-ffi/src/network.rs:323-340`); the only other production call is in the unused `MessageRepository` (`MessageRepository.kt:113`). | `SV` |
+| **R-7** (H) | INFO | **Stubs and stale descriptions.** (a) `MessageRepository` is not used by the app and its "No transport" section is stale (`NetworkMessenger` exists). (b) The manifest requests Bluetooth permissions for the BLE stub. (c) `repo-map.md` does not list the `relay` crate. (d) `ChatViewModel` does not clear its error after a successful reload. | **OPEN** — text fixes are task T4; deletions and the permission change are owner decisions | (a) `android/app/src/main/kotlin/com/arcium/messenger/data/MessageRepository.kt:88`; (b) `android/app/src/main/AndroidManifest.xml:7-13`; (c) no `relay` in `.claude/skills/engineering-code-review/references/repo-map.md`; (d) `reload` sets `error` only in its `catch` and never clears it (`android/app/src/main/kotlin/com/arcium/messenger/ui/chat/ChatViewModel.kt:66-77`); it is cleared only when a send starts (`:98`). | `SV` |
+
+### X-5 and X-6: carried over from PR #82
+
+PR #82 (closed unmerged on 2026-11-11) proposed these two rows as X-4 and X-5. They are
+renumbered here because PR #132 (open) uses X-4 for a different item. Both were re-checked
+at `a4a8479`; the code has changed since #82 was written, so the anchors are new.
+
+| ID | Item | Status | Evidence (`main` @ `a4a8479`) | Label |
+|----|------|--------|-------------------------------|-------|
+| **X-5** | The responder used to read its prekey record under a store guard that was a temporary in an expression chain, so the guard was dropped at the end of the statement and X3DH ran unlocked. Any single-use prekey scheme built on that shape would let two concurrent handshakes consume the same one-time prekey. | **FIXED** (PR #81, `99c9f49`; the shape has changed again since) | `accept_first_message` takes `store: &mut EncryptedStore` (`crates/mobile-ffi/src/lib.rs:910-917`), so its caller holds the store for the whole read → check → rotate → write; the rotated record is written only if it is still byte-identical to the one read (doc `:902-909`). Concurrent handshakes were not exercised here. | `SV`; concurrency `NV` |
+| **X-6** | **Residual replay on the SPK-only path.** The handshake format keeps a form without a one-time prekey, and the responder accepts it when it holds none. On that path nothing stops an exact replay: the root key re-derives identically and a recorded first message decrypts again. | **OPEN — currently unreachable** | Accepted when neither side has a one-time prekey: `(None, None) => Ok(())` (`crates/mobile-ffi/src/lib.rs:898`). No production writer makes a record without one: `establish_prekeys` always sets `opk: Some(…)` (`:683-697`), and the responder replaces a consumed one (`:940-944`). The residual becomes live as soon as anything produces a record without a one-time prekey, such as an exhaustion policy, or several one-time prekeys as considered for R-1. It must be closed together with such a change. | `SV` |
 
 ---
 

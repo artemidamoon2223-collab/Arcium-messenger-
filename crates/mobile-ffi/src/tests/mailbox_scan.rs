@@ -297,7 +297,7 @@ fn dave_starts(w: &World, byte: u8) -> (Device, Vec<u8>, Vec<u8>) {
         match Envelope::decode(&env) {
             Some(Envelope::Handshake { .. }) => hs = Some(env),
             Some(Envelope::Message { .. }) => first = Some(env),
-            None => panic!("garbage"),
+            Some(Envelope::Refusal { .. }) | None => panic!("unexpected envelope"),
         }
     }
     (dave, hs.unwrap(), first.unwrap())

@@ -5,6 +5,7 @@ pub mod contact_hash;
 mod hash_contract;
 pub mod hybrid;
 pub mod ratchet;
+pub mod refusal_mac;
 pub mod rescue;
 pub mod session_handle;
 pub mod spk_id;

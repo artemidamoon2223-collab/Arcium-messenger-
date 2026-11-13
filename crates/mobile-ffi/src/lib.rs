@@ -105,15 +105,17 @@ pub enum CoreError {
     /// No message with this id is recorded for this session.
     #[error("unknown message for session {session_id}")]
     UnknownMessage { session_id: u64 },
-    /// A client message id must be 1 to 64 bytes.
-    #[error("client message id must be 1 to 64 bytes")]
+    /// A client message id must be 1 to 64 bytes, and not one the network
+    /// layer reserves for its own messages (see `send_message`).
+    #[error("client message id must be 1 to 64 bytes and not reserved")]
     InvalidClientMessageId,
     /// The session has accepted a message from the peer, so the peer holds
     /// it too; it cannot be removed locally. Nothing changed.
     #[error("session {session_id} is established and cannot be removed")]
     SessionEstablished { session_id: u64 },
     /// The session has outgoing messages that are neither acknowledged nor
-    /// abandoned (`abandon_outgoing`). Nothing changed.
+    /// abandoned. Only the network layer does either, on the peer's receipt
+    /// or in `resolve_session_conflict`. Nothing changed.
     #[error("session {session_id} has {count} pending outgoing messages")]
     PendingOutgoing { session_id: u64, count: u64 },
     /// An acknowledgement, abandonment or removal may or may not have taken
@@ -585,6 +587,124 @@ fn unpack_initiator_handshake(bytes: &[u8]) -> Result<InitiatorHandshakeV1, Core
     })
 }
 
+// ── HANDSHAKE_REFUSAL_V1 ──────────────────────────────────────────────────────
+//
+// A responder that cannot answer an initiator's handshake (the prekeys it names
+// were consumed or rotated) tells the initiator so. The initiator checks it
+// against the pinned contact and against the handshake it actually sent, and
+// only then gives up its own unconfirmed session (docs/NET-MESSAGING.md,
+// section 6).
+//
+// ```text
+//  0  32  refuser_identity_dh_pk
+// 32  32  initiator_identity_dh_pk
+// 64  32  sha256(INITIATOR_HANDSHAKE_V1 bytes)
+// 96   1  reason   1 = one-time prekey unavailable, 2 = one-time prekey
+//                  required, 3 = stale signed prekey
+// 97  32  tag      core_crypto::refusal_mac over bytes 0..97
+// ```
+//
+// The tag is a MAC keyed by a static DH of the two identity keys, not a
+// signature: only the two parties can make or check it, and the initiator
+// could have made it alone. So a refusal, which anyone can elicit with a forged
+// handshake naming a contact, is no proof to a third party that the refuser
+// has that contact pinned (review finding F-144-1).
+
+/// The authenticated fields of `HANDSHAKE_REFUSAL_V1`.
+const REFUSAL_FIELDS_LEN: usize = 3 * 32 + 1;
+/// `HANDSHAKE_REFUSAL_V1`: the fields, then the tag.
+pub(crate) const HANDSHAKE_REFUSAL_V1_LEN: usize =
+    REFUSAL_FIELDS_LEN + core_crypto::refusal_mac::REFUSAL_TAG_LEN;
+
+/// Why a handshake could not be answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusalReason {
+    OneTimePrekeyUnavailable = 1,
+    OneTimePrekeyRequired = 2,
+    StaleSignedPrekey = 3,
+}
+
+impl RefusalReason {
+    /// The reason for a refusal error of `establish_session_responder`; `None`
+    /// for every other error, which is not a statement about the handshake.
+    pub(crate) fn of(e: &CoreError) -> Option<Self> {
+        match e {
+            CoreError::OneTimePrekeyUnavailable { .. } => Some(Self::OneTimePrekeyUnavailable),
+            CoreError::OneTimePrekeyRequired => Some(Self::OneTimePrekeyRequired),
+            CoreError::StaleSignedPrekey => Some(Self::StaleSignedPrekey),
+            _ => None,
+        }
+    }
+
+    fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            1 => Some(Self::OneTimePrekeyUnavailable),
+            2 => Some(Self::OneTimePrekeyRequired),
+            3 => Some(Self::StaleSignedPrekey),
+            _ => None,
+        }
+    }
+}
+
+/// A `HANDSHAKE_REFUSAL_V1` whose tag checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HandshakeRefusal {
+    pub refuser_dh_pk: [u8; 32],
+    pub initiator_dh_pk: [u8; 32],
+    pub handshake_hash: [u8; 32],
+    pub reason: RefusalReason,
+}
+
+impl HandshakeRefusal {
+    fn fields(&self) -> [u8; REFUSAL_FIELDS_LEN] {
+        let mut out = [0u8; REFUSAL_FIELDS_LEN];
+        out[0..32].copy_from_slice(&self.refuser_dh_pk);
+        out[32..64].copy_from_slice(&self.initiator_dh_pk);
+        out[64..96].copy_from_slice(&self.handshake_hash);
+        out[96] = self.reason as u8;
+        out
+    }
+
+    /// Parses `bytes` as a refusal by `refuser_dh_pk` of a handshake from
+    /// the holder of `own_sk`, and checks its tag. `None` for anything else:
+    /// a wrong length, an unknown reason, another refuser or initiator named
+    /// in the fields, a tag that does not check (made by anyone but the two
+    /// parties, or for other fields), a low-order refuser key. Says nothing
+    /// about which handshake it names; the caller compares the hash.
+    fn open(bytes: &[u8], own_sk: &StaticSecret, refuser_dh_pk: &[u8; 32]) -> Option<Self> {
+        if bytes.len() != HANDSHAKE_REFUSAL_V1_LEN {
+            return None;
+        }
+        let (fields, tag) = bytes.split_at(REFUSAL_FIELDS_LEN);
+        let key = |r: std::ops::Range<usize>| -> [u8; 32] { fields[r].try_into().expect("32 bytes") };
+        let refusal = Self {
+            refuser_dh_pk: key(0..32),
+            initiator_dh_pk: key(32..64),
+            handshake_hash: key(64..96),
+            reason: RefusalReason::from_byte(fields[96])?,
+        };
+        let own_pk = PublicKey::from(own_sk).to_bytes();
+        if refusal.refuser_dh_pk != *refuser_dh_pk || refusal.initiator_dh_pk != own_pk {
+            return None;
+        }
+        core_crypto::refusal_mac::verify_refusal_tag(
+            own_sk,
+            refuser_dh_pk,
+            refuser_dh_pk,
+            &own_pk,
+            fields,
+            tag,
+        )
+        .then_some(refusal)
+    }
+}
+
+/// sha256 of a handshake, as a refusal names it.
+pub(crate) fn handshake_hash(handshake: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(handshake).into()
+}
+
 /// The encrypted store and the durable messaging state machine over it.
 ///
 /// Sessions live only in the store: every messaging call loads the session,
@@ -1021,6 +1141,47 @@ impl ArciumCore {
         messenger
             .is_legacy_unconfirmed(&mut store, our, session_id)
             .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// A `HANDSHAKE_REFUSAL_V1` from this device for `handshake`,
+    /// which `initiator_dh_pk` sent and this device could not answer.
+    /// `None` if `initiator_dh_pk` is of low order: no tag can be made for
+    /// it, and no refusal is sent.
+    pub(crate) fn make_handshake_refusal(
+        &self,
+        initiator_dh_pk: [u8; 32],
+        handshake: &[u8],
+        reason: RefusalReason,
+    ) -> Result<Option<Vec<u8>>, CoreError> {
+        let identity = self.require_identity()?;
+        let refuser_dh_pk = PublicKey::from(&identity.dh_key).to_bytes();
+        let refusal = HandshakeRefusal {
+            refuser_dh_pk,
+            initiator_dh_pk,
+            handshake_hash: handshake_hash(handshake),
+            reason,
+        };
+        let fields = refusal.fields();
+        let tag = core_crypto::refusal_mac::refusal_tag(
+            &identity.dh_key,
+            &initiator_dh_pk,
+            &refuser_dh_pk,
+            &initiator_dh_pk,
+            &fields,
+        );
+        Ok(tag.map(|tag| [&fields[..], &tag[..]].concat()))
+    }
+
+    /// The refusal `bytes` if it is a refusal by `refuser_dh_pk` of a
+    /// handshake from this device whose tag checks; see
+    /// [`HandshakeRefusal::open`].
+    pub(crate) fn open_handshake_refusal(
+        &self,
+        bytes: &[u8],
+        refuser_dh_pk: &[u8; 32],
+    ) -> Result<Option<HandshakeRefusal>, CoreError> {
+        let identity = self.require_identity()?;
+        Ok(HandshakeRefusal::open(bytes, &identity.dh_key, refuser_dh_pk))
     }
 
     fn our_identity_pk(&self) -> Result<[u8; 32], CoreError> {
@@ -2202,15 +2363,22 @@ mod tests {
     }
 
     mod responder;
+    mod ack_probe;
     mod chat;
     mod durable;
     mod net_harness;
     mod network;
     mod network_crash;
+    mod delivery_consistency;
+    mod first_contact;
+    mod net_limits;
+    mod send_refusal;
+    mod history_paging;
     mod net_peer;
     mod legacy_upgrade;
     mod mailbox_scan;
     mod debug_redaction;
     mod outgoing;
     mod identity;
+    mod unresolved;
 }

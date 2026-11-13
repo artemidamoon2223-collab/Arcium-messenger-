@@ -2058,6 +2058,34 @@ mod tests {
         assert_eq!(count.get(), 1, "SideConflict");
     }
 
+    /// A first message staged by one provisional session cannot be promoted
+    /// by another, even though both are at generation 0: only the instance
+    /// tells them apart. Nothing is written and nothing is released.
+    #[test]
+    fn a_first_message_staged_by_another_provisional_session_is_refused() {
+        let fresh = || {
+            let p = pair();
+            let mut a_store = FakeStore::default();
+            let mut alice =
+                DurableSession::create(&mut a_store, p.alice, SessionRole::Initiator, p.alice_pk)
+                    .unwrap();
+            let msg = send(&mut alice, &mut a_store, b"the first message");
+            let provisional =
+                ProvisionalSession::new(p.bob, SessionRole::Responder, p.bob_pk).unwrap();
+            (provisional, msg)
+        };
+        let (staging, msg) = fresh();
+        let (other, _) = fresh();
+        let staged = staging.stage_first_decrypt(&msg.0, &msg.1).unwrap();
+        assert_eq!(staged.base_generation, 0);
+        let mut store = FakeStore::default();
+        assert!(matches!(
+            other.promote_with(&mut store, staged, &[]),
+            Err(OpenError::StaleTransition)
+        ));
+        assert!(store.records.is_empty(), "nothing was written");
+    }
+
     /// The first-message path releases plaintext only through a successful
     /// promotion, and a rejected promotion returns none.
     #[test]

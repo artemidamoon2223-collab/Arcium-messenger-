@@ -511,7 +511,7 @@ fn a_refused_handshake_can_be_replaced_after_removing_the_session() {
         .unwrap();
     let orphan = sent_new(
         alice
-            .send_message(1, b"o".to_vec(), b"never read".to_vec())
+            .send_message(1, b"orphan".to_vec(), b"never read".to_vec())
             .unwrap(),
     );
     bob.establish_prekeys().unwrap();
@@ -541,7 +541,7 @@ fn a_refused_handshake_can_be_replaced_after_removing_the_session() {
     // The abandoned logical message is not encrypted again.
     assert_eq!(
         alice
-            .send_message(1, b"o".to_vec(), b"never read".to_vec())
+            .send_message(1, b"orphan".to_vec(), b"never read".to_vec())
             .unwrap(),
         SendResult::Abandoned {
             message_id: orphan.message_id

@@ -1,7 +1,8 @@
 # cargo-audit configuration for Arcium Messenger.
 #
 # Advisories below are in transitive dependencies we do not control (arti/Tor stack).
-# All ignores were reviewed on 2026-06-07. REVISIT AT NEXT SECURITY AUDIT.
+# The first two ignores were reviewed on 2026-06-07; each entry carries its own
+# Added date. REVISIT AT NEXT SECURITY AUDIT.
 
 [advisories]
 ignore = [
@@ -22,4 +23,23 @@ ignore = [
     # Tracked: https://rustsec.org/advisories/RUSTSEC-2023-0071
     # Added: 2026-06-07
     "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0387 — crypto-bigint < 0.7.6, timing variability in operations meant
+    #   to be constant-time (subtraction, division, Montgomery multiplication, ...).
+    # Provenance: crypto-bigint 0.5.5 via arti-client → tor-keymgr 0.21 → ssh-key 0.6.7
+    #   → optional p256/p384/p521 0.13 → elliptic-curve 0.13.8. Cargo.lock lists optional
+    #   dependencies even when no feature turns them on; this one never is.
+    # Impact: none while the guard below passes — ssh-key is built with {std, alloc, ecdsa,
+    #   rand_core} only, so elliptic-curve and crypto-bigint are not compiled for Linux or
+    #   Android (Android Native Bridge CI job 124353595128 compiled neither).
+    # Guard: .github/scripts/check_rustsec_2026_0387.py runs before cargo audit in
+    #   arcium-ci.yml core-rust and fails if crypto-bigint enters the build graph for any
+    #   checked target or feature mode, if a cargo command fails, or if Cargo.lock stops
+    #   listing exactly crypto-bigint 0.5.5. This ignore is valid only together with it.
+    # Fix: no patched 0.5.x; >= 0.7.6 needs ssh-key 0.7 (release candidates only) and an
+    #   arti that adopts it. REMOVE this entry and the guard when crypto-bigint 0.5 leaves
+    #   Cargo.lock (the guard then fails, by design). REVISIT AT SECURITY AUDIT.
+    # Tracked: https://rustsec.org/advisories/RUSTSEC-2026-0387
+    # Added: 2026-10-31 (Owner task C006)
+    "RUSTSEC-2026-0387",
 ]

@@ -45,6 +45,10 @@ fn net_crash_child() {
         "chat_sync" => {
             device.net.sync_conversations();
         }
+        "resolve" => {
+            let peer = std::fs::read(dir.join("peer")).unwrap();
+            device.net.resolve_session_conflict(peer).unwrap();
+        }
         other => panic!("unknown scenario {other}"),
     }
     std::process::abort();

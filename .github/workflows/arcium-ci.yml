@@ -283,6 +283,7 @@ jobs:
           name: localnet-diagnostics-${{ github.event_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/localnet-publish
           if-no-files-found: error
+          retention-days: 14
       - name: Localnet diagnostics summary
         if: always() && steps.diagnostics_gate.outcome == 'success'
         env:

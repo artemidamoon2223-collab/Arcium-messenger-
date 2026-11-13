@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use core_storage::StorageError;
 use relay::client::{ClientError, Connection};
-use relay::protocol::{DEFAULT_MAX_MAILBOX, MAX_FETCH, MIN_PAGE};
+use relay::protocol::{ErrorCode, DEFAULT_MAX_MAILBOX, MAX_FETCH, MIN_PAGE};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -107,6 +107,12 @@ pub struct NetworkMessenger {
     /// how often it was. In memory only: after a restart everything pending
     /// is sent once more, and the backoff starts again.
     last_sent: Mutex<HashMap<[u8; 32], (Instant, u32)>>,
+    /// Recipients the relay last refused to store an envelope for (a full
+    /// mailbox): when, and how many times in a row. Nothing is sent to one
+    /// while its wait runs; the wait is that of a retransmission
+    /// ([`Self::retransmit_wait`]). The first envelope the relay stores for
+    /// the recipient removes it. In memory only, like `last_sent`.
+    refused: Mutex<HashMap<[u8; 32], (Instant, u32)>>,
     limits: Mutex<Limits>,
     /// Where the mailbox passes of the next round start, after a round the
     /// budget cut short. In memory only; `(0, 0)` otherwise.
@@ -236,6 +242,36 @@ impl Budget {
 /// relay was reached, and the next round continues.
 pub(crate) const BUDGET_EXHAUSTED: &str = "round budget exhausted: the rest follows in the next round";
 
+/// The recipients the relay refused to store an envelope for in one round,
+/// and with which codes.
+#[derive(Debug, Default)]
+struct RelayRefusals {
+    recipients: Vec<[u8; 32]>,
+    codes: Vec<ErrorCode>,
+}
+
+impl RelayRefusals {
+    fn note(&mut self, recipient: [u8; 32], code: ErrorCode) {
+        if !self.recipients.contains(&recipient) {
+            self.recipients.push(recipient);
+        }
+        if !self.codes.contains(&code) {
+            self.codes.push(code);
+        }
+    }
+
+    /// The round's report line, if the relay refused anything. Not a network
+    /// error: the relay was reached. It names no recipient.
+    fn line(&self) -> Option<String> {
+        let n = self.recipients.len();
+        (n > 0).then(|| {
+            let codes: Vec<String> = self.codes.iter().map(|c| format!("{c:?}")).collect();
+            let noun = if n == 1 { "recipient" } else { "recipients" };
+            format!("relay refused {n} {noun}: {}", codes.join(", "))
+        })
+    }
+}
+
 /// A received text and its message id, the text in a wiping owner.
 pub(crate) type PendingText = (MessageId, Zeroizing<Vec<u8>>);
 
@@ -300,6 +336,7 @@ impl NetworkMessenger {
             timeout: Duration::from_millis(timeout_ms),
             retransmit_after: Duration::from_millis(retransmit_after_ms),
             last_sent: Mutex::new(HashMap::new()),
+            refused: Mutex::new(HashMap::new()),
             refusals: Mutex::new(Refusals::default()),
             limits: Mutex::new(Limits::default()),
             resume: Mutex::new(Resume::default()),
@@ -409,9 +446,11 @@ impl NetworkMessenger {
     /// lists the failures.
     pub fn sync(&self) -> SyncReport {
         let mut report = SyncReport::default();
-        if let Err(e) = self.sync_round(&mut report) {
+        let mut relay_refusals = RelayRefusals::default();
+        if let Err(e) = self.sync_round(&mut report, &mut relay_refusals) {
             report.errors.push(e.to_string());
         }
+        report.errors.extend(relay_refusals.line());
         report
     }
 }
@@ -509,11 +548,18 @@ impl NetworkMessenger {
         Ok(out)
     }
 
-    fn sync_round(&self, report: &mut SyncReport) -> Result<(), CoreError> {
+    fn sync_round(&self, report: &mut SyncReport, relay_refusals: &mut RelayRefusals) -> Result<(), CoreError> {
         let budget = Budget::new(self.limits().round_budget);
         // Taken, so that a round that fails anywhere starts the next one
         // from the beginning; set again below only by a round cut short.
         let from = std::mem::take(&mut *self.resume.lock().expect("resume"));
+        // A commit whose outcome is unknown leaves its session unresolved,
+        // and every send on it is refused until `recover_session`. Receiving
+        // recovers it (`process`), but the sends below come first, and one
+        // refusal ends the round for every contact; so recover here.
+        for peer in self.core.contacts()? {
+            self.core.recover_if_unresolved(handle_of(&peer_key(&peer)?))?;
+        }
         let sessions = self.sessions()?;
         // Local recovery first: receipts or OPEN messages committed before a
         // crash, and receipts for texts accepted before one.
@@ -522,7 +568,7 @@ impl NetworkMessenger {
         }
         let mut conn = self.connect()?;
         self.put_bundle(&mut conn)?;
-        self.publish_pending(&mut conn, &sessions, &budget, report)?;
+        self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
 
         let our = self.core.our_identity_pk()?;
         // Handshakes before messages, so a session exists for what follows:
@@ -559,7 +605,7 @@ impl NetworkMessenger {
         self.send_refusals(&mut conn, report)?;
         // Receipts produced above, and the first messages of new sessions.
         let sessions = self.sessions()?;
-        self.publish_pending(&mut conn, &sessions, &budget, report)?;
+        self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
         if budget.cut.get() {
             // What this round processed is committed and deleted; the rest
             // stays on the relay (or in the outbox) for the next round.
@@ -716,11 +762,59 @@ impl NetworkMessenger {
         sent.insert(key, (Instant::now(), sends.saturating_add(1)));
     }
 
+    /// Whether sends to `peer` wait after a relay refusal.
+    fn held(&self, peer: &[u8; 32]) -> bool {
+        let cap = self.limits().retransmit_cap;
+        let refused = self.refused.lock().expect("refused");
+        refused
+            .get(peer)
+            .is_some_and(|(t, times)| t.elapsed() < self.retransmit_wait(*times, cap))
+    }
+
+    /// Test aid: how many times in a row the relay refused `peer`.
+    #[cfg(test)]
+    pub(crate) fn refusals_in_a_row(&self, peer: &[u8; 32]) -> u32 {
+        self.refused.lock().expect("refused").get(peer).map_or(0, |(_, n)| *n)
+    }
+
+    /// Asks the relay to store `envelope` for `peer`. `Ok(false)`: the relay
+    /// refused (a full mailbox). It read the request and answered, so the
+    /// connection is still in step and the round goes on; the recipient
+    /// starts or prolongs its wait. Any other failure ends the round, as the
+    /// connection's state is then unknown.
+    fn send_to(
+        &self,
+        conn: &mut Connection,
+        peer: [u8; 32],
+        envelope: Vec<u8>,
+        relay_refusals: &mut RelayRefusals,
+    ) -> Result<bool, CoreError> {
+        match conn.send(peer, envelope) {
+            Ok(_) => {
+                self.refused.lock().expect("refused").remove(&peer);
+                Ok(true)
+            }
+            Err(ClientError::Refused(code)) => {
+                let mut refused = self.refused.lock().expect("refused");
+                let times = refused.get(&peer).map_or(0, |(_, n)| *n);
+                refused.insert(peer, (Instant::now(), times.saturating_add(1)));
+                relay_refusals.note(peer, code);
+                Ok(false)
+            }
+            Err(e) => Err(network(e)),
+        }
+    }
+
+    /// Sends what is due to every session's peer. A peer the relay refuses
+    /// gets nothing more in this round and nothing until its wait is over
+    /// ([`Self::held`]), so its envelopes stay in their order; the other
+    /// peers are not affected.
     fn publish_pending(
         &self,
         conn: &mut Connection,
         sessions: &[([u8; 32], u64)],
         budget: &Budget,
+        relay_refusals: &mut RelayRefusals,
         report: &mut SyncReport,
     ) -> Result<(), CoreError> {
         let our = self.core.our_identity_pk()?;
@@ -728,6 +822,9 @@ impl NetworkMessenger {
             // Out of time: the rest is sent next round.
             if !budget.left() {
                 return Ok(());
+            }
+            if relay_refusals.recipients.contains(peer) || self.held(peer) {
+                continue;
             }
             if !self.confirmed(*handle)? {
                 if let Some(hs) = self.core.initiator_handshake(*handle)? {
@@ -737,7 +834,9 @@ impl NetworkMessenger {
                             sender: our,
                             handshake: hs,
                         };
-                        conn.send(*peer, env.encode()).map_err(network)?;
+                        if !self.send_to(conn, *peer, env.encode(), relay_refusals)? {
+                            continue;
+                        }
                         self.mark_sent(key);
                         report.published += 1;
                     }
@@ -755,7 +854,9 @@ impl NetworkMessenger {
                     sender: our,
                     wire: m.wire,
                 };
-                conn.send(*peer, env.encode()).map_err(network)?;
+                if !self.send_to(conn, *peer, env.encode(), relay_refusals)? {
+                    break;
+                }
                 self.mark_sent(id);
                 report.published += 1;
                 if m.client_message_id.first() == Some(&client_id::RECEIPT) {

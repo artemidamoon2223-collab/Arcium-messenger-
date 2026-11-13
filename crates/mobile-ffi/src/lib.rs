@@ -2354,6 +2354,7 @@ mod tests {
     mod delivery_consistency;
     mod first_contact;
     mod net_limits;
+    mod send_refusal;
     mod history_paging;
     mod net_peer;
     mod legacy_upgrade;
@@ -2361,4 +2362,5 @@ mod tests {
     mod debug_redaction;
     mod outgoing;
     mod identity;
+    mod unresolved;
 }

@@ -516,6 +516,13 @@ impl NetworkMessenger {
         // Taken, so that a round that fails anywhere starts the next one
         // from the beginning; set again below only by a round cut short.
         let from = std::mem::take(&mut *self.resume.lock().expect("resume"));
+        // A commit whose outcome is unknown leaves its session unresolved,
+        // and every send on it is refused until `recover_session`. Receiving
+        // recovers it (`process`), but the sends below come first, and one
+        // refusal ends the round for every contact; so recover here.
+        for peer in self.core.contacts()? {
+            self.core.recover_if_unresolved(handle_of(&peer_key(&peer)?))?;
+        }
         let sessions = self.sessions()?;
         // Local recovery first: receipts or OPEN messages committed before a
         // crash, and receipts for texts accepted before one.

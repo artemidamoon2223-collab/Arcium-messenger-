@@ -292,7 +292,7 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 | crash after a text is committed | the stored bytes are sent after restart |
 | crash after acceptance / receipt commit / delete | the inbox holds the message once; its receipt is committed or re-derived from the inbox |
 | crash after a receipt is accepted | applied from the inbox at the next sync |
-| commit outcome unknown | S2-B2 recovery (`recover_session`); the envelope stays on the relay |
+| commit outcome unknown | S2-B2 recovery (`recover_session`), which this layer runs itself: at the start of the next round, before it commits a queued text, and when a message for that session is fetched; the envelope stays on the relay |
 
 ## 8. Not provided
 

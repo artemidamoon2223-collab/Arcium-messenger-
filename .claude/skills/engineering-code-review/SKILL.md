@@ -8,8 +8,9 @@ description: "Concrete engineering requirements for making and reviewing changes
 ## Status
 
 Normative for engineering practice in this repository. Does not authorize any
-action: writing, installing, or touching git still requires the owner's
-instruction, and `repo-change-protocol` describes how such work is carried out.
+action: writing, installing or touching git happens only inside a task the
+owner authorized, `CLAUDE.md` («Режим работы») lists what always needs separate
+approval, and `repo-change-protocol` describes how such work is carried out.
 
 This skill does **not** cover security, cryptographic or protocol review —
 that is `arcium-security-review`. The permanent crypto rules live in

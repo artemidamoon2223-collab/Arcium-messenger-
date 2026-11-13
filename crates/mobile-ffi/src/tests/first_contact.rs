@@ -564,6 +564,49 @@ fn a_refusal_the_relay_cannot_store_now_is_sent_later() {
     relay.stop();
 }
 
+/// After the relay refused a refusal, the initiator waits as any recipient
+/// the relay refused does (`retransmit_after`, here 600 ms): within the wait
+/// the refusal is not tried again, even with room in the mailbox, so the
+/// wait is not prolonged by fresh refusals; after it, it goes out.
+#[test]
+fn a_refusal_waits_while_its_recipient_is_held() {
+    let relay = relay::server::serve(
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        relay::server::RelayConfig {
+            max_mailbox: 8,
+            canary: Some(CANARY.to_vec()),
+            ..relay::server::RelayConfig::default()
+        },
+    )
+    .unwrap();
+    let addr = relay.addr().to_string();
+    let (bob, writers) = offline_recipient(&addr, 2, true);
+    let carol = writers
+        .iter()
+        .find(|w| session(&bob, w) != ChatSessionState::Established)
+        .unwrap();
+    assert_eq!(refusals_for(&relay, carol), 0);
+    carol.net.sync_conversations();
+    let free = 8 - relay.stored(&key(carol)).len();
+    for i in 0..free {
+        inject(&addr, carol, vec![i as u8; 10]);
+    }
+
+    let net = crate::network::NetworkMessenger::new(bob.core.clone(), addr.clone(), 600, 2000);
+    let r = net.sync();
+    assert!(r.errors.iter().any(|e| e.starts_with("relay refused")), "{:?}", r.errors);
+    let mut conn = relay::client::Connection::connect(&addr, Duration::from_secs(2)).unwrap();
+    let stored: Vec<u64> = relay.stored(&key(carol)).into_iter().map(|(seq, _)| seq).collect();
+    conn.delete(key(carol), stored).unwrap();
+
+    net.sync();
+    assert_eq!(refusals_for(&relay, carol), 0, "not tried while Carol is held");
+    std::thread::sleep(Duration::from_millis(700));
+    net.sync();
+    assert_eq!(refusals_for(&relay, carol), 1, "sent once the wait is over");
+    relay.stop();
+}
+
 /// F-144-2, the other half: a connection that breaks on the SEND of a
 /// refusal ends Bob's round, as any network error does, but the refusal stays
 /// queued and goes out in the next round. (Before, it was taken off the queue

@@ -18,10 +18,22 @@
 //! `info` names who refuses whom, so the key for "A refuses B" differs from
 //! the key for "B refuses A": a tag cannot be reused with the roles swapped.
 //!
-//! The identity key also takes part in X3DH; there its DH outputs go through
-//! a different HKDF (salt of zeros, info `X3DH/v1`, other DH outputs in the
-//! input), so the two derivations share no key. Not reviewed by a
-//! cryptographer: REVISIT AT SECURITY AUDIT.
+//! The identity key also takes part in X3DH, which never computes an
+//! identity-to-identity DH. Its HKDF has the same extract salt (no salt here
+//! is 32 zero bytes, as there), but another input (0xFF x 32 followed by
+//! three or four DH outputs, at least one of which an outsider cannot
+//! compute) and another info (`X3DH/v1`), so the two derivations share no
+//! key.
+//!
+//! **Key-compromise impersonation.** Whoever holds the initiator's identity
+//! secret can make a refusal the initiator accepts as the refuser's: a MAC
+//! cannot tell the two parties apart. With it, and the ability to read the
+//! refuser's mailbox and write the initiator's, an attacker can make the
+//! initiator give up a pending first contact (its texts become NotDelivered)
+//! and start again. Holding that secret already lets one impersonate the
+//! initiator to everyone, so this adds little; it is the price of a refusal
+//! that proves nothing to third parties. Not reviewed by a cryptographer:
+//! REVISIT AT SECURITY AUDIT.
 
 use hkdf::Hkdf;
 use hmac::{Hmac, KeyInit, Mac};

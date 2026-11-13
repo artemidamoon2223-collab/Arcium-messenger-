@@ -602,7 +602,7 @@ impl NetworkMessenger {
                 messages: messages.reached,
             };
         }
-        self.send_refusals(&mut conn, relay_refusals, report)?;
+        self.send_refusals(&mut conn, &budget, relay_refusals, report)?;
         // Receipts produced above, and the first messages of new sessions.
         let sessions = self.sessions()?;
         self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
@@ -1044,24 +1044,32 @@ impl NetworkMessenger {
     /// Sends the queued refusals. A refusal stays queued, for the next round,
     /// when the relay refuses to store it (the initiator's mailbox is full),
     /// while the initiator waits after such a refusal (`held`), and when the
-    /// connection fails; it leaves the queue only once the relay stored it.
-    /// A relay refusal does not end the round (as in `publish_pending`); a
-    /// failed connection does, as every network error does, with nothing lost.
+    /// connection fails, and once the round's budget is spent; it leaves the
+    /// queue only once the relay stored it. A relay refusal does not end the
+    /// round (as in `publish_pending`); a failed connection does, as every
+    /// network error does, with nothing lost.
     fn send_refusals(
         &self,
         conn: &mut Connection,
+        budget: &Budget,
         relay_refusals: &mut RelayRefusals,
         report: &mut SyncReport,
     ) -> Result<(), CoreError> {
-        let queued = std::mem::take(&mut self.refusals.lock().expect("refusals").queued);
-        if queued.is_empty() {
+        if self.refusals.lock().expect("refusals").queued.is_empty() {
             return Ok(());
         }
+        // Read before the queue is taken: a failure here leaves it in place.
         let our = self.core.our_identity_pk()?;
+        let queued = std::mem::take(&mut self.refusals.lock().expect("refusals").queued);
         let mut queued = queued.into_iter();
         let mut keep = Vec::new();
         let mut failed = None;
         for (peer, refusal, hash) in queued.by_ref() {
+            if !budget.left() {
+                // Out of time: the rest goes out next round.
+                keep.push((peer, refusal, hash));
+                break;
+            }
             if relay_refusals.recipients.contains(&peer) || self.held(&peer) {
                 keep.push((peer, refusal, hash));
                 continue;

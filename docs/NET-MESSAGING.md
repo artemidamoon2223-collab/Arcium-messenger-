@@ -285,16 +285,20 @@ only the first can be accepted.
   with a forged handshake naming a contact. The initiator could have made the
   same bytes alone, so a refusal proves nothing to a third party about whom
   the refuser has pinned. An all-zero DH output (a low-order key) gives no
-  tag and is never accepted.
+  tag and is never accepted. The price of a MAC: whoever holds the
+  initiator's own identity secret can also make a refusal it accepts (section
+  8).
 
   A refusal is sent at most once per refused handshake and at most once per
-  contact per 10 minutes, in memory (a restart may send one more). A first
+  contact per 10 minutes, in memory (a restart may send one more, and so may
+  a lost answer to a SEND the relay did carry out; a second copy names a
+  handshake that is gone by then and is dropped). A first
   message refused for its prekeys sends none; the initiator's next
   retransmission of the handshake is refused and answered. A refusal the relay
   does not store (the initiator's mailbox is full), and one whose SEND loses
-  the connection, stays queued for the next round, within the same process;
-  the wait after a relay refusal is that of section 7. A relay refusal does
-  not end the round.
+  the connection, stays queued for the next round, within the same process,
+  as does one the round's budget leaves unsent; the wait after a relay
+  refusal is that of section 7. A relay refusal does not end the round.
 - The initiator acts on a refusal only if its tag checks for the sender's
   pinned identity key and ours, it names those two keys, and it names the
   handshake of our own session with the sender, on which nothing was received
@@ -380,6 +384,11 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   initiator as a contact (it proves it to nobody else); so does a message
   kept rather than deleted (section 3). Closing this needs relay
   authentication.
+- Protection against key-compromise impersonation of refusals. A refusal is
+  authenticated by a MAC both parties can make, so whoever holds the
+  initiator's identity secret can make one the initiator accepts, and so end
+  its pending first contact (its texts become `NotDelivered`) and make it
+  start again. That secret already allows impersonating the initiator.
 - Automatic resending of texts a refusal or a conflict resolution marked
   `NotDelivered`.
 - One provisional handshake per contact. Whoever can put envelopes in the

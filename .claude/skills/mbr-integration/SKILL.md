@@ -10,9 +10,9 @@ description: "What the MBR durable-history research established, what it only as
 Knowledge and judgment aid. Everything here is either a **verified fact** with a
 citation, an **experimental finding** with its provenance, or a **proposal that
 is not implemented**. The three are labelled separately throughout and must not
-be collapsed. Arcium-side facts were verified at commit `5faadaf`; re-derive
-before relying on any of them — `references/arcium-integration-map.md` carries
-the commands.
+be collapsed. Arcium-side facts were last checked at commit `de328a1`;
+re-derive before relying on any of them — `references/arcium-integration-map.md`
+carries the commands.
 
 ## This skill authorizes nothing
 
@@ -120,5 +120,5 @@ test was objectively mis-specified — and record that it was.
 - `references/evidence-ledger.md` — what MBR demonstrated, with artifact hashes,
   minimal counterexample traces, and the declared negative results.
 - `references/arcium-integration-map.md` — verified Arcium state per mechanism,
-  re-derivation commands, and the proposed staging (S1 and part of S2 since
-  implemented; the rest not).
+  re-derivation commands, and the proposed staging (stages S1–S4 are
+  implemented; S5 partly, in a different shape; S6–S8 are not).

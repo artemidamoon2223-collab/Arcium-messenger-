@@ -254,6 +254,56 @@ fn the_record_survives_a_crash_after_each_new_write() {
     }
 }
 
+/// R-10: a missing history entry, which only a damaged store can produce,
+/// is skipped by pages, the conversation summary and the open-entry record
+/// (rebuilt here, as for a history written before the record existed),
+/// instead of failing them and with them every round.
+#[test]
+fn a_missing_entry_is_skipped_rather_than_failing_every_read() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr, 5); // Entries 1..=10, all final.
+    say(&alice, &bob, "open", "still open"); // Entry 11, open.
+    for seq in [2, 3, 4, 5, 6, 7, 8, 11] {
+        alice.net.drop_entry(&bob.pk, seq);
+    }
+    alice.net.drop_open_record(&bob.pk);
+
+    // A round rebuilds the open-entry record without the missing numbers
+    // and reports no error, for this contact or any other.
+    round(&[&alice, &bob]);
+    let (record, scan) = alice.net.open_record_and_scan(&bob.pk);
+    assert_eq!(record, scan);
+    assert!(record.is_empty(), "the only open entry is gone");
+
+    // Pages: the newest existing entries, walking back over the gap; an
+    // empty page still means the beginning.
+    assert_eq!(seqs(&alice, &bob, None, 3), vec![1, 9, 10]);
+    assert_eq!(seqs(&alice, &bob, Some(10), 3), vec![1, 9]);
+    assert_eq!(seqs(&alice, &bob, Some(9), 3), vec![1]);
+    assert!(seqs(&alice, &bob, Some(1), 3).is_empty());
+    let full: Vec<u64> = alice.net.chat_entries(bob.pk.clone()).unwrap().iter().map(|e| e.seq).collect();
+    assert_eq!(full, vec![1, 9, 10]);
+
+    // The summary: its last entry is the newest that exists.
+    alice.net.mark_seen(bob.pk.clone()).unwrap();
+    alice.net.drop_entry(&bob.pk, 10);
+    let c = alice.net.conversation(bob.pk.clone()).unwrap();
+    assert_eq!(c.last.map(|e| e.seq), Some(9));
+    assert_eq!(c.unread, 0);
+    assert_eq!(alice.net.conversations().unwrap().len(), 1);
+
+    // New texts still go out and are delivered after the gap.
+    say(&alice, &bob, "after", "after the gap");
+    for _ in 0..3 {
+        round(&[&alice, &bob]);
+    }
+    let newest = alice.net.chat_entries_page(bob.pk.clone(), None, 1).unwrap();
+    assert_eq!(newest[0].state, S::Delivered);
+    assert_eq!(newest[0].seq, 12);
+    relay.stop();
+}
+
 /// Measurement, not a pass/fail check (run with `--ignored --nocapture`):
 /// the cost of an idle round, of the conversation list and of reading the
 /// newest page, at 50, 500 and 5000 history entries, debug build.

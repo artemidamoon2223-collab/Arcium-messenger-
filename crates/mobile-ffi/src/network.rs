@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use core_storage::StorageError;
 use relay::client::{ClientError, Connection};
-use relay::protocol::{DEFAULT_MAX_MAILBOX, MAX_FETCH, MIN_PAGE};
+use relay::protocol::{ErrorCode, DEFAULT_MAX_MAILBOX, MAX_FETCH, MIN_PAGE};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -100,9 +100,144 @@ pub struct NetworkMessenger {
     relay: String,
     timeout: Duration,
     retransmit_after: Duration,
-    /// When each message or handshake was last accepted by the relay. In
-    /// memory only: after a restart everything pending is sent once more.
-    last_sent: Mutex<HashMap<[u8; 32], Instant>>,
+    /// When each message or handshake was last accepted by the relay, and
+    /// how often it was. In memory only: after a restart everything pending
+    /// is sent once more, and the backoff starts again.
+    last_sent: Mutex<HashMap<[u8; 32], (Instant, u32)>>,
+    /// Recipients the relay last refused to store an envelope for (a full
+    /// mailbox): when, and how many times in a row. Nothing is sent to one
+    /// while its wait runs; the wait is that of a retransmission
+    /// ([`Self::retransmit_wait`]). The first envelope the relay stores for
+    /// the recipient removes it. In memory only, like `last_sent`.
+    refused: Mutex<HashMap<[u8; 32], (Instant, u32)>>,
+    limits: Mutex<Limits>,
+    /// Where the mailbox passes of the next round start, after a round the
+    /// budget cut short. In memory only; `(0, 0)` otherwise.
+    resume: Mutex<Resume>,
+}
+
+/// The relay sequence numbers after which the two mailbox passes of the next
+/// round start. Both are zero (the beginning) unless the last round was cut
+/// short by its budget. They are positions chosen by the untrusted relay and
+/// are used only as a starting point: any error, and every round that runs
+/// to the end, puts them back to zero, so everything skipped is read again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Resume {
+    handshakes: u64,
+    messages: u64,
+}
+
+/// The part of the mailbox one pass reads: sequence numbers after `from`, up
+/// to and including `until`.
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    from: u64,
+    until: u64,
+}
+
+/// How one mailbox pass ended.
+#[derive(Debug, Clone, Copy)]
+struct ScanEnd {
+    /// The last sequence number the pass reached (where it started, if it
+    /// saw nothing).
+    reached: u64,
+    /// Whether it ran to the end of its part of the mailbox. False only when
+    /// the round's budget stopped it.
+    complete: bool,
+}
+
+/// Time bounds of the network layer (docs/NET-MESSAGING.md, section 7).
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    /// Bound of one relay request as a whole.
+    request_deadline: Duration,
+    /// Time one round may spend on relay requests before it stops starting
+    /// new ones.
+    round_budget: Duration,
+    /// Longest wait between two retransmissions of one message.
+    retransmit_cap: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            request_deadline: relay::client::REQUEST_DEADLINE,
+            round_budget: ROUND_BUDGET,
+            retransmit_cap: RETRANSMIT_CAP,
+        }
+    }
+}
+
+/// Time one sync round may spend on relay requests (L2). Checked before every
+/// page of a mailbox pass after its first and before every send. Each pass
+/// still reads its first page and deletes what it processed, so a round
+/// that ran out ends within this budget plus a few request deadlines
+/// (the request in flight, each pass's first page and deletion).
+pub(crate) const ROUND_BUDGET: Duration = Duration::from_secs(120);
+
+/// Longest wait between two retransmissions of one message or handshake
+/// (L3). The wait starts at `retransmit_after` and doubles with every send.
+pub(crate) const RETRANSMIT_CAP: Duration = Duration::from_secs(5 * 60);
+
+/// The deadline of one round's relay requests, and whether it stopped any
+/// work in this round.
+#[derive(Debug)]
+struct Budget {
+    deadline: Instant,
+    cut: std::cell::Cell<bool>,
+}
+
+impl Budget {
+    fn new(budget: Duration) -> Self {
+        Self {
+            deadline: Instant::now() + budget,
+            cut: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Whether more work may start. A `false` is remembered: the round then
+    /// reports that it was cut short.
+    fn left(&self) -> bool {
+        let left = Instant::now() < self.deadline;
+        if !left {
+            self.cut.set(true);
+        }
+        left
+    }
+}
+
+/// The report line of a round its budget cut short. Not a network error: the
+/// relay was reached, and the next round continues.
+pub(crate) const BUDGET_EXHAUSTED: &str = "round budget exhausted: the rest follows in the next round";
+
+/// The recipients the relay refused to store an envelope for in one round,
+/// and with which codes.
+#[derive(Debug, Default)]
+struct RelayRefusals {
+    recipients: Vec<[u8; 32]>,
+    codes: Vec<ErrorCode>,
+}
+
+impl RelayRefusals {
+    fn note(&mut self, recipient: [u8; 32], code: ErrorCode) {
+        if !self.recipients.contains(&recipient) {
+            self.recipients.push(recipient);
+        }
+        if !self.codes.contains(&code) {
+            self.codes.push(code);
+        }
+    }
+
+    /// The round's report line, if the relay refused anything. Not a network
+    /// error: the relay was reached. It names no recipient.
+    fn line(&self) -> Option<String> {
+        let n = self.recipients.len();
+        (n > 0).then(|| {
+            let codes: Vec<String> = self.codes.iter().map(|c| format!("{c:?}")).collect();
+            let noun = if n == 1 { "recipient" } else { "recipients" };
+            format!("relay refused {n} {noun}: {}", codes.join(", "))
+        })
+    }
 }
 
 /// A received text and its message id, the text in a wiping owner.
@@ -152,7 +287,10 @@ pub(crate) enum Pass {
 impl NetworkMessenger {
     /// `relay_address` is `host:port`. A pending message or handshake is sent
     /// again by `sync` once `retransmit_after_ms` has passed without its
-    /// receipt. Every network operation times out after `timeout_ms`.
+    /// receipt, and again after twice as long each time, up to 5 minutes.
+    /// Every single read and write on the relay connection times out after
+    /// `timeout_ms`, every request as a whole after 30 s, and a round stops
+    /// starting requests after 120 s (docs/NET-MESSAGING.md, section 7).
     #[uniffi::constructor]
     pub fn new(
         core: Arc<ArciumCore>,
@@ -166,6 +304,9 @@ impl NetworkMessenger {
             timeout: Duration::from_millis(timeout_ms),
             retransmit_after: Duration::from_millis(retransmit_after_ms),
             last_sent: Mutex::new(HashMap::new()),
+            refused: Mutex::new(HashMap::new()),
+            limits: Mutex::new(Limits::default()),
+            resume: Mutex::new(Resume::default()),
         })
     }
 
@@ -268,9 +409,11 @@ impl NetworkMessenger {
     /// lists the failures.
     pub fn sync(&self) -> SyncReport {
         let mut report = SyncReport::default();
-        if let Err(e) = self.sync_round(&mut report) {
+        let mut relay_refusals = RelayRefusals::default();
+        if let Err(e) = self.sync_round(&mut report, &mut relay_refusals) {
             report.errors.push(e.to_string());
         }
+        report.errors.extend(relay_refusals.line());
         report
     }
 }
@@ -310,7 +453,23 @@ impl NetworkMessenger {
     }
 
     fn connect(&self) -> Result<Connection, CoreError> {
-        Connection::connect(&self.relay, self.timeout).map_err(network)
+        let mut conn = Connection::connect(&self.relay, self.timeout).map_err(network)?;
+        conn.set_request_deadline(self.limits().request_deadline);
+        Ok(conn)
+    }
+
+    fn limits(&self) -> Limits {
+        *self.limits.lock().expect("limits")
+    }
+
+    /// Test aid: the bounds of `docs/NET-MESSAGING.md` section 7, scaled.
+    #[cfg(test)]
+    pub(crate) fn set_limits(&self, request_deadline: Duration, round_budget: Duration, retransmit_cap: Duration) {
+        *self.limits.lock().expect("limits") = Limits {
+            request_deadline,
+            round_budget,
+            retransmit_cap,
+        };
     }
 
     fn require_contact(&self, peer: &[u8; 32]) -> Result<Card, CoreError> {
@@ -352,7 +511,18 @@ impl NetworkMessenger {
         Ok(out)
     }
 
-    fn sync_round(&self, report: &mut SyncReport) -> Result<(), CoreError> {
+    fn sync_round(&self, report: &mut SyncReport, relay_refusals: &mut RelayRefusals) -> Result<(), CoreError> {
+        let budget = Budget::new(self.limits().round_budget);
+        // Taken, so that a round that fails anywhere starts the next one
+        // from the beginning; set again below only by a round cut short.
+        let from = std::mem::take(&mut *self.resume.lock().expect("resume"));
+        // A commit whose outcome is unknown leaves its session unresolved,
+        // and every send on it is refused until `recover_session`. Receiving
+        // recovers it (`process`), but the sends below come first, and one
+        // refusal ends the round for every contact; so recover here.
+        for peer in self.core.contacts()? {
+            self.core.recover_if_unresolved(handle_of(&peer_key(&peer)?))?;
+        }
         let sessions = self.sessions()?;
         // Local recovery first: receipts or OPEN messages committed before a
         // crash, and receipts for texts accepted before one.
@@ -361,18 +531,49 @@ impl NetworkMessenger {
         }
         let mut conn = self.connect()?;
         self.put_bundle(&mut conn)?;
-        self.publish_pending(&mut conn, &sessions, report)?;
+        self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
 
         let our = self.core.our_identity_pk()?;
         // Handshakes before messages, so a session exists for what follows:
         // first every handshake in the part of the mailbox scanned, then
         // everything else in that same part.
-        if let Some(end) = self.scan(&mut conn, our, Pass::Handshakes, u64::MAX, report)? {
-            self.scan(&mut conn, our, Pass::Messages, end, report)?;
+        let all = Span {
+            from: from.handshakes,
+            until: u64::MAX,
+        };
+        let handshakes = self.scan(&mut conn, our, Pass::Handshakes, all, &budget, report)?;
+        // Messages only as far as the handshakes were read (in this round or,
+        // after a cut, in the rounds before it).
+        let messages = if handshakes.reached > 0 {
+            let read = Span {
+                from: from.messages,
+                until: handshakes.reached,
+            };
+            self.scan(&mut conn, our, Pass::Messages, read, &budget, report)?
+        } else {
+            ScanEnd {
+                reached: from.messages,
+                complete: true,
+            }
+        };
+        if !(handshakes.complete && messages.complete) {
+            // Cut short: the next round continues where each pass stopped,
+            // so both move on even when a page holds nothing but kept
+            // envelopes. Once both reach the end, a round starts over.
+            *self.resume.lock().expect("resume") = Resume {
+                handshakes: handshakes.reached,
+                messages: messages.reached,
+            };
         }
         // Receipts produced above, and the first messages of new sessions.
         let sessions = self.sessions()?;
-        self.publish_pending(&mut conn, &sessions, report)
+        self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
+        if budget.cut.get() {
+            // What this round processed is committed and deleted; the rest
+            // stays on the relay (or in the outbox) for the next round.
+            report.errors.push(BUDGET_EXHAUSTED.into());
+        }
+        Ok(())
     }
 
     /// One pass over this device's mailbox: pages through it in ascending
@@ -384,26 +585,38 @@ impl NetworkMessenger {
     ///
     /// At most [`MAX_SCAN_PAGES`] pages and [`MAX_SCAN_ENVELOPES`] envelopes;
     /// the pass ends early on a page shorter than [`MIN_PAGE`], which the relay
-    /// only returns when nothing follows, and on reaching `until`. The cursor
-    /// exists only in this call:
-    /// sequence numbers are transport positions chosen by the untrusted relay,
-    /// never evidence of anything, and a new round starts from the beginning.
-    /// A relay that does not return strictly increasing numbers after the
-    /// cursor ends the round with an error.
+    /// only returns when nothing follows, and on reaching `until`. The pass
+    /// starts after `from`: zero, the beginning, except in the round after
+    /// one its budget cut short (see [`Resume`]). Sequence numbers are
+    /// transport positions chosen by the untrusted relay, never evidence of
+    /// anything. A relay that does not return strictly increasing numbers
+    /// after the cursor ends the round with an error.
     ///
-    /// Returns the last sequence number this pass reached, if any.
+    /// The first page is always read; before each later one the round's
+    /// budget is checked, and a pass it stops returns `complete: false`.
     fn scan(
         &self,
         conn: &mut Connection,
         our: [u8; 32],
         pass: Pass,
-        until: u64,
+        span: Span,
+        budget: &Budget,
         report: &mut SyncReport,
-    ) -> Result<Option<u64>, CoreError> {
-        let mut after = 0u64;
+    ) -> Result<ScanEnd, CoreError> {
+        let Span { from, until } = span;
+        let mut after = from;
+        let mut complete = true;
         let mut seen = 0usize;
         let mut delete = Vec::new();
-        'pages: for _page in 0..MAX_SCAN_PAGES {
+        'pages: for page in 0..MAX_SCAN_PAGES {
+            // Out of time: stop after the page in hand and delete what was
+            // processed. The first page of a pass is always read, so each
+            // round moves both passes on by at least a page; the next round
+            // starts after it.
+            if page > 0 && !budget.left() {
+                complete = false;
+                break;
+            }
             let items = conn.fetch_after(our, after, MAX_FETCH).map_err(network)?;
             if items.len() > MAX_FETCH as usize {
                 return Err(CoreError::Network {
@@ -414,7 +627,7 @@ impl NetworkMessenger {
                 break;
             }
             #[cfg(test)]
-            scan_hook::run(pass, _page);
+            scan_hook::run(pass, page);
             let last = items.len() < MIN_PAGE;
             for (seq, bytes) in items {
                 if seq <= after {
@@ -462,7 +675,10 @@ impl NetworkMessenger {
                 crash_point("after_delete");
             }
         }
-        Ok((after > 0).then_some(after))
+        Ok(ScanEnd {
+            reached: after,
+            complete,
+        })
     }
 
     /// Whether the session under `handle` has accepted a message from the
@@ -483,27 +699,95 @@ impl NetworkMessenger {
         self.last_sent.lock().expect("last_sent").contains_key(&id)
     }
 
+    /// Whether `key` may be sent now: never sent in this process, or the
+    /// wait after its last send passed. The wait is `retransmit_after` after
+    /// the first send and doubles with each further one, up to the cap.
     fn due(&self, key: &[u8; 32]) -> bool {
+        let cap = self.limits().retransmit_cap;
         let sent = self.last_sent.lock().expect("last_sent");
         sent.get(key)
-            .is_none_or(|t| t.elapsed() >= self.retransmit_after)
+            .is_none_or(|(t, sends)| t.elapsed() >= self.retransmit_wait(*sends, cap))
+    }
+
+    /// The wait after the `sends`-th send (`sends` >= 1).
+    pub(crate) fn retransmit_wait(&self, sends: u32, cap: Duration) -> Duration {
+        let doublings = sends.saturating_sub(1).min(31);
+        self.retransmit_after
+            .checked_mul(1u32 << doublings)
+            .unwrap_or(cap)
+            .min(cap)
     }
 
     fn mark_sent(&self, key: [u8; 32]) {
-        self.last_sent
-            .lock()
-            .expect("last_sent")
-            .insert(key, Instant::now());
+        let mut sent = self.last_sent.lock().expect("last_sent");
+        let sends = sent.get(&key).map_or(0, |(_, n)| *n);
+        sent.insert(key, (Instant::now(), sends.saturating_add(1)));
     }
 
+    /// Whether sends to `peer` wait after a relay refusal.
+    fn held(&self, peer: &[u8; 32]) -> bool {
+        let cap = self.limits().retransmit_cap;
+        let refused = self.refused.lock().expect("refused");
+        refused
+            .get(peer)
+            .is_some_and(|(t, times)| t.elapsed() < self.retransmit_wait(*times, cap))
+    }
+
+    /// Test aid: how many times in a row the relay refused `peer`.
+    #[cfg(test)]
+    pub(crate) fn refusals_in_a_row(&self, peer: &[u8; 32]) -> u32 {
+        self.refused.lock().expect("refused").get(peer).map_or(0, |(_, n)| *n)
+    }
+
+    /// Asks the relay to store `envelope` for `peer`. `Ok(false)`: the relay
+    /// refused (a full mailbox). It read the request and answered, so the
+    /// connection is still in step and the round goes on; the recipient
+    /// starts or prolongs its wait. Any other failure ends the round, as the
+    /// connection's state is then unknown.
+    fn send_to(
+        &self,
+        conn: &mut Connection,
+        peer: [u8; 32],
+        envelope: Vec<u8>,
+        relay_refusals: &mut RelayRefusals,
+    ) -> Result<bool, CoreError> {
+        match conn.send(peer, envelope) {
+            Ok(_) => {
+                self.refused.lock().expect("refused").remove(&peer);
+                Ok(true)
+            }
+            Err(ClientError::Refused(code)) => {
+                let mut refused = self.refused.lock().expect("refused");
+                let times = refused.get(&peer).map_or(0, |(_, n)| *n);
+                refused.insert(peer, (Instant::now(), times.saturating_add(1)));
+                relay_refusals.note(peer, code);
+                Ok(false)
+            }
+            Err(e) => Err(network(e)),
+        }
+    }
+
+    /// Sends what is due to every session's peer. A peer the relay refuses
+    /// gets nothing more in this round and nothing until its wait is over
+    /// ([`Self::held`]), so its envelopes stay in their order; the other
+    /// peers are not affected.
     fn publish_pending(
         &self,
         conn: &mut Connection,
         sessions: &[([u8; 32], u64)],
+        budget: &Budget,
+        relay_refusals: &mut RelayRefusals,
         report: &mut SyncReport,
     ) -> Result<(), CoreError> {
         let our = self.core.our_identity_pk()?;
         for (peer, handle) in sessions {
+            // Out of time: the rest is sent next round.
+            if !budget.left() {
+                return Ok(());
+            }
+            if relay_refusals.recipients.contains(peer) || self.held(peer) {
+                continue;
+            }
             if !self.confirmed(*handle)? {
                 if let Some(hs) = self.core.initiator_handshake(*handle)? {
                     let key: [u8; 32] = Sha256::digest(&hs).into();
@@ -512,7 +796,9 @@ impl NetworkMessenger {
                             sender: our,
                             handshake: hs,
                         };
-                        conn.send(*peer, env.encode()).map_err(network)?;
+                        if !self.send_to(conn, *peer, env.encode(), relay_refusals)? {
+                            continue;
+                        }
                         self.mark_sent(key);
                         report.published += 1;
                     }
@@ -523,11 +809,16 @@ impl NetworkMessenger {
                 if !self.due(&id) {
                     continue;
                 }
+                if !budget.left() {
+                    return Ok(());
+                }
                 let env = Envelope::Message {
                     sender: our,
                     wire: m.wire,
                 };
-                conn.send(*peer, env.encode()).map_err(network)?;
+                if !self.send_to(conn, *peer, env.encode(), relay_refusals)? {
+                    break;
+                }
                 self.mark_sent(id);
                 report.published += 1;
                 if m.client_message_id.first() == Some(&client_id::RECEIPT) {

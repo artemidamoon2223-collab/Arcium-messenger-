@@ -2211,10 +2211,14 @@ mod tests {
     mod network;
     mod network_crash;
     mod delivery_consistency;
+    mod net_limits;
+    mod send_refusal;
+    mod history_paging;
     mod net_peer;
     mod legacy_upgrade;
     mod mailbox_scan;
     mod debug_redaction;
     mod outgoing;
     mod identity;
+    mod unresolved;
 }

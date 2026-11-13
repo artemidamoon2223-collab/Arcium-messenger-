@@ -14,9 +14,6 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.6.0"
-        val solanaRpcUrl = project.findProperty("SOLANA_RPC_URL") as String?
-            ?: "https://api.devnet.solana.com"
-        buildConfigField("String", "SOLANA_RPC_URL", "\"$solanaRpcUrl\"")
         // Runs the instrumentation tests in src/androidTest on a device or
         // emulator. Those are the only place the JNA bridge and the packaged
         // libarcium_core.so are actually executed; local JVM tests in src/test

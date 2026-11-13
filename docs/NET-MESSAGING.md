@@ -283,6 +283,7 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 | relay too slow for a request, or trickling bytes | the request fails after 30 s; the round ends as for a lost connection |
 | round budget exhausted | processed envelopes are deleted, the report says so (not as a network error), the next round continues where the passes stopped |
 | relay unreachable, connection lost | `sync` reports it; nothing local changes; next sync repeats |
+| relay refuses to store an envelope for a recipient (its mailbox is full) | nothing more is sent to that recipient in this round; the round goes on for every other recipient and for this device's own mailbox. The report carries `relay refused N recipient(s): Full`, which is not a network error. Nothing is sent to that recipient until a wait has passed (as between retransmissions: `retransmit_after_ms`, doubling with each refusal in a row, at most 5 minutes; kept in memory), so its envelopes keep their order. The first envelope stored for it ends the wait. Texts stay pending; a refused receipt is not acknowledged and is sent later |
 | SEND answer lost | the envelope may be stored; it is sent again (the relay stores it once, or the recipient sees a duplicate) |
 | FETCH_AFTER answer lost (any page), connection lost between pages | the round stops; what the current pass processed is committed but not yet deleted, and comes back next round as a duplicate |
 | process death between pages | same as above: committed acceptances are duplicates next round, nothing is shown twice |
@@ -319,9 +320,11 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 - Protection against a full mailbox. Paging (section 3) only stops kept
   envelopes from hiding later ones. Anyone who can reach the relay can still
   fill a mailbox to its 4096 entries (SEND is then refused) or delete from
-  it, and a relay that keeps appending can keep a round busy up to its bound
-  with the rest of the mailbox out of reach until the next round. No relay
-  availability or denial-of-service resistance is claimed.
+  it. A full mailbox stops delivery to its owner only: a sender's round goes
+  on for its other contacts (section 7). And a relay that keeps appending
+  can keep a round busy up to its bound with the rest of the mailbox out of
+  reach until the next round. No relay availability or denial-of-service
+  resistance is claimed.
 - Everything S2-B2 does not provide: power-loss durability, rollback
   detection, exactly-once delivery to the application.
 
@@ -410,6 +413,7 @@ entry per logical message, never written by the ratchet.
 | offline recipient | `messages_to_an_offline_recipient_wait_on_the_relay` | runtime |
 | kept envelopes never hide later ones: prefixes of 0–4095 entries, large envelopes, handshakes behind or after the prefix, mixed kept and deleted, deletes, appends and expiry between pages, a mailbox that never runs dry, a relay that breaks paging, lost answers, a stopped relay, process death between pages | `tests::mailbox_scan`; relay paging and the refusal of a capacity above 4096 in `crates/relay` tests | runtime, local relay over TCP; process crash |
 | relay outage; broken SEND/FETCH/DELETE/receipt | `a_relay_outage…`, `broken_connections_at_each_step…` (TCP proxy) | runtime; faults injected at the socket |
+| one recipient's full mailbox: the round goes on for everyone else, the wait and its doubling, order of the waiting texts, a refused receipt | `tests::send_refusal` | runtime, local relay holding 8 envelopes per mailbox; waits scaled down |
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
 | request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt | `tests::network` V6 tests | runtime |

@@ -15,25 +15,40 @@ verification step — "it looks right" is not one.
 ☐ security-ревью, если diff чувствителен    →  блок arcium-security-review в отчёте
 ```
 
-The first three commands are the ones `.github/workflows/arcium-ci.yml` runs;
+The first three commands are the ones `.github/workflows/arcium-ci.yml` runs
+(the two cargo commands there with `--locked`, so a missing or stale
+`Cargo.lock` fails instead of being re-resolved);
 `.devcontainer/setup.sh` prints `cargo test --workspace` as its quick-start.
 Running them locally is the cheapest way to know what CI will say.
 
 ## Which CI checks a diff actually triggers
 
-Knowing this prevents both false confidence and pointless waiting. The `on:`
-blocks of the workflows are the source; re-read them at your target SHA, this
-list is a pointer and can go stale.
+Knowing this prevents both false confidence and pointless waiting. This is the
+one copy of the path filters in the skills; other skills point here. It is
+derived from the `on:` block of every file in `.github/workflows/` at
+`de328a1`. Those blocks are the source: re-derive at your target SHA with
 
-- `arcium-ci.yml` runs on every push and pull request (no path filter). A
-  docs-only or skill-only diff triggers **only** this workflow.
-- The Android workflows are path-filtered. `android-native-bridge.yml` fires on
-  `crates/**`, the repository-root `Cargo.toml`, `android/app/build.gradle.kts`
-  and its own file; `android-instrumentation.yml` and
-  `android-two-device-e2e.yml` fire on `crates/**`, `Cargo.toml`, `android/**`
-  and their own inputs; `android-ci.yml` fires on `android/**`. None of them
-  fires on a docs-only diff, and none fires on a change confined to
-  `arcium-psi/`.
+```bash
+grep -nE "^  (push|pull_request|schedule|workflow_dispatch):|^      - '" .github/workflows/*.yml
+```
+
+| workflow | runs on push and pull request when the diff touches |
+|---|---|
+| `arcium-ci.yml` | anything (no path filter) |
+| `android-ci.yml` | `android/**`, its own file |
+| `android-native-bridge.yml` | `crates/**`, `Cargo.toml`, `Cargo.lock`, `vendor/**`, `android/app/build.gradle.kts`, its own file |
+| `android-instrumentation.yml`, `android-two-device-e2e.yml` | `crates/**`, `Cargo.toml`, `Cargo.lock`, `vendor/**`, `android/**`, `.github/actions/uniffi-android-bridge/**`, its own file |
+| `android-build-baseline.yml`, `native-artifact-baseline.yml` | never: manual (`workflow_dispatch`) only |
+| `monthly-backup.yml` | never: monthly schedule and manual only |
+
+- Each filtered workflow uses the same list for `push` and `pull_request`.
+  `Cargo.toml` and `Cargo.lock` match the repository-root files only; crate
+  manifests are under `crates/**`.
+- A docs-only or `.claude/`-only diff triggers **only** `arcium-ci.yml`, and so
+  does a change confined to `arcium-psi/`.
+- A change confined to `.github/actions/uniffi-android-bridge/**` triggers the
+  two emulator workflows and `arcium-ci.yml`, but not `android-native-bridge.yml`
+  or `android-ci.yml`, although both call that action.
 - So a documentation PR that is green shows that the deterministic Rust and
   Arcium jobs still pass on that tree. It says nothing about the Android
   jobs, which did not run.

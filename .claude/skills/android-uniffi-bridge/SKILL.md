@@ -61,9 +61,11 @@ for.
    `System.loadLibrary("arcium_core")` call. The generated bindings load the
    native library lazily through JNA on first FFI call.
 
-5. **Check what CI actually ran.** `bridge-compile-package` fires on
-   `crates/**`, the root `Cargo.toml`, `android/app/build.gradle.kts`, and its
-   own workflow file — not on docs-only diffs, and not on `arcium-psi/` changes.
+5. **Check what CI actually ran.** Each Android workflow has its own path
+   filter, and not every one that calls the composite action fires when only
+   the action changes. The filters, and how to re-derive them, are in
+   `engineering-code-review/references/delivery-checklist.md` ("Which CI checks
+   a diff actually triggers").
 
 6. **State the claim at the right level** — see the boundary below.
 

@@ -63,9 +63,10 @@ Leave the merge decision to the owner.
 In the disposable clone: `cargo test --workspace` and
 `cargo clippy --workspace --all-targets`.
 
-On CI, know which checks the diff actually triggers. `bridge-compile-package`
-fires on any `crates/**` or `Cargo.toml` change and does not fire on
-docs-only diffs. Confirm the checks that ran are green.
+On CI, know which checks the diff actually triggers: the path filters, and
+how to re-derive them, are in
+`engineering-code-review/references/delivery-checklist.md` ("Which CI checks a
+diff actually triggers"). Confirm the checks that ran are green.
 
 ## 7. Merge mechanics
 

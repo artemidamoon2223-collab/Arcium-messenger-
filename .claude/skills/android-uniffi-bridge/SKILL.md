@@ -16,10 +16,13 @@ touching Gradle configuration each require their own explicit instruction.
 
 ## Purpose
 
-The bridge has one property that is easy to state wrongly: **it is verified at
-compile-and-package level only.** No CI job in this repository has ever
-executed a Kotlin↔Rust call. Keeping that boundary explicit is most of what
-this skill is for.
+The bridge has one property that is easy to state wrongly: **how far it is
+verified depends on the ABI and the device.** Both ABIs (x86_64, arm64-v8a) are
+compiled and packaged by CI. Kotlin↔Rust calls execute in CI only on x86_64
+API-30 emulators (`android-instrumentation.yml`, `android-two-device-e2e.yml`).
+arm64-v8a has never been executed; physical devices and release builds are
+NOT_VERIFIED. Keeping that boundary explicit is most of what this skill is
+for.
 
 ## Use when
 
@@ -28,8 +31,8 @@ this skill is for.
 - Working on the generated Kotlin bindings or code that calls them.
 - Touching the JNA dependency, `jniLibs` packaging, or
   `android/app/build.gradle.kts`.
-- Changing `.github/workflows/android-native-bridge.yml` or
-  `.github/actions/uniffi-android-bridge/action.yml`.
+- Changing `.github/actions/uniffi-android-bridge/action.yml` or a workflow
+  that calls it (`grep -rn uniffi-android-bridge .github/workflows`).
 - Writing a claim about what an Android build proved.
 
 ## Do not use when
@@ -67,11 +70,14 @@ this skill is for.
 ## Constraints
 
 - A successful `assembleDebug`, and a `.so` present in the APK for both ABIs,
-  prove **compile and packaging topology only**. They do **not** prove that
-  `System.loadLibrary` succeeds on a device, that any Kotlin↔Rust call
-  executes, that message encryption works, or that anything is production-ready.
-- Never describe an APK build as evidence of runtime behaviour. Runtime proof
-  requires an emulator or device, and is a separate, manual step.
+  prove **compile and packaging topology only**. They do **not** prove that the
+  library loads, that any Kotlin↔Rust call executes, that message encryption
+  works, or that anything is production-ready.
+- Never describe an APK build as evidence of runtime behaviour. Runtime
+  evidence comes from a run of the emulator workflows, covers x86_64 on an
+  API-30 emulator only, and is cited from that run's log. For arm64-v8a, a
+  physical device or a release build, runtime proof is a separate step for the
+  owner; say so rather than implying a build covered it.
 - Do not update the JNA version, the NDK version, the uniffi version, or the
   ABI list as a side effect of another task.
 - Do not "fix" bridge code noticed in passing — report it instead.
@@ -80,5 +86,6 @@ this skill is for.
 
 ## References
 
-- `references/bridge-topology.md` — the full pipeline, exact paths, pinned
-  versions, and the commands to re-derive all of it.
+- `references/bridge-topology.md` — the full pipeline, the workflows that call
+  it, exact paths, pinned versions, the proof boundary per ABI, and the
+  commands to re-derive all of it.

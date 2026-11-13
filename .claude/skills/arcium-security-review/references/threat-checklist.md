@@ -13,7 +13,8 @@ attack path described in `SKILL.md`, step 5.
 ## 1. Messaging crypto
 
 Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
-`ratchet/checkpoint.rs`, `hybrid.rs`, `spk_id.rs`, `session_handle.rs`.
+`ratchet/checkpoint.rs`, `hybrid.rs`, `spk_id.rs`, `session_handle.rs`,
+`refusal_mac.rs`.
 
 - **Layer separation.** Messages use XChaCha20-Poly1305 and the Double Ratchet;
   PSI uses only RescueCipher (`CLAUDE.md`). Any use of `rescue` on the message
@@ -31,6 +32,17 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
   serves one purpose; a new derivation reuses none. Truncation width and byte
   order are deliberate — see the module notes in `session_handle.rs` and
   `spk_id.rs`.
+- **Handshake-refusal MAC.** `refusal_mac.rs` tags `HANDSHAKE_REFUSAL_V1` with
+  HMAC-SHA256 under an HKDF key from the static X25519 of the two identity
+  keys; its `info` names refuser then initiator, so the key for "A refuses B"
+  is not the key for "B refuses A", and an all-zero (low-order) DH output
+  gives no tag. Check that a change keeps the check for an all-zero DH output,
+  the role-ordered `info`, the constant-time tag comparison
+  (`verify_refusal_tag`) and the wiping of the derived key. Two limits are documented, not fixed: whoever holds the
+  initiator's own identity secret can make a refusal it accepts
+  (key-compromise impersonation, `docs/NET-MESSAGING.md` §8), and the
+  static-DH MAC has not been reviewed by a cryptographer — the module says
+  REVISIT AT SECURITY AUDIT. Neither may be described as settled.
 - **Double Ratchet.** The header is bound as AEAD associated data. `decrypt`
   mutates state on a snapshot and restores it on any error (F-1): a new early
   return or `?` between mutation and authentication breaks that. Skipped keys
@@ -118,6 +130,22 @@ the Android contact-card and add-contact code. Specification:
 - **Session replacement and reset.** Who can cause a session to be removed or
   replaced? A remote party must not be able to reset one by sending a new
   handshake; local removal follows the S2-B2 §6a rules.
+- **Forged or replayed refusals and handshakes.** A refusal restarts first
+  contact (`take_refusal` → `restart_after_refusal`) only if its tag checks for
+  the sender's pinned key and ours and it names the handshake of our own
+  session with that sender, on which nothing was received yet; anything else
+  is dropped (`docs/NET-MESSAGING.md` §6). A handshake is not authenticated
+  where the network layer reads it: one naming a pinned contact while our
+  session with that contact is an unconfirmed start of our own raises the
+  conflict flag (the `Handshake` arm of `NetworkMessenger::process` in
+  `network.rs`). So a forged or replayed
+  handshake can raise a false conflict. Check what a resolve then does
+  (`resolve_session_conflict` in `network/chat.rs`: committed texts
+  `NotDelivered`, abandoned, our session removed, wait for the peer's
+  handshake); `NET-MESSAGING.md` §10 states that a false conflict only delays
+  the conversation. A change must not let a forged or replayed object reach a
+  restart or a session removal without either a verified refusal or the
+  user's own resolve.
 
 ## 4. Network
 
@@ -143,6 +171,27 @@ Where: `crates/mobile-ffi/src/network.rs`, `network/wire.rs`,
   so nothing may claim them for it.
 - **Retransmission identity.** A retransmission carries identical bytes and so
   the same message id.
+- **Time bounds.** One relay request is bounded as a whole by
+  `REQUEST_DEADLINE` (`crates/relay/src/client.rs`), one sync round by
+  `ROUND_BUDGET`, and retransmission backs off by doubling up to
+  `RETRANSMIT_CAP` (`network.rs`; `NET-MESSAGING.md` §7, R-4 and R-5 in the
+  tracker). A new relay call or loop must stay under them: a per-syscall
+  socket timeout does not bound a relay that trickles bytes. A round cut by
+  the budget must lose and repeat nothing, and the budget line must not read
+  as a network error. The tracker records what stays unbounded (the DNS
+  lookup in `Connection::connect`).
+- **What a mailbox reader learns.** Whoever can read a mailbox on the relay
+  learns whom its owner has pinned: a message from a pinned sender without a
+  session is kept (`NoSession` → `Fate::Keep`), one from a stranger is
+  deleted, and refusals go only to pinned contacts (R-9, open;
+  `NET-MESSAGING.md` §8). Check that a change adds no further keep/delete,
+  answer/no-answer or timing difference that depends on who is pinned.
+- **History numbering.** History entries are numbered without gaps and never
+  deleted; paging (`chat_entries_page`) and the one-time build of the
+  open-entry record (`open_seqs`) read every number and fail on a missing one
+  (`network/chat.rs`; R-10, open). A change that deletes, skips or reorders
+  entry numbers, or reads them some other way, must say what happens to that
+  assumption.
 - **Offline and recovery.** After lost network, lost relay or process death:
   nothing committed is lost, nothing is shown twice, and nothing is encrypted
   twice.
@@ -181,6 +230,14 @@ Where: `arcium-psi/programs/arcium-psi/src/lib.rs`,
   a stub (M-3); nothing may present it as real.
 - **Contact hash.** Both sides must compute the canonical form in `CLAUDE.md`,
   and the cross-language parity test must still cover it.
+- **E.164 before hashing.** The hash input is the strict E.164 form
+  (`normalize_e164`, hashed by `hash_contact_e164` in `contact_hash.rs`; TS
+  `normalizeE164` in `arcium-psi/tests/src/utils.ts`; D-010). A number with no
+  canonical form is refused, never hashed in another form, and no country is
+  guessed. A change to the separators, the length or digit rules, or a new
+  caller that hashes raw input with `hash_contact`, breaks matching between
+  devices; both sides must still pass the shared vectors in
+  `crates/core-crypto/tests/contact_hash_e164.tsv`.
 - **Account authorization.** Signer checks, `has_one`, owner-derived PDA seeds
   and the monotonic query nonce hold wherever they apply.
 - **PDA and account substitution.** Every account's address or seeds are
@@ -191,8 +248,13 @@ Where: `arcium-psi/programs/arcium-psi/src/lib.rs`,
   chain, and that hash is the SHA-256 of `psi_intersect.arcis.ir`, not a git
   SHA (`CLAUDE.md`). A circuit change changes the hash and every constant that
   pins it.
-- **Open findings.** Server-dataset anchoring (F-4) and padding false positives
-  (F-3): say whether the change touches them.
+- **Open findings.** Server-dataset anchoring (F-4) is open: say whether the
+  change touches it. Padding false positives (F-3) are fixed (PR #118): each
+  encrypted input carries its number of real entries (`count`) and only real
+  slots are compared (`real_slots` in `arcium-psi/encrypted-ixs/src/lib.rs`).
+  A change to `count` or `real_slots` changes the circuit and so its hash; a
+  change to the client's padding or result check (`decryptResult` in
+  `arcium-psi/tests/src/client.ts`) must keep the fix as well.
 
 ## 7. General
 

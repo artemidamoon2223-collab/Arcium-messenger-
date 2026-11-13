@@ -27,7 +27,11 @@
 //! and replace any bundle. None of that exposes plaintext or keys (envelopes
 //! are end-to-end encrypted and bundles are verified by the fetcher against an
 //! out-of-band identity), but it can withhold, delay, reorder, replay or drop
-//! messages. No TLS: a network observer sees what the relay sees.
+//! messages. No TLS: a network observer sees what the relay sees. No limit on
+//! connections: each open one holds a thread and two descriptors until it
+//! closes or stays idle for 60 s, so anyone can hold enough of them open to
+//! keep others out. A closed connection releases both; when no descriptor is
+//! left, the accept loop waits instead of spinning.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
@@ -76,7 +80,9 @@ struct State {
 pub struct RelayHandle {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
-    conns: Arc<Mutex<Vec<TcpStream>>>,
+    /// A clone of every open connection, so `stop` can close it. Each one
+    /// leaves the map when its connection ends.
+    conns: Arc<Mutex<HashMap<u64, TcpStream>>>,
     state: Arc<Mutex<State>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -95,6 +101,12 @@ impl RelayHandle {
             .unwrap_or_default()
     }
 
+    /// Connections open now, as tracked for [`RelayHandle::stop`].
+    #[cfg(test)]
+    pub(crate) fn open_connections(&self) -> usize {
+        self.conns.lock().expect("conns").len()
+    }
+
     /// How many stored envelopes contained [`RelayConfig::canary`].
     pub fn canary_hits(&self) -> u64 {
         self.state.lock().expect("relay state").canary_hits
@@ -105,7 +117,7 @@ impl RelayHandle {
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::SeqCst);
         let _ = TcpStream::connect(self.addr); // unblock accept()
-        for c in self.conns.lock().expect("conns").drain(..) {
+        for (_, c) in self.conns.lock().expect("conns").drain() {
             let _ = c.shutdown(Shutdown::Both);
         }
         if let Some(t) = self.thread.take() {
@@ -131,7 +143,7 @@ pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHand
     }
     let addr = listener.local_addr()?;
     let stop = Arc::new(AtomicBool::new(false));
-    let conns = Arc::new(Mutex::new(Vec::new()));
+    let conns = Arc::new(Mutex::new(HashMap::new()));
     let state = Arc::new(Mutex::new(State {
         next_seq: 1,
         ..State::default()
@@ -140,16 +152,36 @@ pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHand
     let thread = {
         let (stop, conns, state) = (stop.clone(), conns.clone(), state.clone());
         std::thread::spawn(move || {
+            let mut next_id = 0u64;
             for stream in listener.incoming() {
                 if stop.load(Ordering::SeqCst) {
                     break;
                 }
-                let Ok(stream) = stream else { continue };
+                let stream = match stream {
+                    Ok(s) => s,
+                    // Out of descriptors (or another accept error): the
+                    // pending connection stays in the backlog, so retrying
+                    // at once would spin. Wait for a connection to end.
+                    Err(_) => {
+                        std::thread::sleep(ACCEPT_RETRY);
+                        continue;
+                    }
+                };
+                let id = next_id;
+                next_id += 1;
+                // Untracked if no descriptor is left for the clone: it is
+                // still served, and ends on its own (close or read timeout).
                 if let Ok(c) = stream.try_clone() {
-                    conns.lock().expect("conns").push(c);
+                    conns.lock().expect("conns").insert(id, c);
                 }
-                let (state, config, stop) = (state.clone(), config.clone(), stop.clone());
-                std::thread::spawn(move || connection(stream, &state, &config, &stop));
+                let (state, config, stop, conns) =
+                    (state.clone(), config.clone(), stop.clone(), conns.clone());
+                std::thread::spawn(move || {
+                    connection(stream, &state, &config, &stop);
+                    // Release the clone with the connection, or every
+                    // connection would keep a descriptor until `stop`.
+                    conns.lock().expect("conns").remove(&id);
+                });
             }
         })
     };
@@ -161,6 +193,9 @@ pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHand
         thread: Some(thread),
     })
 }
+
+/// How long the accept loop waits after a failed accept before the next.
+const ACCEPT_RETRY: Duration = Duration::from_millis(50);
 
 fn connection(
     mut stream: TcpStream,

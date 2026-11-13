@@ -209,6 +209,22 @@ impl ArciumCore {
         Ok(send_result(outcome))
     }
 
+    /// Runs [`recover_session`](Self::recover_session) if a commit on
+    /// `session_id` left it unresolved, and nothing otherwise (no store or
+    /// identity read). The network layer calls it before it sends on a
+    /// session, because a send on an unresolved session is refused
+    /// (`docs/NET-MESSAGING.md`, section 7).
+    pub(crate) fn recover_if_unresolved(&self, session_id: u64) -> Result<(), CoreError> {
+        let unresolved = {
+            let (_store, messenger) = self.lock()?;
+            messenger.unresolved_generation(session_id).is_some()
+        };
+        if unresolved {
+            self.recover_session(session_id)?;
+        }
+        Ok(())
+    }
+
     /// What has been committed to `peer` under `client_message_id`, read
     /// only (`Messenger::prior_send`): `None`, `AlreadyPending`,
     /// `AlreadyAcknowledged` or `Abandoned`. Needs no session.

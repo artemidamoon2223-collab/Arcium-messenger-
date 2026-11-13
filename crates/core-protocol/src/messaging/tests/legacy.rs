@@ -493,6 +493,29 @@ fn a_retirement_staged_before_another_instance_received_writes_nothing() {
     assert_eq!(*accepted(p.bob_receives(&next.wire).unwrap()).plaintext, b"next");
 }
 
+/// A inspects the legacy session; meanwhile Bob's handle for Alice is
+/// rewritten to name another peer (a corrupted or concurrently reused
+/// handle). The retirement checks the handle again inside its transaction
+/// and writes nothing.
+#[test]
+fn a_retirement_whose_handle_changed_meanwhile_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = file_legacy(dir.path());
+    let carol = pair().alice_pk;
+    let path = dir.path().join("b.db");
+    crate::messaging::race_hook::set(move || {
+        let db = EncryptedStore::open(&path, KEY).unwrap();
+        db.put(&handle_key(BOB_HANDLE), &encode_handle(&carol)).unwrap();
+    });
+    let before_session = p.b.get(&p.alice_key()).unwrap();
+    assert!(matches!(
+        p.record(b"hs2"),
+        Err(MessagingError::Conflict(Conflict::RecordChanged))
+    ));
+    assert_eq!(p.b.get(&p.alice_key()).unwrap(), before_session, "session kept");
+    assert!(p.b.get(&provisional_key(BOB_HANDLE)).is_err(), "no handshake recorded");
+}
+
 /// B stages a receive on the legacy session; A retires it first. B's commit
 /// writes nothing and releases no plaintext.
 #[test]

@@ -34,10 +34,61 @@ data class ChatState(
             "input=<redacted>, sending=$sending, error=$error)"
 }
 
+/** Prefix of the error a failed reload shows; a later successful one clears it. */
+internal const val READ_ERROR_PREFIX = "Could not read the conversation: "
+
+/**
+ * The state after a failed reload: the read error, replacing any error
+ * shown before.
+ */
+internal fun ChatState.afterFailedReload(message: String?): ChatState =
+    copy(error = READ_ERROR_PREFIX + message)
+
+/**
+ * The state after a successful reload. A read error a failed reload left is
+ * cleared, because the conversation was read now; any other error (a text
+ * not saved, a conflict not resolved) stays until the user acts on it.
+ */
+internal fun ChatState.afterReload(conversation: Conversation, entries: List<ChatEntry>): ChatState =
+    copy(
+        conversation = conversation,
+        entries = entries,
+        error = error?.takeUnless { it.startsWith(READ_ERROR_PREFIX) },
+    )
+
+/** Entries one "load earlier" step adds to what the screen shows. */
+internal const val PAGE = 50
+
+/** The most entries one `chat_entries_page` call returns (Rust `MAX_PAGE`). */
+private const val MAX_PAGE = 200
+
+/**
+ * The newest [count] entries of a conversation, oldest first, read with
+ * [fetch] (`chat_entries_page(peer, before, limit)`) page by page from the
+ * newest back. Fewer if the history is shorter.
+ */
+internal fun loadWindow(count: Int, fetch: (before: ULong?, limit: UInt) -> List<ChatEntry>): List<ChatEntry> {
+    val pages = ArrayDeque<List<ChatEntry>>()
+    var have = 0
+    var before: ULong? = null
+    while (have < count) {
+        val page = fetch(before, minOf(MAX_PAGE, count - have).toUInt())
+        if (page.isEmpty()) break
+        pages.addFirst(page)
+        have += page.size
+        val first = page.first().seq
+        before = first
+        if (first <= 1uL) break
+    }
+    return pages.flatten()
+}
+
 /**
  * One conversation. The history, every message state and the session come
  * from Rust (`network/chat.rs`); this class holds only what the user is
- * typing and the id of a text whose recording has not been confirmed yet.
+ * typing, the id of a text whose recording has not been confirmed yet, and
+ * how many of the newest entries are shown. The history is read in pages
+ * (`chat_entries_page`): the newest [PAGE] first, more on request.
  *
  * Each logical message gets one random id when the user first sends it. If
  * recording it fails, the text and that id stay here, and sending again
@@ -56,6 +107,10 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
     /** The text being sent and the id it was first sent under. */
     private var unconfirmed: Pair<String, ByteArray>? = null
 
+    /** How many of the newest entries the screen shows; grows by [PAGE]. */
+    @Volatile
+    private var window = PAGE
+
     init {
         viewModelScope.launch { service.revision.collect { reload() } }
         viewModelScope.launch {
@@ -66,14 +121,20 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
     private suspend fun reload() {
         try {
             val (conversation, entries) = service.call { m ->
-                val entries = m.chatEntries(peer)
+                val entries = loadWindow(window) { before, limit -> m.chatEntriesPage(peer, before, limit) }
                 m.markSeen(peer)
                 m.conversation(peer) to entries
             }
-            _state.value = _state.value.copy(conversation = conversation, entries = entries)
+            _state.value = _state.value.afterReload(conversation, entries)
         } catch (e: CoreException) {
-            _state.value = _state.value.copy(error = "Could not read the conversation: ${e.message}")
+            _state.value = _state.value.afterFailedReload(e.message)
         }
+    }
+
+    /** Shows [PAGE] more of the older entries. */
+    fun loadOlder() {
+        window += PAGE
+        viewModelScope.launch { reload() }
     }
 
     fun onInput(text: String) {

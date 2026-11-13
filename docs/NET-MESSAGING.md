@@ -197,7 +197,9 @@ of these.
 - Receipts are not acknowledged: a receipt leaves the outbox once the relay
   accepted it. If it is lost, the sender sends the text again; the recipient
   receives a duplicate and commits a new receipt (at most one per message per
-  minute).
+  minute). Only a message that was answered when first accepted (a text or
+  OPEN) is answered again; a duplicate of a receipt, or of a payload this
+  build does not know, is not answered.
 - A missing receipt is never read as non-delivery; the text stays pending.
 - Neither `acknowledge_outgoing` nor `abandon_outgoing` is exported through
   UniFFI: only this layer takes a text out of the outbox, on a receipt, or
@@ -506,7 +508,7 @@ entry per logical message, never written by the ratchet.
 | one recipient's full mailbox: the round goes on for everyone else, the wait and its doubling, order of the waiting texts, a refused receipt | `tests::send_refusal` | runtime, local relay holding 8 envelopes per mailbox; waits scaled down |
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
 | request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
-| replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt | `tests::network` V6 tests | runtime |
+| replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt, a replayed receipt not answered | `tests::network` V6 tests | runtime |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |

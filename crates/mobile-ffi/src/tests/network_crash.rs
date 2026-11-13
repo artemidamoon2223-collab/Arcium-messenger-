@@ -215,6 +215,41 @@ fn a_sender_killed_while_sending_from_the_chat_sends_the_text_once() {
     }
 }
 
+/// The recipient dies after accepting a text and before committing its
+/// receipt. After the restart the chat reads the text into the history and
+/// marks it read before any sync round; the text must still be answered, or
+/// its sender would wait for a receipt that never comes. (Since a duplicate is
+/// answered only when the original was, the receipt has to be committed
+/// before the text is marked read.)
+#[cfg(unix)]
+#[test]
+fn a_recipient_killed_before_its_receipt_still_confirms_the_text() {
+    use crate::network::chat::ChatEntryState;
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    alice
+        .net
+        .chat_send(bob.pk.clone(), b"r".to_vec(), "confirm me".into())
+        .unwrap();
+    chat_rounds(&[&alice], 1);
+    run_child(&bob, &addr, "chat_sync", Some("after_accept"), &alice.pk);
+
+    let bob = bob.restart(&addr);
+    // The history first, as the app does when the chat opens: the text is
+    // recorded and marked read here.
+    let entries = bob.net.chat_entries(alice.pk.clone()).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(bob.net.received_texts(alice.pk.clone()).unwrap().is_empty());
+    chat_rounds(&[&bob, &alice, &bob, &alice], 2);
+    assert_eq!(
+        alice.net.chat_entries(bob.pk.clone()).unwrap()[0].state,
+        ChatEntryState::Delivered
+    );
+    assert_eq!(bob.net.chat_entries(alice.pk.clone()).unwrap().len(), 1);
+    relay.stop();
+}
+
 /// The recipient dies after recording a received text in the history and
 /// before marking it read, so the inbox lists it again after the restart.
 /// The history shows it once.

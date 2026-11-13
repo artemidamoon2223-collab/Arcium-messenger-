@@ -423,9 +423,28 @@ impl NetworkMessenger {
     }
 
     /// Marks a received text as durably processed by the application.
+    ///
+    /// Its receipt is committed first if it has none yet. `settle` commits
+    /// it when the text is accepted, but a crash between the two leaves the
+    /// text in the inbox without one, and the application may read and mark
+    /// it before any sync round runs. A text marked read without a receipt
+    /// would leave its sender waiting, since a repeated message is answered
+    /// only if the original was (`receipt_again`).
     pub fn mark_read(&self, peer: Vec<u8>, message_id: Vec<u8>) -> Result<bool, CoreError> {
-        self.core
-            .acknowledge_incoming(handle_of(&peer_key(&peer)?), message_id)
+        let key = peer_key(&peer)?;
+        let handle = handle_of(&key);
+        if let Ok(id) = <[u8; 32]>::try_from(message_id.as_slice()) {
+            // One read in the usual case; the inbox only after a crash.
+            if self.core.prior_send(&key, &client_id::receipt(&id, 0))?.is_none()
+                && self
+                    .pending_texts(&key)?
+                    .iter()
+                    .any(|(m, _)| m.as_slice() == id.as_slice())
+            {
+                self.receipt(handle, &id, 0)?;
+            }
+        }
+        self.core.acknowledge_incoming(handle, message_id)
     }
 
     /// Ids of own texts to `peer` still waiting for the peer's receipt.
@@ -967,7 +986,7 @@ impl NetworkMessenger {
                     }
                     Ok(Received::Duplicate { message_id, .. }) => {
                         report.duplicates += 1;
-                        self.receipt_again(handle, &message_id)?;
+                        self.receipt_again(handle, &sender, &message_id)?;
                         Ok(Fate::Delete)
                     }
                     Err(CoreError::NoSession { .. }) => Ok(Fate::Keep),
@@ -1212,8 +1231,19 @@ impl NetworkMessenger {
     /// The peer sent `id` again, so it may not have our receipt. If the
     /// original receipt already left the outbox, commit a new one, at most one
     /// per minute per message.
-    fn receipt_again(&self, handle: u64, id: &[u8]) -> Result<(), CoreError> {
+    ///
+    /// Only a message that was answered when it was accepted is answered
+    /// again: a text or an OPEN, whose receipt `settle` committed under
+    /// `client_id::receipt(id, 0)`. A receipt, or a payload this build does
+    /// not know, was never answered, so its duplicate is not either: a
+    /// replayed receipt changes nothing (docs/NET-MESSAGING.md, section 5).
+    /// Send-id records are never deleted, so the check holds for messages
+    /// accepted long ago.
+    fn receipt_again(&self, handle: u64, peer: &[u8; 32], id: &[u8]) -> Result<(), CoreError> {
         let id32: [u8; 32] = id.try_into().expect("32-byte id");
+        if self.core.prior_send(peer, &client_id::receipt(&id32, 0))?.is_none() {
+            return Ok(());
+        }
         if let SendResult::AlreadyAcknowledged { .. } = self.receipt(handle, &id32, 0)? {
             let minute = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

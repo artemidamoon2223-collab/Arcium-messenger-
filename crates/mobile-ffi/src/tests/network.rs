@@ -430,6 +430,50 @@ fn a_message_that_arrives_before_its_handshake_waits_for_it() {
     relay.stop();
 }
 
+/// A receipt the relay (or anyone who copied it) delivers again is a
+/// duplicate and changes nothing (`docs/NET-MESSAGING.md` section 5): it is
+/// not answered. Before, every duplicate was answered with a receipt, so a
+/// replayed receipt drew a "receipt of a receipt" — the first time and then
+/// once a minute — which the peer accepted and ignored, and which showed
+/// whoever replayed it that the device was online and still held the
+/// session (tracker row R-12, raised in PR #126). A repeated text is still
+/// answered: `a_lost_receipt_is_answered_again_when_the_text_is_repeated`.
+#[test]
+fn a_replayed_receipt_is_not_answered() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    alice.send(&bob, "m", "confirm");
+    alice.sync();
+    bob.sync(); // accepts the text, sends the receipt
+    let alice_key: [u8; 32] = alice.pk.as_slice().try_into().unwrap();
+    let stored = relay.stored(&alice_key);
+    assert_eq!(stored.len(), 1, "exactly Bob's receipt is waiting for Alice");
+    let receipt = stored[0].1.clone();
+    assert_eq!(alice.sync().delivered, 1);
+    settle(&[&alice, &bob]);
+
+    // Replayed twice: the second time also takes the per-minute path.
+    for i in 0..2 {
+        inject(&addr, &alice, receipt.clone());
+        let r = alice.sync();
+        assert_eq!(
+            (r.fetched, r.duplicates, r.accepted, r.delivered, r.published),
+            (1, 1, 0, 0, 0),
+            "replay {i}: {r:?}"
+        );
+        assert!(r.errors.is_empty(), "replay {i}: {:?}", r.errors);
+        assert!(relay.stored(&alice_key).is_empty(), "replay {i}: deleted");
+        assert!(
+            relay.stored(&bob.pk.as_slice().try_into().unwrap()).is_empty(),
+            "replay {i}: nothing sent to Bob"
+        );
+    }
+    assert_eq!(alice.undelivered(&bob), 0);
+    relay.stop();
+}
+
 /// The relay loses Bob's receipt after accepting it. Alice keeps the text and
 /// sends it again; Bob receives it as a duplicate and answers with a new
 /// receipt, and only that makes the text delivered.

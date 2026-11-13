@@ -56,8 +56,10 @@ fun ChatScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val list = rememberLazyListState()
-    LaunchedEffect(state.entries.size) {
-        if (state.entries.isNotEmpty()) list.animateScrollToItem(state.entries.size - 1)
+    // To the newest entry when one arrives, not when older ones are loaded.
+    val hasOlder = (state.entries.firstOrNull()?.seq ?: 1uL) > 1uL
+    LaunchedEffect(state.entries.lastOrNull()?.seq) {
+        if (state.entries.isNotEmpty()) list.animateScrollToItem(state.entries.size - 1 + if (hasOlder) 1 else 0)
     }
 
     Scaffold(
@@ -115,6 +117,14 @@ fun ChatScreen(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp).testTag("chatList"),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                if (hasOlder) {
+                    item(key = "loadEarlier") {
+                        TextButton(
+                            onClick = viewModel::loadOlder,
+                            modifier = Modifier.fillMaxWidth().testTag("loadEarlier"),
+                        ) { Text("Load earlier messages") }
+                    }
+                }
                 items(state.entries, key = { it.seq.toLong() }) { entry ->
                     Bubble(entry, onResend = { viewModel.resend(entry) })
                 }

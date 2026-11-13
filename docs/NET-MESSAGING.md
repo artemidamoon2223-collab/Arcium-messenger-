@@ -89,8 +89,14 @@ mailbox (a newer handshake behind an older first message, or behind many
 kept envelopes) finds it recorded. After each pass the client deletes exactly
 the envelopes that pass processed to completion (accepted, duplicate, or
 dropped); envelopes kept for a missing handshake and envelopes of the other
-kind stay, and paging moves past them. The cursor lives only in that call; a
-new round starts again from the beginning.
+kind stay, and paging moves past them. A round starts again from the
+beginning, with one exception: after a round its time budget cut short
+(section 7), the next round's passes start where that round's passes stopped,
+so that both move on even when whole pages hold only kept envelopes. These
+positions are held in memory only. They are a starting point chosen by the
+untrusted relay, never evidence of anything: any failed round, and every
+round that reaches the end of the mailbox, puts them back to the beginning,
+and everything skipped is read again.
 
 Bounds per round, whatever the relay does: each pass reads at most 4096
 envelopes (`MAX_SCAN_ENVELOPES`, a whole mailbox) and at most 274 pages
@@ -104,6 +110,11 @@ upper bound, so a mailbox of fewer than 15 envelopes costs two FETCH_AFTER
 requests (one if it is empty). A relay that
 returns more than asked for, or numbers that do not increase past the cursor,
 ends the round with an error.
+
+Bounds in time (section 7): every request, from writing it to reading the
+whole answer, ends within 30 s; a round stops starting requests after 120 s.
+Each pass still reads its first page, so a round that ran out moves both
+passes on, and the next round continues with what is left.
 
 The price: kept envelopes are read again in both passes of every round, so a
 round transfers up to twice the scanned part of the mailbox (at most
@@ -122,19 +133,28 @@ stored twice.
 
 **Delivery does not depend on retention.** The sender keeps every text until
 the recipient's receipt arrives, and sends it again after
-`retransmit_after_ms`. A relay that loses, withholds or restarts only delays
+`retransmit_after_ms`, then after twice as long each time, up to 5 minutes
+(section 7). A relay that loses, withholds or restarts only delays
 delivery.
 
 `ENVELOPE_V1` (what the relay stores):
 `"ARN1" || kind(1) || sender_x25519_pk(32) || body`, kind 1 = the unchanged
 84-byte `INITIATOR_HANDSHAKE_V1`, kind 2 = the unchanged
-`header(40) || ciphertext`. The sender field is unauthenticated and only picks
-the session; a message decrypts only under the session (keys and AD) that
-produced it.
+`header(40) || ciphertext`, kind 3 = a 129-byte `HANDSHAKE_REFUSAL_V1`
+(section 6). The sender field is unauthenticated and only picks the session; a
+message decrypts only under the session (keys and AD) that produced it, and a
+refusal counts only if its tag checks for the sender's pinned identity key and
+ours.
 
 **What the relay and the network see:** the recipient's and sender's X25519
 identity keys, when each device connects, envelope sizes and timing, every
-published bundle, and the handshake bytes. They do not see plaintext, identity
+published bundle, the handshake bytes, and that a refusal was sent and its
+reason byte (inside the authenticated bytes, which the relay can read but not
+change). A refusal shows that its sender answered a handshake naming the
+recipient, so whoever reads the mailbox learns that the sender has the
+recipient as a contact; but the refusal is no proof of it to anyone else (see
+section 6). They do
+not see plaintext, identity
 or prekey secrets, ratchet state or checkpoints. There is no anonymity and no
 Tor: a network observer sees the same as the relay, and the relay can link
 sender, recipient and time of every message.
@@ -154,7 +174,10 @@ OPEN is the initiator's first message. It lets the responder send before the
 initiator's first text (a responder has no sending chain until it receives).
 
 Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
-`r || message_id [|| round]` (receipts), `o` (OPEN).
+`r || message_id [|| round]` (receipts), `o || sha256(handshake)[0..8]`
+(OPEN: one per session, so a session that replaces an abandoned one commits
+its own; builds before this one used `o` alone). `send_message` refuses all
+of these.
 
 ## 5. Acknowledgements
 
@@ -235,11 +258,106 @@ handshake recorded). If the prekeys the recorded handshake names rotated or
 were consumed by another contact's first message since, the message is
 deleted and the handshake flagged as refused.
 
+**Refusals.** When a handshake can never be answered (the prekeys it names
+were consumed or rotated, and no session holds it), the responder says so.
+Typical case: two contacts write to a device for the first time while it is
+offline; both handshakes name the one one-time prekey its bundle carried, and
+only the first can be accepted.
+
+- When the responder refuses a handshake from a pinned contact with no
+  session holding it, with `OneTimePrekeyUnavailable`, `OneTimePrekeyRequired` or
+  `StaleSignedPrekey`, it sends `HANDSHAKE_REFUSAL_V1`:
+
+  ```text
+   0  32  refuser_identity_dh_pk
+  32  32  initiator_identity_dh_pk
+  64  32  sha256(INITIATOR_HANDSHAKE_V1 bytes)
+  96   1  reason   1 one-time prekey unavailable, 2 required, 3 stale signed prekey
+  97  32  tag
+  ```
+
+  The tag (`core_crypto::refusal_mac`) is a MAC over bytes 0..97, keyed by
+  HKDF-SHA256 over the X25519 of the two identity keys, with info
+  `"arcium/handshake-refusal-mac/v1" || refuser_pk || initiator_pk`. Only the
+  two parties can make or check it, and the key for "A refuses B" differs from
+  the one for "B refuses A". It is a MAC and not a signature on purpose: a
+  handshake is not signed, so anyone who knows both keys can elicit a refusal
+  with a forged handshake naming a contact. The initiator could have made the
+  same bytes alone, so a refusal proves nothing to a third party about whom
+  the refuser has pinned. An all-zero DH output (a low-order key) gives no
+  tag and is never accepted. The price of a MAC: whoever holds the
+  initiator's own identity secret can also make a refusal it accepts (section
+  8).
+
+  A refusal is sent at most once per refused handshake and at most once per
+  contact per 10 minutes, in memory (a restart may send one more, and so may
+  a lost answer to a SEND the relay did carry out; a second copy names a
+  handshake that is gone by then and is dropped). A first
+  message refused for its prekeys sends none; the initiator's next
+  retransmission of the handshake is refused and answered. A refusal the relay
+  does not store (the initiator's mailbox is full), and one whose SEND loses
+  the connection, stays queued for the next round, within the same process,
+  as does one the round's budget leaves unsent; the wait after a relay
+  refusal is that of section 7. A relay refusal does not end the round.
+- The initiator acts on a refusal only if its tag checks for the sender's
+  pinned identity key and ours, it names those two keys, and it names the
+  handshake of our own session with the sender, on which nothing was received
+  yet. Anything else is dropped and changes nothing (a forged, foreign,
+  replayed or late refusal).
+- Acting on it, the initiator gives its session up as
+  `resolve_session_conflict` does: committed texts `NotDelivered`, then
+  abandoned, then the session removed (S2-B2 section 6a). It ends a conflict
+  with that contact and starts a new session from the contact's current
+  bundle at once. Texts still queued go out in the new one; texts marked
+  `NotDelivered` are not sent again (the user can send them again). If the
+  new session cannot start then (no bundle, no relay, a crash), the next
+  queued text starts it. Each step repeats safely after a crash: the refusal
+  stays on the relay until the round deletes it, and once the dead session is
+  gone it no longer matches.
+- A genuine refusal is final: the responder sends it only where the
+  handshake cannot become answerable later (a consumed one-time prekey is
+  never reissued, a rotated signed prekey never returns). The responder's
+  bundle is published at the start of every round, before handshakes are
+  processed, so the bundle the initiator fetches after a refusal names the
+  current prekeys.
+
 ## 7. Failure handling
+
+Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
+`network::RETRANSMIT_CAP`):
+
+- **One request: 30 s.** Every read and write on the connection waits at most
+  `timeout_ms`, and the request as a whole (writing it, reading the whole
+  answer) at most 30 s; past that it fails as a lost connection. A relay that
+  trickles bytes cannot hold a round open. A page (at most one 1 MiB frame)
+  therefore needs a link of about 35 KiB/s to arrive; on a slower link a
+  full page of large envelopes cannot be read (no adaptive paging).
+- **One round: 120 s of relay requests.** The budget is checked before every
+  page of a pass after its first, and before every send. When it runs out,
+  the pass stops after the page in hand, deletes what it processed, and the
+  round's report carries the line `round budget exhausted: the rest follows
+  in the next round`. That line is not a network error (it does not start
+  with `network:`): the relay was reached, and the application neither shows
+  the link as offline nor slows its rounds down for it. Nothing processed is
+  lost or processed again. The next round continues after the last sequence
+  number each pass reached (section 3), so a mailbox larger than one round
+  can read is worked through over several rounds; once both passes reach the
+  end, rounds start from the beginning again. A round that ran out ends
+  within the budget plus a few request deadlines (the request in flight, each
+  pass's first page and deletion).
+- **Retransmission: 5 s, doubling, at most 5 minutes apart.** Each message or
+  handshake waits `retransmit_after_ms` after its first send and twice as
+  long after each further one, up to 5 minutes: at most 9 sends in 10
+  minutes instead of about 120. Kept in memory: after a restart everything
+  pending is sent once more and the waits start again. This spaces the
+  sends only; what is sent, and when a text leaves the outbox, is unchanged.
 
 | failure | result |
 |---|---|
+| relay too slow for a request, or trickling bytes | the request fails after 30 s; the round ends as for a lost connection |
+| round budget exhausted | processed envelopes are deleted, the report says so (not as a network error), the next round continues where the passes stopped |
 | relay unreachable, connection lost | `sync` reports it; nothing local changes; next sync repeats |
+| relay refuses to store an envelope for a recipient (its mailbox is full) | nothing more is sent to that recipient in this round; the round goes on for every other recipient and for this device's own mailbox. The report carries `relay refused N recipient(s): Full`, which is not a network error. Nothing is sent to that recipient until a wait has passed (as between retransmissions: `retransmit_after_ms`, doubling with each refusal in a row, at most 5 minutes; kept in memory), so its envelopes keep their order. The first envelope stored for it ends the wait. Texts stay pending; a refused receipt is not acknowledged and is sent later |
 | SEND answer lost | the envelope may be stored; it is sent again (the relay stores it once, or the recipient sees a duplicate) |
 | FETCH_AFTER answer lost (any page), connection lost between pages | the round stops; what the current pass processed is committed but not yet deleted, and comes back next round as a duplicate |
 | process death between pages | same as above: committed acceptances are duplicates next round, nothing is shown twice |
@@ -248,7 +366,7 @@ deleted and the handshake flagged as refused.
 | crash after a text is committed | the stored bytes are sent after restart |
 | crash after acceptance / receipt commit / delete | the inbox holds the message once; its receipt is committed or re-derived from the inbox |
 | crash after a receipt is accepted | applied from the inbox at the next sync |
-| commit outcome unknown | S2-B2 recovery (`recover_session`); the envelope stays on the relay |
+| commit outcome unknown | S2-B2 recovery (`recover_session`), which this layer runs itself: at the start of the next round, before it commits a queued text, and when a message for that session is fetched; the envelope stays on the relay |
 
 ## 8. Not provided
 
@@ -256,16 +374,32 @@ deleted and the handshake flagged as refused.
 - Authentication of relay clients: anyone reaching a relay can read (only
   ciphertext) or delete a mailbox, or replace a bundle (refused by the
   initiator's identity check). Denial of service is possible.
-- Refusal feedback for handshakes: a responder that refuses a handshake
-  (stale prekey) tells nobody; the initiator keeps retrying until the user
-  removes the session (S2-B2 section 6a).
+- Refusal feedback beyond the refusal of section 6: a relay can withhold a
+  refusal (the initiator then keeps retransmitting, as before refusals
+  existed), and a refusal lost after the relay accepted it is sent again only
+  after 10 minutes, or after the responder restarts. A refusal queued but not
+  yet stored is lost if the responder's process ends.
+- Hiding whom a device knows from a reader of the mailboxes. A refusal of a
+  forged handshake shows such a reader that the refuser has the named
+  initiator as a contact (it proves it to nobody else); so does a message
+  kept rather than deleted (section 3). Closing this needs relay
+  authentication.
+- Protection against key-compromise impersonation of refusals. A refusal is
+  authenticated by a MAC both parties can make, so whoever holds the
+  initiator's identity secret can make one the initiator accepts, and so end
+  its pending first contact (its texts become `NotDelivered`) and make it
+  start again. That secret already allows impersonating the initiator.
+- Automatic resending of texts a refusal or a conflict resolution marked
+  `NotDelivered`.
 - One provisional handshake per contact. Whoever can put envelopes in the
   mailbox (the relay has no authentication) can keep replacing a contact's
   recorded handshake before its first message arrives; the genuine one is then
   retransmitted and takes over. That delays first contact; it creates no
   session and consumes no prekey. Each such first message costs the responder
   one X3DH and one ratchet step.
-- A second initiator racing for the same one-time prekey fails the same way.
+- A second initiator racing for the same one-time prekey is refused and
+  starts again (section 6). With k contacts racing, the k-th may wait up to
+  about 10 minutes per further refusal (the per-contact limit).
 - Simultaneous initiation: if both users start a session with each other
   before either handshake arrives, each device holds an unconfirmed initiator
   session and drops the other's handshake, so neither proceeds (no fork: each
@@ -276,9 +410,11 @@ deleted and the handshake flagged as refused.
 - Protection against a full mailbox. Paging (section 3) only stops kept
   envelopes from hiding later ones. Anyone who can reach the relay can still
   fill a mailbox to its 4096 entries (SEND is then refused) or delete from
-  it, and a relay that keeps appending can keep a round busy up to its bound
-  with the rest of the mailbox out of reach until the next round. No relay
-  availability or denial-of-service resistance is claimed.
+  it. A full mailbox stops delivery to its owner only: a sender's round goes
+  on for its other contacts (section 7). And a relay that keeps appending
+  can keep a round busy up to its bound with the rest of the mailbox out of
+  reach until the next round. No relay availability or denial-of-service
+  resistance is claimed.
 - Everything S2-B2 does not provide: power-loss durability, rollback
   detection, exactly-once delivery to the application.
 
@@ -336,9 +472,26 @@ entry per logical message, never written by the ratchet.
   again completes it.
   A replayed old handshake can raise a false conflict; resolving it then only
   delays the conversation.
+- **Reading in pages.** Entries are numbered 1, 2, … per contact: each takes
+  the next number in the transaction that writes it, and none is deleted.
+  `chat_entries_page(peer, before_seq, limit)` returns the `limit` entries
+  (1 to 200) before `before_seq`, or the newest ones, oldest first, read by
+  number. `chat_entries` still returns the whole history.
+- **What a round reads.** A record per contact, `chat-open:v1`, lists the
+  numbers of outgoing entries not yet final (`Queued`, `Pending`,
+  `Transmitted`). It changes in the transaction of every entry change that
+  adds or removes one. Rounds, sends and the giving up of a session walk it
+  instead of the history. A history written before it existed has none; it
+  is built once, in one transaction, from the entries. The conversation list
+  reads the last entry and the entries not yet seen, not the history.
+  Listing a store namespace (the outbox, the inbox, the contacts) is still a
+  scan of the whole SQLite table on every call (`list_keys_with_prefix`), so
+  a round keeps a cost that grows with the store's size; it no longer
+  decrypts the history.
 - **Not provided.** Sync while the application is closed; unread state across
   devices; a sender timestamp (entries carry the local time they were
-  recorded).
+  recorded); a conversation screen that loads in pages (the app still reads
+  the whole history).
 
 ## 9. Verification
 
@@ -350,10 +503,15 @@ entry per logical message, never written by the ratchet.
 | offline recipient | `messages_to_an_offline_recipient_wait_on_the_relay` | runtime |
 | kept envelopes never hide later ones: prefixes of 0–4095 entries, large envelopes, handshakes behind or after the prefix, mixed kept and deleted, deletes, appends and expiry between pages, a mailbox that never runs dry, a relay that breaks paging, lost answers, a stopped relay, process death between pages | `tests::mailbox_scan`; relay paging and the refusal of a capacity above 4096 in `crates/relay` tests | runtime, local relay over TCP; process crash |
 | relay outage; broken SEND/FETCH/DELETE/receipt | `a_relay_outage…`, `broken_connections_at_each_step…` (TCP proxy) | runtime; faults injected at the socket |
+| one recipient's full mailbox: the round goes on for everyone else, the wait and its doubling, order of the waiting texts, a refused receipt | `tests::send_refusal` | runtime, local relay holding 8 envelopes per mailbox; waits scaled down |
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
+| request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt | `tests::network` V6 tests | runtime |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |
 | conversation history, states, repeats, replays, forged bundle, conflict | `tests::chat` | runtime |
+| first contact to an offline recipient: 2, 3 and 5 contenders, both key orders, a conflict after a refusal; refusal limits; forged, foreign, mismatched, swapped-role, replayed and late refusals; an elicited refusal the initiator can make alone and a third party cannot check; a refusal the relay refuses or whose connection breaks, sent later; process death at each restart step | `tests::first_contact` | runtime, local relay over TCP; process crash |
+| refusal tag: both parties compute it, third parties cannot; bound to both keys, the roles and every field byte; low-order keys; byte-for-byte vector computed independently with Python `cryptography` | `core_crypto::refusal_mac` tests | unit; known answer |
+| history pages (sizes 1, 7, 200, new entries while paging), the open-entry record against a full scan (random steps, a history from before the record, a conflict), process death after its writes | `tests::history_paging` | runtime; process crash |
 | process death while sending from or receiving into the history | `tests::network_crash` (`chat_*` points) | process crash |

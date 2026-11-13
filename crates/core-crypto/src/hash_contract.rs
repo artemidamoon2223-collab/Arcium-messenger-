@@ -68,6 +68,7 @@ fn the_hkdf_key_is_always_wiped_and_the_hmac_tag_is_never_copied() {
         ("x3dh.rs", include_str!("x3dh.rs")),
         ("hybrid.rs", include_str!("hybrid.rs")),
         ("ratchet.rs", include_str!("ratchet.rs")),
+        ("refusal_mac.rs", include_str!("refusal_mac.rs")),
     ];
     for (name, src) in sources {
         assert!(

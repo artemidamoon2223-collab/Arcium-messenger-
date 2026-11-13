@@ -465,6 +465,42 @@ mod tests {
         );
     }
 
+    /// The length limits hold at their exact bounds: a record of exactly
+    /// the largest length is not refused as oversized and one byte more is;
+    /// a record of exactly the header length is not refused as truncated
+    /// and one byte less is.
+    #[test]
+    fn length_limits_hold_at_their_exact_bounds() {
+        let (our, peer) = (identity(), identity());
+        let s = initiator_session(&our, &peer);
+        let rec = encode_session_checkpoint(&s, SessionRole::Initiator, &our, 1).unwrap();
+        let binding = SessionBinding {
+            our_identity_pk: our,
+            peer_identity_pk: peer,
+        };
+        let sized = |len: usize| {
+            let mut r = rec.to_vec();
+            r.resize(len, 0);
+            r
+        };
+        assert!(!matches!(
+            decode_err(&sized(SESSION_CHECKPOINT_MAX_LEN), &binding),
+            SessionCheckpointError::Oversized { .. }
+        ));
+        assert!(matches!(
+            decode_err(&sized(SESSION_CHECKPOINT_MAX_LEN + 1), &binding),
+            SessionCheckpointError::Oversized { .. }
+        ));
+        assert!(!matches!(
+            decode_err(&sized(HEADER_LEN), &binding),
+            SessionCheckpointError::Truncated { .. }
+        ));
+        assert!(matches!(
+            decode_err(&sized(HEADER_LEN - 1), &binding),
+            SessionCheckpointError::Truncated { .. }
+        ));
+    }
+
     #[test]
     fn storage_key_is_per_peer() {
         let k = session_storage_key(&[0xab; 32]);

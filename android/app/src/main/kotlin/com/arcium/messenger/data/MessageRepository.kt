@@ -85,15 +85,17 @@ data class Message(
  * that would have created the session succeeded — and then keep that record when
  * the call failed.
  *
- * ## No transport
+ * ## Not the app's messaging path
  *
- * This class encrypts. It does not send, and nothing here does: `mobile-ffi`
- * exports no transport surface, so there is no way to deliver a ciphertext to a
- * peer. Producing ciphertext and delivering it are therefore separate, and no
- * method returns success for a delivery that did not happen. The bytes returned
- * by [startSessionAsInitiator] and [sendToPeer], and the bytes consumed by
- * [acceptSessionAsResponder] and [receiveFromPeer], have to cross to the peer by
- * some channel this layer does not provide.
+ * This class encrypts and decrypts; it does not send. The app sends and
+ * receives through `NetworkMessenger` (Rust, `crates/mobile-ffi/src/network.rs`),
+ * which `MessengerService` drives over the relay. No screen of the app uses
+ * this class: only unit and instrumentation tests do. Producing ciphertext and
+ * delivering it stay separate here, and no method returns success for a
+ * delivery that did not happen. The bytes returned by [startSessionAsInitiator]
+ * and [sendToPeer], and the bytes consumed by [acceptSessionAsResponder] and
+ * [receiveFromPeer], have to cross to the peer by some channel this class does
+ * not provide.
  *
  * CoreException from Rust propagates unchanged — it is never caught, flattened
  * into a Boolean or null, or turned into a success value.

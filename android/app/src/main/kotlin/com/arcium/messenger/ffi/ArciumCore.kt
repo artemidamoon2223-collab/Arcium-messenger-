@@ -12,8 +12,9 @@ package com.arcium.messenger.ffi
  * This class is a pass-through and nothing more: it holds the open store
  * handle, checks it, and forwards. It derives no identifiers, catches no
  * CoreException, and decides nothing about which session a message belongs
- * to — session-identifier policy and inbound routing live above this layer
- * and are not wired yet.
+ * to. Session-identifier policy and inbound routing live in
+ * `NetworkMessenger` (Rust, `crates/mobile-ffi/src/network.rs`), which the app
+ * gets from [networkMessenger] and drives from `MessengerService`.
  *
  * CRITICAL: all crypto (X3DH, Double Ratchet, RescueCipher) and Tor (arti)
  * stay in Rust. Kotlin only calls through FFI — never reimplements crypto.

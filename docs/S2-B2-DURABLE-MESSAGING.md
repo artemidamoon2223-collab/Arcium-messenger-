@@ -349,12 +349,51 @@ What is and is not established:
 | process-crash recovery (before/after `COMMIT`) | real process aborts in tests |
 | power-loss durability | **assumed**: requires the device to honour `fsync` on file and directory; not demonstrated. The bundled SQLite is built without `SQLITE_DISABLE_DIRSYNC` for every target, Android included (`libsqlite3-sys` 0.28 `build.rs`) |
 | malicious rollback (older database file) | **not provided**; needs an external authority, not in scope |
+| malicious rollback of a single record (an older row of the same key written back) | **not provided**; decided out of scope for v1, see "Rollback decision" below |
 
 A restored older database file brings back an older checkpoint *and* its
 generation together, so the generation counter cannot detect it. The sender
 can then re-derive a chain position it already used and emit a different
 ciphertext there (a fork); the receiver rejects the second one only if it
 already consumed that position. Nothing here prevents that.
+
+### Rollback decision (D-009, 2026-11-08)
+
+**Decision (Owner):** v1 resists neither whole-file nor single-record
+rollback. An attacker who can write the application's storage is outside the
+v1 threat model. This is to be decided again before a production release.
+
+Why it is a decision and not a gap in the crash model: crash consistency
+(sections 3 and 7) holds. Each stored value authenticates under its own key
+name only, with no version or counter (`core-storage`, `put_row`/`get_row`),
+so an older value of the same key reads as valid. The send precondition
+"session is the record loaded" (section 3) is satisfied by a restored
+record, so nothing in the transition detects it.
+
+Consequences observed on `main` @ `090bb17` with synthetic data, in temporary
+tests that were not committed. The store was closed, one earlier row of the
+`kv` table was written back with plain SQL, and the store was reopened:
+
+- **Session record of the sender:** the next send of a new logical message
+  encrypts again at a chain position already used, with the same message key
+  (the key is derived deterministically from the restored chain key). The
+  nonce is random per encryption and differed; nonce reuse was not observed.
+  A receiver that already consumed that position rejects the new ciphertext;
+  one that has not accepts whichever arrives first. The rejected message stays
+  in the sender's outbox, unacknowledged. Later messages are accepted. A send
+  repeated with the original logical id is still answered from its `sendid:`
+  and `outbox:` records, without encrypting.
+- **Outbox record after acknowledgement:** the delivered message is pending
+  again and is retransmitted with its stored bytes; no new ciphertext and no
+  ratchet change. The receiver reports a duplicate; the next new send is
+  normal.
+
+Not examined: rollback across a DH-ratchet step, receiver-side records, the
+`sendid:` record, and network-layer receipts.
+
+When this is revisited, a fix must state which of the two rollbacks it
+resists and against which attacker, and add the experiments above as tests
+that fail before it and pass after it.
 
 Retention: `seen:` and `sendid:` records are kept for the life of the session
 and beyond, including across its removal (about 40 bytes of payload plus the store's per-row overhead per

@@ -110,7 +110,7 @@ fn a_raw_send_cannot_take_the_network_layers_client_ids() {
     let addr = relay.addr().to_string();
     let (alice, bob) = unreceipted_text(&addr);
     let handle = core_crypto::session_handle::local_session_handle(bob.pk.as_slice().try_into().unwrap());
-    for id in [&b"tfoo"[..], b"t", b"r", b"rX", b"o"] {
+    for id in [&b"tfoo"[..], b"t", b"r", b"rX", b"o", b"o12345678"] {
         assert!(
             matches!(
                 alice.core.send_message(handle, id.to_vec(), b"\x01substituted".to_vec()),

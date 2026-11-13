@@ -78,8 +78,11 @@ fn net_peer_bot() {
         }
         match offline {
             Some(ms) => {
-                // Push the receipt for the command first, then go away.
-                net.sync();
+                // Go away at once. The command's receipt has left already:
+                // the round that accepted the command sent it. One more
+                // round here would also read the mailbox, and could accept
+                // and confirm texts a fast client sends as soon as it has
+                // that receipt, while the peer is meant to be away.
                 eprintln!("peer: offline for {ms} ms");
                 std::thread::sleep(Duration::from_millis(ms));
                 eprintln!("peer: back online");

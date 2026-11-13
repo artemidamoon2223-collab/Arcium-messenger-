@@ -2,6 +2,7 @@ package com.arcium.messenger.e2e
 
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.ComposeTimeoutException
@@ -14,6 +15,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -358,9 +360,29 @@ class TwoDeviceMessengerTest {
                     .flatten()
                     .mapNotNull { n -> n.config.getOrNull(SemanticsProperties.Text)?.joinToString(" ") { it.text } }
             }
-            throw AssertionError("timed out after $timeoutMs ms waiting for $what; screen shows: $shown", e)
+            throw AssertionError(
+                "timed out after $timeoutMs ms waiting for $what; screen shows: $shown; ${composerState()}",
+                e,
+            )
         }
     }
+
+    /**
+     * What the message composer holds, for a timeout message: the typed text
+     * is not among the texts a screen dump lists, and neither is whether the
+     * send button can be pressed.
+     */
+    private fun composerState(): String {
+        val input = rule.onAllNodesWithTag("messageInput").fetchSemanticsNodes().firstOrNull()
+            ?.config?.getOrNull(SemanticsProperties.EditableText)?.text
+        return "message input: ${input?.let { "'$it'" } ?: "not on screen"}; " +
+            "send button: ${enabled("send")?.let { if (it) "enabled" else "disabled" } ?: "not on screen"}"
+    }
+
+    /** Whether the node with [tag] can be pressed; null if it is not on screen. */
+    private fun enabled(tag: String): Boolean? =
+        rule.onAllNodesWithTag(tag).fetchSemanticsNodes().firstOrNull()
+            ?.let { SemanticsProperties.Disabled !in it.config }
 
     private fun textOf(tag: String): String =
         rule.onNodeWithTag(tag).fetchSemanticsNode().config.run {
@@ -384,7 +406,16 @@ class TwoDeviceMessengerTest {
 
     private fun send(message: String) {
         rule.onNodeWithTag("messageInput").performTextInput(message)
-        tap("send")
+        // The button can be pressed only once the typed text has reached the
+        // screen's state, so wait for that. Then invoke its click action
+        // rather than click by coordinates: typing brings up the keyboard,
+        // which moves the button while such a click is on its way. A press
+        // that does nothing leaves the text in the field and no bubble, and
+        // the step times out; that is what run 43334490691 showed in
+        // `bobContinuesAfterRestart`. Which of the two made that press do
+        // nothing was not established: the timeout message now says.
+        waitUntil("the send button to be enabled", UI_MS) { enabled("send") == true }
+        rule.onNodeWithTag("send").performSemanticsAction(SemanticsActions.OnClick)
         waitForMessage(message)
     }
 

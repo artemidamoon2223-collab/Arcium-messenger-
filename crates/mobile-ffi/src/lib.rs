@@ -2353,6 +2353,7 @@ mod tests {
     mod network_crash;
     mod delivery_consistency;
     mod first_contact;
+    mod net_limits;
     mod history_paging;
     mod net_peer;
     mod legacy_upgrade;

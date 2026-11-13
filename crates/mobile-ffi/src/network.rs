@@ -213,12 +213,12 @@ pub(crate) const BUDGET_EXHAUSTED: &str = "round budget exhausted: the rest foll
 /// The recipients the relay refused to store an envelope for in one round,
 /// and with which codes.
 #[derive(Debug, Default)]
-struct Refusals {
+struct RelayRefusals {
     recipients: Vec<[u8; 32]>,
     codes: Vec<ErrorCode>,
 }
 
-impl Refusals {
+impl RelayRefusals {
     fn note(&mut self, recipient: [u8; 32], code: ErrorCode) {
         if !self.recipients.contains(&recipient) {
             self.recipients.push(recipient);
@@ -409,11 +409,11 @@ impl NetworkMessenger {
     /// lists the failures.
     pub fn sync(&self) -> SyncReport {
         let mut report = SyncReport::default();
-        let mut refusals = Refusals::default();
-        if let Err(e) = self.sync_round(&mut report, &mut refusals) {
+        let mut relay_refusals = RelayRefusals::default();
+        if let Err(e) = self.sync_round(&mut report, &mut relay_refusals) {
             report.errors.push(e.to_string());
         }
-        report.errors.extend(refusals.line());
+        report.errors.extend(relay_refusals.line());
         report
     }
 }
@@ -511,7 +511,7 @@ impl NetworkMessenger {
         Ok(out)
     }
 
-    fn sync_round(&self, report: &mut SyncReport, refusals: &mut Refusals) -> Result<(), CoreError> {
+    fn sync_round(&self, report: &mut SyncReport, relay_refusals: &mut RelayRefusals) -> Result<(), CoreError> {
         let budget = Budget::new(self.limits().round_budget);
         // Taken, so that a round that fails anywhere starts the next one
         // from the beginning; set again below only by a round cut short.
@@ -524,7 +524,7 @@ impl NetworkMessenger {
         }
         let mut conn = self.connect()?;
         self.put_bundle(&mut conn)?;
-        self.publish_pending(&mut conn, &sessions, &budget, refusals, report)?;
+        self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
 
         let our = self.core.our_identity_pk()?;
         // Handshakes before messages, so a session exists for what follows:
@@ -560,7 +560,7 @@ impl NetworkMessenger {
         }
         // Receipts produced above, and the first messages of new sessions.
         let sessions = self.sessions()?;
-        self.publish_pending(&mut conn, &sessions, &budget, refusals, report)?;
+        self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
         if budget.cut.get() {
             // What this round processed is committed and deleted; the rest
             // stays on the relay (or in the outbox) for the next round.
@@ -742,7 +742,7 @@ impl NetworkMessenger {
         conn: &mut Connection,
         peer: [u8; 32],
         envelope: Vec<u8>,
-        refusals: &mut Refusals,
+        relay_refusals: &mut RelayRefusals,
     ) -> Result<bool, CoreError> {
         match conn.send(peer, envelope) {
             Ok(_) => {
@@ -753,7 +753,7 @@ impl NetworkMessenger {
                 let mut refused = self.refused.lock().expect("refused");
                 let times = refused.get(&peer).map_or(0, |(_, n)| *n);
                 refused.insert(peer, (Instant::now(), times.saturating_add(1)));
-                refusals.note(peer, code);
+                relay_refusals.note(peer, code);
                 Ok(false)
             }
             Err(e) => Err(network(e)),
@@ -769,7 +769,7 @@ impl NetworkMessenger {
         conn: &mut Connection,
         sessions: &[([u8; 32], u64)],
         budget: &Budget,
-        refusals: &mut Refusals,
+        relay_refusals: &mut RelayRefusals,
         report: &mut SyncReport,
     ) -> Result<(), CoreError> {
         let our = self.core.our_identity_pk()?;
@@ -778,7 +778,7 @@ impl NetworkMessenger {
             if !budget.left() {
                 return Ok(());
             }
-            if refusals.recipients.contains(peer) || self.held(peer) {
+            if relay_refusals.recipients.contains(peer) || self.held(peer) {
                 continue;
             }
             if !self.confirmed(*handle)? {
@@ -789,7 +789,7 @@ impl NetworkMessenger {
                             sender: our,
                             handshake: hs,
                         };
-                        if !self.send_to(conn, *peer, env.encode(), refusals)? {
+                        if !self.send_to(conn, *peer, env.encode(), relay_refusals)? {
                             continue;
                         }
                         self.mark_sent(key);
@@ -809,7 +809,7 @@ impl NetworkMessenger {
                     sender: our,
                     wire: m.wire,
                 };
-                if !self.send_to(conn, *peer, env.encode(), refusals)? {
+                if !self.send_to(conn, *peer, env.encode(), relay_refusals)? {
                     break;
                 }
                 self.mark_sent(id);

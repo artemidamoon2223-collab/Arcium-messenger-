@@ -590,31 +590,31 @@ fn unpack_initiator_handshake(bytes: &[u8]) -> Result<InitiatorHandshakeV1, Core
 // ── HANDSHAKE_REFUSAL_V1 ──────────────────────────────────────────────────────
 //
 // A responder that cannot answer an initiator's handshake (the prekeys it names
-// were consumed or rotated) tells the initiator so, signed with its identity
-// signing key. The initiator checks it against the pinned contact card and
-// against the handshake it actually sent, and only then gives up its own
-// unconfirmed session (docs/NET-MESSAGING.md, section 6).
+// were consumed or rotated) tells the initiator so. The initiator checks it
+// against the pinned contact and against the handshake it actually sent, and
+// only then gives up its own unconfirmed session (docs/NET-MESSAGING.md,
+// section 6).
 //
 // ```text
-//   0  32  refuser_identity_dh_pk
-//  32  32  refuser_signing_pk
-//  64  32  initiator_identity_dh_pk
-//  96  32  sha256(INITIATOR_HANDSHAKE_V1 bytes)
-// 128   1  reason   1 = one-time prekey unavailable, 2 = one-time prekey
-//                   required, 3 = stale signed prekey
-// 129  64  signature  Ed25519 over REFUSAL_DOMAIN || bytes 0..129
+//  0  32  refuser_identity_dh_pk
+// 32  32  initiator_identity_dh_pk
+// 64  32  sha256(INITIATOR_HANDSHAKE_V1 bytes)
+// 96   1  reason   1 = one-time prekey unavailable, 2 = one-time prekey
+//                  required, 3 = stale signed prekey
+// 97  32  tag      core_crypto::refusal_mac over bytes 0..97
 // ```
 //
-// The domain differs from the signed-prekey object's (`arcium/x3dh-spk/v1`)
-// from its eighth byte on, so no byte string is both a refusal and a signed
-// prekey object: one signature can never be read as the other.
+// The tag is a MAC keyed by a static DH of the two identity keys, not a
+// signature: only the two parties can make or check it, and the initiator
+// could have made it alone. So a refusal, which anyone can elicit with a forged
+// handshake naming a contact, is no proof to a third party that the refuser
+// has that contact pinned (review finding F-144-1).
 
-/// Domain of the refusal signature.
-const REFUSAL_DOMAIN: &[u8] = b"arcium/handshake-refusal/v1";
-/// The signed fields of `HANDSHAKE_REFUSAL_V1`, without the domain.
-const REFUSAL_FIELDS_LEN: usize = 4 * 32 + 1;
-/// `HANDSHAKE_REFUSAL_V1`: the signed fields, then the 64-byte signature.
-pub(crate) const HANDSHAKE_REFUSAL_V1_LEN: usize = REFUSAL_FIELDS_LEN + 64;
+/// The authenticated fields of `HANDSHAKE_REFUSAL_V1`.
+const REFUSAL_FIELDS_LEN: usize = 3 * 32 + 1;
+/// `HANDSHAKE_REFUSAL_V1`: the fields, then the tag.
+pub(crate) const HANDSHAKE_REFUSAL_V1_LEN: usize =
+    REFUSAL_FIELDS_LEN + core_crypto::refusal_mac::REFUSAL_TAG_LEN;
 
 /// Why a handshake could not be answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -646,58 +646,56 @@ impl RefusalReason {
     }
 }
 
-/// A verified `HANDSHAKE_REFUSAL_V1`.
+/// A `HANDSHAKE_REFUSAL_V1` whose tag checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HandshakeRefusal {
     pub refuser_dh_pk: [u8; 32],
-    pub refuser_signing_pk: [u8; 32],
     pub initiator_dh_pk: [u8; 32],
     pub handshake_hash: [u8; 32],
     pub reason: RefusalReason,
-}
-
-fn refusal_signed_object(fields: &[u8]) -> Vec<u8> {
-    [REFUSAL_DOMAIN, fields].concat()
 }
 
 impl HandshakeRefusal {
     fn fields(&self) -> [u8; REFUSAL_FIELDS_LEN] {
         let mut out = [0u8; REFUSAL_FIELDS_LEN];
         out[0..32].copy_from_slice(&self.refuser_dh_pk);
-        out[32..64].copy_from_slice(&self.refuser_signing_pk);
-        out[64..96].copy_from_slice(&self.initiator_dh_pk);
-        out[96..128].copy_from_slice(&self.handshake_hash);
-        out[128] = self.reason as u8;
+        out[32..64].copy_from_slice(&self.initiator_dh_pk);
+        out[64..96].copy_from_slice(&self.handshake_hash);
+        out[96] = self.reason as u8;
         out
     }
 
-    /// Parses `bytes` and verifies its signature with `signing_pk`, which
-    /// must also be the refuser key the refusal names. `None` for anything
-    /// else: a wrong length, an unknown reason, another signer, a bad or
-    /// non-canonical signature. Says nothing about whose handshake it is;
-    /// the caller compares the other fields.
-    pub(crate) fn open(bytes: &[u8], signing_pk: &[u8; 32]) -> Option<Self> {
+    /// Parses `bytes` as a refusal by `refuser_dh_pk` of a handshake from
+    /// the holder of `own_sk`, and checks its tag. `None` for anything else:
+    /// a wrong length, an unknown reason, another refuser or initiator named
+    /// in the fields, a tag that does not check (made by anyone but the two
+    /// parties, or for other fields), a low-order refuser key. Says nothing
+    /// about which handshake it names; the caller compares the hash.
+    fn open(bytes: &[u8], own_sk: &StaticSecret, refuser_dh_pk: &[u8; 32]) -> Option<Self> {
         if bytes.len() != HANDSHAKE_REFUSAL_V1_LEN {
             return None;
         }
-        let (fields, sig) = bytes.split_at(REFUSAL_FIELDS_LEN);
+        let (fields, tag) = bytes.split_at(REFUSAL_FIELDS_LEN);
         let key = |r: std::ops::Range<usize>| -> [u8; 32] { fields[r].try_into().expect("32 bytes") };
         let refusal = Self {
             refuser_dh_pk: key(0..32),
-            refuser_signing_pk: key(32..64),
-            initiator_dh_pk: key(64..96),
-            handshake_hash: key(96..128),
-            reason: RefusalReason::from_byte(fields[128])?,
+            initiator_dh_pk: key(32..64),
+            handshake_hash: key(64..96),
+            reason: RefusalReason::from_byte(fields[96])?,
         };
-        if refusal.refuser_signing_pk != *signing_pk {
+        let own_pk = PublicKey::from(own_sk).to_bytes();
+        if refusal.refuser_dh_pk != *refuser_dh_pk || refusal.initiator_dh_pk != own_pk {
             return None;
         }
-        let verifying = VerifyingKey::from_bytes(signing_pk).ok()?;
-        let signature = Signature::from_slice(sig).ok()?;
-        verifying
-            .verify_strict(&refusal_signed_object(fields), &signature)
-            .ok()?;
-        Some(refusal)
+        core_crypto::refusal_mac::verify_refusal_tag(
+            own_sk,
+            refuser_dh_pk,
+            refuser_dh_pk,
+            &own_pk,
+            fields,
+            tag,
+        )
+        .then_some(refusal)
     }
 }
 
@@ -1145,25 +1143,45 @@ impl ArciumCore {
             .map_err(|e| CoreError::messaging(session_id, e))
     }
 
-    /// A signed `HANDSHAKE_REFUSAL_V1` from this device for `handshake`,
+    /// A `HANDSHAKE_REFUSAL_V1` from this device for `handshake`,
     /// which `initiator_dh_pk` sent and this device could not answer.
-    pub(crate) fn sign_handshake_refusal(
+    /// `None` if `initiator_dh_pk` is of low order: no tag can be made for
+    /// it, and no refusal is sent.
+    pub(crate) fn make_handshake_refusal(
         &self,
         initiator_dh_pk: [u8; 32],
         handshake: &[u8],
         reason: RefusalReason,
-    ) -> Result<Vec<u8>, CoreError> {
+    ) -> Result<Option<Vec<u8>>, CoreError> {
         let identity = self.require_identity()?;
+        let refuser_dh_pk = PublicKey::from(&identity.dh_key).to_bytes();
         let refusal = HandshakeRefusal {
-            refuser_dh_pk: PublicKey::from(&identity.dh_key).to_bytes(),
-            refuser_signing_pk: identity.signing_key.verifying_key().to_bytes(),
+            refuser_dh_pk,
             initiator_dh_pk,
             handshake_hash: handshake_hash(handshake),
             reason,
         };
         let fields = refusal.fields();
-        let signature = identity.signing_key.sign(&refusal_signed_object(&fields));
-        Ok([&fields[..], &signature.to_bytes()[..]].concat())
+        let tag = core_crypto::refusal_mac::refusal_tag(
+            &identity.dh_key,
+            &initiator_dh_pk,
+            &refuser_dh_pk,
+            &initiator_dh_pk,
+            &fields,
+        );
+        Ok(tag.map(|tag| [&fields[..], &tag[..]].concat()))
+    }
+
+    /// The refusal `bytes` if it is a refusal by `refuser_dh_pk` of a
+    /// handshake from this device whose tag checks; see
+    /// [`HandshakeRefusal::open`].
+    pub(crate) fn open_handshake_refusal(
+        &self,
+        bytes: &[u8],
+        refuser_dh_pk: &[u8; 32],
+    ) -> Result<Option<HandshakeRefusal>, CoreError> {
+        let identity = self.require_identity()?;
+        Ok(HandshakeRefusal::open(bytes, &identity.dh_key, refuser_dh_pk))
     }
 
     fn our_identity_pk(&self) -> Result<[u8; 32], CoreError> {

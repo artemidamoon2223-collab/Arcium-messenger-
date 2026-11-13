@@ -2,19 +2,17 @@
 //!
 //! The recipient's bundle carries one one-time prekey, so when two contacts
 //! write to it for the first time while it is away, both handshakes name the
-//! same prekey and only the first can be answered. Before signed refusals the
-//! second initiator never learned that: its text stayed "sent" for good, and
-//! with the recipient's identity key the greater, a session conflict between
-//! the two could not be resolved by either side. Now the recipient signs a
-//! refusal (`HANDSHAKE_REFUSAL_V1`), and the initiator gives up its dead
-//! session and starts a new one (docs/NET-MESSAGING.md, section 6).
+//! same prekey and only the first can be answered. Before refusals the second
+//! initiator never learned that: its text stayed "sent" for good, and with the
+//! recipient's identity key the greater, a session conflict between the two
+//! could not be resolved by either side. Now the recipient sends a refusal
+//! (`HANDSHAKE_REFUSAL_V1`, authenticated by a MAC only the two parties can
+//! make or check), and the initiator gives up its dead session and starts a
+//! new one (docs/NET-MESSAGING.md, section 6).
 
 use std::time::Duration;
 
-use ed25519_dalek::Signer;
-
 use super::net_harness::*;
-use super::*;
 use crate::network::chat::{ChatEntryState as S, ChatSessionState};
 use crate::network::wire::Envelope;
 
@@ -294,17 +292,18 @@ fn a_retransmitted_handshake_is_refused_once() {
     relay.stop();
 }
 
-/// `fields` signed with `d`'s identity key under `domain`.
-fn signed(d: &Device, domain: &[u8], fields: &[u8]) -> Vec<u8> {
-    let identity = d.core.load_identity().unwrap().unwrap();
-    let sig = identity.signing_key.sign(&[domain, fields].concat());
-    [fields, &sig.to_bytes()[..]].concat()
+/// The refusal fields of `refuser` for `initiator`'s `handshake`.
+fn fields(refuser: &Device, initiator: &Device, handshake: &[u8], reason: u8) -> Vec<u8> {
+    [&key(refuser)[..], &key(initiator)[..], &crate::handshake_hash(handshake)[..], &[reason]].concat()
 }
 
-/// The refusal fields `refuser` would sign for `initiator`'s `handshake`.
-fn fields(refuser: &Device, initiator: &Device, handshake: &[u8], reason: u8) -> Vec<u8> {
-    let card = refuser.core.contact_card().unwrap();
-    [&card[1..65], &initiator.pk[..], &crate::handshake_hash(handshake)[..], &[reason]].concat()
+/// `fields` with the tag `holder` computes, with `other` as the other party,
+/// for a refusal by `refuser_pk` of a handshake from `initiator_pk`.
+fn tagged(holder: &Device, other: &Device, refuser_pk: [u8; 32], initiator_pk: [u8; 32], fields: &[u8]) -> Vec<u8> {
+    let identity = holder.core.load_identity().unwrap().unwrap();
+    let tag = core_crypto::refusal_mac::refusal_tag(&identity.dh_key, &key(other), &refuser_pk, &initiator_pk, fields)
+        .expect("not a low-order key");
+    [fields, &tag[..]].concat()
 }
 
 fn refusal_env(sender: &Device, refusal: Vec<u8>) -> Vec<u8> {
@@ -338,30 +337,35 @@ fn only_a_genuine_refusal_of_the_current_handshake_restarts_the_session() {
     let hs = handshake_of(carol, &bob).unwrap();
     let valid = bob
         .core
-        .sign_handshake_refusal(key(carol), &hs, crate::RefusalReason::OneTimePrekeyUnavailable)
+        .make_handshake_refusal(key(carol), &hs, crate::RefusalReason::OneTimePrekeyUnavailable)
+        .unwrap()
         .unwrap();
 
     let mut forged = valid.clone();
     forged[crate::HANDSHAKE_REFUSAL_V1_LEN - 1] ^= 1;
-    let bundle = bob.core.export_prekey_bundle().unwrap();
+    let mut other_fields = valid.clone();
+    other_fields[96] = 2;
     let cases: Vec<(&str, Vec<u8>)> = vec![
-        ("forged signature", refusal_env(&bob, forged)),
+        ("forged tag", refusal_env(&bob, forged)),
+        ("a field changed under Bob's tag", refusal_env(&bob, other_fields)),
         (
             "from a stranger",
             refusal_env(
                 &dave,
                 dave.core
-                    .sign_handshake_refusal(key(carol), &hs, crate::RefusalReason::OneTimePrekeyUnavailable)
+                    .make_handshake_refusal(key(carol), &hs, crate::RefusalReason::OneTimePrekeyUnavailable)
+                    .unwrap()
                     .unwrap(),
             ),
         ),
         (
-            "signed by another contact, sent as Bob",
+            "made by another contact, sent as Bob",
             refusal_env(
                 &bob,
                 alice
                     .core
-                    .sign_handshake_refusal(key(carol), &hs, crate::RefusalReason::OneTimePrekeyUnavailable)
+                    .make_handshake_refusal(key(carol), &hs, crate::RefusalReason::OneTimePrekeyUnavailable)
+                    .unwrap()
                     .unwrap(),
             ),
         ),
@@ -371,7 +375,8 @@ fn only_a_genuine_refusal_of_the_current_handshake_restarts_the_session() {
                 alice,
                 alice
                     .core
-                    .sign_handshake_refusal(key(carol), &hs, crate::RefusalReason::OneTimePrekeyUnavailable)
+                    .make_handshake_refusal(key(carol), &hs, crate::RefusalReason::OneTimePrekeyUnavailable)
+                    .unwrap()
                     .unwrap(),
             ),
         ),
@@ -380,7 +385,8 @@ fn only_a_genuine_refusal_of_the_current_handshake_restarts_the_session() {
             refusal_env(
                 &bob,
                 bob.core
-                    .sign_handshake_refusal(key(carol), &[0u8; 84], crate::RefusalReason::OneTimePrekeyUnavailable)
+                    .make_handshake_refusal(key(carol), &[0u8; 84], crate::RefusalReason::OneTimePrekeyUnavailable)
+                    .unwrap()
                     .unwrap(),
             ),
         ),
@@ -389,15 +395,22 @@ fn only_a_genuine_refusal_of_the_current_handshake_restarts_the_session() {
             refusal_env(
                 &bob,
                 bob.core
-                    .sign_handshake_refusal(key(alice), &hs, crate::RefusalReason::OneTimePrekeyUnavailable)
+                    .make_handshake_refusal(key(alice), &hs, crate::RefusalReason::OneTimePrekeyUnavailable)
+                    .unwrap()
                     .unwrap(),
             ),
         ),
-        ("unknown reason", refusal_env(&bob, signed(&bob, crate::REFUSAL_DOMAIN, &fields(&bob, carol, &hs, 9)))),
-        ("no domain", refusal_env(&bob, signed(&bob, b"", &fields(&bob, carol, &hs, 1)))),
         (
-            "the signed-prekey signature",
-            refusal_env(&bob, [&fields(&bob, carol, &hs, 1)[..], &bundle[100..164]].concat()),
+            "unknown reason, with a valid tag",
+            refusal_env(&bob, tagged(&bob, carol, key(&bob), key(carol), &fields(&bob, carol, &hs, 9))),
+        ),
+        (
+            "tag keyed for the roles swapped",
+            refusal_env(&bob, tagged(&bob, carol, key(carol), key(&bob), &fields(&bob, carol, &hs, 1))),
+        ),
+        (
+            "tag made by a stranger for Bob's fields",
+            refusal_env(&bob, tagged(&dave, carol, key(&bob), key(carol), &fields(&bob, carol, &hs, 1))),
         ),
         (
             "wrong length",
@@ -429,7 +442,8 @@ fn only_a_genuine_refusal_of_the_current_handshake_restarts_the_session() {
     assert_eq!(session(carol, &bob), ChatSessionState::Established);
     let late = bob
         .core
-        .sign_handshake_refusal(key(carol), &restarted, crate::RefusalReason::OneTimePrekeyUnavailable)
+        .make_handshake_refusal(key(carol), &restarted, crate::RefusalReason::OneTimePrekeyUnavailable)
+        .unwrap()
         .unwrap();
     inject(&addr, carol, refusal_env(&bob, late));
     assert!(carol.sync().dropped >= 1);
@@ -437,22 +451,151 @@ fn only_a_genuine_refusal_of_the_current_handshake_restarts_the_session() {
     relay.stop();
 }
 
-/// Domain separation, the other way: a refusal signature does not stand in
-/// for the signed-prekey signature of a bundle.
+/// F-144-1 of the 2026-11-12 review. Anyone who knows Bob's and Carol's
+/// public keys can store a forged handshake "from Carol" in Bob's mailbox,
+/// and read Bob's refusal from Carol's. That refusal must not prove to the
+/// attacker, or to anyone the attacker shows it to, that Bob has Carol
+/// pinned. With a signature it did: it verified under Bob's public key. Now:
+/// Carol alone makes the very same bytes, and a third party cannot check
+/// them at all.
 #[test]
-fn a_refusal_signature_is_not_a_signed_prekey_signature() {
+fn an_elicited_refusal_proves_nothing_to_a_third_party() {
     let relay = start_relay();
     let addr = relay.addr().to_string();
-    let (bob, writers) = offline_recipient(&addr, 1, true);
-    let alice = &writers[0];
-    let mut bundle = bob.core.export_prekey_bundle().unwrap();
-    // A refusal whose signed bytes are, after the domain, exactly the bytes
-    // the signed-prekey signature covers, so only the domain tells them apart.
-    let spk_object = &bundle[4..100];
-    let refusal_sig = bob.core.load_identity().unwrap().unwrap().signing_key.sign(&[crate::REFUSAL_DOMAIN, spk_object].concat());
-    bundle[100..164].copy_from_slice(&refusal_sig.to_bytes());
-    let err = alice.core.establish_session_initiator(77, bundle).unwrap_err();
-    assert!(matches!(err, CoreError::BadSignedPrekeySignature), "{err:?}");
+    let (bob, carol, mallory) = (Device::new(&addr, 2), Device::new(&addr, 3), Device::new(&addr, 4));
+    bob.knows(&carol);
+    bob.net.publish_prekeys().unwrap();
+    // What the attacker has: Bob's public bundle and Carol's public key.
+    let mut conn = relay::client::Connection::connect(&addr, Duration::from_secs(2)).unwrap();
+    let bundle = conn.get_bundle(key(&bob)).unwrap().unwrap();
+    let mut forged = vec![0u8; crate::INITIATOR_HANDSHAKE_V1_LEN];
+    forged[0..3].copy_from_slice(&[1, 1, 1]); // version, suite, a one-time prekey used
+    forged[4..36].copy_from_slice(&carol.pk);
+    forged[36..68].copy_from_slice(&[9u8; 32]);
+    forged[68..76].copy_from_slice(&core_crypto::spk_id::spk_id(&bundle[68..100].try_into().unwrap()));
+    forged[76..84].copy_from_slice(&0xDEAD_BEEF_u64.to_be_bytes());
+    inject(&addr, &bob, Envelope::Handshake { sender: key(&carol), handshake: forged.clone() }.encode());
+    bob.sync();
+    let refusals: Vec<Vec<u8>> = relay
+        .stored(&key(&carol))
+        .into_iter()
+        .filter_map(|(_, e)| match Envelope::decode(&e) {
+            Some(Envelope::Refusal { refusal, .. }) => Some(refusal),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refusals.len(), 1, "Bob refused the forged handshake");
+    let elicited = &refusals[0];
+
+    // Carol, with nobody's help, makes a byte-identical refusal.
+    let alone = tagged(&carol, &bob, key(&bob), key(&carol), &fields(&bob, &carol, &forged, 1));
+    assert_eq!(&alone, elicited, "the initiator can make the same bytes alone");
+    // A third party holding its own identity cannot check the tag.
+    let mallory_sk = mallory.core.load_identity().unwrap().unwrap().dh_key.clone();
+    let (fields_part, tag) = elicited.split_at(elicited.len() - 32);
+    for other in [key(&bob), key(&carol)] {
+        assert!(!core_crypto::refusal_mac::verify_refusal_tag(
+            &mallory_sk,
+            &other,
+            &key(&bob),
+            &key(&carol),
+            fields_part,
+            tag,
+        ));
+    }
+    // The object carries no signature and no signing key of Bob's.
+    let bob_signing_pk = &bob.core.contact_card().unwrap()[33..65];
+    assert!(!elicited.windows(32).any(|w| w == bob_signing_pk));
+    relay.stop();
+}
+
+/// F-144-2: a refusal the relay refuses to store (the initiator's mailbox
+/// is full) does not end Bob's round, stays queued and is sent once there is
+/// room; a refusal whose SEND breaks the connection is not lost either.
+#[test]
+fn a_refusal_the_relay_cannot_store_now_is_sent_later() {
+    let relay = relay::server::serve(
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        relay::server::RelayConfig {
+            max_mailbox: 8,
+            canary: Some(CANARY.to_vec()),
+            ..relay::server::RelayConfig::default()
+        },
+    )
+    .unwrap();
+    let addr = relay.addr().to_string();
+    let (bob, writers) = offline_recipient(&addr, 2, true);
+    let carol = writers
+        .iter()
+        .find(|w| session(&bob, w) != ChatSessionState::Established)
+        .unwrap();
+    let alice = writers.iter().find(|w| !std::ptr::eq(*w, carol)).unwrap();
+    let dead = handshake_of(carol, &bob).unwrap();
+    // Bob refused Carol's first message, which sends no refusal; her next
+    // retransmission of the handshake is what Bob refuses and answers.
+    assert_eq!(refusals_for(&relay, carol), 0);
+    carol.net.sync_conversations();
+
+    // Carol's mailbox is full while Bob's round wants to refuse her.
+    let free = 8 - relay.stored(&key(carol)).len();
+    for i in 0..free {
+        inject(&addr, carol, vec![i as u8; 10]);
+    }
+    bob.net.set_refusal_interval(Duration::ZERO);
+    let r = bob.net.sync();
+    assert!(r.errors.iter().all(|e| !e.starts_with("network:")), "{:?}", r.errors);
+    assert!(r.errors.iter().any(|e| e.starts_with("relay refused")), "{:?}", r.errors);
+    assert_eq!(refusals_for(&relay, carol), 0);
+    // The round went on for Alice: her first text is in Bob's history.
+    assert!(received(&bob, alice).iter().any(|t| t.starts_with("first")));
+
+    // Carol's mailbox is emptied without Carol sending anything (so no new
+    // handshake reaches Bob, whose refused one was deleted): the refusal
+    // Bob's next round sends can only be the one kept in his queue.
+    let mut conn = relay::client::Connection::connect(&addr, Duration::from_secs(2)).unwrap();
+    let stored: Vec<u64> = relay.stored(&key(carol)).into_iter().map(|(seq, _)| seq).collect();
+    conn.delete(key(carol), stored).unwrap();
+    let r = bob.net.sync();
+    assert!(r.errors.iter().all(|e| !e.starts_with("relay refused")), "{:?}", r.errors);
+    assert_eq!(refusals_for(&relay, carol), 1, "the kept refusal went out");
+    carol.net.sync_conversations();
+    assert_ne!(handshake_of(carol, &bob), Some(dead), "Carol gave up the dead session");
+    until_established(&bob, &writers, 12);
+    relay.stop();
+}
+
+/// F-144-2, the other half: a connection that breaks on the SEND of a
+/// refusal ends Bob's round, as any network error does, but the refusal stays
+/// queued and goes out in the next round. (Before, it was taken off the queue
+/// first and lost.)
+#[test]
+fn a_refusal_lost_with_the_connection_is_sent_in_the_next_round() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (bob, writers) = offline_recipient(&addr, 2, true);
+    let carol = writers
+        .iter()
+        .find(|w| session(&bob, w) != ChatSessionState::Established)
+        .unwrap();
+    let dead = handshake_of(carol, &bob).unwrap();
+    assert_eq!(refusals_for(&relay, carol), 0);
+    carol.net.sync_conversations();
+
+    // Bob's next rounds go through a proxy that breaks the next SEND before
+    // it reaches the relay: the refusal is the only thing Bob has to send.
+    let proxy = Proxy::start(&addr);
+    let net = crate::network::NetworkMessenger::new(bob.core.clone(), proxy.addr.clone(), 0, 2000);
+    proxy.arm(3, Cut::Request);
+    let r = net.sync();
+    assert!(proxy.fired(), "the refusal's SEND was cut");
+    assert!(r.errors.iter().any(|e| e.starts_with("network:")), "{:?}", r.errors);
+    assert_eq!(refusals_for(&relay, carol), 0);
+
+    let r = net.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(refusals_for(&relay, carol), 1, "the queued refusal went out");
+    carol.net.sync_conversations();
+    assert_ne!(handshake_of(carol, &bob), Some(dead), "Carol gave up the dead session");
     relay.stop();
 }
 

@@ -31,7 +31,7 @@ use crate::contacts::{pinned, Card};
 use core_protocol::messaging::{MessageId, Received};
 
 use crate::{
-    handshake_hash, unpack_prekey_bundle, ArciumCore, CoreError, HandshakeRefusal, PlaintextBytes,
+    handshake_hash, unpack_prekey_bundle, ArciumCore, CoreError, PlaintextBytes,
     RefusalReason, SendResult, PREKEYS_KEY,
 };
 use wire::{client_id, Envelope, Payload};
@@ -123,7 +123,7 @@ pub struct NetworkMessenger {
 
 /// Refusals this process owes or sent (docs/NET-MESSAGING.md, section 6).
 struct Refusals {
-    /// Signed refusals not yet accepted by the relay: recipient, envelope
+    /// Refusals not yet stored by the relay: recipient, envelope
     /// body, refused handshake's hash.
     queued: Vec<([u8; 32], Vec<u8>, [u8; 32])>,
     /// Hashes of the handshakes a refusal was sent for: one each.
@@ -602,7 +602,7 @@ impl NetworkMessenger {
                 messages: messages.reached,
             };
         }
-        self.send_refusals(&mut conn, report)?;
+        self.send_refusals(&mut conn, relay_refusals, report)?;
         // Receipts produced above, and the first messages of new sessions.
         let sessions = self.sessions()?;
         self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
@@ -1007,7 +1007,7 @@ impl NetworkMessenger {
         self.refusals.lock().expect("refusals").interval = interval;
     }
 
-    /// Signs a refusal of `handshake` for `peer` and queues it, unless one
+    /// Makes a refusal of `handshake` for `peer` and queues it, unless one
     /// was sent for this handshake already in this process or to this peer
     /// less than [`REFUSAL_INTERVAL`] ago.
     fn queue_refusal(
@@ -1030,7 +1030,9 @@ impl NetworkMessenger {
                 return Ok(());
             }
         }
-        let body = self.core.sign_handshake_refusal(peer, handshake, reason)?;
+        let Some(body) = self.core.make_handshake_refusal(peer, handshake, reason)? else {
+            return Ok(());
+        };
         self.refusals
             .lock()
             .expect("refusals")
@@ -1039,32 +1041,62 @@ impl NetworkMessenger {
         Ok(())
     }
 
-    /// Sends the queued refusals. One the relay did not accept is not
-    /// retried: the initiator retransmits its handshake, which is refused
-    /// again.
-    fn send_refusals(&self, conn: &mut Connection, report: &mut SyncReport) -> Result<(), CoreError> {
+    /// Sends the queued refusals. A refusal stays queued, for the next round,
+    /// when the relay refuses to store it (the initiator's mailbox is full),
+    /// while the initiator waits after such a refusal (`held`), and when the
+    /// connection fails; it leaves the queue only once the relay stored it.
+    /// A relay refusal does not end the round (as in `publish_pending`); a
+    /// failed connection does, as every network error does, with nothing lost.
+    fn send_refusals(
+        &self,
+        conn: &mut Connection,
+        relay_refusals: &mut RelayRefusals,
+        report: &mut SyncReport,
+    ) -> Result<(), CoreError> {
         let queued = std::mem::take(&mut self.refusals.lock().expect("refusals").queued);
         if queued.is_empty() {
             return Ok(());
         }
         let our = self.core.our_identity_pk()?;
-        for (peer, refusal, hash) in queued {
+        let mut queued = queued.into_iter();
+        let mut keep = Vec::new();
+        let mut failed = None;
+        for (peer, refusal, hash) in queued.by_ref() {
+            if relay_refusals.recipients.contains(&peer) || self.held(&peer) {
+                keep.push((peer, refusal, hash));
+                continue;
+            }
             let env = Envelope::Refusal {
                 sender: our,
-                refusal,
+                refusal: refusal.clone(),
             };
-            conn.send(peer, env.encode()).map_err(network)?;
-            let mut r = self.refusals.lock().expect("refusals");
-            r.sent_for.insert(hash);
-            r.last_to.insert(peer, Instant::now());
-            report.published += 1;
+            match self.send_to(conn, peer, env.encode(), relay_refusals) {
+                Ok(true) => {
+                    let mut r = self.refusals.lock().expect("refusals");
+                    r.sent_for.insert(hash);
+                    r.last_to.insert(peer, Instant::now());
+                    report.published += 1;
+                }
+                Ok(false) => keep.push((peer, refusal, hash)),
+                Err(e) => {
+                    keep.push((peer, refusal, hash));
+                    failed = Some(e);
+                    break;
+                }
+            }
         }
-        Ok(())
+        keep.extend(queued);
+        // Ahead of anything queued meanwhile, in their order.
+        let mut r = self.refusals.lock().expect("refusals");
+        keep.append(&mut r.queued);
+        r.queued = keep;
+        drop(r);
+        failed.map_or(Ok(()), Err)
     }
 
     /// Acts on a refusal from the pinned contact `peer`. It counts only if
-    /// it is signed by the contact's pinned key, names the contact's and our
-    /// identity keys, and names the handshake of our own session with the
+    /// its tag checks for the contact's pinned identity key and ours, it
+    /// names those two keys, and it names the handshake of our own session with the
     /// contact, which nothing confirmed yet. Then that session can never
     /// be accepted: it is given up and a new one started. Anything else is
     /// dropped and changes nothing.
@@ -1075,10 +1107,14 @@ impl NetworkMessenger {
         refusal: &[u8],
         report: &mut SyncReport,
     ) -> Result<(), CoreError> {
-        let our = self.core.our_identity_pk()?;
         let handle = handle_of(peer);
-        let valid = match HandshakeRefusal::open(refusal, &card.signing_pk) {
-            Some(r) if r.refuser_dh_pk == *peer && r.refuser_dh_pk == card.dh_pk && r.initiator_dh_pk == our => {
+        let opened = if card.dh_pk == *peer {
+            self.core.open_handshake_refusal(refusal, peer)?
+        } else {
+            None
+        };
+        let valid = match opened {
+            Some(r) => {
                 self.core.has_session(handle)?
                     && !self.confirmed(handle)?
                     && self

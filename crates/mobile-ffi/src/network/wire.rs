@@ -7,7 +7,7 @@
 //! "ARN1"(4) kind(1) sender_identity_dh_pk(32) body
 //!   kind 1: body = INITIATOR_HANDSHAKE_V1 (84 bytes)
 //!   kind 2: body = header(40) || ciphertext   (the unchanged message format)
-//!   kind 3: body = HANDSHAKE_REFUSAL_V1 (193 bytes, signed by the sender)
+//!   kind 3: body = HANDSHAKE_REFUSAL_V1 (129 bytes, with a MAC only the sender and the recipient can make or check)
 //! ```
 //!
 //! `PAYLOAD_V1` is the plaintext inside a ratchet message, so the relay never

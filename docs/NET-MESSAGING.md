@@ -140,15 +140,20 @@ delivery.
 `ENVELOPE_V1` (what the relay stores):
 `"ARN1" || kind(1) || sender_x25519_pk(32) || body`, kind 1 = the unchanged
 84-byte `INITIATOR_HANDSHAKE_V1`, kind 2 = the unchanged
-`header(40) || ciphertext`, kind 3 = a 193-byte `HANDSHAKE_REFUSAL_V1`
+`header(40) || ciphertext`, kind 3 = a 129-byte `HANDSHAKE_REFUSAL_V1`
 (section 6). The sender field is unauthenticated and only picks the session; a
 message decrypts only under the session (keys and AD) that produced it, and a
-refusal counts only if it verifies against the sender's pinned card.
+refusal counts only if its tag checks for the sender's pinned identity key and
+ours.
 
 **What the relay and the network see:** the recipient's and sender's X25519
 identity keys, when each device connects, envelope sizes and timing, every
-published bundle, the handshake bytes, and that a refusal was sent (not why: the reason is
-inside the signed bytes, which the relay can read but not change). They do
+published bundle, the handshake bytes, and that a refusal was sent and its
+reason byte (inside the authenticated bytes, which the relay can read but not
+change). A refusal shows that its sender answered a handshake naming the
+recipient, so whoever reads the mailbox learns that the sender has the
+recipient as a contact; but the refusal is no proof of it to anyone else (see
+section 6). They do
 not see plaintext, identity
 or prekey secrets, ratchet state or checkpoints. There is no anonymity and no
 Tor: a network observer sees the same as the relay, and the relay can link
@@ -261,29 +266,40 @@ only the first can be accepted.
 
 - When the responder refuses a handshake from a pinned contact with no
   session holding it, with `OneTimePrekeyUnavailable`, `OneTimePrekeyRequired` or
-  `StaleSignedPrekey`, it sends `HANDSHAKE_REFUSAL_V1`, signed with its
-  identity Ed25519 key:
+  `StaleSignedPrekey`, it sends `HANDSHAKE_REFUSAL_V1`:
 
   ```text
-    0  32  refuser_identity_dh_pk
-   32  32  refuser_signing_pk
-   64  32  initiator_identity_dh_pk
-   96  32  sha256(INITIATOR_HANDSHAKE_V1 bytes)
-  128   1  reason   1 one-time prekey unavailable, 2 required, 3 stale signed prekey
-  129  64  Ed25519 signature over "arcium/handshake-refusal/v1" || bytes 0..129
+   0  32  refuser_identity_dh_pk
+  32  32  initiator_identity_dh_pk
+  64  32  sha256(INITIATOR_HANDSHAKE_V1 bytes)
+  96   1  reason   1 one-time prekey unavailable, 2 required, 3 stale signed prekey
+  97  32  tag
   ```
 
-  The domain differs from the signed-prekey object's (`arcium/x3dh-spk/v1`),
-  so neither signature can stand for the other. A refusal is sent at most
-  once per refused handshake and at most once per contact per 10 minutes, in
-  memory (a restart may send one more). A first message refused for its
-  prekeys sends none; the initiator's next retransmission of the handshake
-  is refused and answered.
-- The initiator acts on a refusal only if it verifies against the sender's
-  pinned signing key, names the pinned keys of the sender and our own
-  identity key, and names the handshake of our own session with the sender,
-  on which nothing was received yet. Anything else is dropped and changes
-  nothing (a forged, foreign, replayed or late refusal).
+  The tag (`core_crypto::refusal_mac`) is a MAC over bytes 0..97, keyed by
+  HKDF-SHA256 over the X25519 of the two identity keys, with info
+  `"arcium/handshake-refusal-mac/v1" || refuser_pk || initiator_pk`. Only the
+  two parties can make or check it, and the key for "A refuses B" differs from
+  the one for "B refuses A". It is a MAC and not a signature on purpose: a
+  handshake is not signed, so anyone who knows both keys can elicit a refusal
+  with a forged handshake naming a contact. The initiator could have made the
+  same bytes alone, so a refusal proves nothing to a third party about whom
+  the refuser has pinned. An all-zero DH output (a low-order key) gives no
+  tag and is never accepted.
+
+  A refusal is sent at most once per refused handshake and at most once per
+  contact per 10 minutes, in memory (a restart may send one more). A first
+  message refused for its prekeys sends none; the initiator's next
+  retransmission of the handshake is refused and answered. A refusal the relay
+  does not store (the initiator's mailbox is full), and one whose SEND loses
+  the connection, stays queued for the next round, within the same process;
+  the wait after a relay refusal is that of section 7. A relay refusal does
+  not end the round.
+- The initiator acts on a refusal only if its tag checks for the sender's
+  pinned identity key and ours, it names those two keys, and it names the
+  handshake of our own session with the sender, on which nothing was received
+  yet. Anything else is dropped and changes nothing (a forged, foreign,
+  replayed or late refusal).
 - Acting on it, the initiator gives its session up as
   `resolve_session_conflict` does: committed texts `NotDelivered`, then
   abandoned, then the session removed (S2-B2 section 6a). It ends a conflict
@@ -357,7 +373,13 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 - Refusal feedback beyond the refusal of section 6: a relay can withhold a
   refusal (the initiator then keeps retransmitting, as before refusals
   existed), and a refusal lost after the relay accepted it is sent again only
-  after 10 minutes, or after the responder restarts.
+  after 10 minutes, or after the responder restarts. A refusal queued but not
+  yet stored is lost if the responder's process ends.
+- Hiding whom a device knows from a reader of the mailboxes. A refusal of a
+  forged handshake shows such a reader that the refuser has the named
+  initiator as a contact (it proves it to nobody else); so does a message
+  kept rather than deleted (section 3). Closing this needs relay
+  authentication.
 - Automatic resending of texts a refusal or a conflict resolution marked
   `NotDelivered`.
 - One provisional handshake per contact. Whoever can put envelopes in the
@@ -480,6 +502,7 @@ entry per logical message, never written by the ratchet.
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |
 | conversation history, states, repeats, replays, forged bundle, conflict | `tests::chat` | runtime |
-| first contact to an offline recipient: 2, 3 and 5 contenders, both key orders, a conflict after a refusal; refusal limits; forged, foreign, mismatched, replayed and late refusals; domain separation both ways; process death at each restart step | `tests::first_contact` | runtime, local relay over TCP; process crash |
+| first contact to an offline recipient: 2, 3 and 5 contenders, both key orders, a conflict after a refusal; refusal limits; forged, foreign, mismatched, swapped-role, replayed and late refusals; an elicited refusal the initiator can make alone and a third party cannot check; a refusal the relay refuses or whose connection breaks, sent later; process death at each restart step | `tests::first_contact` | runtime, local relay over TCP; process crash |
+| refusal tag: both parties compute it, third parties cannot; bound to both keys, the roles and every field byte; low-order keys; byte-for-byte vector computed independently with Python `cryptography` | `core_crypto::refusal_mac` tests | unit; known answer |
 | history pages (sizes 1, 7, 200, new entries while paging), the open-entry record against a full scan (random steps, a history from before the record, a conflict), process death after its writes | `tests::history_paging` | runtime; process crash |
 | process death while sending from or receiving into the history | `tests::network_crash` (`chat_*` points) | process crash |

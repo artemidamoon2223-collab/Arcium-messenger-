@@ -68,6 +68,19 @@ fn crash_child() {
             let wire = std::fs::read(dir.join("wire")).unwrap();
             accepted(p.bob_receives(&wire).unwrap());
         }
+        "alice_receive" => {
+            let wire = std::fs::read(dir.join("wire")).unwrap();
+            accepted(p.alice_receives(&wire).unwrap());
+        }
+        // Bob's handshake beside Alice's own unconfirmed session.
+        "beside" => {
+            let h = ProvisionalHandshake {
+                peer_identity_pk: p.bob_pk,
+                handshake: b"hs1".to_vec(),
+            };
+            p.am.record_handshake_beside(&mut p.a, p.alice_pk, ALICE_HANDLE, &h)
+                .unwrap()
+        }
         "create" => {
             let pr = pair();
             let mut ns = new_session(42, pr.bob, SessionRole::Responder);
@@ -543,5 +556,86 @@ fn process_killed_around_a_legacy_retirement_leaves_it_whole_or_absent() {
             .unwrap();
         assert_eq!(p.bm.peer_of(&p.b, BOB_HANDLE).unwrap(), None);
         assert!(p.b.list_keys_with_prefix("session:").unwrap().is_empty());
+    }
+}
+
+/// A process death inside the recording of a handshake beside Alice's own
+/// session: before its commit nothing is recorded, after it exactly the
+/// handshake is; Alice's session record is the same either way. Repeating
+/// the call completes it or finds it complete.
+#[cfg(unix)]
+#[test]
+fn process_killed_around_recording_beside_leaves_it_whole_or_absent() {
+    for point in [
+        "beside_before_commit",
+        "beside_after_commit",
+        "after_return",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = fixture(dir.path());
+        let p = fx.peers();
+        let session = p.a.get(&session_storage_key(&p.bob_pk)).unwrap();
+        drop(p);
+        run_child(&fx, "beside", point);
+        let mut p = fx.peers();
+        let recorded = p.am.provisional_handshake(&p.a, ALICE_HANDLE).unwrap();
+        if point == "beside_before_commit" {
+            assert_eq!(recorded, None, "{point}");
+        } else {
+            assert_eq!(recorded.unwrap().handshake, b"hs1", "{point}");
+        }
+        assert_eq!(p.a.get(&session_storage_key(&p.bob_pk)).unwrap(), session, "{point}");
+        let h = ProvisionalHandshake {
+            peer_identity_pk: p.bob_pk,
+            handshake: b"hs1".to_vec(),
+        };
+        p.am.record_handshake_beside(&mut p.a, p.alice_pk, ALICE_HANDLE, &h)
+            .unwrap();
+        assert_eq!(
+            p.am.provisional_handshake(&p.a, ALICE_HANDLE).unwrap(),
+            Some(h),
+            "{point}"
+        );
+    }
+}
+
+/// A process death inside the receive that confirms Alice's session while
+/// a handshake is recorded beside it: before the commit the session, the
+/// record and the inbox are as they were; after it the message is committed
+/// and the record is gone, in the same transaction.
+#[cfg(unix)]
+#[test]
+fn process_killed_during_a_confirming_receive_deletes_the_record_beside_with_it_or_not_at_all() {
+    for point in ["before_commit", "after_commit", "after_return"] {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = fixture(dir.path());
+        let mut p = fx.peers();
+        let h = ProvisionalHandshake {
+            peer_identity_pk: p.bob_pk,
+            handshake: b"hs1".to_vec(),
+        };
+        p.am.record_handshake_beside(&mut p.a, p.alice_pk, ALICE_HANDLE, &h)
+            .unwrap();
+        let m = p.alice_sends(b"first");
+        accepted(p.bob_receives(&m.wire).unwrap());
+        let answer = p.bob_sends(b"answer").wire;
+        std::fs::write(dir.path().join("wire"), &answer).unwrap();
+        drop(p);
+        run_child(&fx, "alice_receive", point);
+        let mut p = fx.peers();
+        let recorded = p.am.provisional_handshake(&p.a, ALICE_HANDLE).unwrap();
+        let pending = p.am.pending_incoming(&p.a, ALICE_HANDLE).unwrap();
+        if point == "before_commit" {
+            assert_eq!(generation(&mut p.a, p.alice_pk, ALICE_HANDLE), 1);
+            assert_eq!(recorded, Some(h), "{point}");
+            assert!(pending.is_empty(), "{point}");
+            accepted(p.alice_receives(&answer).unwrap());
+        } else {
+            assert_eq!(generation(&mut p.a, p.alice_pk, ALICE_HANDLE), 2, "{point}");
+            assert_eq!(recorded, None, "{point}");
+            assert_eq!(*pending[0].plaintext, b"answer", "{point}");
+        }
+        assert_eq!(p.am.provisional_handshake(&p.a, ALICE_HANDLE).unwrap(), None);
+        assert!(p.am.has_received(&mut p.a, p.alice_pk, ALICE_HANDLE).unwrap());
     }
 }

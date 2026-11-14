@@ -1,7 +1,8 @@
 //! Deleting a contact (`NetworkMessenger::delete_contact`, option C of
 //! `docs/SESSION-RECOVERY-OPTIONS.md`) between independent devices over a
-//! real relay: the dead end a false conflict leads to (tracker R-13) and the
-//! way out of it, repeated and session-less deletes, and a text that had no
+//! real relay: the dead end a false conflict leads to (tracker R-13; since
+//! option A only through a replay) and the way out of it, repeated and
+//! session-less deletes, and a text that had no
 //! receipt when its contact was deleted.
 
 use super::net_harness::*;
@@ -35,6 +36,13 @@ fn meet(a: &Device, b: &Device) {
         .unwrap();
     b.net
         .add_named_contact(a.core.contact_card().unwrap(), "peer".into())
+        .unwrap();
+}
+
+/// `a` pins `b`'s card under a name.
+fn meet_one(a: &Device, b: &Device) {
+    a.net
+        .add_named_contact(b.core.contact_card().unwrap(), "peer".into())
         .unwrap();
 }
 
@@ -130,10 +138,16 @@ fn talking(addr: &str) -> (Device, Device) {
     (alice, bob)
 }
 
-/// R-13, reproduced and then left: a forged handshake "from" the contact
-/// raises a false conflict on the device that may resolve it; resolving it
-/// removes that device's session while the contact goes on to accept it.
-/// One side then waits for a handshake that never comes, the other holds an
+/// R-13, reproduced and then left. A forged handshake no longer raises a
+/// conflict (`tests::false_conflict`), so the dead end is reached here the
+/// one way left: a replay of the contact's genuine handshake and first
+/// message, captured from the unauthenticated relay before this device saw
+/// them, after the contact gave that session up without this device (it
+/// deleted and re-added this contact) and while the one-time prekey of
+/// this device that the handshake names is still unused. The replayed first
+/// message authenticates, so the conflict is raised; resolving it removes
+/// this device's session while the contact goes on to accept it. One side
+/// then waits for a handshake that never comes, the other holds an
 /// established session whose messages the first cannot read. Both delete
 /// each other and exchange cards again: the next texts start a new session
 /// and are delivered both ways.
@@ -148,12 +162,28 @@ fn deleting_each_other_ends_the_dead_end_of_a_false_conflict() {
         (&bob, &alice)
     };
     meet(g, s);
-    round(&[s]); // s's bundle reaches the relay.
+    round(&[g, s]); // Both bundles reach the relay.
+
+    // s starts a session while g is offline. Whoever reads g's mailbox on
+    // the relay captures s's handshake and first messages and deletes them.
+    // s then deletes g and adds g again: that session is gone, and g never
+    // saw it.
+    say(s, g, "s0", "never seen by g");
+    round(&[s]);
+    let captured = relay.stored(&key(g));
+    assert!(!captured.is_empty());
+    relay::client::Connection::connect(&addr, std::time::Duration::from_secs(2))
+        .unwrap()
+        .delete(key(g), captured.iter().map(|(seq, _)| *seq).collect())
+        .unwrap();
+    s.net.delete_contact(g.pk.clone()).unwrap();
+    meet_one(s, g);
+
     say(g, s, "g1", "lost in the dead end");
     round(&[g]); // g starts a session; s is offline.
     assert_eq!(session(g, s), ChatSessionState::AwaitingPeer);
 
-    // Anyone can store this "from s": its bytes are public.
+    // A forged handshake "from" s raises nothing: anyone can make one.
     let mut forged = vec![0u8; crate::INITIATOR_HANDSHAKE_V1_LEN];
     forged[4..36].copy_from_slice(&s.pk);
     inject(
@@ -165,6 +195,14 @@ fn deleting_each_other_ends_the_dead_end_of_a_false_conflict() {
         }
         .encode(),
     );
+    g.net.sync_conversations();
+    assert_eq!(session(g, s), ChatSessionState::AwaitingPeer);
+
+    // The replay does: s's old first message authenticates under s's old
+    // handshake, whose one-time prekey g still holds.
+    for (_, env) in captured {
+        inject(&addr, g, env);
+    }
     round(&[g]);
     assert_eq!(
         session(g, s),

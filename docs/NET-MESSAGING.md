@@ -253,7 +253,11 @@ message from the peer (its receipt of OPEN). The responder records it as
 provisional (a repeat changes nothing; a different handshake for that contact
 replaces it, since neither has authority) and creates the session when the
 first message authenticates under it. A handshake from a peer it already has
-a session with is dropped. No session is ever replaced automatically: not on
+a session with is dropped, with one exception: if that session is an
+unconfirmed start of this device's own, the handshake is recorded beside it
+(S2-B2 section 4c), under the same rules and with no more authority, and
+raises nothing by itself (section 10, "Conflict"). No session is ever
+replaced automatically: not on
 timeouts, not when a peer is offline, not on a new handshake. The one
 exception is a responder session an earlier build stored on receipt of a
 handshake and nothing has happened to since (S2-B2 section 4b): the network
@@ -275,7 +279,9 @@ only the first can be accepted.
 
 - When the responder refuses a handshake from a pinned contact with no
   session holding it, with `OneTimePrekeyUnavailable`, `OneTimePrekeyRequired` or
-  `StaleSignedPrekey`, it sends `HANDSHAKE_REFUSAL_V1`:
+  `StaleSignedPrekey`, it sends `HANDSHAKE_REFUSAL_V1`. The same holds for
+  a handshake that arrives beside this device's own unconfirmed session and
+  cannot be answered (section 10, "Conflict"):
 
   ```text
    0  32  refuser_identity_dh_pk
@@ -318,9 +324,10 @@ only the first can be accepted.
   replayed or late refusal).
 - Acting on it, the initiator gives its session up as
   `resolve_session_conflict` does: committed texts `NotDelivered`, then
-  abandoned, then the session removed (S2-B2 section 6a). It ends a conflict
-  with that contact and starts a new session from the contact's current
-  bundle at once. Texts still queued go out in the new one; texts marked
+  abandoned, then the session removed (S2-B2 section 6a). It clears a
+  conflict flag for that contact (a genuine conflict comes back under the
+  new session once the contact's first message authenticates beside it) and
+  starts a new session from the contact's current bundle at once. Texts still queued go out in the new one; texts marked
   `NotDelivered` are not sent again (the user can send them again). If the
   new session cannot start then (no bundle, no relay, a crash), the next
   queued text starts it. Each step repeats safely after a crash: the refusal
@@ -410,16 +417,42 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   recorded handshake before its first message arrives; the genuine one is then
   retransmitted and takes over. That delays first contact; it creates no
   session and consumes no prekey. Each such first message costs the responder
-  one X3DH and one ratchet step.
+  one X3DH and one ratchet step. The same holds for the handshake recorded
+  beside a device's own unconfirmed session (section 10, "Conflict"):
+  replacing it keeps a genuine first message from authenticating, which
+  delays the conflict being shown, as withholding envelopes does; and each
+  message from the contact that does not decrypt under that session costs
+  one X3DH and one ratchet step more (including up to `MAX_SKIP` (1000)
+  skipped-key derivations, which a forged header can ask for), under the
+  store lock. It is bounded by what the sender can store in the mailbox; it
+  was not measured. A beside record that cannot be read counts as none: the
+  check is reported and the message deleted, and the round goes on.
 - A second initiator racing for the same one-time prekey is refused and
   starts again (section 6). With k contacts racing, the k-th may wait up to
   about 10 minutes per further refusal (the per-contact limit).
 - Simultaneous initiation: if both users start a session with each other
   before either handshake arrives, each device holds an unconfirmed initiator
-  session and drops the other's handshake, so neither proceeds (no fork: each
-  side's messages fail to decrypt at the other and write nothing). Nothing
-  resolves it automatically. The conflict is recorded and shown, and the user
-  of one device resolves it (section 10).
+  session and records the other's handshake beside it, so neither proceeds
+  (no fork: each side's messages fail to decrypt at the other and write
+  nothing). Nothing resolves it automatically. The conflict is recorded and
+  shown once the other side's first message authenticates under its
+  handshake, and the user of one device resolves it (section 10).
+- Protection against a replayed conflict (the residual of tracker R-13). A
+  forged handshake or first message raises no conflict any more. A genuine
+  handshake and first message replayed later still do, if this device never
+  accepted that handshake and can still answer it: the one-time prekey it
+  names is still the published one (S2-B2 section 4c). Anyone who reads
+  this device's mailbox on the relay can capture them, since the relay
+  does not authenticate readers. A dead end needs more than the replay: the
+  contact must have given that session up without this device (for
+  example it deleted and re-added this contact), this device's own session
+  must still be unconfirmed, every message of the contact under this
+  device's session must be withheld until the user resolves, and the user
+  must resolve. Once the contact accepts this device's session and its
+  receipt arrives, the conflict clears by itself. The way out of a dead
+  end is deleting the contact on both devices (section 10). A handshake
+  that created a session here cannot be replayed this way: its one-time
+  prekey was consumed and replaced.
 - Read receipts; multi-device; group messaging; attachments.
 - Protection against a full mailbox. Paging (section 3) only stops kept
   envelopes from hiding later ones. Anyone who can reach the relay can still
@@ -474,8 +507,30 @@ entry per logical message, never written by the ratchet.
   card is refused and flagged (`identity_mismatch`); a missing bundle leaves
   the text queued with a note.
 - **Conflict.** A handshake from a contact whose session here is an
-  unconfirmed start of our own is still dropped, and the conflict is
-  recorded. Only the device with the greater identity key may resolve it
+  unconfirmed start of our own raises nothing by itself: its bytes are
+  public, so anyone who reaches the relay can make one (tracker R-13). It
+  is checked against this device's prekeys and recorded beside our session
+  (S2-B2 section 4c), replacing one recorded before. The conflict is
+  recorded when a message from the contact that does not decrypt under our
+  session authenticates as the contact's first message under that
+  handshake, which needs the contact's identity secret. Nothing is stored
+  for that message, and it is deleted from the relay like any message that
+  does not decrypt here: the contact keeps it in its outbox and
+  retransmits it, with its handshake, until our receipt (which no session
+  here can give) or until it gives that session up itself. So it is still
+  being sent when it can be accepted, which is only after our session was
+  removed. A handshake that cannot be answered here (its one-time prekey
+  was consumed, or its signed prekey is not the current one) raises nothing
+  either; it is refused as section 6 describes, so a genuine contact gives
+  that session up and starts again, and a refusal elicited by a forged one
+  names no handshake the contact holds and is dropped there. Builds before
+  this change recorded the conflict on a handshake alone; that stored flag
+  is no longer read, so a false conflict such a build recorded is neither
+  shown nor resolvable, and a genuine one is recorded again from the
+  contact's retransmitted first message. (A dead end such a build reached
+  by resolving a false conflict stays; deleting the contact on both
+  devices is its way out.)
+  Only the device with the greater identity key may resolve it
   (`resolve_session_conflict`), and only when its user asks. That device marks
   its committed texts `NotDelivered`, abandons them, removes its unconfirmed
   session (allowed by S2-B2 section 6a: nothing was received on it), and waits
@@ -485,10 +540,12 @@ entry per logical message, never written by the ratchet.
   abandoned too and shown `NotDelivered` from its record; one committed after
   the abandoning makes the removal refuse (`PendingOutgoing`), and calling
   again completes it.
-  A handshake that is not the contact's current one can raise a false
-  conflict: a replayed old one, or a forged one (it is built from public
-  bytes, and the relay does not authenticate senders). Resolving a false
-  conflict is not harmless. If the contact goes on to accept this device's
+  A forged handshake or first message can no longer raise a conflict. A
+  replay can still raise a false one: a genuine handshake and first message
+  of a session the contact has since given up, captured from the relay,
+  which this device never accepted and can still answer (section 8).
+  Resolving a false conflict is not harmless. If the contact goes on to
+  accept this device's
   original handshake, the two devices dead-end: this device waits for a
   handshake that never comes, and the contact keeps an established session
   whose messages this device cannot read. Nothing resolves that
@@ -588,6 +645,7 @@ entry per logical message, never written by the ratchet.
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |
 | conversation history, states, repeats, replays, forged bundle, conflict | `tests::chat` | runtime |
+| a conflict raised only by an authenticated first message (R-13 option A): a forged handshake and first message beside an own session raise nothing, in both key orders; a genuine simultaneous start is flagged only once its first message authenticates and resolves as before, in both key orders; an unanswerable handshake beside an own session is refused; the record beside goes on confirmation, removal and deletion; stores from earlier builds (the old conflict flag, a stale record beside an established session); process death after recording and after flagging; the dead end now reached only by a replay, and its way out | `tests::false_conflict`, `tests::delete_contact` | runtime, local relay over TCP; process crash |
 | first contact to an offline recipient: 2, 3 and 5 contenders, both key orders, a conflict after a refusal; refusal limits; a refusal lost on the relay, sent again after the interval; forged, foreign, mismatched, swapped-role, replayed and late refusals; an elicited refusal the initiator can make alone and a third party cannot check; a refusal the relay refuses or whose connection breaks, sent later; process death at each restart step | `tests::first_contact` | runtime, local relay over TCP; process crash |
 | refusal tag: both parties compute it, third parties cannot; bound to both keys, the roles and every field byte; low-order keys; byte-for-byte vector computed independently with Python `cryptography` | `core_crypto::refusal_mac` tests | unit; known answer |
 | history pages (sizes 1, 7, 200, new entries while paging), the open-entry record against a full scan (random steps, a history from before the record, a conflict), process death after its writes | `tests::history_paging` | runtime; process crash |

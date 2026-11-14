@@ -41,7 +41,17 @@ const ENTRY_VERSION: u8 = 1;
 const META_VERSION: u8 = 1;
 
 /// Both devices started a session with each other; ours is unconfirmed.
-const FLAG_CONFLICT: u8 = 1;
+/// Set only when the contact's first message under its handshake, recorded
+/// beside our session, authenticated here (tracker R-13, option A): a
+/// handshake alone never sets it.
+const FLAG_CONFLICT: u8 = 16;
+/// The conflict flag of builds before option A, which set it on a handshake
+/// alone, which anyone can forge. Never set now and ignored when read
+/// (`Meta::decode`), so a false conflict such a build recorded is not shown
+/// or resolved. A genuine one is recorded again under `FLAG_CONFLICT`: the
+/// contact retransmits its handshake and first message while its session is
+/// unconfirmed.
+const FLAG_CONFLICT_BEFORE_OPTION_A: u8 = 1;
 /// The peer's published bundle names keys other than its pinned card.
 const FLAG_IDENTITY_MISMATCH: u8 = 2;
 /// Do not start a session: wait for the peer's handshake (set when this
@@ -424,7 +434,7 @@ impl Meta {
         Ok(Self {
             last_seq: u64::from_be_bytes(bytes[1..9].try_into().expect("8 bytes")),
             seen_seq: u64::from_be_bytes(bytes[9..17].try_into().expect("8 bytes")),
-            flags: bytes[17],
+            flags: bytes[17] & !FLAG_CONFLICT_BEFORE_OPTION_A,
             name,
             note,
         })
@@ -503,8 +513,9 @@ struct Refresh {
     waiting: u32,
 }
 
-/// Sets `flag` for `peer`. Used by the network layer when it drops a
-/// handshake that signals a conflict or that it could not accept.
+/// Sets `flag` for `peer`. Used by the network layer when the contact's
+/// first message shows a conflict, and when it could not accept a
+/// handshake.
 pub(super) fn set_flag(
     messenger: &NetworkMessenger,
     peer: &[u8; 32],
@@ -515,9 +526,11 @@ pub(super) fn set_flag(
 
 /// The contact refused our handshake with a valid refusal
 /// (`NetworkMessenger::take_refusal`): our unconfirmed session with it can
-/// never be accepted. Gives it up as `resolve_session_conflict` does, ends a
-/// conflict (the contact holds no session with us, or it would not have
-/// refused), and starts a new session from the contact's current bundle.
+/// never be accepted. Gives it up as `resolve_session_conflict` does, clears
+/// a conflict flag (the contact refused this session; if it also started one
+/// of its own, that conflict is raised again under the new session once the
+/// contact's first message authenticates beside it), and starts a new
+/// session from the contact's current bundle.
 /// Texts not yet committed go out in the new session. If the new session
 /// cannot be started now, the next queued text starts it.
 pub(super) fn restart_after_refusal(
@@ -802,7 +815,11 @@ impl NetworkMessenger {
 
     /// Resolves a session conflict (both devices started a session with each
     /// other) on the one device allowed to: the one whose identity key is
-    /// the greater. It marks the texts it committed to its own session
+    /// the greater. The conflict was recorded when the peer's first message
+    /// under its own handshake authenticated here: the peer started a
+    /// session of its own (or that message was replayed from one it has
+    /// since given up, docs/NET-MESSAGING.md section 8). It marks the texts
+    /// it committed to its own session
     /// `NotDelivered` (the peer dropped that session's messages and never
     /// accepts it), abandons them, removes that session, and waits for the
     /// peer's, which the peer keeps retransmitting. Texts not yet committed

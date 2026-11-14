@@ -207,7 +207,8 @@ of these.
 - A missing receipt is never read as non-delivery; the text stays pending.
 - Neither `acknowledge_outgoing` nor `abandon_outgoing` is exported through
   UniFFI: only this layer takes a text out of the outbox, on a receipt, or
-  in `resolve_session_conflict`.
+  in `resolve_session_conflict`, or when the user deletes the contact
+  (`delete_contact`), which marks it abandoned.
 - The history never reads a text missing from the outbox as delivered by
   itself. It reads the durable send record (`Messenger::prior_send`, keyed
   by the peer): acknowledged is `Delivered`, abandoned is `NotDelivered`,
@@ -483,10 +484,26 @@ entry per logical message, never written by the ratchet.
   conflict is not harmless. If the contact goes on to accept this device's
   original handshake, the two devices dead-end: this device waits for a
   handshake that never comes, and the contact keeps an established session
-  whose messages this device cannot read. Nothing in this version resolves
-  that (tracker R-13; options in `docs/SESSION-RECOVERY-OPTIONS.md`). On the
+  whose messages this device cannot read. Nothing resolves that
+  automatically; the way out is deleting the contact on both devices (below;
+  tracker R-13; options in `docs/SESSION-RECOVERY-OPTIONS.md`). On the
   device with the smaller key, a false conflict clears by itself once the
   contact confirms the session.
+- **Deleting a contact.** `delete_contact(peer)`, on the user's request,
+  removes in one store transaction the pinned card, the name and flags, the
+  whole history, and the session in any state (established, unconfirmed, in
+  conflict, unreadable or absent) with its handshakes, pending outgoing
+  texts and pending incoming messages (S2-B2 section 6a, "Forgetting a
+  peer"). Pending texts are marked abandoned there, so none is ever read as
+  delivered; the `seen:` and `sendid:` records stay, so nothing is
+  encrypted twice and nothing already received is new again. Undelivered
+  texts are lost, and the contact is told nothing: it keeps its session,
+  and drops a new handshake from this device while it does. To start
+  again, both users delete each other and exchange cards again; the next
+  text then starts a new session. This is the way out of a session that
+  can no longer progress, such as the dead end after a false conflict was
+  resolved. Deleting again, or deleting someone who is not a contact, is
+  harmless.
 - **Reading in pages.** Entries are numbered 1, 2, … per contact: each takes
   the next number in the transaction that writes it, and none is deleted.
   `chat_entries_page(peer, before_seq, limit)` returns the `limit` entries

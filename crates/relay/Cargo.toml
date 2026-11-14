@@ -5,8 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 # An untrusted store-and-forward relay for end-to-end encrypted envelopes, and
-# the blocking client the app uses to reach it. Standard library only, so the
-# client cross-compiles for Android with nothing added.
+# the blocking client the app uses to reach it. Besides the standard library,
+# only rusqlite (the relay's optional SQLite file), with the version and
+# features core-storage already uses, so the Android build adds no crate.
 [lib]
 name = "relay"
 
@@ -16,3 +17,7 @@ path = "src/bin/arcium-relay.rs"
 
 [dependencies]
 thiserror.workspace = true
+rusqlite = { version = "0.41", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"

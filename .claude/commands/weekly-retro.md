@@ -57,7 +57,9 @@ A single incident with no sign of repetition is a one-off.
 | A specific skill or command | A procedure step belongs to one workflow: edit that `.claude/skills/<skill>/` or `.claude/commands/<cmd>.md` |
 | No permanent change | One-off incidents; record them only in the report |
 
-Never propose weakening a security, evidence or Owner-approval rule. Changes
+Do not propose weakening a security, evidence or Owner-approval rule, that is,
+widening what it allows. Proposing to add a rule's reason and scope, or to
+remove a note whose reason no longer holds, is not weakening. Changes
 to the cryptographic rules, merge rules or permanent constraints in
 `CLAUDE.md` are proposals for the Owner only.
 

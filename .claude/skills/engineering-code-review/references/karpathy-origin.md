@@ -46,20 +46,13 @@ Claude Code session: `karpathy-review.md`. A GitHub Actions job,
 `karpathy-review`, used to do this; it was removed because it called the paid
 Anthropic API on every pull-request push.
 
-## Subagent guidance — preserved, and in tension with session policy
+## Parallel checks
 
-The original `CLAUDE.md` carried this advice, sourced from
-<https://gist.github.com/hqman/e29cb6386c539d795767e8c3fd2c959b>:
-
-> Если задача распадается на независимые части — запускай их параллельно, по
-> одной задаче на субагент. Не делай всё последовательно когда части не зависят
-> друг от друга.
->
-> Пример: нужно проверить `cargo test` + `tsc --noEmit` + grep на висячие
-> ссылки — это три независимых вызова, запускай одновременно.
-
-**Conflict, preserved rather than resolved:** some Claude Code sessions run
-under a harness instruction not to spawn subagents unless the user explicitly
-asks. Where that applies, it is the stricter constraint and it wins — but the
-underlying point survives without subagents: independent checks should be
-issued in parallel in a single step, not run one after another.
+The original `CLAUDE.md` asked for one subagent per independent part of a
+task (source: <https://gist.github.com/hqman/e29cb6386c539d795767e8c3fd2c959b>).
+What is kept: independent checks (for example `cargo test`, `tsc --noEmit`
+and a grep for dangling references) are issued in parallel, as several tool
+calls in one step, not one after another. Subagents are not the default: each
+one costs a session of its own, so start one only when a task must read many
+files or needs a review not anchored on your own conclusions (`CLAUDE.md`,
+«Ревью и CI»).

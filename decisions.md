@@ -164,3 +164,8 @@ D-029 · 2026-11-14 · OWNER · ACTIVE
 D-030 · 2026-11-14 · OWNER · DONE
 - What: "мёрдж #171" (R-18 a FLAG_SECURE, c dataExtractionRules). Tracker PR #172 (R-18 partial) merged under the approved small-tracker-PR pattern.
 - Evidence: #171 merged as `92ad8eb` (18 check runs success on head `bd596d0`); #172 merged as `ea7c3fe` (12 check runs success on head `2686b5f`); both pinned with `expectedHeadSha`.
+
+D-031 · 2026-11-14 · OWNER · DONE
+- What: "173, 175, 174 и CLAUDE.md … Исполняй": merge #173 (background receive), #175 (R-19 off-chain circuit source), #174 (session recovery option A, approving its two extra steps: the R-1 refusal from the beside state and the conflict flag moved to bit 16), and correct CLAUDE.md on the circuit hash. CLAUDE.md fix PR #176 and tracker PR #177 merged under that instruction.
+- Evidence: #173 merged as `d36a95e` (18 check runs success on head `cb38d45`); #175 as `fcabf55` (12 on `361d5d1`); #174 as `efd4c0e` (19 on `0a75fa7`; 532 passed locally at `b2d1088`); #176 as `d764380` (12 on `cf96fc1`); #177 as `41a0d8d` (12 on `5c7e534`); all pinned with `expectedHeadSha`. Each code PR had an independent review whose findings were fixed in the PR.
+- Remaining: publishing the PSI circuit file (needs the Owner's approval at deploy time); R-13 replay residual; phone tests for background receive.

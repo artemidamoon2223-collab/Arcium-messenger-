@@ -61,27 +61,64 @@ D-006 · 2026-10-20 · OWNER · ACTIVE
 
 ## Findings (engineering; fixing any of them needs a separate Owner task)
 
-D-007 · 2026-10-19 · FINDING · OPEN
+D-007 · 2026-10-19 · FINDING · SUPERSEDED by D-020
 - What: master-key loss. If `master_key.blob` is missing, a new key is created, and onboarding then creates a new identity.
 - Evidence: `android/app/src/main/kotlin/com/arcium/messenger/security/MasterKeyProvider.kt:42-58` at `fb9cf32`. The test `crates/mobile-ffi/src/lib.rs:1106` (`core_with_wrong_key_fails`) pins this behaviour. Tracker: F-9 limits.
 
-D-008 · 2026-10-19 · FINDING · OPEN
+D-008 · 2026-10-19 · FINDING · SUPERSEDED by D-020
 - What: `TorTransport::new` has no bootstrap timeout. In a sandbox that blackholes connections, `new_fails_gracefully_without_tor` hung until a 300 s timeout.
 - Impact: none today; Tor is unwired (F-15).
 - Evidence: `crates/core-transport/src/lib.rs:22-26` at `fb9cf32`. The hang is RUNTIME_VERIFIED in the sandbox; its cause is INFERRED.
 
-D-009 · 2026-10-19 · FINDING · KNOWN (F-10)
+D-009 · 2026-10-19 · FINDING · SUPERSEDED by D-020
 - What: rolling a single storage record back to an older ciphertext is accepted.
 - Evidence: an external probe (s8) against `crates/core-storage` at `fb9cf32`, not committed. The tracker F-10 row already lists rollback as not covered.
 
-D-010 · 2026-10-19 · FINDING · OPEN
+D-010 · 2026-10-19 · FINDING · SUPERSEDED by D-020
 - What: no phone-number normalization before `hash_contact`.
 - Evidence: Rust, TS and Python agree on 60 vectors; `+7999…`, ` +7999…` and `7999…` give different hashes. Probe not committed. `hash_contact` has no caller yet.
 
-D-011 · 2026-10-19 · FINDING · OPEN (low)
+D-011 · 2026-10-19 · FINDING · SUPERSEDED by D-020
 - What: `|| true` on the SDK-license step.
 - Evidence: `.github/workflows/android-ci.yml:32` and `android-two-device-e2e.yml:90` at `fb9cf32`.
 
 D-012 · 2026-10-06 · CORRECTION · ACTIVE
 - What: pin MCP merge calls with `expectedHeadSha`, not `sha`. The PR #120 merge used `sha`.
 - Evidence: UNVERIFIED from GitHub; this is the agent's own record of its earlier session. Merge commit `e0e825c` has the expected parents.
+
+D-013 · 2026-11-13 · OWNER · ACTIVE
+- What: the Owner delegated the eight open questions of the review of `main` @ `de328a1` to the agent ("реши эти вопросы по возможности", "чтобы всё было как в швейцарских часах"), within the `CLAUDE.md` limits: no merge, no protocol or crypto change without a separate Owner decision, no expense.
+- Evidence: Owner message in session `013Fd9w11HPCwF53H2tPuKpt`, 2026-11-13, about 23:30 UTC.
+
+D-014 · 2026-11-13 · AGENT (under D-013) · ACTIVE
+- What: priority. The production relay (authentication R-9, TLS, persistence) and background receive come before PSI, Tor and devnet.
+- Why: a release build cannot send or receive at all (only debug builds accept a relay; `android/app/build.gradle.kts`, `RelaySettings.kt`), and the app calls no PSI code (`ArciumCore.submitPsiQuery` throws).
+- Evidence: the review report in the session above.
+
+D-015 · 2026-11-13 · AGENT (under D-013) · ACTIVE
+- What: R-7 (b) and stubs. Remove the Bluetooth permissions; delete `BluetoothMeshManager`, `SolanaClient` (and the `SOLANA_RPC_URL` build field) and `ContactRepository`; keep `MessageRepository` (two tests use it). PR #157.
+- Merge NOT authorized: it needs an Owner instruction naming the PR.
+
+D-016 · 2026-11-13 · AGENT (under D-013) · ACTIVE
+- What: R-10, fixed: a missing history number is skipped by the record build, pages and the summary. PR #158.
+- Evidence: the new test fails on `de328a1` ("storage error: key not found") and passes on the PR head; `cargo test --workspace --locked` 492 passed, 0 failed; clippy `-D warnings` exit 0 (RUNTIME_VERIFIED in a disposable clone).
+
+D-017 · 2026-11-13 · AGENT (under D-013) · ACTIVE
+- What: session recovery is recorded as options only (C: delete a contact completely; A: raise a conflict only after the peer's first message authenticates; B: peer-authenticated replacement). PR #159. Choosing and implementing one is an Owner decision (protocol).
+
+D-018 · 2026-11-13 · AGENT (under D-013) · ACTIVE
+- What: the QC family (`qc-*` skills and agents, `.claude/qc/`) is kept unchanged.
+- Why: it is manual-only and costs nothing unused; removing an Owner-merged tool needs a reason. Revisit at a weekly retro if it stays unused.
+
+D-019 · 2026-11-13 · FINDING · OPEN
+- What: R-13 (a false conflict, once resolved, dead-ends a conversation) and R-14 (more than `MAX_SKIP` lost messages in one sending chain stop that direction for good), both RUNTIME_VERIFIED by probes at `de328a1` (not committed). R-15 … R-18 SOURCE_VERIFIED. R-19: the PSI circuit is registered on chain (`arcium-psi/programs/arcium-psi/src/lib.rs:42`, `None`), contrary to `CLAUDE.md`.
+- Evidence: tracker PR #160.
+
+D-020 · 2026-11-13 · CORRECTION · ACTIVE
+- What: the statuses of D-007 … D-011 as of `main` @ `de328a1`, from `docs/SECURITY-FINDINGS.md`:
+  - D-007: Android start-up half closed (PR #133); the Rust-level `Ok(None)` and the lack of a recovery flow stay open (F-9).
+  - D-008: fixed (PR #137, bootstrap bound 120 s).
+  - D-009: decided (no rollback resistance in v1; PR #138).
+  - D-010: decided and implemented (E.164; PR #139).
+  - D-011: fixed (A-4, PR #135).
+- Evidence: tracker sections "Update 2026-11-06", "Update 2026-11-12", "Update 2026-11-13".

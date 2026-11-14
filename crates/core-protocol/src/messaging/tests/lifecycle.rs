@@ -357,10 +357,7 @@ fn removal_refuses_if_a_send_or_receive_commits_meanwhile() {
             .unwrap();
         let reply = p.bob_sends(b"reply");
         let (alice_pk, other) = (p.alice_pk, path.clone());
-        let ran = std::rc::Rc::new(std::cell::Cell::new(false));
-        let raced = ran.clone();
         crate::messaging::race_hook::set(move || {
-            raced.set(true);
             let mut db = EncryptedStore::open(&other, KEY).unwrap();
             let mut m = Messenger::new();
             if racing_receive {
@@ -557,10 +554,10 @@ fn talking_on_file(path: &Path) -> Peers {
 
 /// Option C: an established session with pending messages both ways is
 /// forgotten in one call. The session, handle, both handshakes, outbox,
-/// inbox and the caller's records go; seen and send-id records stay. Under a
-/// new session, a forgotten pending text reads as abandoned, one
-/// acknowledged before as acknowledged, and an incoming message acknowledged
-/// before is still a duplicate.
+/// inbox and the caller's records go; seen and send-id records stay, and the
+/// unread incoming message leaves a seen record. Under a new session, a
+/// forgotten pending text reads as abandoned, one acknowledged before as
+/// acknowledged, and both incoming messages are duplicates.
 #[test]
 fn forgetting_an_established_peer_keeps_only_seen_and_sendid_records() {
     let mut p = memory_peers();
@@ -583,7 +580,7 @@ fn forgetting_an_established_peer_keeps_only_seen_and_sendid_records() {
     p.am.acknowledge_incoming(&mut p.a, ALICE_HANDLE, &read_id)
         .unwrap();
     let unread = p.bob_sends(b"unread");
-    accepted(p.alice_receives(&unread.wire).unwrap());
+    let unread_id = accepted(p.alice_receives(&unread.wire).unwrap()).message_id;
     let pending = new_message(send(&mut p, b"L2", b"two"));
     p.a.put("app:v1/bob-history", b"history").unwrap();
     p.a.put("app:v1/other", b"kept").unwrap();
@@ -598,6 +595,7 @@ fn forgetting_an_established_peer_keeps_only_seen_and_sendid_records() {
     let mut want = vec![
         "app:v1/other".to_string(),
         seen_key(&p.bob_pk, &read_id),
+        seen_key(&p.bob_pk, &unread_id),
         sendid_key(&p.bob_pk, b"L1"),
         sendid_key(&p.bob_pk, b"L2"),
     ];
@@ -632,17 +630,15 @@ fn forgetting_an_established_peer_keeps_only_seen_and_sendid_records() {
         }
     );
     assert_eq!(generation(&mut p.a, p.alice_pk, ALICE_HANDLE), 0);
-    assert!(matches!(
-        p.alice_receives(&read.wire),
-        Ok(Received::Duplicate {
-            undelivered: None,
-            ..
-        })
-    ));
-    assert!(matches!(
-        p.alice_receives(&unread.wire),
-        Err(MessagingError::Ratchet(_))
-    ));
+    for wire in [&read.wire, &unread.wire] {
+        assert!(matches!(
+            p.alice_receives(wire),
+            Ok(Received::Duplicate {
+                undelivered: None,
+                ..
+            })
+        ));
+    }
     assert_eq!(new_message(send(&mut p, b"L3", b"three")).generation, 1);
 }
 
@@ -861,4 +857,33 @@ fn forgetting_refuses_if_records_keep_appearing_and_completes_when_repeated() {
             Some(SendOutcome::Abandoned { .. })
         ));
     }
+}
+
+/// An outbox record that cannot be decoded still names its message in its
+/// key: the send-id record pointing at that message is rewritten as
+/// abandoned, so the text never reads as acknowledged (review probe).
+/// Another send-id record of the peer is left as it is.
+#[test]
+fn forgetting_marks_an_undecodable_outbox_message_abandoned() {
+    let mut p = memory_peers();
+    let acked = new_message(send(&mut p, b"L1", b"one"));
+    p.am.acknowledge_outgoing(&mut p.a, ALICE_HANDLE, &acked.message_id)
+        .unwrap();
+    let pending = new_message(send(&mut p, b"L2", b"two"));
+    p.a.put(&outbox_key(&p.bob_pk, &pending.message_id), b"garbage")
+        .unwrap();
+    forget_bob(&mut p, &[]).unwrap();
+    assert_eq!(keys(&p.a, "outbox:"), 0);
+    assert_eq!(
+        p.am.prior_send(&mut p.a, &p.bob_pk, b"L2").unwrap(),
+        Some(SendOutcome::Abandoned {
+            message_id: pending.message_id
+        })
+    );
+    assert_eq!(
+        p.am.prior_send(&mut p.a, &p.bob_pk, b"L1").unwrap(),
+        Some(SendOutcome::AlreadyAcknowledged {
+            message_id: acked.message_id
+        })
+    );
 }

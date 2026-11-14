@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 
 use super::helpers::{commit_repeatable, keys_under};
 use super::records::*;
-use super::{MessageId, MessagingError, Messenger};
+use super::{MessageId, MessagingError, Messenger, MESSAGE_ID_LEN};
 use crate::checkpoint::session_storage_key;
 use crate::durable::Conflict;
 
@@ -120,9 +120,11 @@ impl Messenger {
     /// [`abandon_outgoing`](Self::abandon_outgoing), so [`send`](Self::send)
     /// and [`prior_send`](Self::prior_send) report it
     /// [`Abandoned`](super::SendOutcome::Abandoned), never acknowledged:
-    /// only a receipt acknowledges. An outbox record that cannot be read is
-    /// deleted as it is; its send-id record, if any, then reads as
-    /// acknowledged (a limit of a damaged store).
+    /// only a receipt acknowledges. For an outbox record that cannot be read,
+    /// the message id is taken from its key, and every send-id record of the
+    /// peer naming that id is rewritten as abandoned. Each pending incoming
+    /// message, deleted unread, leaves a `seen:` record for its id (taken
+    /// from its key), so it is a duplicate if it ever arrives again.
     ///
     /// Kept: the `seen:` and `sendid:` records, as after
     /// [`remove_session`](Self::remove_session), so a message already seen is
@@ -181,10 +183,24 @@ fn pending_keys(store: &EncryptedStore, peer: &[u8; 32]) -> Result<Vec<String>, 
     Ok(keys)
 }
 
+/// The message id an `outbox:` or `inbox:` key under `prefix` ends with.
+fn id_in_key(key: &str, prefix: &str) -> Option<MessageId> {
+    let hex = key.strip_prefix(prefix)?;
+    if hex.len() != 2 * MESSAGE_ID_LEN {
+        return None;
+    }
+    let mut id = [0u8; MESSAGE_ID_LEN];
+    for (i, byte) in id.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
+    }
+    Some(id)
+}
+
 /// One transaction of [`Messenger::forget_peer`]: deletes `peer`'s session,
 /// handle and handshake records, `pending` (listed before it) and
-/// `also_delete`, and marks each readable outgoing message in `pending`
-/// abandoned. Nothing is written if `handle` belongs to another peer.
+/// `also_delete`; marks each outgoing message in `pending` abandoned and
+/// leaves a `seen:` record for each incoming one. Nothing is written if
+/// `handle` belongs to another peer.
 fn forget_listed(
     store: &mut EncryptedStore,
     handle: u64,
@@ -194,6 +210,22 @@ fn forget_listed(
 ) -> Result<(), MessagingError> {
     #[cfg(test)]
     super::race_hook::run();
+    // An outbox record that cannot be read names its message only in its
+    // key; its send-id record is found among the peer's, which are listed
+    // only in that case (the transaction cannot list).
+    let mut sendids = Vec::new();
+    for key in pending.iter().filter(|k| k.starts_with(OUTBOX_NAMESPACE)) {
+        let damaged = match store.get(key) {
+            Ok(bytes) => decode_outbox(&Zeroizing::new(bytes)).is_err(),
+            Err(StorageError::NotFound) => false,
+            Err(StorageError::Decryption) => true,
+            Err(e) => return Err(MessagingError::Store(e)),
+        };
+        if damaged {
+            sendids = keys_under(store, "sendid:", &sendid_key(peer, &[]))?;
+            break;
+        }
+    }
     let tx = store.transaction().map_err(MessagingError::NotCommitted)?;
     match tx.get(&handle_key(handle)) {
         Ok(bytes) => {
@@ -219,21 +251,45 @@ fn forget_listed(
         }
         Err(e) => return Err(MessagingError::Store(e)),
     }
+    let abandoned = |id: &MessageId| encode_id_record(ABANDONED_MAGIC, id);
     for key in pending.iter().filter(|k| k.starts_with(OUTBOX_NAMESPACE)) {
         let message = match tx.get(key) {
-            Ok(bytes) => decode_outbox(&Zeroizing::new(bytes)).ok(),
-            // Settled by another connection since the listing, or
-            // unreadable: nothing to mark.
-            Err(StorageError::NotFound | StorageError::Decryption) => None,
+            Ok(bytes) => decode_outbox(&Zeroizing::new(bytes)).map_err(|_| ()),
+            Err(StorageError::Decryption) => Err(()),
+            // Settled by another connection since the listing.
+            Err(StorageError::NotFound) => continue,
             Err(e) => return Err(MessagingError::Store(e)),
         };
-        if let Some(message) = message {
-            tx.put(
-                &sendid_key(peer, &message.client_message_id),
-                &encode_id_record(ABANDONED_MAGIC, &message.message_id),
-            )
-            .map_err(MessagingError::NotCommitted)?;
+        match message {
+            Ok(message) => tx
+                .put(
+                    &sendid_key(peer, &message.client_message_id),
+                    &abandoned(&message.message_id),
+                )
+                .map_err(MessagingError::NotCommitted)?,
+            Err(()) => {
+                let Some(id) = id_in_key(key, &outbox_prefix(peer)) else {
+                    continue;
+                };
+                for sendid in &sendids {
+                    match tx.get(sendid) {
+                        Ok(bytes) if decode_id_record(SENDID_MAGIC, &bytes, "sendid").ok() == Some(id) => {
+                            tx.put(sendid, &abandoned(&id))
+                                .map_err(MessagingError::NotCommitted)?
+                        }
+                        Ok(_) | Err(StorageError::NotFound | StorageError::Decryption) => {}
+                        Err(e) => return Err(MessagingError::Store(e)),
+                    }
+                }
+            }
         }
+    }
+    for id in pending
+        .iter()
+        .filter_map(|k| id_in_key(k, &inbox_prefix(peer)))
+    {
+        tx.put(&seen_key(peer, &id), &encode_id_record(SEEN_MAGIC, &id))
+            .map_err(MessagingError::NotCommitted)?;
     }
     for key in delete.iter().chain(pending).chain(also_delete) {
         tx.delete(key).map_err(MessagingError::NotCommitted)?;

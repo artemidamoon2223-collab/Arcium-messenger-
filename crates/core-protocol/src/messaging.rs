@@ -806,8 +806,9 @@ impl Messenger {
 
 /// Lets a test act between an operation's reads and its transaction: after
 /// `send`, `receive` or `accept_first_message` has staged its transition,
-/// after `remove_session` has checked the session, and after a legacy
-/// retirement has inspected it.
+/// after `remove_session` has checked the session, after a legacy
+/// retirement has inspected it, and before each transaction of
+/// `forget_peer` (after its listing).
 #[cfg(test)]
 mod race_hook {
     use std::cell::RefCell;

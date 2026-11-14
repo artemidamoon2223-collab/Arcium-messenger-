@@ -186,8 +186,9 @@ pub(crate) fn parse_hex32(s: &str) -> Option<[u8; 32]> {
         _ => None,
     };
     let mut out = [0u8; 32];
-    for (i, pair) in s.chunks_exact(2).enumerate() {
-        out[i] = digit(pair[0])? << 4 | digit(pair[1])?;
+    let (pairs, _) = s.as_chunks::<2>();
+    for (byte, [hi, lo]) in out.iter_mut().zip(pairs) {
+        *byte = digit(*hi)? << 4 | digit(*lo)?;
     }
     Some(out)
 }

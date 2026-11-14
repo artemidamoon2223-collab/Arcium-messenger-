@@ -827,6 +827,28 @@ re-add trusts whatever card the user enters, as a first add does.
 
 ---
 
+## Update 2026-11-14: R-16 fixed (`main` @ `6d6acea`)
+
+**Snapshot:** `main` @ `6d6aceaf236e01f20580a2c18c2d36064f3e918d`, the merge commit of PR #167.
+Only the row named here changes; every other row keeps the snapshot it cites. Each
+`path:line` was re-read at `6d6acea`.
+
+**Runtime evidence.** On PR #167's head `fa7a0c9` (based on `6714921`),
+`cargo test --workspace --locked`: exit 0, 508 passed, 0 failed;
+`cargo clippy --workspace --locked --all-targets -- -D warnings`: exit 0 (local run,
+2026-11-14). `6714921` → `6d6acea` changes no Rust source except PR #167's (`git diff --stat`:
+only `crates/mobile-ffi/src/network.rs` and `crates/mobile-ffi/src/tests/first_contact.rs`
+under `crates/`). Every check run on the head was success (18 runs, including `two-devices`
+and `connected-tests`). An independent review found no findings. The merge was made on the
+Owner's instruction of 2026-11-14 ("мёрдж #167"). Local test relay only; a real relay restart
+and a phone are `NV`.
+
+| ID | Status at `6d6acea` | Evidence (`main` @ `6d6acea`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-16** (a lost refusal is not repeated until the responder restarts) | **FIXED — merged** in PR #167 (merge `6d6acea`). The per-process record of refused handshakes (`sent_for`) is gone. A retransmitted handshake is refused again once `REFUSAL_INTERVAL` (10 minutes) has passed since the last refusal to that contact; the per-contact limit is unchanged (at most one refusal per contact per interval). A repeated refusal cannot disturb a newer session: only the current unconfirmed session whose handshake hash matches is restarted. No wire or record format changed. **Remaining:** after a loss the initiator can wait up to the interval for the repeat; the limit is in memory, so a restart may send one more (as before). | `queue_refusal` (`crates/mobile-ffi/src/network.rs:1032`, the per-contact check `:1040-1047`, recorded `:1100`); `REFUSAL_INTERVAL` (`:200`). Tests: `tests::first_contact::a_lost_refusal_is_sent_again_once_the_interval_has_passed` (`crates/mobile-ffi/src/tests/first_contact.rs:326`; fails on `6714921`'s `network.rs`, passes here), `…::a_retransmitted_handshake_is_refused_once_per_interval` (`:294`), `…::a_second_refusal_to_one_contact_waits_for_the_interval` (`:250`). Specification: `docs/NET-MESSAGING.md:299-304`. | `SV`, tests `RV`; real relay restart `NV` |
+
+---
+
 ## Prioritized remaining work
 
 For new work, see "Next engineering tasks (2026-11-06)" above; this list is kept as history. Regenerated 2026-09-29 from the tables above; the 2026-07-19 list is superseded. Order is

@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-14 19:40 UTC, by a Claude Code cloud session
+Updated: 2026-11-14 20:50 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -24,8 +24,7 @@ Updated: 2026-11-14 19:40 UTC, by a Claude Code cloud session
 
 ## Open PRs (each needs the Owner's merge instruction naming it)
 - #178 production relay design (docs only).
-- #179 relay SQLite persistence (`--db FILE`); 538 passed locally; independent review running.
-- Next (D-032): relay TLS + mailbox authentication PR, then app configuration for release builds, then a relay deploy guide.
+- Relay stack, merge in this order: #179 SQLite persistence (CI green) → #180 relay V2: TLS 1.3 + mailbox authentication (CI green, reviewed) → #181 app speaks V2, release builds V2-only (review running) → #182 deploy guide.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is being written now (D-032).

@@ -173,3 +173,8 @@ D-031 · 2026-11-14 · OWNER · DONE
 D-032 · 2026-11-14 · OWNER · ACTIVE
 - What: the Owner chose "production relay code" next, then delegated its design: "Этот код твой: для чего он и как устроен — решаешь ты, и ты будешь дальше его развивать." Agent decisions under it, as proposed in PR #178 (`docs/RELAY-PRODUCTION-DESIGN.md`): mailbox authentication by DH challenge-response with a pinned relay auth key, bound to the TLS session (exporter); TLS 1.3 with rustls and a pinned key; SQLite persistence (PR #179); `RELAY_PROTOCOL_V2` only; order persistence / TLS+auth / app configuration, then a deploy guide. The identity-key reuse in the auth DH stays flagged for an outside cryptographic review. Every merge still needs the Owner's instruction naming the PR.
 - Evidence: Owner messages of 2026-11-14 in session `013Fd9w11HPCwF53H2tPuKpt`.
+
+D-033 · 2026-11-14 · AGENT (under D-032) · ACTIVE
+- What: relay protocol V1 (plain, unauthenticated) is kept for development builds and for the failure-injection tests (the TCP proxy in the test harness inspects plaintext frames, impossible under TLS); release builds of the app accept only V2 connection strings. This amends decision 4 of the design ("V2 only"). A relay that served a database as V2 refuses to open it as V1.
+- Stack (each needs the Owner's merge instruction naming it, in this order): #179 persistence → #180 relay V2 (TLS + mailbox authentication) → #181 app speaks V2 → #182 deploy guide; #178 design doc independent.
+- Evidence: PR #180 independent security review (TLS pinning, AUTH and owner checks sound; LOW findings fixed in `a830d99`); PR #179 review (MEDIUM disk-full stall fixed in `e3a0578`).

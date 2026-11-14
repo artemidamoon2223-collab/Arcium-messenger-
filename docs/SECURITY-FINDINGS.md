@@ -9,6 +9,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **Statuses and rows added 2026-11-13 against `main` @ `c2c967c`:** R-1 … R-5, R-7 (a, c, d), A-4 and D-009 recorded as fixed or decided; new rows R-8 … R-12 (see "Update 2026-11-13"); no earlier row was changed.
 **R-12 recorded as fixed 2026-11-13 against `main` @ `c07bf36`** (PR #154; see "Update 2026-11-13: R-12 fixed"). Only the R-12 row gained a dated note; no other row was changed.
 **Rows added 2026-11-14 against `main` @ `de328a1`:** R-13 … R-19, and notes on R-7 (b) and R-10 (fix in review) (see "Update 2026-11-14"); no earlier row was changed.
+**R-7 (b) and R-10 recorded as fixed 2026-11-14 against `main` @ `0a8dbd4`** (PRs #157, #158; see "Update 2026-11-14: R-7 (b) and R-10 fixed"), with a note on R-17 and F-15 (a); no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -765,6 +766,28 @@ committed. No phone and no production relay (`NV`). The other rows come from rea
 | **R-17** | LOW | **Android shows "Connected" while rounds fail on the device.** The link state counts only report errors that start with `network:`. Any other error in a round's report leaves the banner at "Connected to the development relay" and is shown nowhere: a storage error such as R-10's, a refused handshake, a session error. | **OPEN**: an Android task | `reachedRelay` (`android/app/src/main/kotlin/com/arcium/messenger/messaging/MessengerService.kt:182`), used at `:165-171`; the banner (`android/app/src/main/kotlin/com/arcium/messenger/ui/contacts/ContactsScreen.kt:115`). | `SV` |
 | **R-18** | INFO | **Android hardening not present.** (a) No `FLAG_SECURE`, so screenshots and the recent-apps preview show the chat. (b) The Keystore key that wraps the master key is created without StrongBox, unlocked-device or user-authentication requirements. (c) `allowBackup="false"` without `dataExtractionRules`, so device-to-device transfer on Android 12 and later is not excluded; this is already listed as untested in "Update 2026-11-06". Each item is a choice with costs: StrongBox is not on every device, and user authentication would block a future background sync. | **OPEN**: an Owner choice per item | (a) no `FLAG_SECURE` under `android/app/src/main`; (b) `KeyGenParameterSpec.Builder` (`android/app/src/main/kotlin/com/arcium/messenger/security/MasterKeyProvider.kt:150-157`); (c) `android/app/src/main/AndroidManifest.xml:17`, no `dataExtractionRules` attribute. | `SV`; device behaviour `NV` |
 | **R-19** | INFO (pre-deploy; cost and rule conformance, no secrecy impact: the circuit is public) | **The PSI circuit is registered as on-chain, not off-chain.** `init_psi_intersect_comp_def` passes no circuit source (`None`), and the localnet test asserts that the stored source is `OnChain` and uploads the circuit into raw circuit accounts. The doc comments on the same instruction say OffChainCircuitSource with only the 32-byte hash on chain, and so does `CLAUDE.md` («OffChainCircuitSource»: "НИКОГДА не встраивай circuit в смарт-контракт"). A devnet deploy as the code stands would store the whole circuit on chain. Found while aligning `docs/HOME-DEPLOY.md` (PR #161). | **OPEN** — Owner decision before any deploy: switch to an off-chain source (URL plus hash) or restate the rule | `init_computation_def(&*ctx.accounts, None)` (`arcium-psi/programs/arcium-psi/src/lib.rs:42`) under comments claiming OffChainCircuitSource (`:37-38`, `:186`); the test expects `circuitSource.onChain` (`arcium-psi/tests/src/localnet/psi.localnet.ts:166-167`) and exercises `uploadCircuit` (`:181-188`). The `arcium-test` CI job runs that test (log not read for this row). | `SV`; CI `NV` |
+
+---
+
+## Update 2026-11-14: R-7 (b) and R-10 fixed (`main` @ `0a8dbd4`)
+
+**Snapshot:** `main` @ `0a8dbd471763fa2298edf052c4991ec903ecf016`, the merge commit of
+PR #160. Only the rows named here change; every other row keeps the snapshot it cites.
+Each `path:line` below was re-read at `0a8dbd4`. Labels as in "Update 2026-11-13".
+
+**Runtime evidence.** At `0a8dbd4`, `cargo test --workspace --locked`: exit 0, 493 passed,
+0 failed, 4 ignored; `cargo clippy --workspace --locked -- -D warnings`: exit 0 (run
+locally on 2026-11-14). Every check run on the PR heads was success before each merge:
+PR #157 head `bdb194a` (19 check runs, including Android CI `build`, `connected-tests` and
+`two-devices`), PR #158 head `c3ca851` (18 check runs). The merges were made on the
+Owner's instruction of 2026-11-14. Emulators and a local relay only; no phone (`NV`).
+
+| ID | Status at `0a8dbd4` | Evidence (`main` @ `0a8dbd4`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-7 (b)** (Bluetooth permissions for the BLE stub) | **FIXED — merged** in PR #157 (merge `3e4e0c3`). The manifest requests only `INTERNET` and `ACCESS_NETWORK_STATE`. The unused stubs `BluetoothMeshManager`, `SolanaClient` (with the `SOLANA_RPC_URL` build field and Gradle property) and `ContactRepository` are deleted. `MessageRepository` is kept because two tests use it. With R-7 (a), (c) and (d) fixed earlier, every part of R-7 is now fixed. | `android/app/src/main/AndroidManifest.xml:4`, `:6`; the three files are absent under `android/app/src/main/kotlin/com/arcium/messenger/`. Independent review (`engineering-code-review` and `arcium-security-review`, full coverage): no security findings. | `SV`; CI `RV`; install-time behaviour on a phone `NV` |
+| **R-10** (a missing history entry fails more) | **FIXED — merged** in PR #158 (merge `ddca7cc`). A missing entry number is skipped by every history read. Pages walk back over a gap and still hold up to `limit` entries; an empty page still means the beginning. An entry that exists but cannot be read is still an error. Without gaps, every read returns what it returned before. | `entries_in` (`crates/mobile-ffi/src/network/chat.rs:898`), `newest_before` (`:913`), the summary's last entry (`:527`), `open_entries` (`:931`, skip at `:936`), the record build in `open_seqs` (`:949`, skip at `:964`). Tests: `tests::history_paging::a_missing_entry_is_skipped_rather_than_failing_every_read` (`crates/mobile-ffi/src/tests/history_paging.rs:262`) and `…::an_open_entry_missing_from_the_store_is_skipped_by_rounds` (`:311`). Both fail on `de328a1`'s `chat.rs` with "storage error: key not found" and pass here. Specification: `docs/NET-MESSAGING.md:495`. **Remaining:** a damaged store is neither detected nor repaired, and the user is not told that an entry is gone (D-009 / F-10: the store claims no row-set integrity). A record number whose entry went missing stays in the open-entry record, harmlessly. | `SV`, tests `RV` |
+| **R-17** (Android shows "Connected" while rounds fail) | Still **OPEN**. Fix in review: PR #163 (not merged). | — | — |
+| **F-15 (a)** (Solana RPC path bypasses Tor) | Cross-reference only; the status is unchanged. The cited `SolanaClient.kt` was deleted by PR #157, so the app now has no Solana RPC path at all. The design concern returns when PSI is wired into the app (F-4, F-14, R-19). | `android/app/src/main/kotlin/com/arcium/messenger/network/SolanaClient.kt` absent at `0a8dbd4` | `SV` |
 
 ---
 

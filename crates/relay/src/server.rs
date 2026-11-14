@@ -31,8 +31,9 @@
 //!
 //! [`serve`] speaks `RELAY_PROTOCOL_V1` on plain TCP. No authentication:
 //! anyone who can reach it can read or delete any mailbox and replace any
-//! bundle. No TLS: a network observer sees what the relay sees. It is for
-//! development and tests only, and will be removed once the app uses V2.
+//! bundle. No TLS: a network observer sees what the relay sees. It stays for
+//! development builds and for the failure-injection tests, which inspect
+//! plaintext frames; release builds of the app accept only V2.
 //!
 //! [`serve_v2`] speaks `RELAY_PROTOCOL_V2` (`crate::protocol`): TLS 1.3 with
 //! the relay's pinned key (`crate::tls`), and FETCH, FETCH_AFTER, DELETE and

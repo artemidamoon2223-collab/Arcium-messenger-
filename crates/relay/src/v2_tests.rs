@@ -25,8 +25,12 @@ fn identity(byte: u8) -> Identity {
 
 /// What the app's closure does: DH of its identity secret with the relay's
 /// auth key.
-fn dh(sk: &StaticSecret) -> impl FnOnce(&[u8; 32]) -> [u8; 32] + '_ {
-    move |auth_pk| sk.diffie_hellman(&PublicKey::from(*auth_pk)).to_bytes()
+fn dh(sk: &StaticSecret) -> impl FnOnce(&[u8; 32], &mut [u8; 32]) + '_ {
+    move |auth_pk, out| *out = shared(sk, auth_pk)
+}
+
+fn shared(sk: &StaticSecret, auth_pk: &[u8; 32]) -> [u8; 32] {
+    sk.diffie_hellman(&PublicKey::from(*auth_pk)).to_bytes()
 }
 
 fn start_v2(config: RelayConfig, keys: &RelayKeys) -> (RelayHandle, RelayAddress) {
@@ -170,7 +174,7 @@ fn auth_is_checked_once_per_connection() {
     let keys = RelayKeys::generate().unwrap();
     let (relay, addr) = start_v2(RelayConfig::default(), &keys);
     let (alice, bob) = (identity(1), identity(2));
-    let bob_shared = dh(&bob.sk)(addr.auth_pk());
+    let bob_shared = shared(&bob.sk, addr.auth_pk());
 
     let mut b = conn(&addr);
     b.authenticate(bob.pk, dh(&bob.sk)).unwrap();
@@ -195,7 +199,7 @@ fn a_tag_replayed_on_another_connection_fails() {
     let (relay, addr) = start_v2(RelayConfig::default(), &keys);
     let bob = identity(2);
     conn(&addr).send(bob.pk, b"x".to_vec()).unwrap();
-    let shared = dh(&bob.sk)(addr.auth_pk());
+    let shared = shared(&bob.sk, addr.auth_pk());
 
     let mut first = conn(&addr);
     let tag = first.tag_for(&bob.pk, &shared);
@@ -278,7 +282,7 @@ fn a_tag_with_another_connections_exporter_is_refused() {
     let keys = RelayKeys::generate().unwrap();
     let (relay, addr) = start_v2(RelayConfig::default(), &keys);
     let bob = identity(2);
-    let shared = dh(&bob.sk)(addr.auth_pk());
+    let shared = shared(&bob.sk, addr.auth_pk());
     let mut victim = conn(&addr);
     let other = conn(&addr);
     let (challenge, own_exporter) = victim.binding();
@@ -301,7 +305,7 @@ fn an_owner_key_with_the_top_bit_set_is_refused() {
     let keys = RelayKeys::generate().unwrap();
     let (relay, addr) = start_v2(RelayConfig::default(), &keys);
     let bob = identity(2);
-    let shared = dh(&bob.sk)(addr.auth_pk());
+    let shared = shared(&bob.sk, addr.auth_pk());
     let mut twin = bob.pk;
     twin[31] |= 0x80;
     let mut c = conn(&addr);

@@ -64,7 +64,7 @@ citing them; they drift.
 | `core-transport` | Tor client (arti); no production caller yet (F-15) |
 | `core-protocol` | Durable sessions over the ratchet: staged transitions with a conditional commit, the outbox and inbox, session removal (S2-B2) |
 | `mobile-ffi` | UniFFI cdylib, `[lib] name = "arcium_core"` → `libarcium_core.so`; `src/network.rs` is `NetworkMessenger`, the app's sync and chat path over the relay; `src/network/chat.rs` is the per-contact history |
-| `relay` | Untrusted store-and-forward relay: wire protocol, client, and the `arcium-relay` server binary (dev: no TLS, no client authentication) |
+| `relay` | Untrusted store-and-forward relay: wire protocol, client, and the `arcium-relay` server binary. V2: TLS 1.3 with a pinned key, mailbox authentication, SQLite persistence (`--db`); V1: plain TCP, development and tests only |
 
 Crypto layering rules for these crates are in `CLAUDE.md` and are not repeated
 here.

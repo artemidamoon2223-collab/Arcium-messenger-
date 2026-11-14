@@ -576,33 +576,31 @@ impl NetworkMessenger {
     }
 
     /// AUTH on `conn` as this device's identity key, once. The identity
-    /// secret stays in [`ArciumCore`]: the relay client gets only the DH
-    /// output with the relay's auth key, derives the tag from it and wipes
-    /// it. A refused AUTH (the relay's answer, or no usable DH output) is a
-    /// `Network` error and is not retried: the caller's operation, or the
-    /// round, ends with it.
+    /// secret stays in [`ArciumCore`]: it writes the DH output with the
+    /// relay's auth key into the relay client's buffer, and the client
+    /// derives the tag from it and wipes it. A refused AUTH (the relay's
+    /// answer, or no usable DH output) is a `Network` error and is not
+    /// retried: the caller's operation, or the round, ends with it. Its text
+    /// names authentication, so it reads apart from a later operation the
+    /// relay refuses.
     fn authenticate(&self, conn: &mut Connection) -> Result<(), CoreError> {
         let our = self.core.our_identity_pk()?;
         let mut failed = None;
-        // Without a usable DH output the closure returns all zeros, which the
+        // Without a usable DH output the buffer stays all zeros, which the
         // client refuses without sending anything; `failed` says why.
-        let authenticated = conn.authenticate(our, |auth_pk| match self.core.identity_dh(auth_pk) {
-            Ok(Some(shared)) => *shared,
-            Ok(None) => {
+        let authenticated = conn.authenticate(our, |auth_pk, out| match self.core.identity_dh(auth_pk, out) {
+            Ok(true) => {}
+            Ok(false) => {
                 failed = Some(CoreError::Network {
                     msg: "cannot authenticate to the relay: its auth key is of low order".into(),
                 });
-                [0; 32]
             }
-            Err(e) => {
-                failed = Some(e);
-                [0; 32]
-            }
+            Err(e) => failed = Some(e),
         });
         if let Some(e) = failed {
             return Err(e);
         }
-        authenticated.map_err(network)
+        authenticated.map_err(|e| CoreError::Network { msg: format!("relay authentication failed: {e}") })
     }
 
     fn limits(&self) -> Limits {

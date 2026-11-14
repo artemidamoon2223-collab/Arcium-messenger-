@@ -113,16 +113,29 @@ UNAUTHORIZED (`protocol.rs`, `auth.rs`, `tls.rs`):
   connecting, and use that one connection for everything; `start_session`
   (GET_BUNDLE only) makes none. The DH is `ArciumCore::identity_dh`, which
   refuses an all-zero output (a low-order auth key), as the relay client
-  does too. A failed TLS handshake, a refused AUTH and an invalid connection
-  string are network errors: the round ends there, before any bundle or
-  envelope is published, read or deleted, and is not retried within the
-  round. A string with the V2 prefix that does not parse is never tried as
+  does too. A failed TLS handshake, a refused AUTH (its text starts
+  `network: relay authentication failed:`) and an invalid connection string
+  are network errors: the `sync` they happen in ends there, before any bundle
+  or envelope is published, read or deleted. The app's round
+  (`sync_conversations`) may then open a session with a contact
+  (GET_BUNDLE, no AUTH) and call `sync` once more, so one round can try AUTH
+  twice; the app's backoff then applies, as after any `network:` error. A
+  string with the V2 prefix that does not parse is never tried as
   `host:port`.
+- Only the app's Kotlin side refuses V1 in release builds
+  (`messaging/RelayRules.kt`, applied when a relay is set and again to the
+  saved value at start). The Rust core accepts both versions in every build:
+  one release `libarcium_core.so` serves every app variant.
 
-V2 keeps mailboxes from strangers and the network (R-9), not from the relay's
-operator, who still sees and can delete everything. It reuses the identity
-X25519 key in one more DH context (the auth key derivation), separated by
-its HKDF salt and label; that is not reviewed by a cryptographer yet.
+V2 keeps the network from seeing keys and envelopes, and keeps strangers from
+reading, deleting or replacing a mailbox's contents. It does not hide how
+full a mailbox is: anyone may SEND, and the count of SENDs accepted before
+FULL is the number of free places. So a stranger can still learn whether the
+owner kept or deleted a message (section 8, R-9), at the cost of filling the
+mailbox. The relay's operator still sees and can delete everything. V2 reuses
+the identity X25519 key in one more DH context (the auth key derivation),
+separated by its HKDF salt and label; that is not reviewed by a cryptographer
+yet.
 
 **Paging.** Each stored envelope gets a sequence number from one relay-wide
 counter: it starts at 1, only grows, and a relay that has used `u64::MAX`
@@ -375,7 +388,8 @@ only the first can be accepted.
   dropped). That limit also covers a refused handshake the initiator keeps
   retransmitting: it is refused again once 10 minutes have passed since the
   last refusal to that contact, so a refusal the relay lost after storing it
-  (a relay restart, or anyone's DELETE) is replaced. A first
+  (a relay restart without `--db`, a DELETE by the operator, or by anyone on
+  V1) is replaced. A first
   message refused for its prekeys sends none; the initiator's next
   retransmission of the handshake is refused and answered. A refusal the relay
   does not store (the initiator's mailbox is full), and one whose SEND loses
@@ -470,8 +484,14 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 - Hiding whom a device knows from a reader of the mailboxes. A refusal of a
   forged handshake shows such a reader that the refuser has the named
   initiator as a contact (it proves it to nobody else); so does a message
-  kept rather than deleted (section 3). On V2 such a reader is the relay's
-  operator only; on V1, in development, anyone who reaches the relay.
+  kept rather than deleted (section 3). On V1, in development, anyone who
+  reaches the relay reads the mailboxes. On V2 only the relay's operator
+  reads them, but anyone can still tell kept from deleted by counting the
+  free places in the owner's mailbox (SENDs accepted until FULL, section 3):
+  plant forged messages naming X, wait for the owner's round, then fill the
+  mailbox (counting X's mailbox the same way shows whether a refusal
+  arrived). That fills the mailbox, so it is visible and stops delivery to
+  its owner until messages are fetched and deleted (tracker R-9, open).
 - Protection against key-compromise impersonation of refusals. A refusal is
   authenticated by a MAC both parties can make, so whoever holds the
   initiator's identity secret can make one the initiator accepts, and so end
@@ -523,8 +543,8 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 - Read receipts; multi-device; group messaging; attachments.
 - Protection against a full mailbox. Paging (section 3) only stops kept
   envelopes from hiding later ones. Anyone who can reach the relay can still
-  fill a mailbox to its 4096 entries (SEND is then refused) or delete from
-  it. A full mailbox stops delivery to its owner only: a sender's round goes
+  fill a mailbox to its 4096 entries (SEND is then refused); on V1 anyone can
+  also delete from it, on V2 only its owner and the operator. A full mailbox stops delivery to its owner only: a sender's round goes
   on for its other contacts (section 7). And a relay that keeps appending
   can keep a round busy up to its bound with the rest of the mailbox out of
   reach until the next round. No relay availability or denial-of-service
@@ -699,7 +719,7 @@ entry per logical message, never written by the ratchet.
 | property | test | evidence class |
 |---|---|---|
 | first contact, identity binding, stranger drop | `tests::network` V1 tests | runtime, local relay over TCP |
-| the app over a V2 relay: first contact, texts both ways, receipts; neither a connection without AUTH nor a third device (as itself, or claiming the owner's key) can read, delete or publish another device's mailbox or bundle (R-9); a wrong TLS pin, a refused AUTH, a low-order auth key and a malformed connection string end the round with a network error and change nothing on the relay; a malformed V2 string is never tried as V1 | `tests::relay_v2` | runtime, local V2 relay over TLS |
+| the app over a V2 relay: first contact, texts both ways, receipts; neither a connection without AUTH nor a third device (as itself, or claiming the owner's key) can read, delete or publish another device's mailbox or bundle (the reading half of R-9; how full a mailbox is stays visible); a wrong TLS pin, a refused AUTH, a low-order auth key and a malformed connection string end the round with a network error and change nothing on the relay; a malformed V2 string is never tried as V1 | `tests::relay_v2` | runtime, local V2 relay over TLS |
 | which relay a build accepts: V2 strings everywhere, `host:port` in debug builds only | `RelayRulesTest` (Android JVM unit test) | unit |
 | a handshake alone is not a session; its first message creates it; a recorded handshake does not block simultaneous initiation | `tests::responder` | runtime, local relay over TCP |
 | both directions, restarts, consistent histories | `both_directions_and_both_histories_survive_restarts` | runtime |

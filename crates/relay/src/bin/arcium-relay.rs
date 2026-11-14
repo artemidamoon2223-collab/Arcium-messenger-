@@ -11,8 +11,8 @@
 //! `--keys FILE` serves `RELAY_PROTOCOL_V2` on `--listen` with the keys in
 //! FILE: TLS 1.3 with the pinned key, and mailboxes only for their
 //! authenticated owners. Without it, `RELAY_PROTOCOL_V1`: no TLS and no
-//! authentication, for development and tests only (the app still uses it;
-//! V1 will be removed once it moves to V2).
+//! authentication, for development builds and tests only (release builds of
+//! the app accept only V2).
 //!
 //! `--max-mailbox` is 1 to 4096 (`DEFAULT_MAX_MAILBOX`, the default); any
 //! other value is refused. `--db FILE` keeps mailboxes and bundles in that

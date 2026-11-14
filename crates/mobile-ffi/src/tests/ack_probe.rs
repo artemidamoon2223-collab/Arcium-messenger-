@@ -252,3 +252,35 @@ fn neither_outbox_removal_is_exported_through_uniffi() {
     allowed_seen.sort_unstable();
     assert_eq!(allowed_seen, ["cancel_text", "delete_contact", "resolve_session_conflict"]);
 }
+
+/// The identity key's DH stays inside Rust. `ArciumCore::identity_dh` gives
+/// the X25519 of the identity secret with any public key, for the relay's
+/// mailbox authentication; exported, it would hand Kotlin (and anything that
+/// reaches the bindings) a DH oracle on the identity key. A source check:
+/// no exported item defines it or calls it directly; the messenger reaches
+/// it only through its own non-exported `authenticate`.
+#[test]
+fn identity_dh_is_not_exported_through_uniffi() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let lib = std::fs::read_to_string(src.join("lib.rs")).unwrap();
+    assert!(lib.contains("fn identity_dh("), "the guarded method exists under this name");
+    let mut items = Vec::new();
+    exported_items(&src, &mut items);
+    // Not vacuous: the scan sees `ArciumCore`'s exported block in lib.rs.
+    assert!(
+        items.iter().any(|(f, b)| f.ends_with("lib.rs") && b.contains("fn export_prekey_bundle")),
+        "the scan must see ArciumCore's exported block"
+    );
+    // The name as a whole word: `identity_dh_pk` and the like are other items.
+    let names_it = |body: &str| {
+        body.match_indices("identity_dh").any(|(i, m)| {
+            let next = body[i + m.len()..].chars().next();
+            let prev = body[..i].chars().next_back();
+            !next.is_some_and(|c| c.is_alphanumeric() || c == '_') && !prev.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+    };
+    assert!(names_it("self.core.identity_dh(pk, out)") && !names_it("identity_dh_pk"));
+    for (file, body) in &items {
+        assert!(!names_it(body), "identity_dh is exported or called by an export in {file}");
+    }
+}

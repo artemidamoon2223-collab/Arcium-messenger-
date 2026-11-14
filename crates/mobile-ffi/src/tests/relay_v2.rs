@@ -25,7 +25,7 @@ fn unauthorized<T: std::fmt::Debug>(r: Result<T, ClientError>) -> bool {
 /// AUTH on a raw connection as `owner`, with the DH of `d`'s identity, as
 /// `d`'s messenger computes it.
 fn auth_as(conn: &mut Connection, owner: [u8; 32], d: &Device) -> Result<(), ClientError> {
-    conn.authenticate(owner, |auth_pk| *d.core.identity_dh(auth_pk).unwrap().unwrap())
+    conn.authenticate(owner, |auth_pk, out| assert!(d.core.identity_dh(auth_pk, out).unwrap()))
 }
 
 /// A messenger on `d`'s store for the relay at `relay`.
@@ -38,15 +38,19 @@ fn identity_dh_is_the_x25519_of_the_identity_key_and_refuses_low_order_keys() {
     let d = Device::new("127.0.0.1:1", 1);
     let relay_sk = StaticSecret::random_from_rng(OsRng);
     let relay_pk = PublicKey::from(&relay_sk);
-    let ours = d.core.identity_dh(relay_pk.as_bytes()).unwrap().expect("not low order");
+    let mut ours = [0u8; 32];
+    assert!(d.core.identity_dh(relay_pk.as_bytes(), &mut ours).unwrap(), "not low order");
     // What the relay computes with its secret and the device's public key.
     let theirs = relay_sk.diffie_hellman(&PublicKey::from(key(&d)));
-    assert_eq!(&ours[..], theirs.as_bytes());
-    // Zero, and one (a point of order 4), give all zeros.
+    assert_eq!(&ours, theirs.as_bytes());
+    // Zero, and one (a point of order 4), give all zeros: refused, and the
+    // buffer is left as it was.
     let mut one = [0u8; 32];
     one[0] = 1;
     for low in [[0u8; 32], one] {
-        assert!(d.core.identity_dh(&low).unwrap().is_none(), "{low:?}");
+        let mut out = [7u8; 32];
+        assert!(!d.core.identity_dh(&low, &mut out).unwrap(), "{low:?}");
+        assert_eq!(out, [7u8; 32], "{low:?}");
     }
 }
 
@@ -185,7 +189,12 @@ fn a_refused_auth_fails_the_round_with_a_network_error_and_changes_nothing() {
     );
 
     let r = wrong.sync();
-    assert_eq!(r.errors, vec!["network: relay refused the request: Unauthorized".to_string()]);
+    // The AUTH itself is refused (a round that skipped it would end on the
+    // PUT_BUNDLE refusal, "network: relay refused the request: ...").
+    assert_eq!(
+        r.errors,
+        vec!["network: relay authentication failed: relay refused the request: Unauthorized".to_string()]
+    );
     assert_eq!((r.published, r.fetched, r.accepted, r.delivered), (0, 0, 0, 0));
     assert!(matches!(wrong.publish_prekeys(), Err(CoreError::Network { .. })));
     assert!(relay.stored(&key(&bob)).is_empty(), "nothing was sent");
@@ -223,14 +232,14 @@ fn an_auth_key_of_low_order_fails_the_round_and_changes_nothing() {
     relay.stop();
 }
 
-/// A string with the V2 prefix that does not parse is refused; it is never
-/// tried as `host:port`, even with a V1 relay listening where it points.
+/// A string with the V2 prefix that does not parse is refused with the
+/// parser's reason; it is never tried as `host:port`. The exact error is the
+/// check: a fallback to V1 would fail differently (no such host), since a
+/// string with the prefix is never a socket address.
 #[test]
 fn a_malformed_v2_string_is_never_tried_as_v1() {
-    let v1 = start_relay();
-    let port = v1.addr().port();
     let malformed = format!(
-        "arcium-relay-v2:127.0.0.1:{port}:{}:{}",
+        "arcium-relay-v2:127.0.0.1:7700:{}:{}",
         "AB".repeat(32), // uppercase: refused
         "ab".repeat(32)
     );
@@ -240,8 +249,9 @@ fn a_malformed_v2_string_is_never_tried_as_v1() {
         r.errors,
         vec!["network: invalid relay address: TLS pin is not 64 lowercase hex digits".to_string()]
     );
-    assert!(matches!(d.net.publish_prekeys(), Err(CoreError::Network { .. })));
-    let mut plain = Connection::connect(&v1.addr().to_string(), TIMEOUT).unwrap();
-    assert_eq!(plain.get_bundle(key(&d)).unwrap(), None, "the V1 relay heard nothing");
-    v1.stop();
+    let err = d.net.publish_prekeys().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "network: invalid relay address: TLS pin is not 64 lowercase hex digits"
+    );
 }

@@ -139,3 +139,11 @@ D-024 · 2026-11-14 · AGENT (under D-023) · ACTIVE
 
 D-025 · 2026-11-14 · OWNER · DONE
 - What: merge #165 ("Мержим, делай дальше"); tracker PR #166 merged under the same instruction. Next: R-16 (PR #167; its merge needs the Owner's instruction naming it).
+
+D-026 · 2026-11-14 · OWNER · DONE
+- What: "сделаем первое, второе" (the R-16 tracker PR, then R-15); the production relay waits until the Owner rents a server. Then "мёрдж #167".
+- Evidence: Owner messages of 2026-11-14 in session `013Fd9w11HPCwF53H2tPuKpt`. #167 merged as `6d6acea` (18 check runs success on head `fa7a0c9`); tracker PR #168 (R-16 fixed) merged as `33f93e7` (12 check runs success on head `c4680ef`); both pinned with `expectedHeadSha`.
+
+D-027 · 2026-11-14 · AGENT (under D-026) · ACTIVE
+- What: R-15 as a per-text user cancel (`NetworkMessenger::cancel_text`, new `ChatEntryState::Cancelled`, stored code 6; `publish_pending` abandons a cancelled text instead of sending it). No automatic give-up. No wire, protocol or crypto change; entry layout and `ENTRY_VERSION` unchanged; a build without code 6 cannot read such an entry (downgrade). PR #169; its merge needs the Owner's instruction naming it.
+- Evidence: 515 passed, 0 failed locally on `6d6acea` + the PR; clippy `--all-targets` exit 0; independent review: one MEDIUM race and a JVM-test import error, both fixed in the PR.

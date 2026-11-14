@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-14 20:50 UTC, by a Claude Code cloud session
+Updated: 2026-11-14 21:35 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -24,7 +24,8 @@ Updated: 2026-11-14 20:50 UTC, by a Claude Code cloud session
 
 ## Open PRs (each needs the Owner's merge instruction naming it)
 - #178 production relay design (docs only).
-- Relay stack, merge in this order: #179 SQLite persistence (CI green) → #180 relay V2: TLS 1.3 + mailbox authentication (CI green, reviewed) → #181 app speaks V2, release builds V2-only (review running) → #182 deploy guide.
+- Relay stack, merge in this order (retarget each base to `main` after the previous merge; no branch deletion from the cloud): #179 SQLite persistence (head `e3a0578`, CI green) → #180 relay V2: TLS 1.3 + mailbox authentication (head `a830d99`, CI green, reviewed) → #181 app speaks V2, release builds V2-only (head `9385596`, 19/19 CI green; review: no blocker, MEDIUM R-9 wording + LOW fixed) → #182 deploy guide (head `95498de`, CI green). #178 design doc (head `6776e99`, CI green) is independent.
+- After the merges: tracker PR for R-9 (narrowed, still OPEN: mailbox occupancy visible via FULL) and R-14 (restart loss gone with `--db`; operator can still delete).
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is being written now (D-032).

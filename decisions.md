@@ -136,3 +136,6 @@ D-023 · 2026-11-14 · OWNER · DONE
 
 D-024 · 2026-11-14 · AGENT (under D-023) · ACTIVE
 - What: session recovery option C ("delete contact": forget a peer in any session state, in one transaction; pending outgoing marked abandoned; seen/send-id kept). Chosen over A and B as the smallest, local, user-triggered step (`docs/SESSION-RECOVERY-OPTIONS.md`). No wire, record-layout or crypto change. Merge of its PR is not authorized by D-023.
+
+D-025 · 2026-11-14 · OWNER · DONE
+- What: merge #165 ("Мержим, делай дальше"); tracker PR #166 merged under the same instruction. Next: R-16 (PR #167; its merge needs the Owner's instruction naming it).

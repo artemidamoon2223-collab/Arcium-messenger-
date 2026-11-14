@@ -10,6 +10,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **R-12 recorded as fixed 2026-11-13 against `main` @ `c07bf36`** (PR #154; see "Update 2026-11-13: R-12 fixed"). Only the R-12 row gained a dated note; no other row was changed.
 **Rows added 2026-11-14 against `main` @ `de328a1`:** R-13 … R-19, and notes on R-7 (b) and R-10 (fix in review) (see "Update 2026-11-14"); no earlier row was changed.
 **R-7 (b), R-10 and R-17 recorded as fixed 2026-11-14 against `main` @ `63b606d`** (PRs #157, #158, #163; see "Update 2026-11-14: R-7 (b), R-10 and R-17 fixed"), with a note on F-15 (a); no earlier row was changed.
+**Way out of R-13 and R-14 recorded 2026-11-14 against `main` @ `6714921`** (PR #165, delete a contact; see "Update 2026-11-14: delete a contact"); no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -792,6 +793,37 @@ local relay only; no phone (`NV`).
 | **R-10** (a missing history entry fails more) | **FIXED — merged** in PR #158 (merge `ddca7cc`). A missing entry number is skipped by every history read. Pages walk back over a gap and still hold up to `limit` entries; an empty page still means the beginning. An entry that exists but cannot be read is still an error. Without gaps, every read returns what it returned before. | `entries_in` (`crates/mobile-ffi/src/network/chat.rs:898`), `newest_before` (`:913`), the summary's last entry (`:527`), `open_entries` (`:931`, skip at `:936`), the record build in `open_seqs` (`:949`, skip at `:964`). Tests: `tests::history_paging::a_missing_entry_is_skipped_rather_than_failing_every_read` (`crates/mobile-ffi/src/tests/history_paging.rs:262`) and `…::an_open_entry_missing_from_the_store_is_skipped_by_rounds` (`:311`). Both fail on `de328a1`'s `chat.rs` with "storage error: key not found" and pass here. Specification: `docs/NET-MESSAGING.md:495`. **Remaining:** a damaged store is neither detected nor repaired, and the user is not told that an entry is gone (D-009 / F-10: the store claims no row-set integrity). A record number whose entry went missing stays in the open-entry record, harmlessly. | `SV`, tests `RV` |
 | **R-17** (Android shows "Connected" while rounds fail) | **FIXED — merged** in PR #163 (merge `63b606d`). A round that reached the relay but reported another error is `RelayLink.Online` with that error as `problem`. The round-budget notice is not counted, since it is not an error (`docs/NET-MESSAGING.md` section 7). The banner on the contacts and chat screens then reads "Connected to the development relay, but the last sync reported: …" in the error colour. A network error is still `Offline`, with the same reason as before. | `RelayLink.Online` (`android/app/src/main/kotlin/com/arcium/messenger/messaging/MessengerService.kt:41`), `BUDGET_NOTICE` (`:55`), `linkAfterRound` (`:62`), used at `:197`; the banner (`android/app/src/main/kotlin/com/arcium/messenger/ui/contacts/ContactsScreen.kt:117`). JVM test `RelayLinkTest` (`android/app/src/test/kotlin/com/arcium/messenger/messaging/RelayLinkTest.kt`: a clean round, the notice alone, local errors with and without it, network errors with others). **Remaining:** the banner shows Rust's error text as it is, without advice. The notice is matched by a text prefix that copies the Rust constant `BUDGET_EXHAUSTED`. There was no independent review of this PR. | `SV`; CI `RV`; phone `NV` |
 | **F-15 (a)** (Solana RPC path bypasses Tor) | Cross-reference only; the status is unchanged. The cited `SolanaClient.kt` was deleted by PR #157, so the app now has no Solana RPC path at all. The design concern returns when PSI is wired into the app (F-4, F-14, R-19). | `android/app/src/main/kotlin/com/arcium/messenger/network/SolanaClient.kt` absent at `0a8dbd4` | `SV` |
+
+---
+
+## Update 2026-11-14: delete a contact (`main` @ `6714921`)
+
+**Snapshot:** `main` @ `67149214cb2da6084b4ea4f6181deb03d6287e7f`, the merge commit of PR #165
+(session recovery option C of `docs/SESSION-RECOVERY-OPTIONS.md`, chosen under the Owner's
+delegation of 2026-11-14). Only the notes below are added; every row keeps its snapshot and
+status. Each `path:line` was re-read at `6714921`.
+
+**Runtime evidence.** At `6714921`, `cargo test --workspace --locked`: exit 0, 507 passed,
+0 failed, 4 ignored (local run, 2026-11-14). Every check run on PR #165's head `826d2b5` was
+success (20 runs; `two-devices` passed on one re-run after an Android SDK download failure
+that happened before any test ran). An independent review (`engineering-code-review`,
+`arcium-security-review`, full coverage) found nothing a remote party can trigger. Its MEDIUM
+finding (writes outside rounds re-creating a deleted contact's records) and LOW finding (a
+damaged outbox record read as delivered) were fixed in the PR. Emulators and a local relay
+only; no phone (`NV`).
+
+| ID | Note at `6714921` | Evidence | Label |
+|----|-------------------|----------|-------|
+| **R-13** (false conflict dead end) | Still **OPEN**. Its cause is unchanged: a handshake alone still raises the conflict. A **way out now exists**: both users delete each other (`delete_contact`) and exchange cards again, and the next texts are delivered both ways. Undelivered texts are lost, and the peer is told nothing. Options A and B of `docs/SESSION-RECOVERY-OPTIONS.md` remain for removing the cause and for recovering without both users acting. | `Messenger::forget_peer` (`crates/core-protocol/src/messaging/removal.rs:154`, one transaction in `forget_listed`, `:204`); `NetworkMessenger::delete_contact` (`crates/mobile-ffi/src/network/chat.rs:737`); every chat write checks the card in its own transaction (`pinned_in`, `:438`). Test `tests::delete_contact::deleting_each_other_ends_the_dead_end_of_a_false_conflict` (`crates/mobile-ffi/src/tests/delete_contact.rs:141`) reproduces the dead end and then the recovery. Specification: `docs/S2-B2-DURABLE-MESSAGING.md:294`, `docs/NET-MESSAGING.md:492`. | `SV`, tests `RV` |
+| **R-14** (more than `MAX_SKIP` lost messages) | Still **OPEN**, with the same way out as R-13. It was not reproduced end to end with a delete (`NV`); the mechanism is the same, since a delete removes the session in any state. | as for R-13 | `SV`; recovery `INF` |
+| **R-15** (no failed state, no give-up) | Still **OPEN**. Deleting the contact now gives up every pending text, which is marked abandoned and never shown as delivered. A per-text cancel and a failed state are still missing. | `tests::delete_contact::a_text_without_a_receipt_is_abandoned_by_the_delete_not_delivered` (`delete_contact.rs:270`) | `SV`, test `RV` |
+| **X-4** (delivery consistency) | Cross-reference only. A third exported path now takes texts out of the outbox: `delete_contact`. It marks them abandoned, also when an outbox record cannot be decoded (abandoned by the id in its key). The export guard allows exactly `resolve_session_conflict` and `delete_contact`. | `crates/mobile-ffi/src/tests/ack_probe.rs` (`neither_outbox_removal_is_exported_through_uniffi`); `core_protocol` test `forgetting_marks_an_undecodable_outbox_message_abandoned` | `SV`, tests `RV` |
+
+**Limits.** Both users must delete. A sync round that runs at the same time as
+`delete_contact` can start a new session for the deleted peer; the Android app runs both on
+its one sync thread (`MessengerService.callBetweenRounds`), and the Rust doc states the
+requirement for any other caller. Deleting the contact also removes the identity pin, so a
+re-add trusts whatever card the user enters, as a first add does.
 
 ---
 

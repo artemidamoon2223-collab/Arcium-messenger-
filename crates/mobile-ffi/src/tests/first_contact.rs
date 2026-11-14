@@ -267,13 +267,34 @@ fn a_second_refusal_to_one_contact_waits_for_the_interval() {
     relay.stop();
 }
 
-/// D3: one refusal per refused handshake, however often it is retransmitted.
+/// Removes the refusal envelopes stored for `to`, as a relay restart or
+/// anyone's unauthenticated DELETE would. Returns how many there were.
+fn remove_refusals(relay: &relay::server::RelayHandle, to: &Device) -> usize {
+    let seqs: Vec<u64> = relay
+        .stored(&key(to))
+        .into_iter()
+        .filter(|(_, e)| matches!(Envelope::decode(e), Some(Envelope::Refusal { .. })))
+        .map(|(seq, _)| seq)
+        .collect();
+    let n = seqs.len();
+    if n > 0 {
+        relay::client::Connection::connect(&relay.addr().to_string(), Duration::from_secs(2))
+            .unwrap()
+            .delete(key(to), seqs)
+            .unwrap();
+    }
+    n
+}
+
+/// D3: one refusal per contact per interval, however often the refused
+/// handshake is retransmitted. Each refusal is removed from the relay before
+/// the next retransmission, so the relay's dropping of an identical envelope
+/// still stored cannot hide a second one.
 #[test]
-fn a_retransmitted_handshake_is_refused_once() {
+fn a_retransmitted_handshake_is_refused_once_per_interval() {
     let relay = start_relay();
     let addr = relay.addr().to_string();
     let (bob, writers) = offline_recipient(&addr, 2, true);
-    bob.net.set_refusal_interval(Duration::ZERO);
     let carol = writers
         .iter()
         .find(|w| session(&bob, w) != ChatSessionState::Established)
@@ -284,11 +305,63 @@ fn a_retransmitted_handshake_is_refused_once() {
         handshake: hs,
     }
     .encode();
+    let mut sent = 0;
     for _ in 0..4 {
         inject(&addr, &bob, env.clone());
         bob.sync();
+        sent += remove_refusals(&relay, carol);
     }
-    assert_eq!(refusals_for(&relay, carol), 1);
+    assert_eq!(sent, 1);
+    relay.stop();
+}
+
+/// R-16: a refusal the relay lost after storing it is sent again. Bob's
+/// refusal of Carol's retransmitted handshake is removed from the relay
+/// before Carol reads it. Within the per-contact interval her next
+/// retransmission is not answered; once the interval has passed, the one
+/// after it is, and Carol starts again and gets through. (Before, a refused
+/// handshake was answered at most once per process, and Carol waited until
+/// Bob's process restarted.)
+#[test]
+fn a_lost_refusal_is_sent_again_once_the_interval_has_passed() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (bob, writers) = offline_recipient(&addr, 2, true);
+    let idx = writers
+        .iter()
+        .position(|w| session(&bob, w) != ChatSessionState::Established)
+        .unwrap();
+    let carol = &writers[idx];
+    let dead = handshake_of(carol, &bob).unwrap();
+
+    // Carol retransmits her handshake; Bob refuses it and says so. The
+    // refusal is lost before Carol's next round.
+    carol.net.sync_conversations();
+    bob.net.sync_conversations();
+    assert_eq!(remove_refusals(&relay, carol), 1, "the first refusal was stored");
+
+    // Within the interval (the default 10 minutes) Bob does not refuse again.
+    carol.net.sync_conversations();
+    assert_eq!(handshake_of(carol, &bob), Some(dead.clone()), "Carol still waits");
+    bob.net.sync_conversations();
+    assert_eq!(refusals_for(&relay, carol), 0, "no second refusal within the interval");
+
+    // The interval (shortened) passes; Carol's next retransmission is
+    // refused again.
+    bob.net.set_refusal_interval(Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(250));
+    carol.net.sync_conversations();
+    bob.net.sync_conversations();
+    assert_eq!(refusals_for(&relay, carol), 1, "the refusal was sent again");
+
+    carol.net.sync_conversations();
+    assert_ne!(handshake_of(carol, &bob), Some(dead), "Carol gave up the dead session");
+    until_established(&bob, &writers, 12);
+    say(carol, &bob, "later", "later");
+    rounds(&[&bob, carol], 4);
+    assert_eq!(state_of(carol, &bob, "later"), Some(S::Delivered));
+    assert_eq!(state_of(carol, &bob, &format!("first {idx}")), Some(S::NotDelivered));
+    assert_eq!(received(&bob, carol), vec!["later".to_string()], "once, and never the dead text");
     relay.stop();
 }
 

@@ -874,6 +874,25 @@ no phone (`NV`).
 
 ---
 
+## Update 2026-11-14: R-18 (a) and (c) fixed (`main` @ `92ad8eb`)
+
+**Snapshot:** `main` @ `92ad8eb4ac7e3c50579eab462562882012f7243f`, the merge commit of PR #171.
+Only the row named here changes; every other row keeps the snapshot it cites. Each
+`path:line` was re-read at `92ad8eb`.
+
+**Runtime evidence.** Every check run on PR #171's head `bd596d0` was success (18 runs,
+including Android CI `build`, which runs the JVM tests, Android Instrumentation
+`connected-tests` on an API 30 emulator, and `two-devices`). No Rust source changed. There
+was no local Android build (no SDK in the session). The merge was made on the Owner's
+instruction of 2026-11-14 ("мёрдж #171"); the choice of items followed the Owner's
+delegation of the same day (continuity record D-029). Emulators only; no phone (`NV`).
+
+| ID | Status at `92ad8eb` | Evidence (`main` @ `92ad8eb`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-18** (Android hardening not present) | **PARTIAL — (a) and (c) fixed, merged** in PR #171 (merge `92ad8eb`); **(b) deferred**. (a) `MainActivity` sets `FLAG_SECURE`, so the system keeps the window out of screenshots, screen recordings and the recent-apps preview; the user cannot screenshot their own chats either. (c) `android:dataExtractionRules` excludes every domain, device-protected storage included, from cloud backup and device-to-device transfer on Android 12 and later; `allowBackup="false"` covers older versions. (b) StrongBox and Keystore key flags stay as they were: emulators have no StrongBox, so a fallback could not be verified, and a failing key creation would block start-up; an unlocked-device or user-authentication requirement would also block the planned background receive. It waits for a phone test. | (a) `android/app/src/main/kotlin/com/arcium/messenger/MainActivity.kt:24`; instrumentation test `ui/SecureWindowInstrumentationTest` (`android/app/src/androidTest/kotlin/com/arcium/messenger/ui/SecureWindowInstrumentationTest.kt:25`). (c) `android/app/src/main/AndroidManifest.xml:10-11`, `android/app/src/main/res/xml/data_extraction_rules.xml`; JVM test `security/BackupRulesTest` (`android/app/src/test/kotlin/com/arcium/messenger/security/BackupRulesTest.kt:25`, `:32`). (b) unchanged: `KeyGenParameterSpec.Builder` (`android/app/src/main/kotlin/com/arcium/messenger/security/MasterKeyProvider.kt:150`). | `SV`, CI `RV`; phone behaviour `NV` |
+
+---
+
 ## Prioritized remaining work
 
 For new work, see "Next engineering tasks (2026-11-06)" above; this list is kept as history. Regenerated 2026-09-29 from the tables above; the 2026-07-19 list is superseded. Order is

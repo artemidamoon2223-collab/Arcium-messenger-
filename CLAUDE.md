@@ -159,8 +159,8 @@ chain, CI integrity (ложно-зелёные проверки). Процеду
 Подтверждены `.github/workflows/arcium-ci.yml` и `.devcontainer/setup.sh`:
 
 ```bash
-cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo test --workspace --locked
+cargo clippy --workspace --locked -- -D warnings
 cd arcium-psi/tests && npx tsc --noEmit
 cd arcium-psi/tests && npx mocha --require ts-node/register 'src/crypto.test.ts'
 ```

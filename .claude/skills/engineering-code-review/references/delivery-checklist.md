@@ -6,8 +6,8 @@ verification step — "it looks right" is not one.
 ## Minimum
 
 ```
-☐ cargo test --workspace                    →  0 упавших
-☐ cargo clippy --workspace -- -D warnings   →  0 предупреждений
+☐ cargo test --workspace --locked                    →  0 упавших
+☐ cargo clippy --workspace --locked -- -D warnings   →  0 предупреждений
 ☐ tsc --noEmit                              →  0 ошибок  (если трогал TS)
 ☐ grep на висячие ссылки                    →  нет
 ☐ diff затрагивает ТОЛЬКО запрошенное       →  да

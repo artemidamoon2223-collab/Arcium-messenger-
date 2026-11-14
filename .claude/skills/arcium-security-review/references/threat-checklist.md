@@ -142,8 +142,10 @@ the Android contact-card and add-contact code. Specification:
   handshake can raise a false conflict. Check what a resolve then does
   (`resolve_session_conflict` in `network/chat.rs`: committed texts
   `NotDelivered`, abandoned, our session removed, wait for the peer's
-  handshake); `NET-MESSAGING.md` §10 states that a false conflict only delays
-  the conversation. A change must not let a forged or replayed object reach a
+  handshake). A probe at `de328a1` showed that a resolved false conflict can
+  dead-end the conversation for good: the contact accepts the original
+  handshake while this device waits for one that never comes (recorded in
+  the tracker by PR #160). A change must not let a forged or replayed object reach a
   restart or a session removal without either a verified refusal or the
   user's own resolve.
 
@@ -187,9 +189,10 @@ Where: `crates/mobile-ffi/src/network.rs`, `network/wire.rs`,
   `NET-MESSAGING.md` §8). Check that a change adds no further keep/delete,
   answer/no-answer or timing difference that depends on who is pinned.
 - **History numbering.** History entries are numbered without gaps and never
-  deleted; paging (`chat_entries_page`) and the one-time build of the
-  open-entry record (`open_seqs`) read every number and fail on a missing one
-  (`network/chat.rs`; R-10, open). A change that deletes, skips or reorders
+  deleted, so a number is missing only from a damaged store. At `de328a1`,
+  paging (`chat_entries_page`), the summary and the one-time build of the
+  open-entry record (`open_seqs`) fail on a missing number (`network/chat.rs`;
+  R-10); PR #158 makes them skip it. A change that deletes, skips or reorders
   entry numbers, or reads them some other way, must say what happens to that
   assumption.
 - **Offline and recovery.** After lost network, lost relay or process death:

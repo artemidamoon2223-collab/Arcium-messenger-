@@ -849,6 +849,31 @@ and a phone are `NV`.
 
 ---
 
+## Update 2026-11-14: R-15 fixed (`main` @ `2cc79ff`)
+
+**Snapshot:** `main` @ `2cc79ff4fff37d525bdb2240640149870b8a5079`, the merge commit of PR #169.
+Only the rows named here change; every other row keeps the snapshot it cites. Each
+`path:line` was re-read at `2cc79ff`.
+
+**Runtime evidence.** On `6d6acea` plus PR #169 (its head `5632ab6`; `6d6acea` → `2cc79ff`
+differs from that only by tracker PR #168, docs only), `cargo test --workspace --locked`:
+exit 0, 515 passed, 0 failed, 4 ignored; `cargo clippy --workspace --locked --all-targets --
+-D warnings`: exit 0 (local run, 2026-11-14). Every check run on the head was success (20
+runs, including Android CI `build`, which runs the JVM tests, `connected-tests` and
+`two-devices`). An independent review (`engineering-code-review`, `arcium-security-review`,
+every changed file read in full) found no way for a text to read `Delivered` without the
+peer's receipt; its MEDIUM finding (a text committed by a concurrent `refresh` published
+once after the cancel) and a JVM-test import error were fixed in the PR. The merge was made
+on the Owner's instruction of 2026-11-14 ("мёрдж #169"). Emulators and a local relay only;
+no phone (`NV`).
+
+| ID | Status at `2cc79ff` | Evidence (`main` @ `2cc79ff`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-15** (an unacknowledged text stays `Transmitted` for good; no give-up) | **FIXED — merged** in PR #169 (merge `2cc79ff`), as a per-text user cancel (the product decision taken under D-026/D-027 of the continuity records). `cancel_text` marks an own `Queued`, `Pending` or `Transmitted` text `Cancelled` in one transaction, then abandons its committed message; `publish_pending` abandons, instead of sending, any text whose entry reads `Cancelled` (a crash between the two steps, or a text another thread commits after the mark). A receipt already taken makes the entry `Delivered`; `Cancelled` → `Delivered` is the only move out of `Cancelled`. `Cancelled` claims nothing about the peer: a copy the relay already accepted may still be accepted there. Android offers "Cancel" (with a confirmation) on texts not yet final, run between rounds, and "Send again" (a new message) on cancelled ones. No wire, protocol or crypto change. **Remaining:** there is still no automatic give-up: a text the user does not cancel is retransmitted for as long as the app runs (by choice; "Not in this package" of the work plan). A crash inside a cancel that a receipt races can leave a delivered text `Cancelled`. A build without the new state code (6) reads such an entry as corrupt (downgrade). A round already past the publish check may send the text once more (Android cancels between rounds). | State and code (`crates/mobile-ffi/src/network/chat.rs:77`, `:89`, `:101`); the transitions (`:470`); `cancel_text` (`:751`); `cancelled_text` (`:1240`), checked in `publish_pending` (`crates/mobile-ffi/src/network.rs:867`). Tests `tests::cancel_text::*` (`crates/mobile-ffi/src/tests/cancel_text.rs:86`, `:122`, `:147`, `:180`, `:198`, `:229`) and `tests::network_crash::a_sender_killed_while_cancelling_never_sends_the_text` (`network_crash.rs:300`; with the `publish_pending` check disabled it fails). Android: `ChatScreen.kt:287`, `:291`; `ChatViewModel.kt:194`; JVM test `CancelActionsTest`. Specification: `docs/NET-MESSAGING.md:517`. | `SV`, tests `RV`; phone `NV` |
+| **X-4** (delivery consistency) | Cross-reference only. A third exported caller of `abandon_outgoing` exists, `cancel_text`; the export guard lists it explicitly (`ALLOWED`, three names) and still checks every other exported method. `Delivered` still comes only from an acknowledged send record. | `crates/mobile-ffi/src/tests/ack_probe.rs:230`, `:253` | `SV`, test `RV` |
+
+---
+
 ## Prioritized remaining work
 
 For new work, see "Next engineering tasks (2026-11-06)" above; this list is kept as history. Regenerated 2026-09-29 from the tables above; the 2026-07-19 list is superseded. Order is

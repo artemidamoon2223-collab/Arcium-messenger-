@@ -1294,6 +1294,26 @@ impl ArciumCore {
         Ok(HandshakeRefusal::open(bytes, &identity.dh_key, refuser_dh_pk))
     }
 
+    /// X25519 of this device's identity secret with `public`, in a wiping
+    /// owner. `None` if the output is all zeros (`public` is of low order):
+    /// anyone could compute that value. For the mailbox authentication of a
+    /// `RELAY_PROTOCOL_V2` relay, where `public` is the relay's auth key
+    /// (docs/NET-MESSAGING.md, section 3); the relay crate separates that
+    /// derivation from every other use of the identity key by its own HKDF
+    /// salt and label. The identity secret never leaves this type. Not
+    /// exported: this impl block is not `#[uniffi::export]`.
+    pub(crate) fn identity_dh(&self, public: &[u8; 32]) -> Result<Option<Zeroizing<[u8; 32]>>, CoreError> {
+        let identity = self.require_identity()?;
+        // `SharedSecret` wipes itself on drop.
+        let shared = identity.dh_key.diffie_hellman(&PublicKey::from(*public));
+        if !shared.was_contributory() {
+            return Ok(None);
+        }
+        let mut out = Zeroizing::new([0u8; 32]);
+        out.copy_from_slice(shared.as_bytes());
+        Ok(Some(out))
+    }
+
     fn our_identity_pk(&self) -> Result<[u8; 32], CoreError> {
         Ok(PublicKey::from(&self.require_identity()?.dh_key).to_bytes())
     }
@@ -2494,4 +2514,5 @@ mod tests {
     mod identity;
     mod unresolved;
     mod false_conflict;
+    mod relay_v2;
 }

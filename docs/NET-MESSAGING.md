@@ -135,7 +135,11 @@ stored twice.
 the recipient's receipt arrives, and sends it again after
 `retransmit_after_ms`, then after twice as long each time, up to 5 minutes
 (section 7). A relay that loses, withholds or restarts only delays
-delivery.
+delivery, with one exception: if more than `MAX_SKIP` (1000) consecutive
+messages of one sending chain are lost (receipts included, which are never
+sent again once the relay has stored them), the recipient refuses every
+later message of that chain and that direction stops for good (tracker
+R-14).
 
 `ENVELOPE_V1` (what the relay stores):
 `"ARN1" || kind(1) || sender_x25519_pk(32) || body`, kind 1 = the unchanged
@@ -378,8 +382,9 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   initiator's identity check). Denial of service is possible.
 - Refusal feedback beyond the refusal of section 6: a relay can withhold a
   refusal (the initiator then keeps retransmitting, as before refusals
-  existed), and a refusal lost after the relay accepted it is sent again only
-  after 10 minutes, or after the responder restarts. A refusal queued but not
+  existed), and a refusal lost after the relay accepted it is not sent again
+  for that handshake until the responder restarts (section 6: at most once
+  per refused handshake); until then the initiator waits (tracker R-16). A refusal queued but not
   yet stored is lost if the responder's process ends.
 - Hiding whom a device knows from a reader of the mailboxes. A refusal of a
   forged handshake shows such a reader that the refuser has the named
@@ -472,8 +477,16 @@ entry per logical message, never written by the ratchet.
   abandoned too and shown `NotDelivered` from its record; one committed after
   the abandoning makes the removal refuse (`PendingOutgoing`), and calling
   again completes it.
-  A replayed old handshake can raise a false conflict; resolving it then only
-  delays the conversation.
+  A handshake that is not the contact's current one can raise a false
+  conflict: a replayed old one, or a forged one (it is built from public
+  bytes, and the relay does not authenticate senders). Resolving a false
+  conflict is not harmless. If the contact goes on to accept this device's
+  original handshake, the two devices dead-end: this device waits for a
+  handshake that never comes, and the contact keeps an established session
+  whose messages this device cannot read. Nothing in this version resolves
+  that (tracker R-13; options in `docs/SESSION-RECOVERY-OPTIONS.md`). On the
+  device with the smaller key, a false conflict clears by itself once the
+  contact confirms the session.
 - **Reading in pages.** Entries are numbered 1, 2, … per contact: each takes
   the next number in the transaction that writes it, and none is deleted.
   `chat_entries_page(peer, before_seq, limit)` returns the `limit` entries

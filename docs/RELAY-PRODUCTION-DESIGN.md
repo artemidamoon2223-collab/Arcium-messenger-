@@ -1,10 +1,12 @@
-# Production relay — design proposal (for the Owner's decision)
+# Production relay — design
 
-Status: proposal only. Nothing here is implemented or decided. Each numbered
-decision in section 6 needs the Owner's approval, because it changes the relay
-protocol (`crates/relay/src/protocol.rs`, `RELAY_PROTOCOL_V1`) and adds a
-cryptographic step (`CLAUDE.md`, "Обращение с криптокодом"). Written against
-`main` @ `41a0d8d`.
+Status: decided. The Owner delegated the relay's design to the agent
+(continuity record D-032), so section 6 records the agent's decisions under
+that delegation, with one amendment (D-033, decision 4). Implemented in
+PR #179 (persistence), PR #180 (TLS and mailbox authentication in the relay
+and its client) and PR #181 (the app); deployment is in
+`docs/RELAY-DEPLOY.md` (PR #182). Each PR still needs the Owner's merge
+instruction. Written against `main` @ `41a0d8d`.
 
 ## 1. What the relay is today
 
@@ -64,7 +66,7 @@ bind a victim's mailbox to the attacker's own signing key.
   challenge `c`.
 - To act as owner `O`, the client sends
   `AUTH O tag`, where:
-  - `k = HKDF-SHA256(ikm = DH(id_sk, auth_pk), info = "arcium-relay-auth-v1")`
+  - `k = HKDF-SHA256(salt = "arcium-relay-auth-salt-v1", ikm = DH(id_sk, auth_pk), info = "arcium-relay-auth-v1")`
   - `tag = HMAC-SHA256(k, c || exporter || O)`
 - The relay checks the tag with `DH(auth_sk, O)`.
 - `exporter` is 32 bytes of TLS keying material for this connection
@@ -83,9 +85,10 @@ bind a victim's mailbox to the attacker's own signing key.
 - The relay learning `k` gives it nothing it could not compute itself. For
   any key it chooses, `DH(id_sk, pk)` is known to whoever holds that key's
   secret. This is the same position as an X3DH peer choosing an ephemeral key.
-- The identity key is used in one more DH context, separated by the HKDF info
-  string. That is cross-protocol key reuse, and it needs a cryptographic
-  review: `arcium-security-review`, and an outside reviewer when available.
+- The identity key is used in one more DH context, separated by the HKDF
+  salt and info strings. That is cross-protocol key reuse, and it needs a
+  cryptographic review: `arcium-security-review` (done in PR #180), and an
+  outside reviewer when available (REVISIT AT SECURITY AUDIT).
 - A forged or replayed `AUTH` fails: the challenge is fresh and the exporter
   is bound to the connection.
 
@@ -109,9 +112,9 @@ the app.**
   certificate can be added later without changing the app.
 - The relay crate stops being standard-library only. The client stays
   blocking.
-- If rustls's RFC 7250 raw-public-key mode works on both ends, X.509 can be
-  dropped entirely. That is to be verified during implementation; the pin
-  works either way.
+- rustls's RFC 7250 raw-public-key mode works on both ends (PR #180), so
+  there is no X.509 certificate at all: the relay has an Ed25519 key, and the
+  app pins SHA-256 of its SubjectPublicKeyInfo. Key exchange is X25519 only.
 
 **Alternatives considered**
 - **Noise XK** (`snow` crate). One handshake would give both encryption and
@@ -140,28 +143,31 @@ the Android client does not change.**
   encrypted; the metadata (keys, sizes, times) is not. Encrypting the disk
   is left to the host, and the deploy guide will say so.
 
-## 6. Decisions for the Owner
+## 6. Decisions
 
 1. Mailbox authentication: DH challenge-response with a pinned relay auth
-   key (section 3). **Recommended.**
-2. Channel: TLS 1.3 with rustls and a pinned key (section 4). **Recommended**,
-   over Noise XK and over no encryption.
+   key (section 3).
+2. Channel: TLS 1.3 with rustls and a pinned key (section 4), over Noise XK
+   and over no encryption.
 3. Persistence: SQLite, ciphertext stored as received, disk encryption left
-   to the host (section 5). **Recommended.**
-4. Compatibility: `RELAY_PROTOCOL_V2` only. The development relay and every
-   test use V2 too, with keys generated at start-up, so one code path is
-   tested. Older app builds cannot talk to a V2 relay. **Recommended**, since
-   there are no users yet.
-5. Order: three PRs, each with its own review and tests.
-   1. TLS and authentication, in the relay and the client.
-   2. Persistence.
-   3. App configuration: release builds accept `host:port`, the TLS pin and
-      the auth key, as one string or QR code from the operator.
-   Then a deploy guide for the rented server.
+   to the host (section 5).
+4. Compatibility, amended (D-033): release builds of the app accept only
+   `RELAY_PROTOCOL_V2`. V1 stays for development builds and for the
+   failure-injection tests, which inspect plaintext frames through a TCP
+   proxy and cannot do so under TLS. A database served by a V2 relay is
+   marked, and a V1 relay refuses to open it. Older app builds cannot talk to
+   a V2 relay; there are no users yet.
+5. Order, as built: persistence first, because it changes no wire format
+   (PR #179); then TLS and authentication in the relay and its client
+   (PR #180); then the app, whose release builds take one connection string
+   `arcium-relay-v2:<host>:<port>:<tls pin>:<auth key>` from the operator
+   (PR #181); then the deploy guide (PR #182). Each PR had its own review and
+   tests.
 
 ## 7. What this does not establish
 
-This is a design, not an implementation. Nothing is verified until the PRs
-exist: no test, no review, and no measurement of size or latency. The
-security argument in section 3 is the author's reasoning (INFERRED) and needs
-the review named there.
+This document is a design record; the evidence is in the PRs named above
+(their tests and reviews). The security argument in section 3 is the
+author's reasoning (INFERRED); a model review of it is analysis, not proof,
+and an outside cryptographic review has not happened. Nothing has run on a
+real server or a phone yet, and no size or latency was measured.

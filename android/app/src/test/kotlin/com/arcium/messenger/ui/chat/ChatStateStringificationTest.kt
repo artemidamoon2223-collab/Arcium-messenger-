@@ -67,7 +67,7 @@ class ChatStateStringificationTest {
         ).toString()
         assertTrue(rendered, rendered.startsWith("ChatState("))
         val parts = listOf(
-            "conversation=null", "entries=[]", "link=Online(atMs=5)", "sending=true", "error=Not saved: busy",
+            "conversation=null", "entries=[]", "link=Online(atMs=5, problem=null)", "sending=true", "error=Not saved: busy",
         )
         for (part in parts) {
             assertTrue("'$part' missing in: $rendered", rendered.contains(part))

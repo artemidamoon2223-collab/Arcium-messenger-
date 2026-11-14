@@ -1,6 +1,7 @@
 package com.arcium.messenger
 
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -17,6 +18,10 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Keeps conversations out of screenshots, screen recordings and the
+        // recent-apps preview (tracker R-18 a). The user cannot screenshot
+        // their own chats either.
+        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         enableEdgeToEdge()
         // Messages are synced only while the app is visible (MessengerService),
         // and only once start-up is Ready: before that, the messenger does not

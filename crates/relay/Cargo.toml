@@ -5,9 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 # An untrusted store-and-forward relay for end-to-end encrypted envelopes, and
-# the blocking client the app uses to reach it. Besides the standard library,
-# only rusqlite (the relay's optional SQLite file), with the version and
-# features core-storage already uses, so the Android build adds no crate.
+# the blocking client the app uses to reach it. Every dependency is a package
+# the workspace lockfile already holds, so the Android build adds no crate:
+# rusqlite (the relay's optional SQLite file) with the version and features
+# core-storage uses; rustls 0.23 with the ring provider and no default
+# features (RELAY_PROTOCOL_V2: TLS 1.3 with a pinned raw public key), the
+# version and provider the Tor client already links; and the RustCrypto and
+# dalek crates core-crypto uses (the V2 mailbox authentication).
 [lib]
 name = "relay"
 
@@ -18,6 +22,14 @@ path = "src/bin/arcium-relay.rs"
 [dependencies]
 thiserror.workspace = true
 rusqlite = { version = "0.41", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+x25519-dalek.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+rand_core.workspace = true
+zeroize.workspace = true
+subtle = { version = "2", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

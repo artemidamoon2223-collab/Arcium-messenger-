@@ -2749,9 +2749,17 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "relay"
 version = "0.1.0"
 dependencies = [
+ "hkdf 0.13.0",
+ "hmac 0.13.0",
+ "rand_core 0.6.4",
  "rusqlite",
+ "rustls",
+ "sha2 0.11.0",
+ "subtle",
  "tempfile",
  "thiserror 1.0.69",
+ "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

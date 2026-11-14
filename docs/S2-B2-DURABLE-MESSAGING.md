@@ -311,9 +311,12 @@ session" for an unreadable record (section 4). The rules of
 - In the same transaction, each pending outgoing message's `sendid:` record
   is rewritten as abandoned, as `abandon_outgoing` does. `send` and
   `prior_send` then report `Abandoned`, never `AlreadyAcknowledged`: only a
-  receipt acknowledges. An outbox record that cannot be decoded is deleted
-  as it is; its send-id record then reads as acknowledged (a limit of a
-  damaged store).
+  receipt acknowledges. For an outbox record that cannot be decoded, the
+  message id is taken from its key, and every `sendid:` record of the peer
+  naming that id is rewritten as abandoned in the same transaction.
+- Each deleted `inbox:` record leaves a `seen:` record for its id (from its
+  key), in the same transaction: the message, never shown, is a duplicate
+  if it ever arrives again rather than new.
 - `seen:` and `sendid:` records stay, as after a removal: a message already
   seen is still a duplicate under a later session, and no logical id is
   encrypted twice.

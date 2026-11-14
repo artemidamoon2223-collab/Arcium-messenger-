@@ -503,7 +503,10 @@ entry per logical message, never written by the ratchet.
   text then starts a new session. This is the way out of a session that
   can no longer progress, such as the dead end after a false conflict was
   resolved. Deleting again, or deleting someone who is not a contact, is
-  harmless.
+  harmless. Every chat record is written in a transaction that first finds
+  the card still pinned, so a call that read the contact before the delete
+  writes nothing for it after (a user action then fails as for any
+  non-contact), and a re-added contact inherits no history or flag.
 - **Reading in pages.** Entries are numbered 1, 2, … per contact: each takes
   the next number in the transaction that writes it, and none is deleted.
   `chat_entries_page(peer, before_seq, limit)` returns the `limit` entries

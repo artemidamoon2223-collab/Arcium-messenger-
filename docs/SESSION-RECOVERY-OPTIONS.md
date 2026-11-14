@@ -61,7 +61,7 @@ and is out of scope here.
 
 ### C. Delete a contact completely (local only; no wire change)
 
-**Implemented by PR (this change):** `Messenger::forget_peer`, `NetworkMessenger::delete_contact`.
+**Implemented by PR #165:** `Messenger::forget_peer`, `NetworkMessenger::delete_contact`.
 
 **What it is**
 - A user action "delete contact" removes, in one transaction:

@@ -1,11 +1,17 @@
 //! Test infrastructure for the network tests: independent devices, a real
 //! relay on a TCP port, and a proxy that breaks chosen relay operations.
+//!
+//! Most tests use a `RELAY_PROTOCOL_V1` relay ([`start_relay`]): the
+//! [`Proxy`] reads plaintext frames, which TLS would hide. `relay_v2.rs`
+//! runs devices over a `RELAY_PROTOCOL_V2` relay ([`start_relay_v2`]).
 
 use super::*;
 use crate::network::wire::Envelope;
 use crate::network::{NetworkMessenger, SyncReport};
+use relay::address::RelayAddress;
+use relay::auth::RelayKeys;
 use relay::protocol::{read_frame, write_frame};
-use relay::server::{serve, RelayConfig, RelayHandle};
+use relay::server::{serve, serve_v2, RelayConfig, RelayHandle};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
@@ -21,6 +27,22 @@ pub fn start_relay() -> RelayHandle {
         },
     )
     .unwrap()
+}
+
+/// A `RELAY_PROTOCOL_V2` relay with fresh keys, and its connection string.
+pub fn start_relay_v2() -> (RelayHandle, RelayAddress) {
+    let keys = RelayKeys::generate().unwrap();
+    let relay = serve_v2(
+        TcpListener::bind("127.0.0.1:0").unwrap(),
+        RelayConfig {
+            canary: Some(CANARY.to_vec()),
+            ..RelayConfig::default()
+        },
+        &keys,
+    )
+    .unwrap();
+    let addr = keys.address("127.0.0.1", relay.addr().port()).unwrap();
+    (relay, addr)
 }
 
 /// One device: its own database file, identity and messenger.

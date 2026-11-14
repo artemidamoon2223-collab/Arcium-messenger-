@@ -22,8 +22,9 @@ android {
     }
 
     buildTypes {
-        // The only relay that exists is the development relay: no TLS, no
-        // authentication. Only debug builds may be pointed at one.
+        // Every build accepts a V2 relay (TLS, mailbox authentication). Only
+        // debug builds may also be pointed at a development relay (V1: no
+        // TLS, no authentication); see messaging/RelayRules.kt.
         debug {
             buildConfigField("boolean", "DEV_RELAY_ALLOWED", "true")
         }

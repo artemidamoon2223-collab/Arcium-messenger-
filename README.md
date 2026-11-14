@@ -17,15 +17,16 @@ Private contact discovery is a separate component: private set intersection
 
 ## Status (2026-11-14)
 
-- Messaging between devices goes through the development relay
-  (`crates/relay`, binary `arcium-relay`): no TLS, no authentication, and
-  in memory unless started with `--db FILE` (a SQLite file kept across
-  restarts). The relay crate also implements a TLS protocol with mailbox
-  authentication (`RELAY_PROTOCOL_V2`, `arcium-relay --keys FILE`), which
-  the app does not use yet. There is no production relay. Only debug builds accept a
-  relay address (`DEV_RELAY_ALLOWED` in `android/app/build.gradle.kts`;
-  `android/app/src/main/kotlin/com/arcium/messenger/messaging/RelaySettings.kt`),
-  so a release build cannot send or receive messages.
+- Messaging between devices goes through a relay (`crates/relay`, binary
+  `arcium-relay`), in memory unless started with `--db FILE` (a SQLite file
+  kept across restarts). The app speaks `RELAY_PROTOCOL_V2` to a relay
+  started with `--keys FILE`: TLS 1.3 to the relay's pinned key, and only a
+  mailbox's owner (and the relay's operator) can read or delete it. Every
+  build accepts its connection string; only debug builds also accept
+  `host:port` of a development relay (V1: no TLS, no authentication;
+  `DEV_RELAY_ALLOWED` in `android/app/build.gradle.kts`,
+  `android/app/src/main/kotlin/com/arcium/messenger/messaging/RelayRules.kt`).
+  The Android CI jobs still use V1. No production relay is deployed.
 - Messages sync while the app is open. While it is closed they arrive only
   if the user turned on background receive in Settings (off by default): a
   foreground service with a permanent notification

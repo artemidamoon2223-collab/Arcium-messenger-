@@ -45,8 +45,9 @@
 //! Plain TCP, nothing authenticated: anyone who reaches the relay can read or
 //! delete any mailbox and replace any bundle, and a network observer sees
 //! every key and envelope. A V1 relay answers AUTH with BAD_REQUEST, as an
-//! operation it does not know. V1 is for development and tests only, and will
-//! be removed once the app uses V2.
+//! operation it does not know. V1 is for development builds and tests only
+//! (the failure-injection tests inspect plaintext frames); release builds of
+//! the app accept only V2.
 //!
 //! # V2
 //!

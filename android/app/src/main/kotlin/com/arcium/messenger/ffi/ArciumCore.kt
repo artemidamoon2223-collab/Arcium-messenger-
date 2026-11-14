@@ -289,7 +289,8 @@ class ArciumCoreWrapper {
     fun addContact(card: ByteArray): ByteArray = requireCore().addContact(card)
 
     /**
-     * A messenger that talks to the relay at [relayAddress] (`host:port`)
+     * A messenger that talks to the relay at [relayAddress] (a V2 connection
+     * string, or `host:port` of a development relay; see `RelaySettings`)
      * over this store. Sending and receiving go through the durable outbox
      * and inbox; [NetworkMessenger.sync] does the network I/O and must not run
      * on the main thread.

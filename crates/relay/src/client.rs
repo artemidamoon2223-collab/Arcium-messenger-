@@ -237,20 +237,24 @@ impl Connection {
 
     /// V2: proves to the relay that this connection acts for `owner`, an
     /// X25519 identity public key. Its secret stays with the caller: `dh` is
-    /// given the relay's auth public key and returns `DH(id_sk, auth_pk)`.
+    /// given the relay's auth public key and writes `DH(id_sk, auth_pk)` into
+    /// the second argument, a buffer this method owns and wipes, so the
+    /// output is never returned by value and left behind as a copy.
     ///
     /// Afterwards FETCH, FETCH_AFTER, DELETE and PUT_BUNDLE are answered for
     /// `owner` only. The relay checks one AUTH per connection: a wrong tag,
     /// and any AUTH after the first, is [`ClientError::Refused`] with
     /// [`ErrorCode::Unauthorized`]. [`ClientError::Auth`], with nothing sent,
-    /// on a V1 connection or if `dh` returns all zeros.
+    /// on a V1 connection or if `dh` leaves the buffer all zeros (as it
+    /// starts).
     pub fn authenticate(
         &mut self,
         owner: Key,
-        dh: impl FnOnce(&[u8; 32]) -> [u8; 32],
+        dh: impl FnOnce(&[u8; 32], &mut [u8; 32]),
     ) -> Result<(), ClientError> {
         let session = self.session.as_ref().ok_or(ClientError::Auth("not a V2 connection"))?;
-        let shared = Zeroizing::new(dh(&session.auth_pk));
+        let mut shared = Zeroizing::new([0u8; 32]);
+        dh(&session.auth_pk, &mut shared);
         let tag = auth_tag(&shared, &session.challenge, &session.exporter, &owner)
             .ok_or(ClientError::Auth("the DH output is all zeros"))?;
         self.send_auth(owner, tag)
@@ -454,9 +458,9 @@ mod tests {
         let mut conn = Connection::connect(&addr, Duration::from_secs(1)).unwrap();
         let mut called = false;
         let err = conn
-            .authenticate([1; 32], |_| {
+            .authenticate([1; 32], |_, out| {
                 called = true;
-                [1; 32]
+                *out = [1; 32];
             })
             .unwrap_err();
         assert!(matches!(err, ClientError::Auth(_)), "{err:?}");

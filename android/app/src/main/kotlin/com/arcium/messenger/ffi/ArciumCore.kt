@@ -167,8 +167,9 @@ class ArciumCoreWrapper {
      * removed: it fails with CoreException.SessionEstablished once a message
      * from the peer was accepted, and with CoreException.PendingOutgoing
      * while outgoing messages are neither acknowledged nor abandoned. Only
-     * the Rust network layer does either (on the peer's receipt, or in
-     * `resolveSessionConflict`); neither is exported to Kotlin.
+     * the Rust network layer does either (on the peer's receipt, in
+     * `resolveSessionConflict`, or in `deleteContact`, which also deletes
+     * the session); neither is exported to Kotlin.
      */
     fun removeSession(sessionId: ULong) {
         requireCore().removeSession(sessionId)

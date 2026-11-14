@@ -111,6 +111,10 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
     @Volatile
     private var window = PAGE
 
+    /** Set once the contact is deleted: there is nothing left to read. */
+    @Volatile
+    private var deleted = false
+
     init {
         viewModelScope.launch { service.revision.collect { reload() } }
         viewModelScope.launch {
@@ -119,6 +123,7 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
     }
 
     private suspend fun reload() {
+        if (deleted) return
         try {
             val (conversation, entries) = service.call { m ->
                 val entries = loadWindow(window) { before, limit -> m.chatEntriesPage(peer, before, limit) }
@@ -183,6 +188,26 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
                 _state.value = _state.value.copy(error = "Not resolved: ${e.message}")
             }
             service.changed()
+        }
+    }
+
+    /**
+     * Deletes this contact on this device only (Rust `delete_contact`): the
+     * card, the conversation, the session in any state and every text not
+     * yet delivered. The contact is told nothing. On success [onDeleted]
+     * runs, on the main thread, to leave the screen; on failure the error
+     * is shown and the user can try again.
+     */
+    fun deleteContact(onDeleted: () -> Unit) {
+        viewModelScope.launch {
+            try {
+                service.call { it.deleteContact(peer) }
+                deleted = true
+            } catch (e: CoreException) {
+                _state.value = _state.value.copy(error = "Not deleted: ${e.message}")
+            }
+            service.changed()
+            if (deleted) onDeleted()
         }
     }
 

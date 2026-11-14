@@ -317,3 +317,40 @@ fn a_text_without_a_receipt_is_abandoned_by_the_delete_not_delivered() {
     assert_eq!(chat(&alice, &bob), vec![(true, S::Delivered, "fresh".into())]);
     relay.stop();
 }
+
+/// A call that checked the contact before a delete and writes after it
+/// writes nothing (review probe): here `chat_send`, with the delete landing
+/// between its contact check and the transaction that records the entry,
+/// and the open-entry build of a background refresh run after the delete.
+/// The send fails as for any non-contact, and a re-added contact starts with
+/// an empty history and no flags.
+#[test]
+fn a_write_racing_a_delete_leaves_nothing_for_the_contact() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = (Device::new(&addr, 1), Device::new(&addr, 2));
+    meet(&alice, &bob);
+    let (net, peer) = (alice.net.clone(), bob.pk.clone());
+    crate::network::chat::test_hooks::set_chat_send_before_record(move || {
+        net.delete_contact(peer).unwrap()
+    });
+    assert!(matches!(
+        alice
+            .net
+            .chat_send(bob.pk.clone(), b"r1".to_vec(), format!("x{}", canary())),
+        Err(CoreError::UnknownContact)
+    ));
+    assert_forgotten(&alice, &bob);
+    let (record, scan) = alice.net.open_record_and_scan(&bob.pk);
+    assert!(record.is_empty() && scan.is_empty());
+    assert_eq!(remaining(&alice, &bob), Vec::<String>::new());
+
+    meet(&alice, &bob);
+    assert_eq!(alice.net.chat_entries(bob.pk.clone()).unwrap(), vec![]);
+    let c = alice.net.conversation(bob.pk.clone()).unwrap();
+    assert_eq!(
+        (c.session, c.identity_mismatch, c.handshake_refused, c.unread),
+        (ChatSessionState::None, false, false, 0)
+    );
+    relay.stop();
+}

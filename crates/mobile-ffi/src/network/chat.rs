@@ -526,9 +526,11 @@ pub(super) fn set_flag(
 
 /// The contact refused our handshake with a valid refusal
 /// (`NetworkMessenger::take_refusal`): our unconfirmed session with it can
-/// never be accepted. Gives it up as `resolve_session_conflict` does, ends a
-/// conflict (the contact holds no session with us, or it would not have
-/// refused), and starts a new session from the contact's current bundle.
+/// never be accepted. Gives it up as `resolve_session_conflict` does, clears
+/// a conflict flag (the contact refused this session; if it also started one
+/// of its own, that conflict is raised again under the new session once the
+/// contact's first message authenticates beside it), and starts a new
+/// session from the contact's current bundle.
 /// Texts not yet committed go out in the new session. If the new session
 /// cannot be started now, the next queued text starts it.
 pub(super) fn restart_after_refusal(

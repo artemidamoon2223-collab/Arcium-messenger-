@@ -324,9 +324,10 @@ only the first can be accepted.
   replayed or late refusal).
 - Acting on it, the initiator gives its session up as
   `resolve_session_conflict` does: committed texts `NotDelivered`, then
-  abandoned, then the session removed (S2-B2 section 6a). It ends a conflict
-  with that contact and starts a new session from the contact's current
-  bundle at once. Texts still queued go out in the new one; texts marked
+  abandoned, then the session removed (S2-B2 section 6a). It clears a
+  conflict flag for that contact (a genuine conflict comes back under the
+  new session once the contact's first message authenticates beside it) and
+  starts a new session from the contact's current bundle at once. Texts still queued go out in the new one; texts marked
   `NotDelivered` are not sent again (the user can send them again). If the
   new session cannot start then (no bundle, no relay, a crash), the next
   queued text starts it. Each step repeats safely after a crash: the refusal
@@ -421,7 +422,11 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   replacing it keeps a genuine first message from authenticating, which
   delays the conflict being shown, as withholding envelopes does; and each
   message from the contact that does not decrypt under that session costs
-  one X3DH and one ratchet step more.
+  one X3DH and one ratchet step more (including up to `MAX_SKIP` (1000)
+  skipped-key derivations, which a forged header can ask for), under the
+  store lock. It is bounded by what the sender can store in the mailbox; it
+  was not measured. A beside record that cannot be read counts as none: the
+  check is reported and the message deleted, and the round goes on.
 - A second initiator racing for the same one-time prekey is refused and
   starts again (section 6). With k contacts racing, the k-th may wait up to
   about 10 minutes per further refusal (the per-contact limit).

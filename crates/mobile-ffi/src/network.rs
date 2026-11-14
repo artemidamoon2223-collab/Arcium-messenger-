@@ -1017,12 +1017,24 @@ impl NetworkMessenger {
                         // `resolve_session_conflict` removed our session, and
                         // until then the contact's session stays unconfirmed,
                         // so the retransmission is still running then.
-                        if !first
-                            && self.own_unconfirmed(handle)?
-                            && self.core.beside_authenticates(handle, &sender, &wire)?
-                        {
-                            chat::set_flag(self, &sender, chat::CONFLICT)?;
-                            crash_point("conflict_after_flag");
+                        //
+                        // A beside record that cannot be read or decoded
+                        // counts as none, as `record_handshake_beside` and
+                        // `remove_session` treat it: the check is reported
+                        // and the message is deleted. It must not abort the
+                        // round, or anyone who stores a message "from" the
+                        // contact would stall every round here.
+                        if !first && self.own_unconfirmed(handle)? {
+                            match self.core.beside_authenticates(handle, &sender, &wire) {
+                                Ok(true) => {
+                                    chat::set_flag(self, &sender, chat::CONFLICT)?;
+                                    crash_point("conflict_after_flag");
+                                }
+                                Ok(false) => {}
+                                Err(e) => report
+                                    .errors
+                                    .push(format!("checking a first message beside our session: {e}")),
+                            }
                         }
                         report.dropped += 1;
                         Ok(Fate::Delete)

@@ -486,6 +486,40 @@ fn a_stale_record_beside_an_established_session_is_ignored_and_then_deleted() {
     relay.stop();
 }
 
+/// A record beside our own session that cannot be decoded (a damaged store)
+/// must not let a message anyone can store "from" the contact stall every
+/// round: the check is reported once for that message, the message is
+/// deleted like any that does not decrypt, later rounds are clean, and the
+/// session is established once the contact comes online.
+#[test]
+fn an_undecodable_record_beside_our_session_does_not_stall_rounds() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (v, c) = own_session(&addr, true);
+    v.core
+        .store
+        .lock()
+        .unwrap()
+        .put(&format!("hsin:v1/{:016x}", handle(&c)), b"not a provisional record")
+        .unwrap();
+
+    inject(&addr, &v, forged_message(&c));
+    let r = v.net.sync_conversations();
+    assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+    assert!(r.errors[0].starts_with("checking a first message beside our session"), "{:?}", r.errors);
+    assert!(
+        relay.stored(&key(&v)).is_empty(),
+        "the message left the relay: nothing is retried every round"
+    );
+    round(&[&v]);
+    assert_eq!(session(&v, &c), ChatSessionState::AwaitingPeer);
+
+    rounds(&[&c, &v], 2);
+    assert_eq!(session(&v, &c), ChatSessionState::Established);
+    assert_eq!(chat(&v, &c), vec![(true, S::Delivered, "hello".into())]);
+    relay.stop();
+}
+
 /// Process death right after a handshake was recorded beside our own
 /// session, before its envelope left the relay, and right after the
 /// conflict was raised, before the first message left the relay. After the

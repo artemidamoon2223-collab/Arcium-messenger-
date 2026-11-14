@@ -122,3 +122,10 @@ D-020 · 2026-11-13 · CORRECTION · ACTIVE
   - D-010: decided and implemented (E.164; PR #139).
   - D-011: fixed (A-4, PR #135).
 - Evidence: tracker sections "Update 2026-11-06", "Update 2026-11-12", "Update 2026-11-13".
+
+D-021 · 2026-11-14 · OWNER · DONE
+- What: merge #157, #158, #159, #160, #161, #162 with normal merge commits, each only once every check on its current head is green, #159 before #160. Next: a tracker PR and R-17.
+- Evidence: Owner answer of 2026-11-14 in session `013Fd9w11HPCwF53H2tPuKpt` ("Да, все шесть", "Трекер + R-17"). Merged at 00:29–00:50 UTC, each pinned with `expectedHeadSha`; `main` = `0a8dbd4`.
+
+D-022 · 2026-11-14 · AGENT (under D-021) · ACTIVE
+- What: R-17 fixed in PR #163 (`RelayLink.Online.problem`, shown in the banner); tracker PR #164 records R-7 (b) and R-10 as fixed. Neither merge is authorized by D-021.

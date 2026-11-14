@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-14 00:40 UTC, by a Claude Code cloud session
+Updated: 2026-11-14 01:30 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -21,8 +21,8 @@ Updated: 2026-11-14 00:40 UTC, by a Claude Code cloud session
 - 13–14 Nov: review of `de328a1`; the Owner delegated its open questions (D-013). Decisions D-014 … D-018.
 
 ## Open PRs (none merged; each needs the Owner's merge instruction naming it)
-- #157 Android: remove unused stubs and Bluetooth permissions (R-7 b).
-- #158 R-10: skip a missing history entry (492 passed).
+- #157 Android: remove unused stubs and Bluetooth permissions (R-7 b); independent review: no findings.
+- #158 R-10: skip a missing history entry (493 passed; independent review: no findings).
 - #159 `docs/SESSION-RECOVERY-OPTIONS.md` (options only).
 - #160 tracker: R-13 … R-19, NET-MESSAGING corrections. Merge after or with #159.
 - #161 docs: README, android/README, HOME-DEPLOY; delete PROJECT_CONTEXT.md.

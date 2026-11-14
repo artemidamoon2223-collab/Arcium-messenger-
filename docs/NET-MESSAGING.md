@@ -478,7 +478,10 @@ entry per logical message, never written by the ratchet.
   the next number in the transaction that writes it, and none is deleted.
   `chat_entries_page(peer, before_seq, limit)` returns the `limit` entries
   (1 to 200) before `before_seq`, or the newest ones, oldest first, read by
-  number. `chat_entries` still returns the whole history.
+  number. `chat_entries` still returns the whole history. A number can be
+  missing only from a damaged store: every read skips it (a page then walks
+  further back, so it still holds up to `limit` entries), while an entry
+  that exists but cannot be read is still an error (R-10).
 - **What a round reads.** A record per contact, `chat-open:v1`, lists the
   numbers of outgoing entries not yet final (`Queued`, `Pending`,
   `Transmitted`). It changes in the transaction of every entry change that

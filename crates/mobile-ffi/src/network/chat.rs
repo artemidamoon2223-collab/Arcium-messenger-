@@ -524,8 +524,7 @@ impl NetworkMessenger {
         let unread = after_seen.iter().filter(|e| !e.outgoing).count() as u32;
         let last = match after_seen.last() {
             Some(e) => Some(e.public()),
-            None if meta.last_seq > 0 => Some(self.entry(&key, meta.last_seq)?.public()),
-            None => None,
+            None => self.newest_before(&key, meta.last_seq, 1)?.pop().map(|e| e.public()),
         };
         Ok(Conversation {
             peer,
@@ -555,7 +554,8 @@ impl NetworkMessenger {
     /// entries when `before_seq` is `None`. Pass the first returned entry's
     /// `seq` as `before_seq` for the page before it; an empty page means the
     /// beginning was reached. Brings the history up to date first, as
-    /// [`chat_entries`](Self::chat_entries) does. Reads only the page.
+    /// [`chat_entries`](Self::chat_entries) does. Reads only the page (and,
+    /// in a damaged store, the missing numbers it steps over).
     pub fn chat_entries_page(
         &self,
         peer: Vec<u8>,
@@ -573,9 +573,8 @@ impl NetworkMessenger {
             Some(before) => before.saturating_sub(1).min(last),
             None => last,
         };
-        let start = end.saturating_sub(u64::from(limit) - 1).max(1);
         Ok(self
-            .entries_in(&key, start, end)?
+            .newest_before(&key, end, limit as usize)?
             .iter()
             .map(Entry::public)
             .collect())
@@ -888,12 +887,41 @@ impl NetworkMessenger {
         Ok(out)
     }
 
-    /// Entries `first..=last` of `peer`, by key (none if `first > last`).
+    /// The entries of `peer` numbered `first..=last` that exist, by key,
+    /// oldest first (none if `first > last`).
+    ///
+    /// Entries are numbered without gaps and never deleted, so a number is
+    /// missing only from a damaged store. A missing number is skipped rather
+    /// than failing the read, which would otherwise fail the conversation
+    /// list and every round (R-10). An entry that exists but cannot be read
+    /// is still an error.
     fn entries_in(&self, peer: &[u8; 32], first: u64, last: u64) -> Result<Vec<Entry>, CoreError> {
         let store = self.core.store.lock().map_err(|_| poisoned())?;
-        (first.max(1)..=last)
-            .map(|seq| Entry::decode(seq, &Zeroizing::new(store.get(&entry_key(peer, seq))?)))
-            .collect()
+        let mut out = Vec::new();
+        for seq in first.max(1)..=last {
+            if let Some(bytes) = get_opt(store.get(&entry_key(peer, seq)))? {
+                out.push(Entry::decode(seq, &Zeroizing::new(bytes))?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Up to `limit` entries of `peer` that exist, numbered `last` or lower,
+    /// oldest first: the newest ones, walking back over missing numbers as
+    /// [`entries_in`](Self::entries_in) skips them. Without gaps this is
+    /// exactly `last - limit + 1 ..= last` (from 1).
+    fn newest_before(&self, peer: &[u8; 32], last: u64, limit: usize) -> Result<Vec<Entry>, CoreError> {
+        let store = self.core.store.lock().map_err(|_| poisoned())?;
+        let mut out = Vec::new();
+        let mut seq = last;
+        while seq >= 1 && out.len() < limit {
+            if let Some(bytes) = get_opt(store.get(&entry_key(peer, seq)))? {
+                out.push(Entry::decode(seq, &Zeroizing::new(bytes))?);
+            }
+            seq -= 1;
+        }
+        out.reverse();
+        Ok(out)
     }
 
     /// `peer`'s outgoing entries that are not final yet, oldest first. Builds
@@ -905,7 +933,11 @@ impl NetworkMessenger {
         let store = self.core.store.lock().map_err(|_| poisoned())?;
         let mut out = Vec::with_capacity(seqs.0.len());
         for seq in seqs.0 {
-            let e = Entry::decode(seq, &Zeroizing::new(store.get(&entry_key(peer, seq))?))?;
+            // A missing entry (damaged store) cannot be advanced: skipped.
+            let Some(bytes) = get_opt(store.get(&entry_key(peer, seq)))? else {
+                continue;
+            };
+            let e = Entry::decode(seq, &Zeroizing::new(bytes))?;
             // Defensive: the record and the entry change in one transaction.
             if is_open(e.outgoing, e.state) {
                 out.push(e);
@@ -929,7 +961,11 @@ impl NetworkMessenger {
         };
         let mut open = OpenSeqs::default();
         for seq in 1..=last {
-            let e = Entry::decode(seq, &Zeroizing::new(tx.get(&entry_key(peer, seq))?))?;
+            // A missing number (damaged store) is skipped, as by `entries_in`.
+            let Some(bytes) = get_opt(tx.get(&entry_key(peer, seq)))? else {
+                continue;
+            };
+            let e = Entry::decode(seq, &Zeroizing::new(bytes))?;
             if is_open(e.outgoing, e.state) {
                 open.0.push(seq);
             }
@@ -1180,6 +1216,14 @@ impl NetworkMessenger {
         let peer = peer_key(peer).unwrap();
         let store = self.core.store.lock().unwrap();
         store.delete(&open_key(&peer)).unwrap();
+    }
+
+    /// Test aid: removes entry `seq` of `peer`, as only a damaged store
+    /// could (R-10).
+    pub(crate) fn drop_entry(&self, peer: &[u8], seq: u64) {
+        let peer = peer_key(peer).unwrap();
+        let store = self.core.store.lock().unwrap();
+        store.delete(&entry_key(&peer, seq)).unwrap();
     }
 
     pub(crate) fn has_open_record(&self, peer: &[u8]) -> bool {

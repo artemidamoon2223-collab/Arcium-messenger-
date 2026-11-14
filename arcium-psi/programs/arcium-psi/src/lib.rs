@@ -1,8 +1,48 @@
 #![allow(unexpected_cfgs)]
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
+use arcium_client::idl::arcium::types::CircuitSource;
 
 const COMP_DEF_OFFSET_PSI_INTERSECT: u32 = comp_def_offset("psi_intersect");
+
+// ── Off-chain circuit source ──────────────────────────────────────────────────
+// The computation definition stores where the Arx nodes download the compiled
+// circuit and its SHA-256, not the circuit. Both are constants of this program,
+// so no caller of `init_psi_intersect_comp_def` chooses them.
+
+/// SHA-256 of the compiled circuit `build/psi_intersect.arcis`, the file the
+/// Arx nodes download and check against this hash before they run it. It is
+/// the value `arcium build` writes to `build/psi_intersect.hash`, and not the
+/// hash of `psi_intersect.arcis.ir`. The arcium-build CI job fails if the
+/// build produces a different circuit.
+const PSI_INTERSECT_CIRCUIT_HASH: [u8; 32] = [
+    0x24, 0xe7, 0xf6, 0x13, 0x30, 0x43, 0xd3, 0x03, 0x56, 0x22, 0xd7, 0x44, 0x7e, 0xa0, 0x50, 0xf0,
+    0x42, 0x9f, 0x71, 0x7d, 0x3b, 0x7f, 0x6a, 0x3b, 0xb8, 0xda, 0x3a, 0x21, 0x11, 0x43, 0x16, 0xef,
+];
+
+/// Where the Arx nodes download the circuit: a release asset of this
+/// repository, under a tag named after the first 16 hex digits of the hash,
+/// so a new circuit gets a new URL. The file must be published at this URL
+/// before `init_psi_intersect_comp_def` runs (docs/HOME-DEPLOY.md): the
+/// Arcium program has no instruction that changes the source of a registered
+/// definition.
+const PSI_INTERSECT_CIRCUIT_URL: &str = "https://github.com/artemidamoon2223-collab/Arcium-messenger-/releases/download/psi-intersect-24e7f6133043d303/psi_intersect.arcis";
+
+/// Localnet only: `tests/src/localnet/psi.localnet.ts` serves
+/// `build/psi_intersect.arcis` here, the host as seen from the Docker network
+/// of the localnet Arx nodes. The hash stays `PSI_INTERSECT_CIRCUIT_HASH`.
+const PSI_INTERSECT_LOCALNET_CIRCUIT_URL: &str = "http://172.20.0.1:18080/psi_intersect.arcis";
+
+/// The circuit URL this build registers, chosen at compile time: the localnet
+/// URL only when ARCIUM_PSI_LOCALNET_CIRCUIT is set (to any value) in the
+/// environment of the build, as the arcium-test CI job sets it for
+/// `arcium test`. A deploy build must run without it; the arcium-build CI job
+/// checks that the program it builds holds the release URL and not the
+/// localnet one.
+const PSI_INTERSECT_CIRCUIT_SOURCE_URL: &str = match option_env!("ARCIUM_PSI_LOCALNET_CIRCUIT") {
+    Some(_) => PSI_INTERSECT_LOCALNET_CIRCUIT_URL,
+    None => PSI_INTERSECT_CIRCUIT_URL,
+};
 
 declare_id!("PSiArc1um1111111111111111111111111111111111");
 
@@ -33,13 +73,19 @@ pub mod arcium_psi {
 
     // ── v1.0 Arcium MPC instructions ─────────────────────────────────────────
 
-    /// Called once after deployment to register the PSI circuit on-chain.
-    /// Uses OffChainCircuitSource pattern: only the 32-byte hash is stored,
-    /// not the full .arcis binary (~$0.25 gas vs $25+).
+    /// Called once after deployment to register the psi_intersect computation
+    /// definition with an off-chain circuit source: the definition stores the
+    /// circuit URL and SHA-256 (program constants, above), not the circuit.
     pub fn init_psi_intersect_comp_def(
         ctx: Context<InitPsiIntersectCompDef>,
     ) -> Result<()> {
-        init_computation_def(&*ctx.accounts, None)?;
+        // Arcium's OffChainCircuitSource, not the unused account struct of the
+        // same name at the end of this file.
+        let source = arcium_client::idl::arcium::types::OffChainCircuitSource {
+            source: PSI_INTERSECT_CIRCUIT_SOURCE_URL.to_string(),
+            hash: PSI_INTERSECT_CIRCUIT_HASH,
+        };
+        init_computation_def(&*ctx.accounts, Some(CircuitSource::OffChain(source)))?;
         msg!("PSI circuit registered with Arcium");
         Ok(())
     }
@@ -182,8 +228,8 @@ pub struct SubmitQuery<'info> {
 
 // ── v1.0 Arcium MPC account structs ──────────────────────────────────────────
 
-/// Registers the PSI circuit definition with Arcium.
-/// Run once after deployment. Uses OffChainCircuitSource (hash-only on-chain).
+/// Registers the PSI computation definition with Arcium.
+/// Run once after deployment. The circuit source is off chain: URL and hash.
 #[init_computation_definition_accounts("psi_intersect", authority)]
 #[derive(Accounts)]
 pub struct InitPsiIntersectCompDef<'info> {

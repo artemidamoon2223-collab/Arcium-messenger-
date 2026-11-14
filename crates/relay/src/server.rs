@@ -46,17 +46,21 @@
 //! or keys (envelopes are end-to-end encrypted and bundles are verified by the
 //! fetcher against an out-of-band identity), but it can withhold, delay,
 //! reorder, replay or drop messages. Stored envelopes are kept as received,
-//! not encrypted again at rest. No limit on connections: each open one holds
-//! a thread and two descriptors until it closes or stays idle for 60 s (in
-//! V2, the TLS handshake included), so anyone can hold enough of them open to
-//! keep others out. A closed connection releases both; when no descriptor is
-//! left, the accept loop waits instead of spinning. Log lines name keys by
+//! not encrypted again at rest. Each open connection holds a thread and two
+//! descriptors until it closes, stays idle for 60 s, blocks a write for 60 s
+//! (a client that sends and does not read), or, in V2, has not finished its
+//! TLS handshake within [`RelayConfig::handshake_timeout`]. At most
+//! [`RelayConfig::max_connections`] are open, and at most
+//! [`RelayConfig::max_connections_per_address`] from one IP address; one
+//! beyond either is closed at once. That bounds what one address can hold,
+//! not what many can. A closed connection releases both descriptors; when no
+//! descriptor is left, the accept loop waits instead of spinning. Log lines name keys by
 //! their first four bytes, and never contain a challenge, an exported key or
 //! an AUTH tag.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -91,10 +95,20 @@ pub struct RelayConfig {
     /// is refused with `FULL`. At least [`MAX_ENVELOPE`] ([`serve`] refuses
     /// less).
     pub max_total_bytes: usize,
+    /// Most connections open at once; at least 1.
+    pub max_connections: usize,
+    /// Most connections open at once from one IP address; at least 1.
+    pub max_connections_per_address: usize,
+    /// V2: how long a connection may take to finish its TLS handshake.
+    pub handshake_timeout: Duration,
 }
 
 /// The default [`RelayConfig::max_total_bytes`]: 1 GiB.
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 1 << 30;
+/// The default [`RelayConfig::max_connections`].
+pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+/// The default [`RelayConfig::max_connections_per_address`].
+pub const DEFAULT_MAX_CONNECTIONS_PER_ADDRESS: usize = 32;
 
 impl Default for RelayConfig {
     fn default() -> Self {
@@ -105,6 +119,9 @@ impl Default for RelayConfig {
             log: false,
             db: None,
             max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_connections_per_address: DEFAULT_MAX_CONNECTIONS_PER_ADDRESS,
+            handshake_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -243,6 +260,12 @@ fn start(listener: TcpListener, config: RelayConfig, v2: Option<Arc<V2>>) -> io:
             ),
         ));
     }
+    if config.max_connections == 0 || config.max_connections_per_address == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "max_connections and max_connections_per_address must be at least 1",
+        ));
+    }
     if !(1..=DEFAULT_MAX_MAILBOX).contains(&config.max_mailbox) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -257,7 +280,17 @@ fn start(listener: TcpListener, config: RelayConfig, v2: Option<Arc<V2>>) -> io:
         ..State::default()
     };
     if let Some(path) = &config.db {
-        let disk = Disk::open(path)?;
+        let mut disk = Disk::open(path)?;
+        // A file a V2 relay has served holds mailboxes only their owners may
+        // read; a V1 relay (no authentication) must not open it.
+        if v2.is_some() {
+            disk.mark_v2()?;
+        } else if disk.is_v2()? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "this database belongs to a V2 relay (authenticated mailboxes): start it with its keys",
+            ));
+        }
         let loaded = disk.load(config.ttl)?;
         let now = Instant::now();
         initial.next_seq = loaded.next_seq;
@@ -274,6 +307,7 @@ fn start(listener: TcpListener, config: RelayConfig, v2: Option<Arc<V2>>) -> io:
     let conns = Arc::new(Mutex::new(HashMap::new()));
     let state = Arc::new(Mutex::new(initial));
     let config = Arc::new(config);
+    let open: Arc<Mutex<Open>> = Arc::default();
     let thread = {
         let (stop, conns, state) = (stop.clone(), conns.clone(), state.clone());
         std::thread::spawn(move || {
@@ -292,6 +326,13 @@ fn start(listener: TcpListener, config: RelayConfig, v2: Option<Arc<V2>>) -> io:
                         continue;
                     }
                 };
+                // Over a connection limit: closed at once, unanswered.
+                let ip = stream.peer_addr().map(|a| a.ip()).ok();
+                if !open.lock().expect("open").admit(ip, &config) {
+                    log(&config, || "connection refused: connection limit".to_string());
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
                 let id = next_id;
                 next_id += 1;
                 // Untracked if no descriptor is left for the clone: it is
@@ -299,13 +340,20 @@ fn start(listener: TcpListener, config: RelayConfig, v2: Option<Arc<V2>>) -> io:
                 if let Ok(c) = stream.try_clone() {
                     conns.lock().expect("conns").insert(id, c);
                 }
-                let (state, config, stop, conns, v2) =
-                    (state.clone(), config.clone(), stop.clone(), conns.clone(), v2.clone());
+                let (state, config, stop, conns, v2, open) = (
+                    state.clone(),
+                    config.clone(),
+                    stop.clone(),
+                    conns.clone(),
+                    v2.clone(),
+                    open.clone(),
+                );
                 std::thread::spawn(move || {
                     connection(stream, &state, &config, &stop, v2.as_deref());
                     // Release the clone with the connection, or every
                     // connection would keep a descriptor until `stop`.
                     conns.lock().expect("conns").remove(&id);
+                    open.lock().expect("open").release(ip);
                 });
             }
         })
@@ -322,6 +370,46 @@ fn start(listener: TcpListener, config: RelayConfig, v2: Option<Arc<V2>>) -> io:
 /// How long the accept loop waits after a failed accept before the next.
 const ACCEPT_RETRY: Duration = Duration::from_millis(50);
 
+/// How long a connection may wait on one read or one write.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Connections open now, in all and per IP address.
+#[derive(Default)]
+struct Open {
+    total: usize,
+    per_address: HashMap<IpAddr, usize>,
+}
+
+impl Open {
+    /// Counts a new connection from `ip` if both limits allow it.
+    fn admit(&mut self, ip: Option<IpAddr>, config: &RelayConfig) -> bool {
+        if self.total >= config.max_connections {
+            return false;
+        }
+        if let Some(ip) = ip {
+            let n = self.per_address.entry(ip).or_default();
+            if *n >= config.max_connections_per_address {
+                return false;
+            }
+            *n += 1;
+        }
+        self.total += 1;
+        true
+    }
+
+    fn release(&mut self, ip: Option<IpAddr>) {
+        self.total -= 1;
+        if let Some(ip) = ip {
+            if let Some(n) = self.per_address.get_mut(&ip) {
+                *n -= 1;
+                if *n == 0 {
+                    self.per_address.remove(&ip);
+                }
+            }
+        }
+    }
+}
+
 fn connection(
     stream: TcpStream,
     state: &Mutex<State>,
@@ -329,14 +417,17 @@ fn connection(
     stop: &AtomicBool,
     v2: Option<&V2>,
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+    let _ = stream.set_read_timeout(Some(IDLE_TIMEOUT));
+    // A client that sends requests and never reads the answers would block a
+    // write forever.
+    let _ = stream.set_write_timeout(Some(IDLE_TIMEOUT));
     // A response is written as length, then body; without this the body waits
     // for the client's delayed ACK of the length (tens of ms per request).
     let _ = stream.set_nodelay(true);
     match v2 {
         None => requests(stream, state, config, stop, None),
         Some(v2) => {
-            if let Some((tls, session)) = accept_v2(stream, v2) {
+            if let Some((tls, session)) = accept_v2(stream, v2, config.handshake_timeout) {
                 requests(tls, state, config, stop, Some(session));
             }
         }
@@ -345,11 +436,26 @@ fn connection(
 
 /// The TLS handshake and the HELLO frame of a V2 connection; `None`, and the
 /// connection closes, if either fails.
-fn accept_v2(stream: TcpStream, v2: &V2) -> Option<(StreamOwned<ServerConnection, TcpStream>, Session<'_>)> {
+fn accept_v2(
+    stream: TcpStream,
+    v2: &V2,
+    timeout: Duration,
+) -> Option<(StreamOwned<ServerConnection, TcpStream>, Session<'_>)> {
     let mut tls = StreamOwned::new(ServerConnection::new(v2.tls.clone()).ok()?, stream);
+    // The whole handshake, not each read, has `timeout`: a client trickling
+    // its hello cannot hold the thread longer.
+    let deadline = Instant::now() + timeout;
     while tls.conn.is_handshaking() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        tls.sock.set_read_timeout(Some(left)).ok()?;
+        tls.sock.set_write_timeout(Some(left)).ok()?;
         tls.conn.complete_io(&mut tls.sock).ok()?;
     }
+    tls.sock.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
+    tls.sock.set_write_timeout(Some(IDLE_TIMEOUT)).ok()?;
     let mut challenge = [0u8; CHALLENGE_LEN];
     if let Err(e) = OsRng.try_fill_bytes(&mut challenge) {
         eprintln!("relay: no randomness for a challenge, closing the connection: {e}");

@@ -94,7 +94,13 @@ UNAUTHORIZED (`protocol.rs`, `auth.rs`, `tls.rs`):
   and `exporter` 32 bytes of this connection's TLS exported keying material
   (label `"arcium-relay-auth-v1"`). The relay checks it with
   `DH(auth_sk, O)`, in constant time. A tag is valid on its connection only;
-  one AUTH is checked per connection.
+  one AUTH is checked per connection. An owner key with the top bit set is
+  refused (X25519 ignores that bit).
+- Limits on both versions: at most 1024 open connections, 32 per IP address
+  (`--max-connections`, `--max-connections-per-address`); one beyond is
+  closed at once. A V2 connection must finish its TLS handshake within 10 s;
+  a read or a write that waits 60 s closes the connection. The TLS key
+  exchange is X25519 only.
 - FETCH, FETCH_AFTER and DELETE need AUTH for the recipient, PUT_BUNDLE for
   the owner; otherwise UNAUTHORIZED, and nothing is read or changed. SEND and
   GET_BUNDLE need none.

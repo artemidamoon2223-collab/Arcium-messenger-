@@ -157,6 +157,28 @@ impl Disk {
         Ok(Self { conn })
     }
 
+    /// Records that a V2 relay (authenticated mailboxes) serves this file.
+    pub(crate) fn mark_v2(&mut self) -> io::Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('protocol', 2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )
+            .map(|_| ())
+            .map_err(io_err)
+    }
+
+    /// Whether a V2 relay has served this file.
+    pub(crate) fn is_v2(&self) -> io::Result<bool> {
+        let protocol: Option<i64> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'protocol'", [], |r| r.get(0))
+            .optional()
+            .map_err(io_err)?;
+        Ok(protocol == Some(2))
+    }
+
     /// Everything stored, without envelopes older than `ttl` (which are
     /// deleted from the file now). `next_seq` is never below 1 or below any
     /// stored sequence number plus one.

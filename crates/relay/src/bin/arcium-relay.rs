@@ -1,6 +1,6 @@
 //! `arcium-relay keygen --out FILE --address HOST:PORT`
 //!
-//! `arcium-relay --listen HOST:PORT [--keys FILE] [--db FILE] [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N] [--max-total-bytes N]`
+//! `arcium-relay --listen HOST:PORT [--keys FILE] [--db FILE] [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N] [--max-total-bytes N] [--max-connections N] [--max-connections-per-address N]`
 //!
 //! `keygen` makes the relay's keys (an Ed25519 TLS key and an X25519 auth
 //! key), writes both secrets to a new FILE readable by its owner only (mode
@@ -17,7 +17,9 @@
 //! `--max-mailbox` is 1 to 4096 (`DEFAULT_MAX_MAILBOX`, the default); any
 //! other value is refused. `--db FILE` keeps mailboxes and bundles in that
 //! SQLite file across restarts (created if missing); without it nothing is
-//! persisted. `--max-total-bytes N` caps the envelope bytes of all mailboxes
+//! persisted. `--max-connections N` (default 1024) and
+//! `--max-connections-per-address N` (default 32) cap open connections; one
+//! beyond either is closed at once. `--max-total-bytes N` caps the envelope bytes of all mailboxes
 //! together (default 1 GiB, at least 65536).
 //!
 //! Runs the untrusted store-and-forward relay until killed. Not for
@@ -59,6 +61,15 @@ fn main() {
             "--max-total-bytes" => {
                 config.max_total_bytes =
                     value().parse().unwrap_or_else(|_| usage("--max-total-bytes"))
+            }
+            "--max-connections" => {
+                config.max_connections =
+                    value().parse().unwrap_or_else(|_| usage("--max-connections"))
+            }
+            "--max-connections-per-address" => {
+                config.max_connections_per_address = value()
+                    .parse()
+                    .unwrap_or_else(|_| usage("--max-connections-per-address"))
             }
             other => usage(other),
         }
@@ -141,12 +152,13 @@ fn usage(bad: &str) -> ! {
     eprintln!(
         "arcium-relay: bad argument {bad}\n\
          usage: arcium-relay keygen --out FILE --address HOST:PORT\n\
-         \x20      arcium-relay --listen HOST:PORT [--keys FILE] [--db FILE] [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N] [--max-total-bytes N]\n\
+         \x20      arcium-relay --listen HOST:PORT [--keys FILE] [--db FILE] [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N] [--max-total-bytes N] [--max-connections N] [--max-connections-per-address N]\n\
          keygen           write new relay keys to FILE (mode 0600, never over a file) and print the connection string for HOST:PORT\n\
          --keys FILE      serve RELAY_PROTOCOL_V2 (TLS, authenticated mailboxes) with these keys; without it, V1 for development only\n\
          --db FILE        keep mailboxes and bundles in this SQLite file across restarts\n\
          --max-mailbox N  envelopes per mailbox, 1 to {DEFAULT_MAX_MAILBOX} (default {DEFAULT_MAX_MAILBOX})\n\
-         --max-total-bytes N  envelope bytes in all mailboxes together (default 1 GiB)"
+         --max-total-bytes N  envelope bytes in all mailboxes together (default 1 GiB)\n\
+         --max-connections N, --max-connections-per-address N  open connections in all (default 1024) and per IP (default 32)"
     );
     std::process::exit(2);
 }

@@ -43,7 +43,7 @@ use subtle::ConstantTimeEq;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::address::{hex, parse_hex32, AddressError, RelayAddress};
+use crate::address::{hex, parse_hex32, push_hex, AddressError, RelayAddress};
 use crate::protocol::Key;
 
 /// HKDF salt of the authentication key.
@@ -99,7 +99,9 @@ pub(crate) fn auth_tag(
 
 /// Whether `tag` proves `owner` on the connection with `challenge` and
 /// `exporter`, checked by the relay with its auth secret. Compared in
-/// constant time; false for a low-order `owner`.
+/// constant time; false for a low-order `owner`, and for an `owner` with the
+/// top bit set: X25519 ignores that bit, so such a key would prove the
+/// mailbox of another 32-byte string than the one its holder publishes.
 pub(crate) fn verify_auth_tag(
     auth_sk: &StaticSecret,
     challenge: &[u8; 32],
@@ -107,6 +109,9 @@ pub(crate) fn verify_auth_tag(
     owner: &Key,
     tag: &[u8; AUTH_LEN],
 ) -> bool {
+    if owner[31] & 0x80 != 0 {
+        return false;
+    }
     // `SharedSecret` wipes itself on drop.
     let shared = auth_sk.diffie_hellman(&PublicKey::from(*owner));
     let Some(mut mac) = auth_mac(shared.as_bytes()) else {
@@ -157,11 +162,13 @@ impl RelayKeys {
             .create_new(true)
             .mode(0o600)
             .open(path)?;
+        // Sized once and written in place, so no other buffer ever holds the
+        // secrets' hex.
         let mut text = Zeroizing::new(String::with_capacity(KEYS_FILE_PREFIX.len() + 130));
         text.push_str(KEYS_FILE_PREFIX);
-        text.push_str(&Zeroizing::new(hex(&self.tls_seed[..])));
+        push_hex(&mut text, &self.tls_seed[..]);
         text.push(':');
-        text.push_str(&Zeroizing::new(hex(self.auth_secret.as_bytes())));
+        push_hex(&mut text, self.auth_secret.as_bytes());
         text.push('\n');
         let written = file.write_all(text.as_bytes()).and_then(|()| file.sync_all());
         if written.is_err() {

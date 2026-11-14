@@ -264,6 +264,13 @@ impl Connection {
         }
     }
 
+    /// Test aid: this connection's challenge and TLS exporter.
+    #[cfg(test)]
+    pub(crate) fn binding(&self) -> ([u8; AUTH_LEN], [u8; AUTH_LEN]) {
+        let s = self.session.as_ref().expect("a V2 connection");
+        (s.challenge, *s.exporter)
+    }
+
     /// Test aid: the tag [`Connection::authenticate`] would send for `owner`
     /// on this connection, from `shared`.
     #[cfg(test)]

@@ -171,7 +171,19 @@ fn check_host(host: &str) -> Result<(), AddressError> {
 
 /// Lowercase hex.
 pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    let mut out = String::with_capacity(bytes.len() * 2);
+    push_hex(&mut out, bytes);
+    out
+}
+
+/// Appends `bytes` to `out` as lowercase hex, one character at a time: no
+/// temporary string holds any part of them (secrets are written this way).
+pub(crate) fn push_hex(out: &mut String, bytes: &[u8]) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    for b in bytes {
+        out.push(DIGITS[usize::from(b >> 4)] as char);
+        out.push(DIGITS[usize::from(b & 0x0f)] as char);
+    }
 }
 
 /// Exactly 64 lowercase hex digits.

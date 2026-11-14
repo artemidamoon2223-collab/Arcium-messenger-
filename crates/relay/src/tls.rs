@@ -43,7 +43,11 @@ const ED25519_PKCS8_PREFIX: [u8; 16] = [
 ];
 
 fn provider() -> Arc<CryptoProvider> {
-    Arc::new(ring::default_provider())
+    let mut provider = ring::default_provider();
+    // X25519 only: a client cannot make the relay compute P-256 or P-384
+    // key exchanges, which cost it more than they cost the client.
+    provider.kx_groups = vec![ring::kx_group::X25519];
+    Arc::new(provider)
 }
 
 /// The relay's TLS signing key from its 32-byte Ed25519 seed.

@@ -17,7 +17,7 @@
 pub(crate) mod chat;
 pub(crate) mod wire;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -126,9 +126,9 @@ struct Refusals {
     /// Refusals not yet stored by the relay: recipient, envelope
     /// body, refused handshake's hash.
     queued: Vec<([u8; 32], Vec<u8>, [u8; 32])>,
-    /// Hashes of the handshakes a refusal was sent for: one each.
-    sent_for: HashSet<[u8; 32]>,
-    /// When a refusal was last sent to each contact.
+    /// When a refusal was last sent to each contact. It alone limits a
+    /// retransmitted handshake too: refused again once the interval has
+    /// passed, so a refusal the relay lost after storing it is replaced.
     last_to: HashMap<[u8; 32], Instant>,
     /// Least time between two refusals to one contact.
     interval: Duration,
@@ -138,7 +138,6 @@ impl Default for Refusals {
     fn default() -> Self {
         Self {
             queued: Vec::new(),
-            sent_for: HashSet::new(),
             last_to: HashMap::new(),
             interval: REFUSAL_INTERVAL,
         }
@@ -1027,8 +1026,9 @@ impl NetworkMessenger {
     }
 
     /// Makes a refusal of `handshake` for `peer` and queues it, unless one
-    /// was sent for this handshake already in this process or to this peer
-    /// less than [`REFUSAL_INTERVAL`] ago.
+    /// is queued for this handshake or peer already, or one was sent to this
+    /// peer less than [`REFUSAL_INTERVAL`] ago. A retransmitted handshake
+    /// refused before is refused again once the interval has passed.
     fn queue_refusal(
         &self,
         peer: [u8; 32],
@@ -1042,10 +1042,7 @@ impl NetworkMessenger {
                 .last_to
                 .get(&peer)
                 .is_some_and(|t| t.elapsed() < r.interval);
-            if recent
-                || r.sent_for.contains(&hash)
-                || r.queued.iter().any(|(to, _, h)| *to == peer || *h == hash)
-            {
+            if recent || r.queued.iter().any(|(to, _, h)| *to == peer || *h == hash) {
                 return Ok(());
             }
         }
@@ -1100,7 +1097,6 @@ impl NetworkMessenger {
             match self.send_to(conn, peer, env.encode(), relay_refusals) {
                 Ok(true) => {
                     let mut r = self.refusals.lock().expect("refusals");
-                    r.sent_for.insert(hash);
                     r.last_to.insert(peer, Instant::now());
                     report.published += 1;
                 }

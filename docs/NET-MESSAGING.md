@@ -296,10 +296,13 @@ only the first can be accepted.
   initiator's own identity secret can also make a refusal it accepts (section
   8).
 
-  A refusal is sent at most once per refused handshake and at most once per
-  contact per 10 minutes, in memory (a restart may send one more, and so may
-  a lost answer to a SEND the relay did carry out; a second copy names a
-  handshake that is gone by then and is dropped). A first
+  A refusal is sent at most once per contact per 10 minutes, in memory (a
+  restart may send one more, and so may a lost answer to a SEND the relay did
+  carry out; a second copy names a handshake that is gone by then and is
+  dropped). That limit also covers a refused handshake the initiator keeps
+  retransmitting: it is refused again once 10 minutes have passed since the
+  last refusal to that contact, so a refusal the relay lost after storing it
+  (a relay restart, or anyone's DELETE) is replaced. A first
   message refused for its prekeys sends none; the initiator's next
   retransmission of the handshake is refused and answered. A refusal the relay
   does not store (the initiator's mailbox is full), and one whose SEND loses
@@ -383,10 +386,11 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   initiator's identity check). Denial of service is possible.
 - Refusal feedback beyond the refusal of section 6: a relay can withhold a
   refusal (the initiator then keeps retransmitting, as before refusals
-  existed), and a refusal lost after the relay accepted it is not sent again
-  for that handshake until the responder restarts (section 6: at most once
-  per refused handshake); until then the initiator waits (tracker R-16). A refusal queued but not
-  yet stored is lost if the responder's process ends.
+  existed), and a refusal lost after the relay accepted it is sent again
+  only when the initiator retransmits the handshake and the per-contact
+  limit of section 6 allows it (10 minutes after the last refusal to that
+  contact); until then the initiator waits. A refusal queued but not yet
+  stored is lost if the responder's process ends.
 - Hiding whom a device knows from a reader of the mailboxes. A refusal of a
   forged handshake shows such a reader that the refuser has the named
   initiator as a contact (it proves it to nobody else); so does a message
@@ -551,7 +555,7 @@ entry per logical message, never written by the ratchet.
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |
 | conversation history, states, repeats, replays, forged bundle, conflict | `tests::chat` | runtime |
-| first contact to an offline recipient: 2, 3 and 5 contenders, both key orders, a conflict after a refusal; refusal limits; forged, foreign, mismatched, swapped-role, replayed and late refusals; an elicited refusal the initiator can make alone and a third party cannot check; a refusal the relay refuses or whose connection breaks, sent later; process death at each restart step | `tests::first_contact` | runtime, local relay over TCP; process crash |
+| first contact to an offline recipient: 2, 3 and 5 contenders, both key orders, a conflict after a refusal; refusal limits; a refusal lost on the relay, sent again after the interval; forged, foreign, mismatched, swapped-role, replayed and late refusals; an elicited refusal the initiator can make alone and a third party cannot check; a refusal the relay refuses or whose connection breaks, sent later; process death at each restart step | `tests::first_contact` | runtime, local relay over TCP; process crash |
 | refusal tag: both parties compute it, third parties cannot; bound to both keys, the roles and every field byte; low-order keys; byte-for-byte vector computed independently with Python `cryptography` | `core_crypto::refusal_mac` tests | unit; known answer |
 | history pages (sizes 1, 7, 200, new entries while paging), the open-entry record against a full scan (random steps, a history from before the record, a conflict), process death after its writes | `tests::history_paging` | runtime; process crash |
 | process death while sending from or receiving into the history | `tests::network_crash` (`chat_*` points) | process crash |

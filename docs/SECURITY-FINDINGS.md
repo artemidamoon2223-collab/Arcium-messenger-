@@ -11,6 +11,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **Rows added 2026-11-14 against `main` @ `de328a1`:** R-13 … R-19, and notes on R-7 (b) and R-10 (fix in review) (see "Update 2026-11-14"); no earlier row was changed.
 **R-7 (b), R-10 and R-17 recorded as fixed 2026-11-14 against `main` @ `63b606d`** (PRs #157, #158, #163; see "Update 2026-11-14: R-7 (b), R-10 and R-17 fixed"), with a note on F-15 (a); no earlier row was changed.
 **Way out of R-13 and R-14 recorded 2026-11-14 against `main` @ `6714921`** (PR #165, delete a contact; see "Update 2026-11-14: delete a contact"); no earlier row was changed.
+**R-9 and R-14 narrowed, R-8 noted, 2026-11-14 against `main` @ `bd5dfed`** (production relay, PRs #179–#182; see "Update 2026-11-14: production relay"); no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -921,6 +922,35 @@ same day (continuity record D-029).
 | **R-19** (PSI circuit registered on chain) | **FIXED in code — merged** in PR #175 (merge `fcabf55`); **not yet deployable**. `init_psi_intersect_comp_def` registers an off-chain source: a release URL and the SHA-256 of the compiled `build/psi_intersect.arcis`, both program constants, so no caller chooses them. The arcium-build CI job fails if the constant, `build/psi_intersect.hash` and the URL disagree, or if the built program lacks the URL. The localnet MPC scenarios run on a build with `ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT` set (the localnet Arx nodes refuse private-address URLs); the deploy build is checked for its registration only. **Remaining:** the circuit file is not published (that needs the Owner's approval, `docs/HOME-DEPLOY.md` Step 1b); no computation has run against the off-chain source; whether the Arx nodes follow GitHub's redirect is unknown. | `PSI_INTERSECT_CIRCUIT_HASH` (`arcium-psi/programs/arcium-psi/src/lib.rs:18`), `PSI_INTERSECT_CIRCUIT_URL` (`:29`), `psi_intersect_circuit_source` (`:39`), used at `:88`; the "Verify build artifacts" step and the `off-chain-registration` scenario in `.github/workflows/arcium-ci.yml`. | `SV`, CI `RV`; fetch by Arx nodes `NV` |
 | **R-18** (Android hardening) | Note only; status unchanged (PARTIAL). With background receive on, the store stays open with its key in memory while the service runs, also on a locked device; an unlocked-device or user-authentication key flag (item b) would bear on starting the process without the user, which the service does not do. | `android/README.md:77` ("Background receive") | `SV` |
 | **R-5** (retransmission) | Note only; status unchanged. Retransmission now also runs while the app is closed if the user turned background receive on (PR #173, merge `d36a95e`): an idle round every 30 s instead of 4 s on screen; the backoff is unchanged. Battery and data cost not measured. | `BACKGROUND_IDLE_DELAY_MS` and `idleDelayMs` (`android/app/src/main/kotlin/com/arcium/messenger/messaging/BackgroundRules.kt:58`, `:61`); `BackgroundReceiveService` (`android/app/src/main/kotlin/com/arcium/messenger/messaging/BackgroundReceiveService.kt:44`) | `SV`; cost `NV` |
+
+---
+
+## Update 2026-11-14: production relay (`main` @ `bd5dfed`)
+
+**Snapshot:** `main` @ `bd5dfed0206e796ae8ea6793ac0f42df5ee709ca`. The relay work is the
+merges of PRs #179 (`9c36cf0`), #180 (`9b3f54f`), #181 (`b41050d`) and #182 (`bc0dc19`); the
+merge after them, PR #183, changed instruction files only. Only the rows named here change;
+every other row keeps the snapshot it cites. Each `path:line` was re-read at `bd5dfed`. The
+four PRs were merged on the Owner's instruction of 2026-11-14 ("мёрдж #179, #180, #181,
+#182"); the Owner delegated the relay design (continuity record D-032).
+
+**Runtime evidence.**
+- PR #179 (head `e3a0578`): 18 check runs success; `cargo test --workspace --locked` 543
+  passed locally.
+- PR #180 (head `a830d99`): 18 check runs success; 572 passed locally (stable 1.100).
+- PR #181 (head `9385596`): 19 check runs success, including Android CI `build`,
+  `connected-tests` and `two-devices`; 580 passed locally.
+- PR #182 (head `95498de`, docs only): 12 check runs success.
+- Each code PR had an independent review (`engineering-code-review`,
+  `arcium-security-review`), and its findings were fixed in the PR. The review of #181
+  found the R-9 residual below with a probe (not committed).
+- Loopback only. No real server, no phone and no release build ran (`NV`).
+
+| ID | Status at `bd5dfed` | Evidence (`main` @ `bd5dfed`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-9** (a reader of a mailbox learns whom its owner has pinned) | **OPEN — narrowed.** On a `RELAY_PROTOCOL_V2` relay a stranger can no longer read, delete or replace a mailbox: FETCH, FETCH_AFTER, DELETE and PUT_BUNDLE are answered only for the owner who authenticated on that connection, over TLS 1.3 to the pinned relay key. Release builds of the app accept only V2. **Remaining:** anyone may SEND (first contact needs it), and the SENDs accepted before FULL count a mailbox's free places. Planting forged messages that name X, waiting for the owner's round and counting again shows whether they were kept, that is, whether X is pinned (probe in the #181 review: with a cap of 10, 7 places left after forged messages from a pinned X against 10 from a stranger). The attack fills the mailbox, so it is visible. The relay's operator reads everything; V1 (development builds) is unchanged. The keep-versus-delete rule itself is unchanged. | `Session::screen` (`crates/relay/src/server.rs:539`); `NetworkMessenger::connect_owner` (`crates/mobile-ffi/src/network.rs:570`); keep on `NoSession` (`:1092`); `relayChoice` (`android/app/src/main/kotlin/com/arcium/messenger/messaging/RelayRules.kt:30`, V1 refused at `:35`); `docs/NET-MESSAGING.md:131`, `:489`. Tests `tests::relay_v2::only_a_mailboxs_owner_can_read_or_delete_it_or_publish_its_bundle` (`crates/mobile-ffi/src/tests/relay_v2.rs:85`), `v2_tests::without_auth_only_send_and_get_bundle_are_answered` (`crates/relay/src/v2_tests.rs:151`), `v2_tests::after_auth_another_owners_mailbox_and_bundle_are_unauthorized` (`:125`). | `SV`, tests `RV`; residual `RV` (probe, not committed) |
+| **R-14** (more than `MAX_SKIP` lost messages stop a direction) | **OPEN — narrowed.** Two of its causes are closed for a relay run as `docs/RELAY-DEPLOY.md` describes (V2 with `--db`). A restart no longer loses accepted envelopes: SEND, DELETE and a changed bundle are committed to SQLite (WAL, `synchronous=FULL`) before the answer. And strangers can no longer delete receipts (DELETE needs the owner's AUTH, as for R-9). **Remaining:** the relay's operator can still delete or withhold; a relay without `--db`, and any V1 relay, keep the old behaviour; more than 1000 consecutive losses in one sending chain still stop that direction, and the way out is still deleting the contact on both devices. | write-through in `handle` (`crates/relay/src/server.rs:642`, `:699`, `:734`); `Disk::store_envelope` (`crates/relay/src/disk.rs:243`), `synchronous` set at `:124`; `MAX_SKIP` unchanged. Tests `a_relay_with_a_database_keeps_mailboxes_and_bundles_across_restarts` (`crates/relay/src/lib.rs:118`), `v2_tests::persistence_works_under_v2` (`crates/relay/src/v2_tests.rs:220`). | `SV`, tests `RV`; power loss `NV` |
+| **R-8** (one full mailbox stopped every round) | Note only; status unchanged (FIXED, with its remaining item). The remaining item — delivery to a full mailbox's owner stays blocked until it has room — is not closed by V2: V2 authenticates owners, not senders, so anyone can still fill a mailbox. New for every relay: the envelope bytes of all mailboxes together are capped (default 1 GiB, refused with FULL beyond it). | `RelayConfig::max_total_bytes` (`crates/relay/src/server.rs:98`), default at `:107`; `Session::screen` lets SEND through unauthenticated (`:542`). | `SV` |
 
 ---
 

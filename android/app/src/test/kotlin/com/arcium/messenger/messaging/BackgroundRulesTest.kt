@@ -141,11 +141,10 @@ class BackgroundRulesTest {
     }
 
     @Test
-    fun theUnreadCountDoesNotDecide() {
-        // An open chat screen marks texts seen as they arrive: unread stays 0,
-        // and the text is still new.
-        val read = newestEntries(listOf(conversation(1, entry(5uL, outgoing = false), unread = 0u)))
-        val readAgain = newestEntries(listOf(conversation(1, entry(6uL, outgoing = false), unread = 0u)))
-        assertTrue(notifyAfterRound(read, readAgain, visible = false))
+    fun theBackgroundPaceIsSlowerThanTheVisibleOne() {
+        assertEquals(VISIBLE_IDLE_DELAY_MS, idleDelayMs(visible = true))
+        assertEquals(BACKGROUND_IDLE_DELAY_MS, idleDelayMs(visible = false))
+        assertTrue(BACKGROUND_IDLE_DELAY_MS >= 30_000L)
+        assertTrue(VISIBLE_IDLE_DELAY_MS < BACKGROUND_IDLE_DELAY_MS)
     }
 }

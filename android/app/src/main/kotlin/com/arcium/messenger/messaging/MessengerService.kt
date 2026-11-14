@@ -86,7 +86,8 @@ internal fun linkAfterRound(report: SyncReport, nowMs: Long, networkAvailable: (
  * activity's lifecycle) and, if the user turned background receive on, from
  * [BackgroundReceiveService] ([syncInBackground]). Both run the same loop, one
  * at a time: after a round in which something arrived, again after
- * [ACTIVE_DELAY_MS], otherwise after [IDLE_DELAY_MS], backing off to
+ * [ACTIVE_DELAY_MS], otherwise after [idleDelayMs] (4 s on screen, 30 s in the
+ * background), backing off to
  * [MAX_BACKOFF_MS] while the relay is unreachable, and at once when the user
  * sends or Android reports a network. Without background receive nothing
  * runs while the app is in the background: messages wait on the relay until
@@ -123,6 +124,15 @@ class MessengerService(
 
     /** Callers of [syncWhileVisible] running or waiting for [loopLock]. */
     private val visibleCount = AtomicInteger()
+
+    private val _visible = MutableStateFlow(false)
+
+    /**
+     * The app is on screen (some caller of [syncWhileVisible] is active). A
+     * chat screen marks texts seen only then, so a text recorded while the
+     * app is in the background stays unread.
+     */
+    val visible: StateFlow<Boolean> = _visible
 
     private var messenger: NetworkMessenger? = null
     private var messengerRelay: String? = null
@@ -173,10 +183,25 @@ class MessengerService(
      */
     suspend fun syncWhileVisible() {
         visibleCount.incrementAndGet()
+        setVisible()
         try {
             syncLoop(onNewIncoming = null)
         } finally {
             visibleCount.decrementAndGet()
+            setVisible()
+        }
+    }
+
+    /**
+     * Updates [visible]. On a change, the running loop wakes so it takes the
+     * new pace now ([idleDelayMs]), and screens read again: on returning to
+     * the app, an open chat marks what arrived meanwhile as seen.
+     */
+    private fun setVisible() {
+        val now = visibleCount.get() > 0
+        if (_visible.value != now) {
+            _visible.value = now
+            changed()
         }
     }
 
@@ -220,7 +245,7 @@ class MessengerService(
                     val delayMs = report?.let {
                         if (it.reachedRelay()) {
                             backoff = ACTIVE_DELAY_MS
-                            if (it.busy()) ACTIVE_DELAY_MS else IDLE_DELAY_MS
+                            if (it.busy()) ACTIVE_DELAY_MS else idleDelayMs(visibleCount.get() > 0)
                         } else {
                             backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
                             backoff
@@ -263,7 +288,9 @@ class MessengerService(
             messenger().syncConversations()
         }
         _link.value = linkAfterRound(report, System.currentTimeMillis()) { networkAvailable() }
-        _revision.value++
+        // In the background, screens read again only when the round changed
+        // something, so an idle round decrypts no history.
+        if (visibleCount.get() > 0 || report.busy() || report.published > 0u) _revision.value++
         return report
     }
 
@@ -283,7 +310,6 @@ class MessengerService(
 
     private companion object {
         const val ACTIVE_DELAY_MS = 1_500L
-        const val IDLE_DELAY_MS = 4_000L
         const val MAX_BACKOFF_MS = 30_000L
     }
 }

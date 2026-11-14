@@ -23,8 +23,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 
 /**
@@ -86,9 +88,17 @@ class BackgroundReceiveService : Service() {
         val startup = ArciumApp.startup.state.first { it != StartupState.Checking }
         if (startup == StartupState.Ready) {
             val messenger = ArciumApp.messenger
-            val notificationsAllowed = BackgroundReceive.notificationsAllowed(this)
-            val states = combine(messenger.background.enabled, messenger.relay.address) { enabled, relay ->
-                backgroundState(enabled, startup, relay, notificationsAllowed)
+            // Notifications can be turned off in system settings while this
+            // runs, and below Android 13 that does not end the process: they
+            // are checked again on every tick, not only at start.
+            val ticks = flow {
+                while (true) {
+                    emit(Unit)
+                    delay(NOTIFICATION_CHECK_MS)
+                }
+            }
+            val states = combine(messenger.background.enabled, messenger.relay.address, ticks) { enabled, relay, _ ->
+                backgroundState(enabled, startup, relay, BackgroundReceive.notificationsAllowed(this))
             }
             if (states.first() == BackgroundState.RUN) {
                 val loop = scope.launch {
@@ -102,6 +112,10 @@ class BackgroundReceiveService : Service() {
             }
         }
         stopSelf(lastStartId)
+    }
+
+    private companion object {
+        const val NOTIFICATION_CHECK_MS = 30_000L
     }
 }
 
@@ -152,6 +166,7 @@ object BackgroundReceive {
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "Shown while the app stays connected to the relay in the background."
+            lockscreenVisibility = Notification.VISIBILITY_SECRET
         }
         val messages = NotificationChannel(
             MESSAGE_CHANNEL,
@@ -159,7 +174,7 @@ object BackgroundReceive {
             NotificationManager.IMPORTANCE_DEFAULT,
         ).apply {
             description = "Says that a message arrived, without the sender or the text."
-            lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+            lockscreenVisibility = Notification.VISIBILITY_SECRET
         }
         manager(context).createNotificationChannels(listOf(connection, messages))
     }
@@ -176,13 +191,15 @@ object BackgroundReceive {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOngoing(true)
             .setShowWhen(false)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .setContentIntent(openApp(context))
             .build()
     }
 
     /**
      * "New message": no sender, no text, nothing that tells contacts apart,
-     * and private on the lock screen. Tapping it opens the app.
+     * and not shown on the lock screen at all (secret: the lock screen would
+     * otherwise still show the app's name). Tapping it opens the app.
      */
     internal fun notifyNewMessage(context: Context) {
         if (!notificationsAllowed(context)) return
@@ -191,7 +208,7 @@ object BackgroundReceive {
             .setContentTitle("New message")
             .setContentText("Open the app to read it.")
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .setContentIntent(openApp(context))
             .setAutoCancel(true)
             .build()

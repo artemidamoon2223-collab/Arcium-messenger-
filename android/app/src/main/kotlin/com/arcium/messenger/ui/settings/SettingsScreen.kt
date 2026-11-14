@@ -26,13 +26,20 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.arcium.messenger.messaging.BackgroundReceive
 import com.arcium.messenger.messaging.BackgroundState
@@ -50,8 +57,22 @@ fun SettingsScreen(
     // On Android 13 and later, turning background receive on first asks for
     // the notification permission. The choice is stored whatever the answer:
     // without notifications the service does not run, and the status says so.
+    var notificationsAllowed by remember { mutableStateOf(BackgroundReceive.notificationsAllowed(context)) }
     val askForNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        notificationsAllowed = BackgroundReceive.notificationsAllowed(context)
         viewModel.setBackground(true)
+    }
+    // Read again whenever the screen returns, for example from the system's
+    // notification settings, so the status below is not stale.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                notificationsAllowed = BackgroundReceive.notificationsAllowed(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     Scaffold(
@@ -113,11 +134,12 @@ fun SettingsScreen(
             Text("Background receive", style = MaterialTheme.typography.titleMedium)
             Text(
                 "Off by default. When on, the app keeps syncing with the relay after you leave " +
-                    "it, so messages arrive while it is closed. Android shows a notice for as long " +
-                    "as this runs, and a \"New message\" notification, without the sender or the " +
-                    "text, when one arrives. It costs battery and data, and messages can arrive " +
-                    "late while the phone sleeps. It stops if Android ends the app, and after the " +
-                    "phone restarts, until you open the app again.",
+                    "it, about every 30 seconds, so messages can arrive while it is closed. Android " +
+                    "shows a notice for as long as this runs, and a \"New message\" notification, " +
+                    "without the sender or the text and hidden on the lock screen, when one arrives. " +
+                    "It costs battery and data, and messages can arrive late while the screen is " +
+                    "off. It stops if Android ends the app, and after the phone restarts, until you " +
+                    "open the app again.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -140,7 +162,7 @@ fun SettingsScreen(
                         enabled = state.background,
                         startup = StartupState.Ready,
                         relayAddress = state.savedRelay,
-                        notificationsAllowed = BackgroundReceive.notificationsAllowed(context),
+                        notificationsAllowed = notificationsAllowed,
                     ),
                 ),
                 style = MaterialTheme.typography.bodySmall,

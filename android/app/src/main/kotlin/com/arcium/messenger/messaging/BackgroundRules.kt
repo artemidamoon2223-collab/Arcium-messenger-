@@ -46,6 +46,21 @@ internal fun backgroundState(
     else -> BackgroundState.RUN
 }
 
+/** Wait after a round that changed nothing, while the app is on screen. */
+internal const val VISIBLE_IDLE_DELAY_MS = 4_000L
+
+/**
+ * Wait after a round that changed nothing, while only the background service
+ * runs the loop. Each round is a new connection that publishes the bundle and
+ * scans the mailbox, so the background pace is kept low: battery, data, and
+ * how often the device shows itself to the relay and the network.
+ */
+internal const val BACKGROUND_IDLE_DELAY_MS = 30_000L
+
+/** The wait after a round that changed nothing ([VISIBLE_IDLE_DELAY_MS] or [BACKGROUND_IDLE_DELAY_MS]). */
+internal fun idleDelayMs(visible: Boolean): Long =
+    if (visible) VISIBLE_IDLE_DELAY_MS else BACKGROUND_IDLE_DELAY_MS
+
 /** The newest entry of one conversation: its number, and whether the contact wrote it. */
 internal data class NewestEntry(val seq: ULong, val incoming: Boolean)
 
@@ -65,9 +80,9 @@ internal fun newestEntries(conversations: List<Conversation>): Map<String, Newes
  * except all at once when the contact is deleted (docs/NET-MESSAGING.md,
  * section 10). So a newest entry with another number is one recorded since
  * [before], also in a history that restarted at 1. The unread count is not
- * used: an open chat screen marks its texts seen as they arrive, also while
- * the app is not visible. Null on either side means that list could not be
- * read; nothing is shown then.
+ * used: it says what the user has not seen, not what arrived in this round.
+ * Null on either side means that list could not be read; nothing is shown
+ * then.
  */
 internal fun notifyAfterRound(
     before: Map<String, NewestEntry>?,

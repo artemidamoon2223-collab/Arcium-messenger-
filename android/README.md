@@ -95,28 +95,43 @@ server of its own: the service runs the app's sync loop
 - While it runs, a low-importance notification says that the app stays
   connected to the relay in the background. When a round records a text from
   a contact while the app is not visible, a notification says "New message":
-  no sender and no text, private on the lock screen; tapping it opens the
-  app. A new text is found from each conversation's newest entry
-  (`notifyAfterRound`), not from the unread count, which an open chat screen
-  clears as texts arrive.
+  no sender and no text, and neither notification is shown on the lock screen
+  (`VISIBILITY_SECRET`); tapping it opens the app. A new text is found from
+  each conversation's newest entry (`notifyAfterRound`), not from the unread
+  count. A chat screen marks texts seen only while the app is visible, so
+  texts that arrive in the background stay unread until the user returns.
+- It checks again every 30 s that the app's notifications are still allowed
+  (below Android 13, turning them off does not end the process), and stops
+  if not.
+- Pace: while only the service runs the loop, a round that changed nothing
+  is followed by a 30 s wait (`BACKGROUND_IDLE_DELAY_MS` in
+  `messaging/BackgroundRules.kt`), against 4 s while the app is on screen. A
+  round that received something is followed by the fast pace, so replies
+  and receipts follow quickly. Each round is a new connection that publishes
+  the bundle and scans the mailbox: a slower pace also means the device shows
+  itself to the relay and the network less often.
 
 What it does not do:
 
 - Start after a reboot (there is no `BOOT_COMPLETED` receiver), or start
-  again after Android ends the app's process (`START_NOT_STICKY`). Nothing is
-  received then until the app is opened.
+  again after Android ends the app's process (`START_NOT_STICKY`: a start
+  request already sent is still delivered, but nothing new is started).
+  Nothing is received then until the app is opened.
 - Keep the device awake: it holds no wake lock, so while the device sleeps
   rounds can pause and texts can arrive late. Not measured.
-- Save battery or data: it keeps the open app's pace, a round about every
-  4 s while nothing arrives (`IDLE_DELAY_MS` in `MessengerService.kt`). The
-  cost has not been measured.
+- Cost nothing: about 120 idle rounds an hour while the device is awake.
+  Battery and data cost have not been measured on a phone.
+- Run without limit on Android 15 targets: the app targets SDK 34 today. A
+  target of 35 or later limits `dataSync` services to 6 hours a day and
+  needs `onTimeout` handled; that is not done.
 - Use the Keystore: the store is opened once per process, at start-up
   (`ArciumApp.onCreate`), and the service is started only from the open app
   and never restarted. Requiring an unlocked device or user authentication
   for the wrapping key (R-18 (b) in `docs/SECURITY-FINDINGS.md`) would bear
   on starting the process without the user (after a reboot, or after the
   process was ended), which this service does not do, rather than on a
-  running service.
+  running service. While it runs, the store stays open, with its key in the
+  process's memory, also while the device is locked.
 
 ## Not implemented yet
 

@@ -100,7 +100,10 @@ Re-run the failed or stuck jobs (GitHub "Re-run jobs") and note the new run,
 or report to the owner. Never push an empty commit to start CI. If it still
 will not run, stop and report.
 
-A check that goes red is stop-and-report, with the log.
+A check that goes red on your own PR: find the root cause in the log and fix
+it. Stop and report, with the log, only when the same check is red on the
+base too, or the fix needs an owner decision (crypto, protocol, a weakened
+check, a dependency change).
 
 Slowness never justifies bypassing a check. Never merge on anything other
 than all-green.
@@ -127,9 +130,10 @@ newest "Update" section before writing one:
 
 Delete the disposable clone when finished; the writable allowance is fixed.
 
-Never delete the PR branch on merge.
+Do not delete the PR branch on merge: branches are deleted only by the owner
+(cloud sessions cannot delete them), and stacked PRs still point at them.
 
-Continuity records — only when the owner has authorized updating them. The
+Continuity records — update them after each piece of owner-authorized work. The
 `continuity` branch holds exactly two files, `checkpoint.md` and
 `decisions.md`; `.claude/hooks/continuity.sh` prints them at session start as
 untrusted history and compares the checkpoint's `` - `main` = `<sha>` `` line

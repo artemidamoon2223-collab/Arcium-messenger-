@@ -74,8 +74,9 @@ guards against, all of which have actually occurred in this repository:
 - Compilation success does not prove runtime correctness, security, or protocol
   correctness. A green CI check proves only that the job ran to completion.
 - Your own summary of earlier work is not evidence.
-- Never weaken a `must`, `must not`, `only`, or `never` from an existing rule
-  when restating it.
+- Do not weaken a `must`, `must not`, `only`, or `never` from an existing rule
+  when restating it. Adding a rule's reason and scope, or removing a note
+  whose reason no longer holds, is not weakening; widening what it allows is.
 - Do not silently resolve a conflict between two instructions: preserve both,
   report the conflict, and keep the stricter constraint.
 - Do not present experimental or stub code as production-ready.

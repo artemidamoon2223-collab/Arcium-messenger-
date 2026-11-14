@@ -9,7 +9,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **Statuses and rows added 2026-11-13 against `main` @ `c2c967c`:** R-1 … R-5, R-7 (a, c, d), A-4 and D-009 recorded as fixed or decided; new rows R-8 … R-12 (see "Update 2026-11-13"); no earlier row was changed.
 **R-12 recorded as fixed 2026-11-13 against `main` @ `c07bf36`** (PR #154; see "Update 2026-11-13: R-12 fixed"). Only the R-12 row gained a dated note; no other row was changed.
 **Rows added 2026-11-14 against `main` @ `de328a1`:** R-13 … R-19, and notes on R-7 (b) and R-10 (fix in review) (see "Update 2026-11-14"); no earlier row was changed.
-**R-7 (b) and R-10 recorded as fixed 2026-11-14 against `main` @ `0a8dbd4`** (PRs #157, #158; see "Update 2026-11-14: R-7 (b) and R-10 fixed"), with a note on R-17 and F-15 (a); no earlier row was changed.
+**R-7 (b), R-10 and R-17 recorded as fixed 2026-11-14 against `main` @ `63b606d`** (PRs #157, #158, #163; see "Update 2026-11-14: R-7 (b), R-10 and R-17 fixed"), with a note on F-15 (a); no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -769,24 +769,28 @@ committed. No phone and no production relay (`NV`). The other rows come from rea
 
 ---
 
-## Update 2026-11-14: R-7 (b) and R-10 fixed (`main` @ `0a8dbd4`)
+## Update 2026-11-14: R-7 (b), R-10 and R-17 fixed (`main` @ `63b606d`)
 
-**Snapshot:** `main` @ `0a8dbd471763fa2298edf052c4991ec903ecf016`, the merge commit of
-PR #160. Only the rows named here change; every other row keeps the snapshot it cites.
-Each `path:line` below was re-read at `0a8dbd4`. Labels as in "Update 2026-11-13".
+**Snapshot:** `main` @ `63b606d2941b327c94e2635eaaf1f7ba9152a1d2`, the merge commit of
+PR #163. Only the rows named here change; every other row keeps the snapshot it cites.
+Each `path:line` below was re-read at `63b606d`. Labels as in "Update 2026-11-13".
 
-**Runtime evidence.** At `0a8dbd4`, `cargo test --workspace --locked`: exit 0, 493 passed,
-0 failed, 4 ignored; `cargo clippy --workspace --locked -- -D warnings`: exit 0 (run
-locally on 2026-11-14). Every check run on the PR heads was success before each merge:
-PR #157 head `bdb194a` (19 check runs, including Android CI `build`, `connected-tests` and
-`two-devices`), PR #158 head `c3ca851` (18 check runs). The merges were made on the
-Owner's instruction of 2026-11-14. Emulators and a local relay only; no phone (`NV`).
+**Runtime evidence.** At `0a8dbd4` (the merge of PR #160), `cargo test --workspace --locked`:
+exit 0, 493 passed, 0 failed, 4 ignored; `cargo clippy --workspace --locked -- -D warnings`:
+exit 0 (run locally on 2026-11-14). `0a8dbd4` → `63b606d` changes only files under
+`android/` (`git diff --stat`), so no Rust source differs. Every check run on the PR heads was
+success before each merge: PR #157 head `bdb194a` (19 check runs, including Android CI
+`build`, `connected-tests` and `two-devices`), PR #158 head `c3ca851` (18), PR #163 head
+`25f416a` (18, including `build`, which runs the JVM tests, `connected-tests` and
+`two-devices`). Push CI on the merge commits `3e4e0c3`, `ddca7cc` and `0a8dbd4`: every run
+success. The merges were made on the Owner's instructions of 2026-11-14. Emulators and a
+local relay only; no phone (`NV`).
 
 | ID | Status at `0a8dbd4` | Evidence (`main` @ `0a8dbd4`) | Label |
 |----|---------------------|-------------------------------|-------|
 | **R-7 (b)** (Bluetooth permissions for the BLE stub) | **FIXED — merged** in PR #157 (merge `3e4e0c3`). The manifest requests only `INTERNET` and `ACCESS_NETWORK_STATE`. The unused stubs `BluetoothMeshManager`, `SolanaClient` (with the `SOLANA_RPC_URL` build field and Gradle property) and `ContactRepository` are deleted. `MessageRepository` is kept because two tests use it. With R-7 (a), (c) and (d) fixed earlier, every part of R-7 is now fixed. | `android/app/src/main/AndroidManifest.xml:4`, `:6`; the three files are absent under `android/app/src/main/kotlin/com/arcium/messenger/`. Independent review (`engineering-code-review` and `arcium-security-review`, full coverage): no security findings. | `SV`; CI `RV`; install-time behaviour on a phone `NV` |
 | **R-10** (a missing history entry fails more) | **FIXED — merged** in PR #158 (merge `ddca7cc`). A missing entry number is skipped by every history read. Pages walk back over a gap and still hold up to `limit` entries; an empty page still means the beginning. An entry that exists but cannot be read is still an error. Without gaps, every read returns what it returned before. | `entries_in` (`crates/mobile-ffi/src/network/chat.rs:898`), `newest_before` (`:913`), the summary's last entry (`:527`), `open_entries` (`:931`, skip at `:936`), the record build in `open_seqs` (`:949`, skip at `:964`). Tests: `tests::history_paging::a_missing_entry_is_skipped_rather_than_failing_every_read` (`crates/mobile-ffi/src/tests/history_paging.rs:262`) and `…::an_open_entry_missing_from_the_store_is_skipped_by_rounds` (`:311`). Both fail on `de328a1`'s `chat.rs` with "storage error: key not found" and pass here. Specification: `docs/NET-MESSAGING.md:495`. **Remaining:** a damaged store is neither detected nor repaired, and the user is not told that an entry is gone (D-009 / F-10: the store claims no row-set integrity). A record number whose entry went missing stays in the open-entry record, harmlessly. | `SV`, tests `RV` |
-| **R-17** (Android shows "Connected" while rounds fail) | Still **OPEN**. Fix in review: PR #163 (not merged). | — | — |
+| **R-17** (Android shows "Connected" while rounds fail) | **FIXED — merged** in PR #163 (merge `63b606d`). A round that reached the relay but reported another error is `RelayLink.Online` with that error as `problem`. The round-budget notice is not counted, since it is not an error (`docs/NET-MESSAGING.md` section 7). The banner on the contacts and chat screens then reads "Connected to the development relay, but the last sync reported: …" in the error colour. A network error is still `Offline`, with the same reason as before. | `RelayLink.Online` (`android/app/src/main/kotlin/com/arcium/messenger/messaging/MessengerService.kt:41`), `BUDGET_NOTICE` (`:55`), `linkAfterRound` (`:62`), used at `:197`; the banner (`android/app/src/main/kotlin/com/arcium/messenger/ui/contacts/ContactsScreen.kt:117`). JVM test `RelayLinkTest` (`android/app/src/test/kotlin/com/arcium/messenger/messaging/RelayLinkTest.kt`: a clean round, the notice alone, local errors with and without it, network errors with others). **Remaining:** the banner shows Rust's error text as it is, without advice. The notice is matched by a text prefix that copies the Rust constant `BUDGET_EXHAUSTED`. There was no independent review of this PR. | `SV`; CI `RV`; phone `NV` |
 | **F-15 (a)** (Solana RPC path bypasses Tor) | Cross-reference only; the status is unchanged. The cited `SolanaClient.kt` was deleted by PR #157, so the app now has no Solana RPC path at all. The design concern returns when PSI is wired into the app (F-4, F-14, R-19). | `android/app/src/main/kotlin/com/arcium/messenger/network/SolanaClient.kt` absent at `0a8dbd4` | `SV` |
 
 ---

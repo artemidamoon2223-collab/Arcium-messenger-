@@ -69,6 +69,12 @@ pub enum ChatEntryState {
     NotDelivered,
     /// A text from the peer, accepted by the ratchet.
     Received,
+    /// Given up on by the user (`cancel_text`) before a receipt arrived: it
+    /// is no longer sent. Says nothing about the peer: a copy the relay
+    /// already accepted may still reach it, and its device would then accept
+    /// it. Moves to `Delivered` only if the peer's receipt is found after
+    /// all.
+    Cancelled,
 }
 
 impl ChatEntryState {
@@ -80,6 +86,7 @@ impl ChatEntryState {
             Self::Delivered => 3,
             Self::NotDelivered => 4,
             Self::Received => 5,
+            Self::Cancelled => 6,
         }
     }
 
@@ -91,6 +98,7 @@ impl ChatEntryState {
             3 => Self::Delivered,
             4 => Self::NotDelivered,
             5 => Self::Received,
+            6 => Self::Cancelled,
             _ => return None,
         })
     }
@@ -253,7 +261,9 @@ impl OpenSeqs {
 }
 
 /// Whether an entry in `state` can still change: an outgoing one not yet
-/// `Delivered` or `NotDelivered`.
+/// `Delivered`, `NotDelivered` or `Cancelled`. (A `Cancelled` entry becomes
+/// `Delivered` only in `cancel_text`, or when a stale `refresh` holds a
+/// receipt for it; nothing walks it otherwise.)
 fn is_open(outgoing: bool, state: ChatEntryState) -> bool {
     outgoing
         && matches!(
@@ -437,6 +447,50 @@ fn get_opt(result: Result<Vec<u8>, StorageError>) -> Result<Option<Vec<u8>>, Cor
 /// here, and writes nothing: a later re-add inherits no record.
 fn pinned_in(tx: &StoreTransaction<'_>, peer: &[u8; 32]) -> Result<bool, CoreError> {
     Ok(get_opt(tx.get(&contact_key(peer)))?.is_some())
+}
+
+/// The body of [`NetworkMessenger::advance`], inside `tx`: moves entry `seq`
+/// forward to `state` and records `message_id` if it has none. Returns
+/// whether it wrote anything; the caller commits.
+fn advance_in(
+    tx: &StoreTransaction<'_>,
+    peer: &[u8; 32],
+    seq: u64,
+    state: ChatEntryState,
+    message_id: Option<&[u8]>,
+) -> Result<bool, CoreError> {
+    use ChatEntryState::*;
+    let key = entry_key(peer, seq);
+    let mut entry = Entry::decode(seq, &Zeroizing::new(tx.get(&key)?))?;
+    let forward = matches!(
+        (entry.state, state),
+        (Queued, Pending | Transmitted | Delivered | NotDelivered | Cancelled)
+            | (Pending, Transmitted | Delivered | NotDelivered | Cancelled)
+            | (Transmitted, Delivered | NotDelivered | Cancelled)
+            | (Cancelled, Delivered)
+    );
+    let new_id = match message_id {
+        Some(id) if entry.message_id.is_empty() => Some(id.to_vec()),
+        _ => None,
+    };
+    if !forward && new_id.is_none() {
+        return Ok(false);
+    }
+    if forward {
+        entry.state = state;
+    }
+    if let Some(id) = new_id {
+        entry.message_id = id;
+    }
+    tx.put(&key, &entry.encode())?;
+    if !is_open(entry.outgoing, entry.state) {
+        if let Some(open) = get_opt(tx.get(&open_key(peer)))? {
+            let mut open = OpenSeqs::decode(&open)?;
+            open.remove(seq);
+            tx.put(&open_key(peer), &open.encode())?;
+        }
+    }
+    Ok(true)
 }
 
 /// What one local refresh of a conversation did.
@@ -671,6 +725,79 @@ impl NetworkMessenger {
         let key = peer_key(&peer)?;
         self.require_contact(&key)?;
         self.update_meta(&key, |m| m.seen_seq = m.last_seq)
+    }
+
+    /// Gives up on the outgoing text `app_id` before the peer's receipt
+    /// arrived (R-15): it is never sent again, and the entry reads
+    /// `Cancelled`. Nothing is claimed about the peer: a copy the relay
+    /// already accepted may still reach it and be accepted there. If the
+    /// peer's receipt is already here, the entry reads `Delivered` instead.
+    /// A text already `Delivered`, `NotDelivered` or `Cancelled` is returned
+    /// as it stands (a `Cancelled` one is upgraded if its receipt is found);
+    /// repeating the call is harmless.
+    ///
+    /// The entry is marked first, in its own transaction, and the committed
+    /// message (if any) is abandoned after that, so a `refresh` never reads
+    /// the abandonment as `NotDelivered`. From the mark on, `publish_pending`
+    /// never sends the text: it abandons it instead (`cancelled_text`), which
+    /// also covers a crash before this call abandons it, and a text another
+    /// thread commits after the mark. A round already past that check may
+    /// still send it once; the Android app runs this on its sync thread,
+    /// between rounds. An error after the mark leaves the entry `Cancelled`
+    /// and the text unsent; calling again completes the rest.
+    ///
+    /// `UnknownContact` if the contact is not (or no longer) pinned; an
+    /// `InvalidArgument` if the history has no outgoing text with this id.
+    pub fn cancel_text(&self, peer: Vec<u8>, app_id: Vec<u8>) -> Result<ChatEntry, CoreError> {
+        let key = peer_key(&peer)?;
+        self.require_contact(&key)?;
+        let client = client_id::text(&app_id);
+        // A receipt already here makes it Delivered, not Cancelled. (One
+        // that lands after this read is caught after the mark, below.)
+        let before = self.core.prior_send(&key, &client)?;
+        let seq = {
+            let mut store = self.core.store.lock().map_err(|_| poisoned())?;
+            let tx = store.transaction()?;
+            if !pinned_in(&tx, &key)? {
+                return Err(CoreError::UnknownContact);
+            }
+            let Some(seq) = get_opt(tx.get(&out_key(&key, &app_id)))? else {
+                return Err(invalid("no outgoing text with this app id"));
+            };
+            let seq = decode_seq(&seq)?;
+            let state = match before {
+                Some(SendResult::AlreadyAcknowledged { .. }) => ChatEntryState::Delivered,
+                _ => ChatEntryState::Cancelled,
+            };
+            let id = match &before {
+                Some(SendResult::AlreadyAcknowledged { message_id }) => Some(message_id.as_slice()),
+                _ => None,
+            };
+            if advance_in(&tx, &key, seq, state, id)? {
+                tx.commit()?;
+                crash_point("cancel_after_mark");
+            }
+            seq
+        };
+        if self.entry(&key, seq)?.state != ChatEntryState::Cancelled {
+            return Ok(self.entry(&key, seq)?.public());
+        }
+        let mut now = self.core.prior_send(&key, &client)?;
+        if let Some(SendResult::AlreadyPending { message }) = now {
+            self.core.abandon_outgoing(handle_of(&key), message.message_id)?;
+            crash_point("cancel_after_abandon");
+            now = self.core.prior_send(&key, &client)?;
+        }
+        // A receipt that won the race with the mark: the record says
+        // acknowledged for this entry's message (or, for a text a crash left
+        // `Queued` after committing it, for the message its id committed).
+        if let Some(SendResult::AlreadyAcknowledged { message_id }) = now {
+            let entry = self.entry(&key, seq)?;
+            if entry.message_id.is_empty() || entry.message_id == message_id {
+                self.advance(&key, seq, ChatEntryState::Delivered, Some(&message_id))?;
+            }
+        }
+        Ok(self.entry(&key, seq)?.public())
     }
 
     /// Resolves a session conflict (both devices started a session with each
@@ -1075,8 +1202,10 @@ impl NetworkMessenger {
     /// Moves entry `seq` forward to `state` (never back: a stale caller
     /// cannot undo a receipt) and records its message id if it has none.
     ///
-    /// Forward is `Queued → Pending → Transmitted → Delivered`, and from any
-    /// of the first three to `NotDelivered`; a step may skip states. Skips
+    /// Forward is `Queued → Pending → Transmitted → Delivered`, from any of
+    /// the first three to `NotDelivered` or `Cancelled`, and from `Cancelled`
+    /// to `Delivered` (the peer's receipt is a fact; a cancel only stops
+    /// sending); a step may skip states. Skips
     /// happen when the stored state lags what the durable layer already
     /// holds: a `Queued` entry whose commit ran before a crash comes back from
     /// `send_text` as pending, delivered or abandoned, and a `Pending` one
@@ -1089,43 +1218,35 @@ impl NetworkMessenger {
         state: ChatEntryState,
         message_id: Option<&[u8]>,
     ) -> Result<(), CoreError> {
-        use ChatEntryState::*;
         let mut store = self.core.store.lock().map_err(|_| poisoned())?;
         let tx = store.transaction()?;
         if !pinned_in(&tx, peer)? {
             return Ok(());
         }
-        let key = entry_key(peer, seq);
-        let mut entry = Entry::decode(seq, &Zeroizing::new(tx.get(&key)?))?;
-        let forward = matches!(
-            (entry.state, state),
-            (Queued, Pending | Transmitted | Delivered | NotDelivered)
-                | (Pending, Transmitted | Delivered | NotDelivered)
-                | (Transmitted, Delivered | NotDelivered)
-        );
-        let new_id = match message_id {
-            Some(id) if entry.message_id.is_empty() => Some(id.to_vec()),
-            _ => None,
-        };
-        if !forward && new_id.is_none() {
-            return Ok(());
+        if advance_in(&tx, peer, seq, state, message_id)? {
+            tx.commit()?;
         }
-        if forward {
-            entry.state = state;
-        }
-        if let Some(id) = new_id {
-            entry.message_id = id;
-        }
-        tx.put(&key, &entry.encode())?;
-        if !is_open(entry.outgoing, entry.state) {
-            if let Some(open) = get_opt(tx.get(&open_key(peer)))? {
-                let mut open = OpenSeqs::decode(&open)?;
-                open.remove(seq);
-                tx.put(&open_key(peer), &open.encode())?;
-            }
-        }
-        tx.commit()?;
         Ok(())
+    }
+
+    /// Whether the history entry of the text committed under `app_id` reads
+    /// `Cancelled`. `publish_pending` asks before sending each text, and
+    /// abandons a cancelled one instead: so a cancelled text is never sent
+    /// again, whoever committed it and whenever (a crash between
+    /// `cancel_text`'s mark and its abandoning, or a `refresh` on another
+    /// thread that read the entry as `Queued` before the mark and committed
+    /// it after). A text `send_text` committed has no entry; a missing entry
+    /// (damaged store) reads as not cancelled.
+    pub(super) fn cancelled_text(&self, peer: &[u8; 32], app_id: &[u8]) -> Result<bool, CoreError> {
+        let store = self.core.store.lock().map_err(|_| poisoned())?;
+        let Some(seq) = get_opt(store.get(&out_key(peer, app_id)))? else {
+            return Ok(false);
+        };
+        let seq = decode_seq(&seq)?;
+        Ok(match get_opt(store.get(&entry_key(peer, seq)))? {
+            Some(bytes) => Entry::decode(seq, &Zeroizing::new(bytes))?.state == ChatEntryState::Cancelled,
+            None => false,
+        })
     }
 
     /// Records a received text once: the entry and its message-id index are

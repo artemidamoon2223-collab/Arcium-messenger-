@@ -2365,6 +2365,7 @@ mod tests {
 
     mod responder;
     mod ack_probe;
+    mod cancel_text;
     mod chat;
     mod delete_contact;
     mod durable;

@@ -94,7 +94,8 @@ internal fun loadWindow(count: Int, fetch: (before: ULong?, limit: UInt) -> List
  * recording it fails, the text and that id stay here, and sending again
  * repeats the call with the same id — Rust then returns what it already has
  * and never encrypts the text twice. A resend of a message that was given up
- * on is a new message with a new id, and only on the user's request.
+ * on (not delivered, or cancelled by the user) is a new message with a new
+ * id, and only on the user's request.
  */
 class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
 
@@ -177,6 +178,28 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
                 _state.value = _state.value.copy(
                     sending = false,
                     error = "Not saved: ${e.message}. Send again to retry.",
+                )
+            }
+            service.changed()
+        }
+    }
+
+    /**
+     * Gives up on an own text not yet delivered (Rust `cancel_text`): it is
+     * not sent again and reads Cancelled, or Delivered if the receipt was
+     * already here. On the sync thread, so no round in flight sends it once
+     * more after this returns; later rounds never send it (Rust
+     * `publish_pending` abandons a cancelled text instead).
+     */
+    fun cancel(entry: ChatEntry) {
+        viewModelScope.launch {
+            try {
+                service.callBetweenRounds { it.cancelText(peer, entry.appId) }
+            } catch (e: CoreException) {
+                // The mark may have been committed before the failure: a
+                // text that shows Cancelled is not sent again either way.
+                _state.value = _state.value.copy(
+                    error = "Cancel failed: ${e.message}. If the message shows Cancelled, it is not sent again.",
                 )
             }
             service.changed()

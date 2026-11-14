@@ -861,6 +861,14 @@ impl NetworkMessenger {
                 }
             }
             for m in self.core.pending_outgoing(*handle)? {
+                // A text the user cancelled is never sent again: abandoned
+                // here instead (`chat::cancel_text`; R-15).
+                if let Some((&client_id::TEXT, app_id)) = m.client_message_id.split_first() {
+                    if self.cancelled_text(peer, app_id)? {
+                        self.core.abandon_outgoing(*handle, m.message_id)?;
+                        continue;
+                    }
+                }
                 let id: [u8; 32] = m.message_id.as_slice().try_into().expect("32-byte id");
                 if !self.due(&id) {
                     continue;

@@ -208,7 +208,8 @@ of these.
 - Neither `acknowledge_outgoing` nor `abandon_outgoing` is exported through
   UniFFI: only this layer takes a text out of the outbox, on a receipt, or
   in `resolve_session_conflict`, or when the user deletes the contact
-  (`delete_contact`), which marks it abandoned.
+  (`delete_contact`), which marks it abandoned, or for a history entry the
+  user cancelled (`cancel_text`, section 10), which is abandoned too.
 - The history never reads a text missing from the outbox as delivered by
   itself. It reads the durable send record (`Messenger::prior_send`, keyed
   by the peer): acknowledged is `Delivered`, abandoned is `NotDelivered`,
@@ -235,7 +236,8 @@ of these.
 
 Outgoing text: `committed (outbox)` → `published (relay accepted; in memory,
 repeated after a restart)` → `delivered (receipt; outbox record deleted,
-send-id kept)` or `abandoned (abandon_outgoing)`. Repeating `send_text` with
+send-id kept)` or `abandoned (abandon_outgoing: a conflict resolution, a
+deleted contact, or a cancel by the user)`. Repeating `send_text` with
 the same app id never encrypts again (S2-B2).
 
 Incoming envelope: fetched → `accepted (inbox committed, receipt committed)` →
@@ -444,6 +446,7 @@ entry per logical message, never written by the ratchet.
 | `Transmitted` | the relay accepted it; nothing is known about the peer |
 | `Delivered` | the peer's authenticated receipt arrived (its device committed it); not a read receipt |
 | `NotDelivered` | given up after a conflict resolution; the peer never accepts it |
+| `Cancelled` | given up by the user (`cancel_text`); no longer sent, and a copy the relay already accepted may still be accepted by the peer |
 | `Received` | a text from the peer |
 
 - **Sending.** `chat_send(peer, app_id, text)` records the entry first, then
@@ -511,6 +514,31 @@ entry per logical message, never written by the ratchet.
   the card still pinned, so a call that read the contact before the delete
   writes nothing for it after (a user action then fails as for any
   non-contact), and a re-added contact inherits no history or flag.
+- **Cancelling a text.** `cancel_text(peer, app_id)`, on the user's request,
+  gives up on an own text not yet final (`Queued`, `Pending` or
+  `Transmitted`; tracker R-15). It marks the entry `Cancelled` in one
+  transaction (which also takes it off `chat-open`), then abandons the
+  committed message, if any: it leaves the outbox and its send record reads
+  abandoned, so the same id is never encrypted again. Marking first means a
+  `refresh` never reads that abandonment as `NotDelivered`. From the mark
+  on, `publish_pending` never sends the text: before sending each text it
+  reads its entry, and abandons a `Cancelled` one instead. This covers a
+  cancel cut by a crash between the two steps, and a text another thread
+  commits after reading the entry as `Queued` before the mark. A round
+  already past that check may send it once more; the Android app cancels on
+  its sync thread, between rounds. An error after the mark leaves the entry
+  `Cancelled` and the text unsent; calling again completes it.
+  `Cancelled` claims nothing about the peer: a copy the relay already
+  accepted may still reach it and be accepted there, and its receipt then
+  finds the message abandoned, so the entry stays `Cancelled`. If the
+  receipt was taken before the cancel (also one that lands while the
+  cancel runs), the entry reads `Delivered` (`Cancelled` → `Delivered` is
+  the one move out of `Cancelled`). A crash inside a cancel that a receipt
+  races can leave such an entry `Cancelled`. A final
+  text is returned as it stands, and repeating a cancel is harmless. The
+  user can send the text again, as a new message with a new id. The
+  peer is told nothing. No automatic give-up exists: a text the user does
+  not cancel is still retransmitted for as long as the app runs.
 - **Reading in pages.** Entries are numbered 1, 2, … per contact: each takes
   the next number in the transaction that writes it, and none is deleted.
   `chat_entries_page(peer, before_seq, limit)` returns the `limit` entries
@@ -521,7 +549,7 @@ entry per logical message, never written by the ratchet.
   that exists but cannot be read is still an error (R-10).
 - **What a round reads.** A record per contact, `chat-open:v1`, lists the
   numbers of outgoing entries not yet final (`Queued`, `Pending`,
-  `Transmitted`). It changes in the transaction of every entry change that
+  `Transmitted`; not `Cancelled`). It changes in the transaction of every entry change that
   adds or removes one. Rounds, sends and the giving up of a session walk it
   instead of the history. A history written before it existed has none; it
   is built once, in one transaction, from the entries. The conversation list
@@ -559,3 +587,4 @@ entry per logical message, never written by the ratchet.
 | refusal tag: both parties compute it, third parties cannot; bound to both keys, the roles and every field byte; low-order keys; byte-for-byte vector computed independently with Python `cryptography` | `core_crypto::refusal_mac` tests | unit; known answer |
 | history pages (sizes 1, 7, 200, new entries while paging), the open-entry record against a full scan (random steps, a history from before the record, a conflict), process death after its writes | `tests::history_paging` | runtime; process crash |
 | process death while sending from or receiving into the history | `tests::network_crash` (`chat_*` points) | process crash |
+| cancelling a text: queued, pending and transmitted texts, a copy already on the relay that still arrives, a receipt taken before the cancel, refusals, a restart, sending again; process death between marking and abandoning | `tests::cancel_text`; `tests::network_crash` (`cancel_*` points) | runtime, local relay over TCP; process crash |

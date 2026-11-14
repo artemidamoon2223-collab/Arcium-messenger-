@@ -43,7 +43,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.arcium.messenger.messaging.BackgroundReceive
 import com.arcium.messenger.messaging.BackgroundState
+import com.arcium.messenger.messaging.RelayProtocol
 import com.arcium.messenger.messaging.backgroundState
+import com.arcium.messenger.messaging.relayProtocolOf
 import com.arcium.messenger.startup.StartupState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -95,26 +97,28 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Development relay", style = MaterialTheme.typography.titleMedium)
-            if (!state.relayAllowed) {
-                Text(
-                    "This build has no relay: there is no production relay yet, and the " +
-                        "development relay is available only in debug builds. Messages cannot " +
-                        "be sent or received.",
-                )
-                return@Column
-            }
+            Text("Relay", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Messages travel through a relay you run yourself (arcium-relay). It is for " +
-                    "development only: no TLS, no authentication, nothing kept on disk. It " +
-                    "cannot read messages, but it and anyone on the network see who talks to " +
-                    "whom, when and how much. There is no Tor and no anonymity.",
+                "Messages travel through a relay. Paste the connection string its operator " +
+                    "gives you (arcium-relay-v2:…). The app then reaches the relay over TLS, " +
+                    "checks that it is that relay, and only this device can read or delete its " +
+                    "mailbox. The relay cannot read messages, but it sees who talks to whom, " +
+                    "when and how much. There is no Tor and no anonymity.",
                 style = MaterialTheme.typography.bodySmall,
             )
+            if (state.devRelayAllowed) {
+                Text(
+                    "This debug build also accepts host:port of a development relay " +
+                        "(arcium-relay without --keys): no TLS and no authentication, so anyone " +
+                        "on the network sees what the relay sees, and anyone who reaches it can " +
+                        "read or delete any mailbox.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             OutlinedTextField(
                 value = state.relayInput,
                 onValueChange = viewModel::onRelayInput,
-                label = { Text("host:port") },
+                label = { Text("Connection string") },
                 singleLine = true,
                 isError = state.error != null,
                 supportingText = { state.error?.let { Text(it) } },
@@ -130,6 +134,13 @@ fun SettingsScreen(
                 state.savedRelay?.let { "Using $it" } ?: "No relay: messaging is off.",
                 modifier = Modifier.testTag("savedRelay"),
             )
+            state.savedRelay?.let { saved ->
+                Text(
+                    protocolStatus(relayProtocolOf(saved)),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("relayProtocol"),
+                )
+            }
             HorizontalDivider()
             Text("Background receive", style = MaterialTheme.typography.titleMedium)
             Text(
@@ -177,6 +188,12 @@ fun SettingsScreen(
             )
         }
     }
+}
+
+/** What the screen says about the protocol of the configured relay. */
+private fun protocolStatus(protocol: RelayProtocol): String = when (protocol) {
+    RelayProtocol.V2 -> "Encrypted relay (V2): TLS to the pinned key, mailbox authentication."
+    RelayProtocol.DEV_V1 -> "Development relay (V1): no TLS, no authentication."
 }
 
 /** What the screen says about background receive in [state]. */

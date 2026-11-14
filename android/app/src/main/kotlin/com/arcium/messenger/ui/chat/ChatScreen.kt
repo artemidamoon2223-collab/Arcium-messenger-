@@ -62,6 +62,7 @@ fun ChatScreen(
     val state by viewModel.state.collectAsState()
     val list = rememberLazyListState()
     var confirmDelete by remember { mutableStateOf(false) }
+    var cancelTarget by remember { mutableStateOf<ChatEntry?>(null) }
     // To the newest entry when one arrives, not when older ones are loaded.
     val hasOlder = (state.entries.firstOrNull()?.seq ?: 1uL) > 1uL
     LaunchedEffect(state.entries.lastOrNull()?.seq) {
@@ -140,7 +141,11 @@ fun ChatScreen(
                     }
                 }
                 items(state.entries, key = { it.seq.toLong() }) { entry ->
-                    Bubble(entry, onResend = { viewModel.resend(entry) })
+                    Bubble(
+                        entry,
+                        onResend = { viewModel.resend(entry) },
+                        onCancel = { cancelTarget = entry },
+                    )
                 }
             }
         }
@@ -155,6 +160,44 @@ fun ChatScreen(
             onDismiss = { confirmDelete = false },
         )
     }
+
+    cancelTarget?.let { entry ->
+        CancelTextDialog(
+            name = state.conversation?.name ?: "",
+            onConfirm = {
+                cancelTarget = null
+                viewModel.cancel(entry)
+            },
+            onDismiss = { cancelTarget = null },
+        )
+    }
+}
+
+/**
+ * Asks before giving up on a text: it will not be sent again, and a copy
+ * the relay already holds may still arrive (Rust `cancel_text`).
+ */
+@Composable
+private fun CancelTextDialog(name: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("confirmCancelText"),
+        title = { Text("Stop sending?") },
+        text = {
+            Text(
+                "This message will not be sent again. If a copy already reached the relay, " +
+                    "$name may still receive it.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, modifier = Modifier.testTag("cancelTextConfirm")) {
+                Text("Stop sending")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Keep") }
+        },
+    )
 }
 
 /**
@@ -241,10 +284,23 @@ fun statusLabel(state: ChatEntryState): String = when (state) {
     ChatEntryState.DELIVERED -> "Delivered"
     ChatEntryState.NOT_DELIVERED -> "Not delivered"
     ChatEntryState.RECEIVED -> "Received"
+    ChatEntryState.CANCELLED -> "Cancelled"
 }
 
+/** Whether the user may give up on [entry]: an own text not yet final. */
+internal fun cancellable(entry: ChatEntry): Boolean =
+    entry.outgoing && entry.state in setOf(
+        ChatEntryState.QUEUED,
+        ChatEntryState.PENDING,
+        ChatEntryState.TRANSMITTED,
+    )
+
+/** Whether [entry] offers "Send again": an own text given up on, here or by the user. */
+internal fun resendable(entry: ChatEntry): Boolean =
+    entry.outgoing && (entry.state == ChatEntryState.NOT_DELIVERED || entry.state == ChatEntryState.CANCELLED)
+
 @Composable
-private fun Bubble(entry: ChatEntry, onResend: () -> Unit) {
+private fun Bubble(entry: ChatEntry, onResend: () -> Unit, onCancel: () -> Unit) {
     val status = statusLabel(entry.state)
     Box(Modifier.fillMaxWidth()) {
         Column(
@@ -266,8 +322,11 @@ private fun Bubble(entry: ChatEntry, onResend: () -> Unit) {
                     if (entry.outgoing) " · $status" else "",
                 style = MaterialTheme.typography.labelSmall,
             )
-            if (entry.state == ChatEntryState.NOT_DELIVERED) {
+            if (resendable(entry)) {
                 TextButton(onClick = onResend) { Text("Send again") }
+            }
+            if (cancellable(entry)) {
+                TextButton(onClick = onCancel, modifier = Modifier.testTag("cancelText")) { Text("Cancel") }
             }
         }
     }

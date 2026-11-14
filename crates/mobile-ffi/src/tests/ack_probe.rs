@@ -8,7 +8,9 @@
 //! exported through UniFFI. Abandonment through `resolve_session_conflict`
 //! (marked `NotDelivered`) is covered in `tests/chat.rs`, and through
 //! `delete_contact` (`Messenger::forget_peer`, which marks every pending text
-//! abandoned and deletes the history with it) in `tests/delete_contact.rs`.
+//! abandoned and deletes the history with it) in `tests/delete_contact.rs`,
+//! and through `cancel_text` (marked `Cancelled` first) in
+//! `tests/cancel_text.rs`.
 
 use std::path::Path;
 
@@ -199,13 +201,21 @@ fn exported_methods(body: &str) -> Vec<(&str, &str)> {
 }
 
 /// The trust boundary itself: no exported method lets Kotlin remove an
-/// outgoing message from the outbox, except the two that never let it read
-/// as delivered. A source check: it keeps `acknowledge_outgoing`,
+/// outgoing message from the outbox, except the three that never let it
+/// read as delivered. A source check: it keeps `acknowledge_outgoing`,
 /// `abandon_outgoing` and `forget_peer` from being exported, and from being
 /// called directly by any exported method other than
 /// `resolve_session_conflict` (marks the texts `NotDelivered`, then abandons
-/// them) and `delete_contact` (`forget_peer` marks every pending text
-/// abandoned in the transaction that deletes it). The generated bindings
+/// them), `delete_contact` (`forget_peer` marks every pending text
+/// abandoned in the transaction that deletes it) and `cancel_text` (marks
+/// the one entry `Cancelled`, then abandons its message; the record then
+/// reads abandoned, never acknowledged). Paths that abandon through a
+/// crate-private helper are not seen by this scan: the restart after a
+/// refusal (`sync` → `restart_after_refusal` →
+/// `retire_unconfirmed_session`, which marks the texts `NotDelivered`
+/// first) and `publish_pending` (`sync` abandons, instead of sending, a text
+/// whose entry already reads `Cancelled`; covered in `tests/cancel_text.rs`
+/// and `tests/network_crash.rs`). The generated bindings
 /// themselves are not checked by any test.
 #[test]
 fn neither_outbox_removal_is_exported_through_uniffi() {
@@ -217,7 +227,7 @@ fn neither_outbox_removal_is_exported_through_uniffi() {
         names.iter().any(|f| f.ends_with("messaging_api.rs")),
         "the scan must see the exported messaging block: {names:?}"
     );
-    const ALLOWED: [&str; 2] = ["resolve_session_conflict", "delete_contact"];
+    const ALLOWED: [&str; 3] = ["resolve_session_conflict", "delete_contact", "cancel_text"];
     const CALLS: [&str; 3] = ["acknowledge_outgoing", "abandon_outgoing", "forget_peer"];
     let mut allowed_seen = Vec::new();
     for (file, body) in &items {
@@ -240,5 +250,5 @@ fn neither_outbox_removal_is_exported_through_uniffi() {
     assert!(items.iter().any(|(_, b)| b.contains("fn pending_outgoing")));
     assert!(items.iter().any(|(_, b)| b.contains("fn acknowledge_incoming")));
     allowed_seen.sort_unstable();
-    assert_eq!(allowed_seen, ["delete_contact", "resolve_session_conflict"]);
+    assert_eq!(allowed_seen, ["cancel_text", "delete_contact", "resolve_session_conflict"]);
 }

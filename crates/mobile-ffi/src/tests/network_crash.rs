@@ -45,6 +45,10 @@ fn net_crash_child() {
         "chat_sync" => {
             device.net.sync_conversations();
         }
+        "cancel" => {
+            let peer = std::fs::read(dir.join("peer")).unwrap();
+            device.net.cancel_text(peer, b"cancel".to_vec()).unwrap();
+        }
         "resolve" => {
             let peer = std::fs::read(dir.join("peer")).unwrap();
             device.net.resolve_session_conflict(peer).unwrap();
@@ -283,4 +287,44 @@ fn a_recipient_killed_before_marking_a_recorded_text_read_shows_it_once() {
     assert_eq!(entries[0].text.0, "recorded");
     assert!(bob.net.received_texts(alice.pk.clone()).unwrap().is_empty());
     relay.stop();
+}
+
+/// The sender dies while cancelling a committed text: after marking the
+/// entry `Cancelled` and before abandoning the message, after abandoning it,
+/// and after the call returned. After the restart the text is still in the
+/// outbox only in the first case, and the next round abandons it instead of
+/// sending it (`publish_pending`): the peer never gets it, and the entry
+/// stays `Cancelled`.
+#[cfg(unix)]
+#[test]
+fn a_sender_killed_while_cancelling_never_sends_the_text() {
+    use crate::network::chat::ChatEntryState;
+    for point in [Some("cancel_after_mark"), Some("cancel_after_abandon"), None] {
+        let relay = start_relay();
+        let addr = relay.addr().to_string();
+        let (alice, bob) = connected(&addr);
+        let text = format!("cancel me{}", String::from_utf8(CANARY.to_vec()).unwrap());
+        let entry = alice
+            .net
+            .chat_send(bob.pk.clone(), b"cancel".to_vec(), text)
+            .unwrap();
+        assert_eq!(entry.state, ChatEntryState::Pending);
+        run_child(&alice, &addr, "cancel", point, &bob.pk);
+
+        let alice = alice.restart(&addr);
+        let left = usize::from(point == Some("cancel_after_mark"));
+        assert_eq!(alice.undelivered(&bob), left, "{point:?}");
+        chat_rounds(&[&alice, &bob, &alice], 2);
+        assert_eq!(alice.undelivered(&bob), 0, "{point:?}");
+        assert!(stored_messages(&relay, &bob).is_empty(), "{point:?}");
+        assert!(
+            bob.net.chat_entries(alice.pk.clone()).unwrap().is_empty(),
+            "{point:?}: never received"
+        );
+        let entries = alice.net.chat_entries(bob.pk.clone()).unwrap();
+        assert_eq!(entries.len(), 1, "{point:?}");
+        assert_eq!(entries[0].state, ChatEntryState::Cancelled, "{point:?}");
+        assert_eq!(relay.canary_hits(), 0);
+        relay.stop();
+    }
 }

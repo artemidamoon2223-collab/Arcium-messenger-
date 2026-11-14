@@ -17,6 +17,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -31,6 +33,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -56,6 +61,7 @@ fun ChatScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val list = rememberLazyListState()
+    var confirmDelete by remember { mutableStateOf(false) }
     // To the newest entry when one arrives, not when older ones are loaded.
     val hasOlder = (state.entries.firstOrNull()?.seq ?: 1uL) > 1uL
     LaunchedEffect(state.entries.lastOrNull()?.seq) {
@@ -77,6 +83,14 @@ fun ChatScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = { confirmDelete = true },
+                        modifier = Modifier.testTag("deleteContact"),
+                    ) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Delete contact")
                     }
                 },
             )
@@ -131,6 +145,44 @@ fun ChatScreen(
             }
         }
     }
+
+    if (confirmDelete) {
+        DeleteContactDialog(
+            onConfirm = {
+                confirmDelete = false
+                viewModel.deleteContact(onDeleted = onBack)
+            },
+            onDismiss = { confirmDelete = false },
+        )
+    }
+}
+
+/**
+ * Asks before deleting the contact: what goes, that it is local only, and
+ * how two people start again.
+ */
+@Composable
+private fun DeleteContactDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("confirmDeleteContact"),
+        title = { Text("Delete contact?") },
+        text = {
+            Text(
+                "Deletes this contact, the conversation and every message not yet delivered — " +
+                    "on this device only. To talk again, both of you delete each other and " +
+                    "exchange cards again.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, modifier = Modifier.testTag("deleteContactConfirm")) {
+                Text("Delete")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 /** The session and anything that stops texts from going out, in words. */

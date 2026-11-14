@@ -517,3 +517,373 @@ fn an_unreadable_session_is_not_removed() {
         Err(MessagingError::NoSession { .. })
     ));
 }
+
+// ── Forgetting a peer (delete contact) ────────────────────────────────────
+
+/// Every record of the namespaces these tests write, by key.
+fn records(store: &EncryptedStore) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    for ns in [
+        "session:", "handle:", "hsout:", "hsin:", "outbox:", "inbox:", "seen:", "sendid:", "app:",
+    ] {
+        for key in store.list_keys_with_prefix(ns).unwrap() {
+            let value = store.get(&key).unwrap();
+            out.insert(key, value);
+        }
+    }
+    out
+}
+
+fn forget_bob(p: &mut Peers, also: &[String]) -> Result<(), MessagingError> {
+    p.am.forget_peer(&mut p.a, ALICE_HANDLE, &p.bob_pk, also)
+}
+
+/// Alice and Bob on file databases, with one round trip done (Bob can
+/// send), so another connection can race on Alice's.
+fn talking_on_file(path: &Path) -> Peers {
+    let mut p = setup(
+        EncryptedStore::open(path, KEY).unwrap(),
+        EncryptedStore::open_in_memory(KEY).unwrap(),
+    );
+    let m = p.alice_sends(b"hello");
+    accepted(p.bob_receives(&m.wire).unwrap());
+    p.am.acknowledge_outgoing(&mut p.a, ALICE_HANDLE, &m.message_id)
+        .unwrap();
+    p
+}
+
+/// Option C: an established session with pending messages both ways is
+/// forgotten in one call. The session, handle, both handshakes, outbox,
+/// inbox and the caller's records go; seen and send-id records stay, and the
+/// unread incoming message leaves a seen record. Under a new session, a
+/// forgotten pending text reads as abandoned, one acknowledged before as
+/// acknowledged, and both incoming messages are duplicates.
+#[test]
+fn forgetting_an_established_peer_keeps_only_seen_and_sendid_records() {
+    let mut p = memory_peers();
+    let provisional = ProvisionalHandshake {
+        peer_identity_pk: p.bob_pk,
+        handshake: b"hs in".to_vec(),
+    };
+    p.a.put(&handshake_key(&p.bob_pk), b"hs out").unwrap();
+    p.a.put(
+        &provisional_key(ALICE_HANDLE),
+        &encode_provisional(&provisional).unwrap(),
+    )
+    .unwrap();
+    let acked = new_message(send(&mut p, b"L1", b"one"));
+    accepted(p.bob_receives(&acked.wire).unwrap());
+    p.am.acknowledge_outgoing(&mut p.a, ALICE_HANDLE, &acked.message_id)
+        .unwrap();
+    let read = p.bob_sends(b"read");
+    let read_id = accepted(p.alice_receives(&read.wire).unwrap()).message_id;
+    p.am.acknowledge_incoming(&mut p.a, ALICE_HANDLE, &read_id)
+        .unwrap();
+    let unread = p.bob_sends(b"unread");
+    let unread_id = accepted(p.alice_receives(&unread.wire).unwrap()).message_id;
+    let pending = new_message(send(&mut p, b"L2", b"two"));
+    p.a.put("app:v1/bob-history", b"history").unwrap();
+    p.a.put("app:v1/other", b"kept").unwrap();
+    assert_eq!((keys(&p.a, "outbox:"), keys(&p.a, "inbox:")), (1, 1));
+    assert!(matches!(
+        remove_alice(&mut p),
+        Err(MessagingError::SessionEstablished)
+    ));
+
+    forget_bob(&mut p, &["app:v1/bob-history".into()]).unwrap();
+    let left: Vec<String> = records(&p.a).into_keys().collect();
+    let mut want = vec![
+        "app:v1/other".to_string(),
+        seen_key(&p.bob_pk, &read_id),
+        seen_key(&p.bob_pk, &unread_id),
+        sendid_key(&p.bob_pk, b"L1"),
+        sendid_key(&p.bob_pk, b"L2"),
+    ];
+    want.sort();
+    assert_eq!(left, want);
+    assert_eq!(p.am.peer_of(&p.a, ALICE_HANDLE).unwrap(), None);
+    assert_eq!(
+        p.am.prior_send(&mut p.a, &p.bob_pk, b"L2").unwrap(),
+        Some(SendOutcome::Abandoned {
+            message_id: pending.message_id
+        })
+    );
+    // Repeating it changes nothing.
+    let before = records(&p.a);
+    forget_bob(&mut p, &["app:v1/bob-history".into()]).unwrap();
+    assert_eq!(records(&p.a), before);
+
+    // A new session with the peer can be created. No logical id is
+    // encrypted again under it, and nothing already seen becomes new.
+    let (s2, _) = replacement(&p);
+    recreate_alice(&mut p, s2).unwrap();
+    assert_eq!(
+        send(&mut p, b"L2", b"two"),
+        SendOutcome::Abandoned {
+            message_id: pending.message_id
+        }
+    );
+    assert_eq!(
+        send(&mut p, b"L1", b"one"),
+        SendOutcome::AlreadyAcknowledged {
+            message_id: acked.message_id
+        }
+    );
+    assert_eq!(generation(&mut p.a, p.alice_pk, ALICE_HANDLE), 0);
+    for wire in [&read.wire, &unread.wire] {
+        assert!(matches!(
+            p.alice_receives(wire),
+            Ok(Received::Duplicate {
+                undelivered: None,
+                ..
+            })
+        ));
+    }
+    assert_eq!(new_message(send(&mut p, b"L3", b"three")).generation, 1);
+}
+
+/// A session or handle record that cannot be read is forgotten like any
+/// other, and a new session can then be created: the way out of a damaged
+/// record, whose removal `remove_session` refuses.
+#[test]
+fn forgetting_removes_an_unreadable_session_or_handle_record() {
+    for damaged in ["session", "handle"] {
+        let mut p = memory_peers();
+        let key = match damaged {
+            "session" => session_storage_key(&p.bob_pk),
+            _ => handle_key(ALICE_HANDLE),
+        };
+        p.a.put(&key, b"garbage").unwrap();
+        let ((s2, _), (s3, _)) = (replacement(&p), replacement(&p));
+        assert!(remove_alice(&mut p).is_err(), "{damaged}");
+        assert!(recreate_alice(&mut p, s2).is_err(), "{damaged}");
+        forget_bob(&mut p, &[]).unwrap();
+        assert!(records(&p.a).is_empty(), "{damaged}");
+        recreate_alice(&mut p, s3).unwrap();
+        assert_eq!(new_message(send(&mut p, b"L", b"x")).generation, 1);
+    }
+}
+
+/// A handle registered to another peer is refused, and nothing changes,
+/// not even the caller's records.
+#[test]
+fn forgetting_refuses_a_handle_that_belongs_to_another_peer() {
+    let mut p = memory_peers();
+    let carol = pair().alice_pk;
+    new_message(send(&mut p, b"L", b"x"));
+    p.a.put("app:v1/carol", b"history").unwrap();
+    let before = records(&p.a);
+    assert!(matches!(
+        p.am.forget_peer(&mut p.a, ALICE_HANDLE, &carol, &["app:v1/carol".into()]),
+        Err(MessagingError::HandleCollision {
+            handle: ALICE_HANDLE
+        })
+    ));
+    assert_eq!(records(&p.a), before);
+}
+
+/// While a commit on the handle has an unknown outcome, forgetting waits for
+/// recovery and changes nothing; afterwards whatever that commit left is
+/// forgotten too.
+#[test]
+fn forgetting_waits_for_an_unknown_outcome_to_be_recovered() {
+    for fault in [CommitFault::UnknownStored, CommitFault::UnknownLost] {
+        let mut p = memory_peers();
+        test_hooks::inject(fault);
+        assert!(matches!(
+            p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"U", b"maybe"),
+            Err(MessagingError::OutcomeUnknown { .. })
+        ));
+        let before = records(&p.a);
+        assert!(matches!(
+            forget_bob(&mut p, &[]),
+            Err(MessagingError::Unresolved {
+                attempted_generation: 1
+            })
+        ));
+        assert_eq!(records(&p.a), before);
+        p.am.recover(&mut p.a, p.alice_pk, ALICE_HANDLE)
+            .unwrap()
+            .unwrap();
+        forget_bob(&mut p, &[]).unwrap();
+        assert_eq!(keys(&p.a, "session:") + keys(&p.a, "outbox:"), 0);
+        let outcome = p.am.prior_send(&mut p.a, &p.bob_pk, b"U").unwrap();
+        match fault {
+            CommitFault::UnknownStored => {
+                assert!(matches!(outcome, Some(SendOutcome::Abandoned { .. })))
+            }
+            _ => assert_eq!(outcome, None),
+        }
+    }
+}
+
+/// Forgetting a peer the store holds nothing for succeeds, changes nothing
+/// else and can be repeated.
+#[test]
+fn forgetting_a_peer_with_nothing_stored_changes_nothing() {
+    let mut p = memory_peers();
+    let stranger = pair().alice_pk;
+    let before = records(&p.a);
+    for _ in 0..2 {
+        p.am.forget_peer(&mut p.a, 0x57A9E, &stranger, &[]).unwrap();
+        assert_eq!(records(&p.a), before);
+    }
+    let mut empty = EncryptedStore::open_in_memory(KEY).unwrap();
+    Messenger::new()
+        .forget_peer(&mut empty, 7, &stranger, &[])
+        .unwrap();
+}
+
+/// The forgetting's own commit: an unknown outcome is reported as such and
+/// repeating the call completes it; a definite failure changes nothing.
+#[test]
+fn an_unknown_forget_outcome_is_resolved_by_repeating_it() {
+    for fault in [CommitFault::UnknownStored, CommitFault::UnknownLost] {
+        let mut p = memory_peers();
+        let m = new_message(send(&mut p, b"L", b"x"));
+        test_hooks::inject(fault);
+        assert!(matches!(
+            forget_bob(&mut p, &[]),
+            Err(MessagingError::RepeatableOutcomeUnknown(_))
+        ));
+        forget_bob(&mut p, &[]).unwrap();
+        assert!(records(&p.a).keys().all(|k| k.starts_with("sendid:")));
+        assert_eq!(
+            p.am.prior_send(&mut p.a, &p.bob_pk, b"L").unwrap(),
+            Some(SendOutcome::Abandoned {
+                message_id: m.message_id
+            })
+        );
+    }
+    let mut p = memory_peers();
+    new_message(send(&mut p, b"L", b"x"));
+    let before = records(&p.a);
+    test_hooks::inject(CommitFault::NotCommitted);
+    assert!(matches!(
+        forget_bob(&mut p, &[]),
+        Err(MessagingError::NotCommitted(_))
+    ));
+    assert_eq!(records(&p.a), before);
+}
+
+/// A send or a receive another connection commits between the listing and
+/// the transaction is forgotten too, in a second transaction: no pending
+/// record is left, and the racing text reads as abandoned.
+#[test]
+fn forgetting_removes_what_another_connection_commits_meanwhile() {
+    for racing_receive in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.db");
+        let mut p = talking_on_file(&path);
+        let reply = p.bob_sends(b"reply");
+        let (alice_pk, other) = (p.alice_pk, path.clone());
+        let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+        let raced = ran.clone();
+        crate::messaging::race_hook::set(move || {
+            raced.set(true);
+            let mut db = EncryptedStore::open(&other, KEY).unwrap();
+            let mut m = Messenger::new();
+            if racing_receive {
+                accepted(
+                    m.receive(&mut db, alice_pk, ALICE_HANDLE, &reply.wire)
+                        .unwrap(),
+                );
+            } else {
+                new_message(
+                    m.send(&mut db, alice_pk, ALICE_HANDLE, b"racing", b"meanwhile")
+                        .unwrap(),
+                );
+            }
+        });
+        forget_bob(&mut p, &[]).unwrap();
+        assert!(ran.get(), "the other connection committed in between");
+        for ns in ["session:", "handle:", "outbox:", "inbox:"] {
+            assert_eq!(keys(&p.a, ns), 0, "{ns}, racing receive: {racing_receive}");
+        }
+        let racing = p.am.prior_send(&mut p.a, &p.bob_pk, b"racing").unwrap();
+        assert_eq!(
+            matches!(racing, Some(SendOutcome::Abandoned { .. })),
+            !racing_receive
+        );
+    }
+}
+
+/// Records that keep appearing (here: another connection creates a new
+/// session and sends on it between the two transactions) make the call fail
+/// with a conflict. Repeating it completes, and nothing is ever read as
+/// acknowledged.
+#[test]
+fn forgetting_refuses_if_records_keep_appearing_and_completes_when_repeated() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.db");
+    let mut p = talking_on_file(&path);
+    let (s2, _) = replacement(&p);
+    let (alice_pk, other) = (p.alice_pk, path.clone());
+    crate::messaging::race_hook::set(move || {
+        let mut db = EncryptedStore::open(&other, KEY).unwrap();
+        new_message(
+            Messenger::new()
+                .send(&mut db, alice_pk, ALICE_HANDLE, b"first", b"on S1")
+                .unwrap(),
+        );
+        // Runs before the second transaction.
+        crate::messaging::race_hook::set(move || {
+            let mut db = EncryptedStore::open(&other, KEY).unwrap();
+            let mut m = Messenger::new();
+            m.create_session(
+                &mut db,
+                alice_pk,
+                new_session(ALICE_HANDLE, s2, SessionRole::Initiator),
+            )
+            .unwrap();
+            new_message(
+                m.send(&mut db, alice_pk, ALICE_HANDLE, b"second", b"on S2")
+                    .unwrap(),
+            );
+        });
+    });
+    assert!(matches!(
+        forget_bob(&mut p, &[]),
+        Err(MessagingError::Conflict(Conflict::RecordChanged))
+    ));
+    // The second transaction took the new session; its text came after.
+    assert_eq!(keys(&p.a, "session:") + keys(&p.a, "handle:"), 0);
+    assert_eq!(keys(&p.a, "outbox:"), 1);
+    forget_bob(&mut p, &[]).unwrap();
+    assert_eq!(keys(&p.a, "outbox:"), 0);
+    for id in [&b"first"[..], b"second"] {
+        assert!(matches!(
+            p.am.prior_send(&mut p.a, &p.bob_pk, id).unwrap(),
+            Some(SendOutcome::Abandoned { .. })
+        ));
+    }
+}
+
+/// An outbox record that cannot be decoded still names its message in its
+/// key: the send-id record pointing at that message is rewritten as
+/// abandoned, so the text never reads as acknowledged (review probe).
+/// Another send-id record of the peer is left as it is.
+#[test]
+fn forgetting_marks_an_undecodable_outbox_message_abandoned() {
+    let mut p = memory_peers();
+    let acked = new_message(send(&mut p, b"L1", b"one"));
+    p.am.acknowledge_outgoing(&mut p.a, ALICE_HANDLE, &acked.message_id)
+        .unwrap();
+    let pending = new_message(send(&mut p, b"L2", b"two"));
+    p.a.put(&outbox_key(&p.bob_pk, &pending.message_id), b"garbage")
+        .unwrap();
+    forget_bob(&mut p, &[]).unwrap();
+    assert_eq!(keys(&p.a, "outbox:"), 0);
+    assert_eq!(
+        p.am.prior_send(&mut p.a, &p.bob_pk, b"L2").unwrap(),
+        Some(SendOutcome::Abandoned {
+            message_id: pending.message_id
+        })
+    );
+    assert_eq!(
+        p.am.prior_send(&mut p.a, &p.bob_pk, b"L1").unwrap(),
+        Some(SendOutcome::AlreadyAcknowledged {
+            message_id: acked.message_id
+        })
+    );
+}

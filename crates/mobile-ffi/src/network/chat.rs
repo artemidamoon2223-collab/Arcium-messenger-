@@ -21,13 +21,13 @@
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use core_storage::StorageError;
+use core_storage::{StorageError, StoreTransaction};
 use zeroize::Zeroizing;
 
 use super::wire::client_id;
 use super::{crash_point, handle_of, peer_key, NetworkMessenger, SyncReport, TextState};
 use crate::messaging_api::SendResult;
-use crate::contacts::contact_card_fingerprint;
+use crate::contacts::{contact_card_fingerprint, contact_key};
 use crate::{CoreError, PlaintextText};
 
 /// Longest contact name accepted, in bytes.
@@ -430,6 +430,15 @@ fn get_opt(result: Result<Vec<u8>, StorageError>) -> Result<Option<Vec<u8>>, Cor
     }
 }
 
+/// Whether `peer` is still a contact, read inside the transaction that is
+/// about to write one of its chat records. `delete_contact` deletes the card
+/// with every chat record in one IMMEDIATE transaction, so a writer that
+/// checked the contact before that and writes after it finds the card gone
+/// here, and writes nothing: a later re-add inherits no record.
+fn pinned_in(tx: &StoreTransaction<'_>, peer: &[u8; 32]) -> Result<bool, CoreError> {
+    Ok(get_opt(tx.get(&contact_key(peer)))?.is_some())
+}
+
 /// What one local refresh of a conversation did.
 #[derive(Default)]
 struct Refresh {
@@ -497,7 +506,7 @@ impl NetworkMessenger {
         let name = checked_name(name)?;
         let peer = peer_key(&peer)?;
         self.require_contact(&peer)?;
-        self.update_meta(&peer, |m| m.name = name)
+        self.update_known_meta(&peer, |m| m.name = name)
     }
 
     /// Every contact with its conversation state, most recent first. Local
@@ -614,6 +623,9 @@ impl NetworkMessenger {
         let seq = {
             let mut store = self.core.store.lock().map_err(|_| poisoned())?;
             let tx = store.transaction()?;
+            if !pinned_in(&tx, &key)? {
+                return Err(CoreError::UnknownContact);
+            }
             match get_opt(tx.get(&out_key(&key, &app_id)))? {
                 Some(seq) => decode_seq(&seq)?,
                 None if sent_raw || get_opt(tx.get(&raw_claim_key(&key, &app_id)))?.is_some() => {
@@ -685,15 +697,75 @@ impl NetworkMessenger {
         if self.core.has_session(handle)? {
             if self.confirmed(handle)? {
                 // The peer accepted this session after all: nothing to do.
-                return self.update_meta(&key, |m| m.flags &= !FLAG_CONFLICT);
+                return self.update_known_meta(&key, |m| m.flags &= !FLAG_CONFLICT);
             }
-            self.update_meta(&key, |m| m.flags |= FLAG_ACCEPT_ONLY)?;
+            self.update_known_meta(&key, |m| m.flags |= FLAG_ACCEPT_ONLY)?;
             self.retire_unconfirmed_session(&key, "resolve")?;
         }
-        self.update_meta(&key, |m| {
+        self.update_known_meta(&key, |m| {
             m.flags = (m.flags | FLAG_ACCEPT_ONLY) & !FLAG_CONFLICT;
             m.note.clear();
         })
+    }
+
+    /// Deletes the contact `peer` and everything this device keeps for it,
+    /// in one store transaction: the pinned card, its name and flags, the
+    /// whole conversation history, the session in whatever state it is
+    /// (established, unconfirmed, in conflict, unreadable or absent), both
+    /// handshakes, the pending outgoing texts (marked abandoned, so never
+    /// shown or counted as delivered) and the incoming messages not yet
+    /// taken into the history. The records that detect repeats (`seen:`,
+    /// `sendid:`) stay: nothing already received becomes new, and no logical
+    /// id is encrypted twice (`Messenger::forget_peer`).
+    ///
+    /// This is the way out of a session that can no longer progress, such as
+    /// the dead end after a false conflict was resolved: both users delete
+    /// each other and exchange cards again, and the next text starts a new
+    /// session. Texts not yet delivered are lost. The peer is told nothing
+    /// and keeps its session until its user deletes this contact too.
+    ///
+    /// The contact need not be pinned: deleting again removes whatever is
+    /// left. Refused if the contact's session handle is registered to
+    /// another identity (`SessionIdCollision`).
+    ///
+    /// A chat record is written only in a transaction that finds the card
+    /// still pinned, so no call that read the contact before the delete
+    /// writes its history, flags or indexes after it. A `sync_conversations`
+    /// round in flight can still act on the durable layer for the contact
+    /// (for example start a session) after it; so do not run the two
+    /// concurrently. The Android app runs both on its one sync thread.
+    pub fn delete_contact(&self, peer: Vec<u8>) -> Result<(), CoreError> {
+        let key = peer_key(&peer)?;
+        let handle = handle_of(&key);
+        // Forgetting is refused while a commit on the handle has an unknown
+        // outcome; establish what the store holds first, as a round does.
+        self.core.recover_if_unresolved(handle)?;
+        {
+            let (mut store, mut messenger) = self.core.lock()?;
+            let mut also = vec![contact_key(&key), meta_key(&key), open_key(&key)];
+            also.extend(store.list_keys_with_prefix(&entry_namespace(&key))?);
+            // Each index key with an empty last part is this contact's prefix
+            // in a namespace shared by all contacts.
+            for prefix in [out_key(&key, &[]), raw_claim_key(&key, &[]), in_key(&key, &[])] {
+                let namespace = &prefix[..=prefix.find(':').expect("a namespaced key")];
+                also.extend(
+                    store
+                        .list_keys_with_prefix(namespace)?
+                        .into_iter()
+                        .filter(|k| k.starts_with(&prefix)),
+                );
+            }
+            messenger
+                .forget_peer(&mut store, handle, &key, &also)
+                .map_err(|e| CoreError::messaging(handle, e))?;
+        }
+        // In-memory state kept per contact. `last_sent` is keyed by message
+        // id: its entries for this contact are never consulted again.
+        self.refused.lock().expect("refused").remove(&key);
+        let mut refusals = self.refusals.lock().expect("refusals");
+        refusals.queued.retain(|(to, _, _)| *to != key);
+        refusals.last_to.remove(&key);
+        Ok(())
     }
 
     /// One round for every conversation: records what the local stores hold,
@@ -850,9 +922,29 @@ impl NetworkMessenger {
         }
     }
 
+    /// Changes `peer`'s meta in one transaction. Writes nothing once `peer` is
+    /// no longer a contact (deleted meanwhile), and reports that as success:
+    /// for background writers. User actions use [`Self::update_known_meta`].
     fn update_meta(&self, peer: &[u8; 32], f: impl FnOnce(&mut Meta)) -> Result<(), CoreError> {
+        self.write_meta(peer, f).map(|_| ())
+    }
+
+    /// As [`Self::update_meta`], but a contact deleted meanwhile is
+    /// `UnknownContact`, with nothing written.
+    fn update_known_meta(&self, peer: &[u8; 32], f: impl FnOnce(&mut Meta)) -> Result<(), CoreError> {
+        match self.write_meta(peer, f)? {
+            true => Ok(()),
+            false => Err(CoreError::UnknownContact),
+        }
+    }
+
+    /// Whether `peer` is a contact; its meta changed by `f` if so.
+    fn write_meta(&self, peer: &[u8; 32], f: impl FnOnce(&mut Meta)) -> Result<bool, CoreError> {
         let mut store = self.core.store.lock().map_err(|_| poisoned())?;
         let tx = store.transaction()?;
+        if !pinned_in(&tx, peer)? {
+            return Ok(false);
+        }
         let mut meta = match get_opt(tx.get(&meta_key(peer)))? {
             Some(m) => Meta::decode(&m)?,
             None => Meta::default(),
@@ -864,7 +956,7 @@ impl NetworkMessenger {
             tx.put(&meta_key(peer), &after)?;
             tx.commit()?;
         }
-        Ok(())
+        Ok(true)
     }
 
     fn entry(&self, peer: &[u8; 32], seq: u64) -> Result<Entry, CoreError> {
@@ -955,6 +1047,10 @@ impl NetworkMessenger {
         if let Some(open) = get_opt(tx.get(&open_key(peer)))? {
             return OpenSeqs::decode(&open);
         }
+        // Deleted meanwhile: nothing to build, nothing written.
+        if !pinned_in(&tx, peer)? {
+            return Ok(OpenSeqs::default());
+        }
         let last = match get_opt(tx.get(&meta_key(peer)))? {
             Some(m) => Meta::decode(&m)?.last_seq,
             None => 0,
@@ -996,6 +1092,9 @@ impl NetworkMessenger {
         use ChatEntryState::*;
         let mut store = self.core.store.lock().map_err(|_| poisoned())?;
         let tx = store.transaction()?;
+        if !pinned_in(&tx, peer)? {
+            return Ok(());
+        }
         let key = entry_key(peer, seq);
         let mut entry = Entry::decode(seq, &Zeroizing::new(tx.get(&key)?))?;
         let forward = matches!(
@@ -1039,6 +1138,9 @@ impl NetworkMessenger {
     ) -> Result<(), CoreError> {
         let mut store = self.core.store.lock().map_err(|_| poisoned())?;
         let tx = store.transaction()?;
+        if !pinned_in(&tx, peer)? {
+            return Ok(());
+        }
         let index = in_key(peer, message_id);
         if get_opt(tx.get(&index))?.is_some() {
             return Ok(());
@@ -1069,6 +1171,9 @@ impl NetworkMessenger {
     pub(super) fn claim_for_send_text(&self, peer: &[u8; 32], app_id: &[u8]) -> Result<(), CoreError> {
         let mut store = self.core.store.lock().map_err(|_| poisoned())?;
         let tx = store.transaction()?;
+        if !pinned_in(&tx, peer)? {
+            return Err(CoreError::UnknownContact);
+        }
         if get_opt(tx.get(&out_key(peer, app_id)))?.is_some() {
             return Err(invalid("app id already used by the chat history"));
         }

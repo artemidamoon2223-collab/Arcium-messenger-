@@ -84,6 +84,10 @@ fn crash_child() {
             p.am.remove_session(&mut p.a, p.alice_pk, ALICE_HANDLE)
                 .unwrap()
         }
+        "forget" => {
+            let bob = p.bob_pk;
+            p.am.forget_peer(&mut p.a, ALICE_HANDLE, &bob, &[]).unwrap()
+        }
         // Bob's session is the old build's responder session (`setup`).
         "retire" => {
             let validated = ValidatedRecord {
@@ -445,6 +449,51 @@ fn process_killed_around_a_removal_loses_no_obligation() {
             SendOutcome::Abandoned {
                 message_id: m.message_id
             }
+        );
+    }
+}
+
+/// A process death inside the forgetting of a peer: before its commit the
+/// session and the pending text are there; after it both are gone and the
+/// text reads as abandoned, never as acknowledged. Repeating the call after
+/// the restart completes it either way.
+#[cfg(unix)]
+#[test]
+fn process_killed_around_forgetting_a_peer_leaves_it_whole_or_gone() {
+    for point in [
+        "forget_before_commit",
+        "forget_after_commit",
+        "after_return",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = fixture(dir.path());
+        let mut p = fx.peers();
+        let m = new_message(
+            p.am.send(&mut p.a, p.alice_pk, ALICE_HANDLE, b"L", b"x")
+                .unwrap(),
+        );
+        drop(p);
+        run_child(&fx, "forget", point);
+        let mut p = fx.peers();
+        let present = p.am.peer_of(&p.a, ALICE_HANDLE).unwrap().is_some();
+        assert_eq!(present, point == "forget_before_commit", "{point}");
+        let outbox = p.a.list_keys_with_prefix("outbox:").unwrap().len();
+        let outcome = p.am.prior_send(&mut p.a, &p.bob_pk, b"L").unwrap();
+        if present {
+            assert_eq!(outbox, 1);
+            assert_eq!(outcome, Some(SendOutcome::AlreadyPending(m.clone())));
+        } else {
+            assert_eq!(outbox, 0, "{point}");
+        }
+        let bob = p.bob_pk;
+        p.am.forget_peer(&mut p.a, ALICE_HANDLE, &bob, &[]).unwrap();
+        assert!(p.a.list_keys_with_prefix("session:").unwrap().is_empty());
+        assert_eq!(
+            p.am.prior_send(&mut p.a, &p.bob_pk, b"L").unwrap(),
+            Some(SendOutcome::Abandoned {
+                message_id: m.message_id
+            }),
+            "{point}"
         );
     }
 }

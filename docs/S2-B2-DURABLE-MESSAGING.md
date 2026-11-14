@@ -291,6 +291,59 @@ protocol that is out of scope. Local removal proves nothing about the peer.
 
 - A forged or undecryptable message stages nothing and writes nothing.
 
+### Forgetting a peer (delete contact)
+
+`forget_peer(handle, peer, also_delete)` is the user's explicit decision to
+delete a contact (`delete_contact`, `docs/NET-MESSAGING.md` section 10).
+Unlike `remove_session` it does not ask whether obligations remain: it is
+the way out of a session that can no longer progress (option C of
+`docs/SESSION-RECOVERY-OPTIONS.md`). It is the one exception to "an
+established session is not removed" above and to "never replaced by a new
+session" for an unreadable record (section 4). The rules of
+`remove_session` are unchanged.
+
+- One transaction deletes, whatever state the session is in (established,
+  unconfirmed, unreadable or absent): the session record, the handle record
+  (also an unreadable one), the stored initiator handshake, the provisional
+  handshake under the handle (unless it names another peer), every
+  `outbox:` and `inbox:` record of the peer, and the caller's own records
+  for the peer (`also_delete`).
+- In the same transaction, each pending outgoing message's `sendid:` record
+  is rewritten as abandoned, as `abandon_outgoing` does. `send` and
+  `prior_send` then report `Abandoned`, never `AlreadyAcknowledged`: only a
+  receipt acknowledges. For an outbox record that cannot be decoded, the
+  message id is taken from its key, and every `sendid:` record of the peer
+  naming that id is rewritten as abandoned in the same transaction.
+- Each deleted `inbox:` record leaves a `seen:` record for its id (from its
+  key), in the same transaction: the message, never shown, is a duplicate
+  if it ever arrives again rather than new.
+- `seen:` and `sendid:` records stay, as after a removal: a message already
+  seen is still a duplicate under a later session, and no logical id is
+  encrypted twice.
+- It discards obligations. Undelivered texts are never sent again, and
+  incoming messages the application has not acknowledged are gone.
+- The peer is told nothing and keeps its session. It refuses a new
+  handshake from this identity (`AlreadyExists`) until it forgets this peer
+  too; after both have, the next text starts a new session.
+- A transaction cannot list keys, so the `outbox:` and `inbox:` records are
+  listed before `BEGIN`. A send or receive another connection commits in
+  between is removed in a second transaction, after a fresh listing. If
+  records are still found after that, the call fails with
+  `Conflict(RecordChanged)` and is repeated.
+- An error from its `COMMIT` is `RepeatableOutcomeUnknown`: repeating the
+  call reports what the store holds.
+
+| state | forgetting | why |
+|---|---|---|
+| commit with unknown outcome on this handle | refused, `Unresolved`, nothing changed | an ambiguous commit is not a rollback; `recover_session` first (`delete_contact` does) |
+| handle registered to another peer | refused, `HandleCollision`, nothing changed | the records under it are not this peer's |
+| anything else: established, unconfirmed, unreadable or missing records, nothing stored | everything listed above deleted in one transaction | the user's explicit decision |
+
+Tests: `messaging/tests/lifecycle.rs` (`forgetting_*`,
+`an_unknown_forget_outcome_is_resolved_by_repeating_it`) and
+`messaging/tests/crash.rs`
+(`process_killed_around_forgetting_a_peer_leaves_it_whole_or_gone`).
+
 ## 7. Failure and recovery
 
 | event | stored state | released | next step |

@@ -294,10 +294,11 @@ class DurableMessagingInstrumentationTest {
      * The responder refuses the initiator's handshake because its prekeys
      * rotated first, after the initiator had already committed a message on
      * it. That message stays pending, byte for byte, across a reopen, and the
-     * session cannot be removed or replaced from Kotlin: no exported call
+     * session cannot be removed or replaced through the session calls: none
      * takes a message out of the outbox without the peer's receipt.
      * Abandoning it is the Rust network layer's `resolveSessionConflict`,
-     * which marks the text not delivered first (Rust tests cover that, and
+     * which marks the text not delivered first, or its `deleteContact`,
+     * which deletes the text with the contact (Rust tests cover both, and
      * that the abandoned logical id is not encrypted again).
      */
     @Test

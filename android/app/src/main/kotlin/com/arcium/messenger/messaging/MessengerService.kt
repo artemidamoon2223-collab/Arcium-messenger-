@@ -133,6 +133,15 @@ class MessengerService(
     suspend fun <T> call(block: (NetworkMessenger) -> T): T =
         withContext(Dispatchers.IO) { block(messenger()) }
 
+    /**
+     * Runs [block] against the messenger on the sync thread, so it never
+     * overlaps a sync round. For deleting a contact: a round in flight could
+     * otherwise write that contact's records (its flags, its history) again
+     * after they were deleted.
+     */
+    suspend fun <T> callBetweenRounds(block: (NetworkMessenger) -> T): T =
+        withContext(syncDispatcher) { block(messenger()) }
+
     /** Local state changed (a text queued, a contact added): read again and sync soon. */
     fun changed() {
         _revision.value++

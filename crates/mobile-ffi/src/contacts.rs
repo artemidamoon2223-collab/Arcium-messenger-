@@ -50,7 +50,7 @@ impl Card {
     }
 }
 
-fn contact_key(dh_pk: &[u8; 32]) -> String {
+pub(crate) fn contact_key(dh_pk: &[u8; 32]) -> String {
     let hex: String = dh_pk.iter().map(|b| format!("{b:02x}")).collect();
     format!("contact:v1/{hex}")
 }

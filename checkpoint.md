@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-14 06:10 UTC, by a Claude Code cloud session
+Updated: 2026-11-14 06:45 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -21,13 +21,13 @@ Updated: 2026-11-14 06:10 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs (each needs the Owner's merge instruction naming it)
-- None.
+- #171 R-18 (a) FLAG_SECURE and (c) dataExtractionRules; CI pending.
+- In progress (D-029): background receive (foreground service), R-19 off-chain circuit, session recovery option A.
 
 ## Waiting for the Owner
 - Production relay: the Owner is renting a server (D-026); then authentication (R-9), TLS, persistence.
-- Session recovery options A and B (C is merged).
-- R-19: PSI circuit registered on chain, contrary to CLAUDE.md; decide before any deploy.
-- Background receive (foreground service or push), release-signing key, R-18 items.
+- Session recovery option B (after R-9 and X-6). Publishing the PSI circuit file (R-19). Release-signing key.
+- R-18 (b) StrongBox / Keystore flags: needs a phone test.
 
 ## Next work (D-014 order)
 Production relay (after the server) → background receive → release signing → Tor, devnet, PSI.

@@ -151,3 +151,12 @@ D-027 · 2026-11-14 · AGENT (under D-026) · ACTIVE
 D-028 · 2026-11-14 · OWNER · DONE
 - What: "мёрдж #169" (R-15, per-text cancel). Tracker PR #170 (R-15 fixed) merged under the approved pattern (small tracker PR after a fix merges).
 - Evidence: Owner message of 2026-11-14 in session `013Fd9w11HPCwF53H2tPuKpt`. #169 merged as `2cc79ff` (20 check runs success on head `5632ab6`); #170 merged as `4266537` (12 check runs success on head `7c01287`); both pinned with `expectedHeadSha`.
+
+D-029 · 2026-11-14 · OWNER · ACTIVE
+- What: answers to the agent's questions on the open decisions (no server needed for these):
+  - R-19: switch the PSI circuit to an off-chain source (URL + hash), as CLAUDE.md requires. Publishing the circuit file (e.g. a GitHub release) still needs a separate Owner approval.
+  - Session recovery: option A now (a handshake beside our own unconfirmed session no longer raises a conflict until its first message authenticates); option B later, after the production relay (R-9) and X-6.
+  - Background receive: an opt-in foreground service; no push, no FCM.
+  - R-18: delegated ("чтобы всё соответствовало нашему проекту"); agent choice: (a) FLAG_SECURE and (c) dataExtractionRules now (PR #171); (b) StrongBox / Keystore flags deferred to a phone test (emulators lack StrongBox; unlocked-device or user-auth flags would block background receive).
+  - Release signing key: not decided; agent recommendation: held only by the Owner, signing done locally.
+- Evidence: Owner answers of 2026-11-14 in session `013Fd9w11HPCwF53H2tPuKpt`. Each item is its own PR; every merge still needs the Owner's instruction naming the PR.

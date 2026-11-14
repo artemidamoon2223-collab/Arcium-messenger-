@@ -26,14 +26,19 @@ Alternatives considered:
 | a third-party push or messaging service | an external account and service, which needs the owner's approval |
 | **untrusted store-and-forward relay** | chosen: works with offline peers, runs locally and in CI, needs nothing external, and nothing about it is trusted |
 
-The app talks to a development and test relay (`arcium-relay` without
-`--keys`): `RELAY_PROTOCOL_V1`, no TLS, no authentication. The relay crate
-also implements `RELAY_PROTOCOL_V2` (`arcium-relay --keys FILE`, section 3):
-TLS 1.3 with the relay's pinned key, and mailboxes only for their
-authenticated owners. The app, its tests and CI do not use V2 yet; V1 will be
-removed when they move to it. Either way the relay is in memory unless
-started with `--db FILE`. With it, every
-accepted envelope, deletion and bundle is committed to that SQLite file before
+The app speaks `RELAY_PROTOCOL_V2` to a V2 relay (`arcium-relay --keys
+FILE`, section 3): TLS 1.3 with the relay's pinned key, and mailboxes only
+for their authenticated owners. It is configured with the relay's connection
+string, and `NetworkMessenger` authenticates as the device's identity key on
+every connection that reads, deletes or publishes (the DH with the identity
+secret is computed inside `ArciumCore`, which never hands the secret out).
+`RELAY_PROTOCOL_V1` (`arcium-relay` without `--keys`: no TLS, no
+authentication, `host:port`) is kept for development only: debug builds of
+the app accept it, release builds accept V2 connection strings only
+(`messaging/RelayRules.kt`), and the failure-injection tests (their TCP
+proxy reads plaintext frames) and the Android emulator jobs in CI still use
+it. Either way the relay is in memory unless started with `--db FILE`. With
+it, every accepted envelope, deletion and bundle is committed to that SQLite file before
 the request is answered, and a restart loads it (envelopes past the TTL are
 dropped); a change that cannot be committed is not answered and the connection
 closes, so the client retries. Deploying a public one is a separate decision.
@@ -70,9 +75,9 @@ There is no trust on first use in the application. (The CI peer in
 `RELAY_PROTOCOL_V1` (`crates/relay/src/protocol.rs`): length-prefixed frames,
 six operations — PUT_BUNDLE, GET_BUNDLE, SEND, FETCH, DELETE, FETCH_AFTER.
 Exact decoding; frames up to 1 MiB, envelopes up to 64 KiB, bundles up to
-1 KiB. This is what the app uses today.
+1 KiB. The app uses it only in development (section 1).
 
-**V2 (in the relay crate, not yet used by the app).** `RELAY_PROTOCOL_V2` is
+**V2 (what the app uses).** `RELAY_PROTOCOL_V2` is
 the same frames inside TLS 1.3, plus one operation, AUTH, and one error,
 UNAUTHORIZED (`protocol.rs`, `auth.rs`, `tls.rs`):
 
@@ -104,6 +109,15 @@ UNAUTHORIZED (`protocol.rs`, `auth.rs`, `tls.rs`):
 - FETCH, FETCH_AFTER and DELETE need AUTH for the recipient, PUT_BUNDLE for
   the owner; otherwise UNAUTHORIZED, and nothing is read or changed. SEND and
   GET_BUNDLE need none.
+- The app: a sync round and `publish_prekeys` make AUTH right after
+  connecting, and use that one connection for everything; `start_session`
+  (GET_BUNDLE only) makes none. The DH is `ArciumCore::identity_dh`, which
+  refuses an all-zero output (a low-order auth key), as the relay client
+  does too. A failed TLS handshake, a refused AUTH and an invalid connection
+  string are network errors: the round ends there, before any bundle or
+  envelope is published, read or deleted, and is not retried within the
+  round. A string with the V2 prefix that does not parse is never tried as
+  `host:port`.
 
 V2 keeps mailboxes from strangers and the network (R-9), not from the relay's
 operator, who still sees and can delete everything. It reuses the identity
@@ -210,9 +224,9 @@ recipient as a contact; but the refusal is no proof of it to anyone else (see
 section 6). They do
 not see plaintext, identity
 or prekey secrets, ratchet state or checkpoints. There is no anonymity and no
-Tor: with V1, which the app uses, a network observer sees the same as the
-relay (with V2 it would see only connections, their sizes and timing), and
-the relay can link sender, recipient and time of every message.
+Tor: with V2 a network observer sees only connections, their sizes and
+timing (with V1, in development, it sees the same as the relay), and the
+relay can link sender, recipient and time of every message.
 
 ## 4. Messages inside the ratchet
 
@@ -442,9 +456,10 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 ## 8. Not provided
 
 - Anonymity, metadata protection, Tor.
-- Authentication of relay clients: anyone reaching a relay can read (only
-  ciphertext) or delete a mailbox, or replace a bundle (refused by the
-  initiator's identity check). Denial of service is possible.
+- Authentication of relay clients on V1 (development only): anyone reaching
+  such a relay can read (only ciphertext) or delete a mailbox, or replace a
+  bundle (refused by the initiator's identity check). On V2 only the owner
+  and the relay's operator can. On both, denial of service is possible.
 - Refusal feedback beyond the refusal of section 6: a relay can withhold a
   refusal (the initiator then keeps retransmitting, as before refusals
   existed), and a refusal lost after the relay accepted it is sent again
@@ -455,8 +470,8 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 - Hiding whom a device knows from a reader of the mailboxes. A refusal of a
   forged handshake shows such a reader that the refuser has the named
   initiator as a contact (it proves it to nobody else); so does a message
-  kept rather than deleted (section 3). Closing this needs relay
-  authentication.
+  kept rather than deleted (section 3). On V2 such a reader is the relay's
+  operator only; on V1, in development, anyone who reaches the relay.
 - Protection against key-compromise impersonation of refusals. A refusal is
   authenticated by a MAC both parties can make, so whoever holds the
   initiator's identity secret can make one the initiator accepts, and so end
@@ -493,10 +508,10 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   forged handshake or first message raises no conflict any more. A genuine
   handshake and first message replayed later still do, if this device never
   accepted that handshake and can still answer it: the one-time prekey it
-  names is still the published one (S2-B2 section 4c). Anyone who reads
-  this device's mailbox on the relay can capture them, since the relay
-  does not authenticate readers. A dead end needs more than the replay: the
-  contact must have given that session up without this device (for
+  names is still the published one (S2-B2 section 4c). Whoever reads this
+  device's mailbox on the relay can capture them: on V2 the relay's
+  operator, on V1 anyone who reaches the relay. A dead end needs more than
+  the replay: the contact must have given that session up without this device (for
   example it deleted and re-added this contact), this device's own session
   must still be unconfirmed, every message of the contact under this
   device's session must be withheld until the user resolves, and the user
@@ -684,6 +699,8 @@ entry per logical message, never written by the ratchet.
 | property | test | evidence class |
 |---|---|---|
 | first contact, identity binding, stranger drop | `tests::network` V1 tests | runtime, local relay over TCP |
+| the app over a V2 relay: first contact, texts both ways, receipts; neither a connection without AUTH nor a third device (as itself, or claiming the owner's key) can read, delete or publish another device's mailbox or bundle (R-9); a wrong TLS pin, a refused AUTH, a low-order auth key and a malformed connection string end the round with a network error and change nothing on the relay; a malformed V2 string is never tried as V1 | `tests::relay_v2` | runtime, local V2 relay over TLS |
+| which relay a build accepts: V2 strings everywhere, `host:port` in debug builds only | `RelayRulesTest` (Android JVM unit test) | unit |
 | a handshake alone is not a session; its first message creates it; a recorded handshake does not block simultaneous initiation | `tests::responder` | runtime, local relay over TCP |
 | both directions, restarts, consistent histories | `both_directions_and_both_histories_survive_restarts` | runtime |
 | offline recipient | `messages_to_an_offline_recipient_wait_on_the_relay` | runtime |

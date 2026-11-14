@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-14 08:05 UTC, by a Claude Code cloud session
+Updated: 2026-11-14 19:40 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -23,10 +23,12 @@ Updated: 2026-11-14 08:05 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs (each needs the Owner's merge instruction naming it)
-- None.
+- #178 production relay design (docs only).
+- #179 relay SQLite persistence (`--db FILE`); 538 passed locally; independent review running.
+- Next (D-032): relay TLS + mailbox authentication PR, then app configuration for release builds, then a relay deploy guide.
 
 ## Waiting for the Owner
-- Production relay: the Owner is renting a server (D-026); then authentication (R-9), TLS, persistence.
+- Production relay hosting: the Owner is renting a server (D-026); the code is being written now (D-032).
 - Session recovery option B (after R-9 and X-6). Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 

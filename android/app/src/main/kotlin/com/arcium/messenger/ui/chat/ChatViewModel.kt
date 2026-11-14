@@ -201,7 +201,9 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
     fun deleteContact(onDeleted: () -> Unit) {
         viewModelScope.launch {
             try {
-                service.call { it.deleteContact(peer) }
+                // On the sync thread: a round in flight must not write this
+                // contact's records again after they are deleted.
+                service.callBetweenRounds { it.deleteContact(peer) }
                 deleted = true
             } catch (e: CoreException) {
                 _state.value = _state.value.copy(error = "Not deleted: ${e.message}")

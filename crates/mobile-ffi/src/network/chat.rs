@@ -715,6 +715,12 @@ impl NetworkMessenger {
     /// The contact need not be pinned: deleting again removes whatever is
     /// left. Refused if the contact's session handle is registered to
     /// another identity (`SessionIdCollision`).
+    ///
+    /// Do not run it while a `sync_conversations` round of the same
+    /// messenger is in flight: that round may already have read the contact
+    /// and can write its records (flags such as accept-only, history
+    /// entries) again after they are deleted, which a later re-add would
+    /// inherit. The Android app runs both on its one sync thread.
     pub fn delete_contact(&self, peer: Vec<u8>) -> Result<(), CoreError> {
         let key = peer_key(&peer)?;
         let handle = handle_of(&key);

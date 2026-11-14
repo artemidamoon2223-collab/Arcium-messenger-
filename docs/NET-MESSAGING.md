@@ -495,8 +495,10 @@ entry per logical message, never written by the ratchet.
   decrypts the history.
 - **Not provided.** Sync while the application is closed; unread state across
   devices; a sender timestamp (entries carry the local time they were
-  recorded); a conversation screen that loads in pages (the app still reads
-  the whole history).
+  recorded). The conversation screen reads a window of the newest entries
+  through `chat_entries_page` and widens it by 50 on "load earlier"
+  (`loadWindow` in `android/.../ui/chat/ChatViewModel.kt`), so it no longer
+  reads the whole history.
 
 ## 9. Verification
 

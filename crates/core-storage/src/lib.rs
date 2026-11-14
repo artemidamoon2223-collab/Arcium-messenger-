@@ -163,9 +163,9 @@ impl EncryptedStore {
     ///
     /// # Contention
     ///
-    /// No busy handling is configured here. The connection keeps the timeout
-    /// `rusqlite` applies when it opens a connection (5000 ms), so `BEGIN`
-    /// waits up to that long for another connection's write transaction and
+    /// `init` sets `busy_timeout = 5000` explicitly (the value `rusqlite`
+    /// applies when it opens a connection), so `BEGIN` waits up to 5000 ms
+    /// for another connection's write transaction and
     /// then fails with [`StorageError::Db`] carrying `SQLITE_BUSY`. Nothing is
     /// written in that case. Retrying is the caller's decision.
     ///
@@ -189,7 +189,7 @@ impl EncryptedStore {
     ///   [`StoreTransaction`]).
     /// - **Successful `COMMIT`.** When `commit` returns `Ok`, SQLite reports
     ///   the transaction committed: other connections see all of it, and the
-    ///   journal and database file were synced as `synchronous = FULL`
+    ///   journal and database file were synced as `synchronous = EXTRA`
     ///   requires. An `Err` does not always mean the opposite — the outcome
     ///   of a failed `commit` can be ambiguous (see
     ///   [`StoreTransaction::commit`]).

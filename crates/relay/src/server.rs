@@ -1,5 +1,6 @@
-//! The relay: an untrusted, in-memory store-and-forward mailbox per recipient
-//! key, plus one published prekey bundle per owner key.
+//! The relay: an untrusted store-and-forward mailbox per recipient key, plus
+//! one published prekey bundle per owner key. It serves from memory, and
+//! optionally keeps everything in a SQLite file ([`RelayConfig::db`]).
 //!
 //! # Retention policy
 //!
@@ -13,7 +14,9 @@
 //! reader's scan of one round covers that many, so a larger mailbox could hide
 //! entries behind the ones it keeps (`serve` refuses such a configuration). A
 //! SEND to a full mailbox is refused with `FULL`, never by dropping an older
-//! envelope. A SEND of bytes identical to an envelope still stored returns the
+//! envelope, and so is a SEND that would take the relay's stored envelopes
+//! past [`RelayConfig::max_total_bytes`] in all, so a flood of SENDs to many
+//! keys cannot exhaust its memory or disk. A SEND of bytes identical to an envelope still stored returns the
 //! stored sequence number.
 //!
 //! A full mailbox is a denial of service anyone who can reach the relay can
@@ -64,7 +67,14 @@ pub struct RelayConfig {
     /// SQLite file that keeps mailboxes and bundles across restarts; `None`
     /// keeps everything in memory only.
     pub db: Option<PathBuf>,
+    /// Most envelope bytes stored in all mailboxes together; a SEND beyond it
+    /// is refused with `FULL`. At least [`MAX_ENVELOPE`] ([`serve`] refuses
+    /// less).
+    pub max_total_bytes: usize,
 }
+
+/// The default [`RelayConfig::max_total_bytes`]: 1 GiB.
+pub const DEFAULT_MAX_TOTAL_BYTES: usize = 1 << 30;
 
 impl Default for RelayConfig {
     fn default() -> Self {
@@ -74,6 +84,7 @@ impl Default for RelayConfig {
             canary: None,
             log: false,
             db: None,
+            max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
         }
     }
 }
@@ -84,6 +95,8 @@ struct State {
     mailboxes: HashMap<Key, BTreeMap<u64, (Instant, Vec<u8>)>>,
     bundles: HashMap<Key, Vec<u8>>,
     canary_hits: u64,
+    /// Bytes of all stored envelopes, for [`RelayConfig::max_total_bytes`].
+    total_bytes: usize,
     /// Written through when [`RelayConfig::db`] is set.
     disk: Option<Disk>,
 }
@@ -92,26 +105,29 @@ impl State {
     /// Deletes from the disk the envelopes of `recipient` that expired from
     /// memory. Best effort: an envelope left behind is older than the TTL and
     /// is dropped when the file is next loaded.
-    fn forget_expired(&mut self, recipient: &Key, expired: &[u64], log: &dyn Fn(String)) {
+    fn forget_expired(&mut self, recipient: &Key, expired: &[(u64, usize)], log: &dyn Fn(String)) {
+        self.total_bytes -= expired.iter().map(|(_, len)| len).sum::<usize>();
         if let Some(disk) = self.disk.as_mut() {
-            if let Err(e) = disk.delete_envelopes(recipient, expired) {
+            let seqs: Vec<u64> = expired.iter().map(|(seq, _)| *seq).collect();
+            if let Err(e) = disk.delete_envelopes(recipient, &seqs) {
                 log(format!("could not delete expired envelopes: {e}"));
             }
         }
     }
 }
 
-/// Drops `mailbox`'s envelopes older than `ttl`; returns their numbers.
-fn expire(mailbox: &mut BTreeMap<u64, (Instant, Vec<u8>)>, now: Instant, ttl: Duration) -> Vec<u64> {
+/// Drops `mailbox`'s envelopes older than `ttl`; returns their numbers and
+/// sizes.
+fn expire(mailbox: &mut BTreeMap<u64, (Instant, Vec<u8>)>, now: Instant, ttl: Duration) -> Vec<(u64, usize)> {
     let expired: Vec<u64> = mailbox
         .iter()
         .filter(|(_, (t, _))| now.duration_since(*t) >= ttl)
         .map(|(k, _)| *k)
         .collect();
-    for k in &expired {
-        mailbox.remove(k);
-    }
     expired
+        .into_iter()
+        .filter_map(|k| mailbox.remove(&k).map(|(_, v)| (k, v.len())))
+        .collect()
 }
 
 /// A running relay. Dropping it does not stop it; call [`RelayHandle::stop`].
@@ -172,6 +188,15 @@ impl RelayHandle {
 /// clamped. With [`RelayConfig::db`], opens (or creates) that file and loads
 /// it first; an error there also starts nothing.
 pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHandle> {
+    if config.max_total_bytes < MAX_ENVELOPE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "max_total_bytes must be at least {MAX_ENVELOPE}, got {}",
+                config.max_total_bytes
+            ),
+        ));
+    }
     if !(1..=DEFAULT_MAX_MAILBOX).contains(&config.max_mailbox) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -192,6 +217,7 @@ pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHand
         initial.next_seq = loaded.next_seq;
         for (recipient, seq, age, bytes) in loaded.envelopes {
             let at = now.checked_sub(age).unwrap_or(now);
+            initial.total_bytes += bytes.len();
             initial.mailboxes.entry(recipient).or_default().insert(seq, (at, bytes));
         }
         initial.bundles.extend(loaded.bundles);
@@ -341,10 +367,14 @@ fn handle(req: Request, state: &Mutex<State>, config: &RelayConfig) -> io::Resul
                 short(&owner),
                 bundle.len()
             ));
-            if let Some(disk) = s.disk.as_mut() {
-                disk.put_bundle(&owner, &bundle)?;
+            // The same bundle again (every sync round publishes it) needs no
+            // write: answering it does not depend on the disk.
+            if s.bundles.get(&owner) != Some(&bundle) {
+                if let Some(disk) = s.disk.as_mut() {
+                    disk.put_bundle(&owner, &bundle)?;
+                }
+                s.bundles.insert(owner, bundle);
             }
-            s.bundles.insert(owner, bundle);
             Response::Ok
         }
         Request::GetBundle { owner } => {
@@ -380,7 +410,10 @@ fn handle(req: Request, state: &Mutex<State>, config: &RelayConfig) -> io::Resul
                 ));
                 return Ok(Response::Accepted { seq: existing });
             }
-            if mailbox.len() >= config.max_mailbox {
+            let mailbox_len = mailbox.len();
+            if mailbox_len >= config.max_mailbox
+                || s.total_bytes + envelope.len() > config.max_total_bytes
+            {
                 return Ok(Response::Error(ErrorCode::Full));
             }
             // Sequence numbers never wrap: a relay that has used them all
@@ -397,6 +430,7 @@ fn handle(req: Request, state: &Mutex<State>, config: &RelayConfig) -> io::Resul
             if let Some(disk) = s.disk.as_mut() {
                 disk.store_envelope(seq, &recipient, now_ms(), &envelope, next)?;
             }
+            s.total_bytes += envelope.len();
             s.mailboxes
                 .get_mut(&recipient)
                 .expect("inserted above")
@@ -431,11 +465,15 @@ fn handle(req: Request, state: &Mutex<State>, config: &RelayConfig) -> io::Resul
             if let Some(disk) = s.disk.as_mut() {
                 disk.delete_envelopes(&recipient, &seqs)?;
             }
+            let mut freed = 0;
             if let Some(m) = s.mailboxes.get_mut(&recipient) {
                 for seq in &seqs {
-                    m.remove(seq);
+                    if let Some((_, v)) = m.remove(seq) {
+                        freed += v.len();
+                    }
                 }
             }
+            s.total_bytes -= freed;
             log(format!(
                 "DELETE for={} count={}",
                 short(&recipient),
@@ -527,5 +565,75 @@ mod tests {
         assert_eq!(s.next_seq, 2);
         assert_eq!(s.mailboxes[&[1u8; 32]].len(), 1, "nothing added, nothing deleted");
         assert!(s.bundles.is_empty());
+    }
+
+    /// Every sync round publishes the device's bundle. The same bundle again
+    /// is answered without a write, so a disk that refuses writes does not
+    /// stop every round at its first request; a changed bundle still needs
+    /// the disk.
+    #[test]
+    fn the_same_bundle_again_needs_no_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.db");
+        let state = Mutex::new(State {
+            next_seq: 1,
+            bundles: HashMap::from([([1u8; 32], vec![1u8, 2, 3])]),
+            disk: Some(Disk::read_only(&path).unwrap()),
+            ..State::default()
+        });
+        let config = RelayConfig::default();
+        let put = |bundle: Vec<u8>| {
+            handle(
+                Request::PutBundle {
+                    owner: [1; 32],
+                    bundle,
+                },
+                &state,
+                &config,
+            )
+        };
+        assert_eq!(put(vec![1, 2, 3]).unwrap(), Response::Ok);
+        assert!(put(vec![4]).is_err());
+        assert_eq!(state.lock().unwrap().bundles[&[1u8; 32]], vec![1, 2, 3]);
+    }
+
+    /// The relay's stored envelopes in all mailboxes together never exceed
+    /// `max_total_bytes`: a SEND beyond it is refused with FULL, and space
+    /// freed by a DELETE can be used again.
+    #[test]
+    fn envelopes_in_all_mailboxes_are_capped() {
+        let state = Mutex::new(State {
+            next_seq: 1,
+            ..State::default()
+        });
+        let config = RelayConfig {
+            max_total_bytes: 10,
+            ..RelayConfig::default()
+        };
+        let send = |to: u8, len: usize, fill: u8| {
+            handle(
+                Request::Send {
+                    recipient: [to; 32],
+                    envelope: vec![fill; len],
+                },
+                &state,
+                &config,
+            )
+            .unwrap()
+        };
+        assert_eq!(send(1, 6, 1), Response::Accepted { seq: 1 });
+        assert_eq!(send(2, 5, 2), Response::Error(ErrorCode::Full), "another mailbox, same cap");
+        assert_eq!(send(2, 4, 3), Response::Accepted { seq: 2 });
+        handle(
+            Request::Delete {
+                recipient: [1; 32],
+                seqs: vec![1, 77],
+            },
+            &state,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(state.lock().unwrap().total_bytes, 4);
+        assert_eq!(send(3, 6, 4), Response::Accepted { seq: 3 });
     }
 }

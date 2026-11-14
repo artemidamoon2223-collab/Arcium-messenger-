@@ -10,13 +10,25 @@
 //!
 //! Stored as received: envelopes are end-to-end encrypted by the endpoints;
 //! their recipient keys, sizes and arrival times are not. Encrypting the disk
-//! is left to the host.
+//! is left to the host. The file (and SQLite's `-wal` and `-shm` beside it) is
+//! readable by its owner only, and `secure_delete` overwrites deleted rows.
+//!
+//! While the disk refuses writes (full, failing), every SEND and DELETE, and
+//! every PUT_BUNDLE that changes a bundle, is refused this way until the disk
+//! is fixed; reads keep working, and a PUT_BUNDLE of the bundle already
+//! stored is answered without a write.
+//!
+//! Ages are kept with the monotonic clock while the relay runs, and with the
+//! wall clock in the file: a restart computes each envelope's age from the
+//! wall clock. If the host's clock jumped forward by more than the TTL
+//! between two runs, envelopes the relay had accepted are dropped at load;
+//! if it went back, they are kept longer. The host needs a correct clock.
 //!
 //! Sequence numbers are `u64` and stored bit for bit in SQLite's signed
 //! 64-bit `INTEGER`; nothing here orders by them in SQL.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -48,6 +60,37 @@ fn key_of(bytes: Vec<u8>) -> io::Result<Key> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "relay database: bad key length"))
 }
 
+/// Makes `path` readable and writable by its owner only, creating it empty
+/// if missing, before SQLite opens it (SQLite gives `-wal` and `-shm` the
+/// database file's permissions); existing `-wal` and `-shm` files are
+/// restricted too.
+#[cfg(unix)]
+fn restrict(path: &Path) -> io::Result<()> {
+    use std::fs::{OpenOptions, Permissions};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?
+        .set_permissions(Permissions::from_mode(0o600))?;
+    for suffix in ["-wal", "-shm"] {
+        let mut side = path.as_os_str().to_owned();
+        side.push(suffix);
+        let side = PathBuf::from(side);
+        if side.exists() {
+            std::fs::set_permissions(&side, Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
 /// Milliseconds since the Unix epoch, now.
 pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
@@ -60,15 +103,26 @@ impl Disk {
     /// Opens (or creates) the database at `path`. Refuses a file written by
     /// another schema version.
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
+        restrict(path)?;
         let conn = Connection::open(path).map_err(io_err)?;
         Self::init(conn)
     }
 
     fn init(conn: Connection) -> io::Result<Self> {
         // WAL with FULL sync: a committed transaction survives a crash or a
-        // power loss of the host, as far as the disk keeps its promises.
-        conn.pragma_update(None, "journal_mode", "WAL").map_err(io_err)?;
+        // power loss of the host, as far as the disk keeps its promises. In
+        // a rollback journal, FULL could lose the last commit on power loss,
+        // so a database that does not switch to WAL is refused.
+        let mode: String = conn
+            .pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))
+            .map_err(io_err)?;
+        if !mode.eq_ignore_ascii_case("wal") {
+            return Err(io::Error::other(format!(
+                "relay database: journal mode is {mode}, not WAL"
+            )));
+        }
         conn.pragma_update(None, "synchronous", "FULL").map_err(io_err)?;
+        conn.pragma_update(None, "secure_delete", "ON").map_err(io_err)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS envelopes (
@@ -261,6 +315,21 @@ mod tests {
             .unwrap();
         let err = Disk::open(&path).err().expect("refused");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// The file and SQLite's files beside it are readable by their owner only.
+    #[cfg(unix)]
+    #[test]
+    fn the_database_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.db");
+        let mut disk = Disk::open(&path).unwrap();
+        disk.store_envelope(1, &[1; 32], now_ms(), b"a", 2).unwrap();
+        for name in ["relay.db", "relay.db-wal", "relay.db-shm"] {
+            let mode = std::fs::metadata(dir.path().join(name)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "{name}: {mode:o}");
+        }
     }
 
     /// Deleting numbers that are not stored, or another recipient's, changes

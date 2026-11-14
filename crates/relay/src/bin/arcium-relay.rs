@@ -1,12 +1,14 @@
-//! `arcium-relay --listen HOST:PORT [--db FILE] [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N]`
+//! `arcium-relay --listen HOST:PORT [--db FILE] [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N] [--max-total-bytes N]`
 //!
 //! `--max-mailbox` is 1 to 4096 (`DEFAULT_MAX_MAILBOX`, the default); any
 //! other value is refused. `--db FILE` keeps mailboxes and bundles in that
 //! SQLite file across restarts (created if missing); without it nothing is
-//! persisted.
+//! persisted. `--max-total-bytes N` caps the envelope bytes of all mailboxes
+//! together (default 1 GiB, at least 65536).
 //!
 //! Runs the untrusted store-and-forward relay until killed. Not for
-//! production yet: no TLS and no authentication (tracker R-9).
+//! production yet: no TLS and no authentication (docs/NET-MESSAGING.md,
+//! section 1).
 
 use std::net::TcpListener;
 use std::time::Duration;
@@ -32,6 +34,10 @@ fn main() {
             "--max-mailbox" => {
                 config.max_mailbox = value().parse().unwrap_or_else(|_| usage("--max-mailbox"))
             }
+            "--max-total-bytes" => {
+                config.max_total_bytes =
+                    value().parse().unwrap_or_else(|_| usage("--max-total-bytes"))
+            }
             other => usage(other),
         }
     }
@@ -52,9 +58,10 @@ fn main() {
 fn usage(bad: &str) -> ! {
     eprintln!(
         "arcium-relay: bad argument {bad}\n\
-         usage: arcium-relay --listen HOST:PORT [--db FILE] [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N]\n\
+         usage: arcium-relay --listen HOST:PORT [--db FILE] [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N] [--max-total-bytes N]\n\
          --db FILE        keep mailboxes and bundles in this SQLite file across restarts\n\
-         --max-mailbox N  envelopes per mailbox, 1 to {DEFAULT_MAX_MAILBOX} (default {DEFAULT_MAX_MAILBOX})"
+         --max-mailbox N  envelopes per mailbox, 1 to {DEFAULT_MAX_MAILBOX} (default {DEFAULT_MAX_MAILBOX})\n\
+         --max-total-bytes N  envelope bytes in all mailboxes together (default 1 GiB)"
     );
     std::process::exit(2);
 }

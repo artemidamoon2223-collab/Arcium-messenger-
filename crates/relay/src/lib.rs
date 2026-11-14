@@ -138,6 +138,45 @@ mod tests {
         third.stop();
     }
 
+    /// An envelope that expires while the relay runs is deleted from the
+    /// file too: a restart with a longer TTL does not bring it back.
+    #[test]
+    fn an_envelope_that_expires_while_running_leaves_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Some(dir.path().join("relay.db"));
+        let relay = start(RelayConfig {
+            ttl: Duration::from_millis(100),
+            db: db.clone(),
+            ..RelayConfig::default()
+        });
+        let mut c = conn(&relay);
+        c.send([2; 32], vec![1]).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(c.fetch([2; 32], 10).unwrap().is_empty(), "expired in memory");
+        relay.stop();
+        let again = start(RelayConfig {
+            db,
+            ..RelayConfig::default()
+        });
+        assert!(again.stored(&[2; 32]).is_empty(), "and deleted from the file");
+        again.stop();
+    }
+
+    /// A total-size cap smaller than one envelope is refused at start.
+    #[test]
+    fn a_total_size_cap_below_one_envelope_is_refused() {
+        let err = serve(
+            TcpListener::bind("127.0.0.1:0").unwrap(),
+            RelayConfig {
+                max_total_bytes: MAX_ENVELOPE - 1,
+                ..RelayConfig::default()
+            },
+        )
+        .err()
+        .expect("refused");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
     /// An envelope older than the TTL is not loaded after a restart.
     #[test]
     fn a_restarted_relay_does_not_load_expired_envelopes() {

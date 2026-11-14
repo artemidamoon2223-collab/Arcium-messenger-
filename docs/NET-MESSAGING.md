@@ -126,9 +126,12 @@ round transfers up to twice the scanned part of the mailbox (at most
 most one page. Keeping a round bounded, not cheap, is what this provides.
 
 **Retention.** An envelope stays in the recipient's mailbox until the recipient
-deletes it, it is 7 days old, or the relay stops (nothing is on disk). A
-mailbox holds at most 4096 envelopes; a SEND beyond that is refused, never
-made room for. The capacity can be set lower (`--max-mailbox N`,
+deletes it, it is 7 days old, or the relay stops without `--db` (with it, the
+mailbox survives restarts; ages are computed from the host's wall clock at
+load, so the host needs a correct clock). A mailbox holds at most 4096
+envelopes, and all mailboxes together at most 1 GiB of envelopes
+(`RelayConfig::max_total_bytes`); a SEND beyond either is refused with FULL,
+never made room for. The capacity can be set lower (`--max-mailbox N`,
 `RelayConfig::max_mailbox`), never higher: 4096 is what one round's scan
 covers (`MAX_SCAN_ENVELOPES`), and `serve` refuses 0 or more than 4096 with
 `InvalidInput` before starting anything, so no configuration of this relay
@@ -384,7 +387,8 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 | SEND answer lost | the envelope may be stored; it is sent again (the relay stores it once, or the recipient sees a duplicate) |
 | FETCH_AFTER answer lost (any page), connection lost between pages | the round stops; what the current pass processed is committed but not yet deleted, and comes back next round as a duplicate |
 | process death between pages | same as above: committed acceptances are duplicates next round, nothing is shown twice |
-| relay restarts mid-round | the round fails; senders retransmit what has no receipt. Without `--db` the relay comes back empty; with it, everything it had answered OK is still there |
+| relay restarts mid-round | the round fails; senders retransmit what has no receipt. Without `--db` the relay comes back empty; with it, everything it had answered OK is still there (unless older than the TTL by the wall clock) |
+| relay cannot commit a change to its `--db` file (disk full or failing) | that request gets no answer and the connection closes; the round fails as after a lost answer. SEND and DELETE keep failing until the disk is fixed; reads, and publishing an unchanged bundle, keep working |
 | DELETE lost | the envelope comes back as a duplicate: no second acceptance, a new receipt |
 | crash after a text is committed | the stored bytes are sent after restart |
 | crash after acceptance / receipt commit / delete | the inbox holds the message once; its receipt is committed or re-derived from the inbox |

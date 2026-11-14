@@ -129,3 +129,10 @@ D-021 · 2026-11-14 · OWNER · DONE
 
 D-022 · 2026-11-14 · AGENT (under D-021) · ACTIVE
 - What: R-17 fixed in PR #163 (`RelayLink.Online.problem`, shown in the banner); tracker PR #164 records R-7 (b) and R-10 as fixed. Neither merge is authorized by D-021.
+
+D-023 · 2026-11-14 · OWNER · DONE
+- What: merge #163, then the small tracker PR recording R-17 as fixed; "я тебе разрешаю, делай все" for the next steps of the plan.
+- Evidence: Owner message of 2026-11-14 in session `013Fd9w11HPCwF53H2tPuKpt`. #163 merged as `63b606d`; R-17 folded into tracker PR #164, merged as `3ac0af5`; every check run success on each head.
+
+D-024 · 2026-11-14 · AGENT (under D-023) · ACTIVE
+- What: session recovery option C ("delete contact": forget a peer in any session state, in one transaction; pending outgoing marked abandoned; seen/send-id kept). Chosen over A and B as the smallest, local, user-triggered step (`docs/SESSION-RECOVERY-OPTIONS.md`). No wire, record-layout or crypto change. Merge of its PR is not authorized by D-023.

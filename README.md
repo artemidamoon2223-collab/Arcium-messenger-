@@ -23,8 +23,11 @@ Private contact discovery is a separate component: private set intersection
   relay address (`DEV_RELAY_ALLOWED` in `android/app/build.gradle.kts`;
   `android/app/src/main/kotlin/com/arcium/messenger/messaging/RelaySettings.kt`),
   so a release build cannot send or receive messages.
-- Messages sync only while the app is open; nothing arrives while it is
-  closed (`MainActivity.kt`, and "Not provided" in `SettingsScreen.kt`).
+- Messages sync while the app is open. While it is closed they arrive only
+  if the user turned on background receive in Settings (off by default): a
+  foreground service with a permanent notification
+  (`android/app/src/main/kotlin/com/arcium/messenger/messaging/BackgroundReceiveService.kt`).
+  There is no push; after a reboot nothing arrives until the app is opened.
 - Contacts are added by exchanging contact cards out of band and comparing
   their fingerprints.
 - Tor is not wired: `crates/core-transport` exists, but nothing calls it

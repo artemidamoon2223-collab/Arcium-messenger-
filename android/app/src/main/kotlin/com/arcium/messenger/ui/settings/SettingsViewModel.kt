@@ -12,6 +12,8 @@ data class SettingsState(
     val savedRelay: String? = null,
     val relayAllowed: Boolean = BuildConfig.DEV_RELAY_ALLOWED,
     val error: String? = null,
+    /** The user turned background receive on. */
+    val background: Boolean = false,
 )
 
 class SettingsViewModel(
@@ -22,6 +24,7 @@ class SettingsViewModel(
         SettingsState(
             relayInput = service.relay.address.value.orEmpty(),
             savedRelay = service.relay.address.value,
+            background = service.background.enabled.value,
         ),
     )
     val state: StateFlow<SettingsState> = _state
@@ -46,5 +49,15 @@ class SettingsViewModel(
         service.relay.clear()
         _state.value = _state.value.copy(relayInput = "", savedRelay = null, error = null)
         service.changed()
+    }
+
+    /**
+     * Stores the user's choice. The visible app starts the background service
+     * when it may run (MainActivity); the service stops itself when it is
+     * turned off.
+     */
+    fun setBackground(on: Boolean) {
+        service.background.set(on)
+        _state.value = _state.value.copy(background = on)
     }
 }

@@ -131,7 +131,10 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
         try {
             val (conversation, entries) = service.call { m ->
                 val entries = loadWindow(window) { before, limit -> m.chatEntriesPage(peer, before, limit) }
-                m.markSeen(peer)
+                // Only while the app is on screen: a chat left open in the
+                // background must not mark texts seen that nobody saw.
+                // Returning to the app reloads, and marks them then.
+                if (service.visible.value) m.markSeen(peer)
                 m.conversation(peer) to entries
             }
             _state.value = _state.value.afterReload(conversation, entries)

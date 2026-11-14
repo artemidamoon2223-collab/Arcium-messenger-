@@ -26,8 +26,12 @@ Alternatives considered:
 | a third-party push or messaging service | an external account and service, which needs the owner's approval |
 | **untrusted store-and-forward relay** | chosen: works with offline peers, runs locally and in CI, needs nothing external, and nothing about it is trusted |
 
-The relay is a development and test relay (`arcium-relay`): in memory, no TLS,
-no authentication. Deploying a public one is a separate decision.
+The relay is a development and test relay (`arcium-relay`): no TLS, no
+authentication, in memory unless started with `--db FILE`. With it, every
+accepted envelope, deletion and bundle is committed to that SQLite file before
+the request is answered, and a restart loads it (envelopes past the TTL are
+dropped); a change that cannot be committed is not answered and the connection
+closes, so the client retries. Deploying a public one is a separate decision.
 
 ## 2. Identity
 
@@ -380,7 +384,7 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 | SEND answer lost | the envelope may be stored; it is sent again (the relay stores it once, or the recipient sees a duplicate) |
 | FETCH_AFTER answer lost (any page), connection lost between pages | the round stops; what the current pass processed is committed but not yet deleted, and comes back next round as a duplicate |
 | process death between pages | same as above: committed acceptances are duplicates next round, nothing is shown twice |
-| relay restarts (empty) mid-round | the round fails; senders retransmit what has no receipt |
+| relay restarts mid-round | the round fails; senders retransmit what has no receipt. Without `--db` the relay comes back empty; with it, everything it had answered OK is still there |
 | DELETE lost | the envelope comes back as a duplicate: no second acceptance, a new receipt |
 | crash after a text is committed | the stored bytes are sent after restart |
 | crash after acceptance / receipt commit / delete | the inbox holds the message once; its receipt is committed or re-derived from the inbox |

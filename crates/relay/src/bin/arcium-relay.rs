@@ -1,10 +1,12 @@
-//! `arcium-relay --listen HOST:PORT [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N]`
+//! `arcium-relay --listen HOST:PORT [--db FILE] [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N]`
 //!
 //! `--max-mailbox` is 1 to 4096 (`DEFAULT_MAX_MAILBOX`, the default); any
-//! other value is refused.
+//! other value is refused. `--db FILE` keeps mailboxes and bundles in that
+//! SQLite file across restarts (created if missing); without it nothing is
+//! persisted.
 //!
-//! Runs the untrusted store-and-forward relay until killed. For development
-//! and tests only: no TLS, no authentication, nothing persisted.
+//! Runs the untrusted store-and-forward relay until killed. Not for
+//! production yet: no TLS and no authentication (tracker R-9).
 
 use std::net::TcpListener;
 use std::time::Duration;
@@ -20,6 +22,7 @@ fn main() {
         let mut value = || args.next().unwrap_or_else(|| usage(&arg));
         match arg.as_str() {
             "--listen" => listen = value(),
+            "--db" => config.db = Some(value().into()),
             "--log" => config.log = true,
             "--canary" => config.canary = Some(value().into_bytes()),
             "--ttl-secs" => {
@@ -49,7 +52,8 @@ fn main() {
 fn usage(bad: &str) -> ! {
     eprintln!(
         "arcium-relay: bad argument {bad}\n\
-         usage: arcium-relay --listen HOST:PORT [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N]\n\
+         usage: arcium-relay --listen HOST:PORT [--db FILE] [--log] [--canary TEXT] [--ttl-secs N] [--max-mailbox N]\n\
+         --db FILE        keep mailboxes and bundles in this SQLite file across restarts\n\
          --max-mailbox N  envelopes per mailbox, 1 to {DEFAULT_MAX_MAILBOX} (default {DEFAULT_MAX_MAILBOX})"
     );
     std::process::exit(2);

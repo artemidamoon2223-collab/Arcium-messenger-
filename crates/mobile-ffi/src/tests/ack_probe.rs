@@ -6,7 +6,9 @@
 //! caller, so `ArciumCore::acknowledge_outgoing` and `abandon_outgoing` are
 //! crate-private: only the network layer calls them, and they are not
 //! exported through UniFFI. Abandonment through `resolve_session_conflict`
-//! (marked `NotDelivered`) is covered in `tests/chat.rs`.
+//! (marked `NotDelivered`) is covered in `tests/chat.rs`, and through
+//! `delete_contact` (`Messenger::forget_peer`, which marks every pending text
+//! abandoned and deletes the history with it) in `tests/delete_contact.rs`.
 
 use std::path::Path;
 
@@ -197,9 +199,14 @@ fn exported_methods(body: &str) -> Vec<(&str, &str)> {
 }
 
 /// The trust boundary itself: no exported method lets Kotlin remove an
-/// outgoing message from the outbox. A source check: it keeps either
-/// method from being exported again or wrapped directly by an exported
-/// one. The generated bindings themselves are not checked by any test.
+/// outgoing message from the outbox, except the two that never let it read
+/// as delivered. A source check: it keeps `acknowledge_outgoing`,
+/// `abandon_outgoing` and `forget_peer` from being exported, and from being
+/// called directly by any exported method other than
+/// `resolve_session_conflict` (marks the texts `NotDelivered`, then abandons
+/// them) and `delete_contact` (`forget_peer` marks every pending text
+/// abandoned in the transaction that deletes it). The generated bindings
+/// themselves are not checked by any test.
 #[test]
 fn neither_outbox_removal_is_exported_through_uniffi() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -210,23 +217,28 @@ fn neither_outbox_removal_is_exported_through_uniffi() {
         names.iter().any(|f| f.ends_with("messaging_api.rs")),
         "the scan must see the exported messaging block: {names:?}"
     );
-    // The one exported method allowed to call either: it marks the texts
-    // not delivered before abandoning them.
-    const ALLOWED: &str = "resolve_session_conflict";
+    const ALLOWED: [&str; 2] = ["resolve_session_conflict", "delete_contact"];
+    const CALLS: [&str; 3] = ["acknowledge_outgoing", "abandon_outgoing", "forget_peer"];
+    let mut allowed_seen = Vec::new();
     for (file, body) in &items {
-        for name in ["fn acknowledge_outgoing", "fn abandon_outgoing"] {
-            assert!(!body.contains(name), "{name} is exported in {file}");
+        for call in CALLS {
+            let name = format!("fn {call}");
+            assert!(!body.contains(&name), "{name} is exported in {file}");
         }
         for (name, method) in exported_methods(body) {
-            if name == ALLOWED {
+            if ALLOWED.contains(&name) {
+                allowed_seen.push(name);
                 continue;
             }
-            for call in ["acknowledge_outgoing", "abandon_outgoing"] {
+            for call in CALLS {
                 assert!(!method.contains(call), "exported {name} in {file} refers to {call}");
             }
         }
     }
-    // The scan is not vacuous: it does find exported methods.
+    // The scan is not vacuous: it does find exported methods, the allowed
+    // ones among them.
     assert!(items.iter().any(|(_, b)| b.contains("fn pending_outgoing")));
     assert!(items.iter().any(|(_, b)| b.contains("fn acknowledge_incoming")));
+    allowed_seen.sort_unstable();
+    assert_eq!(allowed_seen, ["delete_contact", "resolve_session_conflict"]);
 }

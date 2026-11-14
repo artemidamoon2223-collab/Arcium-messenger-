@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use super::wire::client_id;
 use super::{crash_point, handle_of, peer_key, NetworkMessenger, SyncReport, TextState};
 use crate::messaging_api::SendResult;
-use crate::contacts::contact_card_fingerprint;
+use crate::contacts::{contact_card_fingerprint, contact_key};
 use crate::{CoreError, PlaintextText};
 
 /// Longest contact name accepted, in bytes.
@@ -694,6 +694,59 @@ impl NetworkMessenger {
             m.flags = (m.flags | FLAG_ACCEPT_ONLY) & !FLAG_CONFLICT;
             m.note.clear();
         })
+    }
+
+    /// Deletes the contact `peer` and everything this device keeps for it,
+    /// in one store transaction: the pinned card, its name and flags, the
+    /// whole conversation history, the session in whatever state it is
+    /// (established, unconfirmed, in conflict, unreadable or absent), both
+    /// handshakes, the pending outgoing texts (marked abandoned, so never
+    /// shown or counted as delivered) and the incoming messages not yet
+    /// taken into the history. The records that detect repeats (`seen:`,
+    /// `sendid:`) stay: nothing already received becomes new, and no logical
+    /// id is encrypted twice (`Messenger::forget_peer`).
+    ///
+    /// This is the way out of a session that can no longer progress, such as
+    /// the dead end after a false conflict was resolved: both users delete
+    /// each other and exchange cards again, and the next text starts a new
+    /// session. Texts not yet delivered are lost. The peer is told nothing
+    /// and keeps its session until its user deletes this contact too.
+    ///
+    /// The contact need not be pinned: deleting again removes whatever is
+    /// left. Refused if the contact's session handle is registered to
+    /// another identity (`SessionIdCollision`).
+    pub fn delete_contact(&self, peer: Vec<u8>) -> Result<(), CoreError> {
+        let key = peer_key(&peer)?;
+        let handle = handle_of(&key);
+        // Forgetting is refused while a commit on the handle has an unknown
+        // outcome; establish what the store holds first, as a round does.
+        self.core.recover_if_unresolved(handle)?;
+        {
+            let (mut store, mut messenger) = self.core.lock()?;
+            let mut also = vec![contact_key(&key), meta_key(&key), open_key(&key)];
+            also.extend(store.list_keys_with_prefix(&entry_namespace(&key))?);
+            // Each index key with an empty last part is this contact's prefix
+            // in a namespace shared by all contacts.
+            for prefix in [out_key(&key, &[]), raw_claim_key(&key, &[]), in_key(&key, &[])] {
+                let namespace = &prefix[..=prefix.find(':').expect("a namespaced key")];
+                also.extend(
+                    store
+                        .list_keys_with_prefix(namespace)?
+                        .into_iter()
+                        .filter(|k| k.starts_with(&prefix)),
+                );
+            }
+            messenger
+                .forget_peer(&mut store, handle, &key, &also)
+                .map_err(|e| CoreError::messaging(handle, e))?;
+        }
+        // In-memory state kept per contact. `last_sent` is keyed by message
+        // id: its entries for this contact are never consulted again.
+        self.refused.lock().expect("refused").remove(&key);
+        let mut refusals = self.refusals.lock().expect("refusals");
+        refusals.queued.retain(|(to, _, _)| *to != key);
+        refusals.last_to.remove(&key);
+        Ok(())
     }
 
     /// One round for every conversation: records what the local stores hold,

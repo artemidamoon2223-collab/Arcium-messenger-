@@ -893,6 +893,37 @@ delegation of the same day (continuity record D-029). Emulators only; no phone (
 
 ---
 
+## Update 2026-11-14: option A (R-13), R-19 and background receive (`main` @ `efd4c0e`)
+
+**Snapshot:** `main` @ `efd4c0edee678710107a4f532907048145767064`, the merge commit of PR #174.
+Only the rows named here change; every other row keeps the snapshot it cites. Each
+`path:line` was re-read at `efd4c0e`. The three PRs were merged on the Owner's instruction
+of 2026-11-14 ("173, 175, 174 … Исполняй"); the designs follow the Owner's decisions of the
+same day (continuity record D-029).
+
+**Runtime evidence.**
+- PR #174 (head `0a75fa7`): `cargo test --workspace --locked` 532 passed, 0 failed, and
+  `cargo clippy --workspace --locked --all-targets -- -D warnings` exit 0 at its review fix
+  `b2d1088`; the merge after it brought in Android and docs only. 19 check runs success on
+  the head.
+- PR #175 (head `361d5d1`): 12 check runs success (Arcium CI, two runs).
+- PR #173 (head `cb38d45`): 18 check runs success, including Android CI `build` (JVM tests),
+  `connected-tests` and `two-devices`.
+- Each PR had an independent review (`engineering-code-review`, `arcium-security-review`)
+  before the merge, and its findings were fixed in the PR. #175 was reviewed by the session
+  agent, not a separate one.
+- Emulators, a local relay and localnet only: no phone, no production relay, no devnet
+  (`NV`).
+
+| ID | Status at `efd4c0e` | Evidence (`main` @ `efd4c0e`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-13** (a false conflict dead-ends the conversation) | **PARTIAL — the forgeable trigger is removed** (option A, PR #174, merge `efd4c0e`). A handshake that arrives beside this device's own unconfirmed session is recorded there and raises nothing; the conflict is raised only when the contact's first message under that handshake authenticates (in memory: nothing written, no one-time prekey consumed, our session untouched). A forged handshake or message therefore no longer leads to the dead end. **Remaining:** a genuine handshake and first message replayed later can still raise a conflict when this device never accepted that handshake and its one-time prekey is still current; a dead end then also needs the contact to have given that session up, its messages withheld until the resolve, and the user to resolve (S2-B2 section 4c). The way out stays deleting the contact on both devices. Option B is still open. Two steps beyond the option A outline, approved with the merge: an unanswerable handshake beside our session queues the R-1 refusal, and the conflict flag moved to a new bit (the old one, raised by a handshake alone, is no longer read). | `Messenger::record_handshake_beside` (`crates/core-protocol/src/messaging/beside.rs:56`), `first_message_authenticates` (`:130`), `discard_beside` (`:169`); `responder_session` (`crates/mobile-ffi/src/lib.rs:1028`), `beside_authenticates` (`:1217`); the message branch (`crates/mobile-ffi/src/network.rs:1028`), `record_beside` (`:1089`); `FLAG_CONFLICT` (`crates/mobile-ffi/src/network/chat.rs:47`). Tests `tests::false_conflict::*` (`crates/mobile-ffi/src/tests/false_conflict.rs:176`, `:227`, `:269`, `:341`, `:417`, `:462`, `:495`; the first seven fail on `4266537`), `messaging::tests::beside`, two crash tests. Specification: `docs/S2-B2-DURABLE-MESSAGING.md:200`. | `SV`, tests `RV`; replay residual `INF` |
+| **R-19** (PSI circuit registered on chain) | **FIXED in code — merged** in PR #175 (merge `fcabf55`); **not yet deployable**. `init_psi_intersect_comp_def` registers an off-chain source: a release URL and the SHA-256 of the compiled `build/psi_intersect.arcis`, both program constants, so no caller chooses them. The arcium-build CI job fails if the constant, `build/psi_intersect.hash` and the URL disagree, or if the built program lacks the URL. The localnet MPC scenarios run on a build with `ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT` set (the localnet Arx nodes refuse private-address URLs); the deploy build is checked for its registration only. **Remaining:** the circuit file is not published (that needs the Owner's approval, `docs/HOME-DEPLOY.md` Step 1b); no computation has run against the off-chain source; whether the Arx nodes follow GitHub's redirect is unknown. | `PSI_INTERSECT_CIRCUIT_HASH` (`arcium-psi/programs/arcium-psi/src/lib.rs:18`), `PSI_INTERSECT_CIRCUIT_URL` (`:29`), `psi_intersect_circuit_source` (`:39`), used at `:88`; the "Verify build artifacts" step and the `off-chain-registration` scenario in `.github/workflows/arcium-ci.yml`. | `SV`, CI `RV`; fetch by Arx nodes `NV` |
+| **R-18** (Android hardening) | Note only; status unchanged (PARTIAL). With background receive on, the store stays open with its key in memory while the service runs, also on a locked device; an unlocked-device or user-authentication key flag (item b) would bear on starting the process without the user, which the service does not do. | `android/README.md:77` ("Background receive") | `SV` |
+| **R-5** (retransmission) | Note only; status unchanged. Retransmission now also runs while the app is closed if the user turned background receive on (PR #173, merge `d36a95e`): an idle round every 30 s instead of 4 s on screen; the backoff is unchanged. Battery and data cost not measured. | `BACKGROUND_IDLE_DELAY_MS` and `idleDelayMs` (`android/app/src/main/kotlin/com/arcium/messenger/messaging/BackgroundRules.kt:58`, `:61`); `BackgroundReceiveService` (`android/app/src/main/kotlin/com/arcium/messenger/messaging/BackgroundReceiveService.kt:44`) | `SV`; cost `NV` |
+
+---
+
 ## Prioritized remaining work
 
 For new work, see "Next engineering tasks (2026-11-06)" above; this list is kept as history. Regenerated 2026-09-29 from the tables above; the 2026-07-19 list is superseded. Order is

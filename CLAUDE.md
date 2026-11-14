@@ -54,9 +54,9 @@
 
 ## Что за проект
 
-Анонимный E2E-мессенджер для Android. Четыре слоя защиты: Tor onion (arti),
-X3DH + Double Ratchet, шифрованный SQLite (XChaCha20-Poly1305), Arcium MPC для
-приватного поиска контактов (PSI).
+Анонимный E2E-мессенджер для Android. Четыре слоя защиты: Tor onion (arti;
+пока не подключён, F-15), X3DH + Double Ratchet, шифрованный SQLite
+(XChaCha20-Poly1305), Arcium MPC для приватного поиска контактов (PSI).
 
 Ориентация: Rust-ядро в `crates/`, Anchor-программа и Arcis-circuit в
 `arcium-psi/`, Android-приложение в `android/`, документация и трекер находок в
@@ -159,8 +159,8 @@ chain, CI integrity (ложно-зелёные проверки). Процеду
 Подтверждены `.github/workflows/arcium-ci.yml` и `.devcontainer/setup.sh`:
 
 ```bash
-cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo test --workspace --locked
+cargo clippy --workspace --locked -- -D warnings
 cd arcium-psi/tests && npx tsc --noEmit
 cd arcium-psi/tests && npx mocha --require ts-node/register 'src/crypto.test.ts'
 ```
@@ -211,3 +211,6 @@ cd arcium-psi/tests && npx mocha --require ts-node/register 'src/crypto.test.ts'
 - RUSTSEC-2025-0009 (ring 0.16.x) и RUSTSEC-2023-0071 (rsa 0.9.x): REVISIT AT
   SECURITY AUDIT. Ignore в `.cargo/audit.toml` снимать только после появления
   исправленной версии upstream.
+- RUSTSEC-2026-0387 (crypto-bigint 0.5.x): REVISIT AT SECURITY AUDIT. Ignore
+  действует только вместе с guard `.github/scripts/check_rustsec_2026_0387.py`;
+  запись и guard снять, когда crypto-bigint 0.5 уйдёт из `Cargo.lock`.

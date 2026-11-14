@@ -14,7 +14,7 @@ android/
 │   ├── data/
 │   │   ├── IdentityRepository.kt
 │   │   └── MessageRepository.kt
-│   ├── messaging/            Development relay settings, sync loop, background receive, contact cards
+│   ├── messaging/            Relay settings, sync loop, background receive, contact cards
 │   ├── security/             Master key, wrapped by an Android Keystore key
 │   ├── startup/              Start-up checks of the master key and store
 │   └── ui/
@@ -24,7 +24,7 @@ android/
 │       ├── onboarding/       Generate identity keys
 │       ├── contacts/         Contact list; add a contact by pasting their card
 │       ├── chat/             Encrypted message thread
-│       └── settings/         Development relay address; what is not provided
+│       └── settings/         Relay connection string; what is not provided
 └── e2e/                      Host scripts that drive the emulator end-to-end tests
 ```
 
@@ -70,9 +70,35 @@ non-exportable AES-256-GCM key in the Android Keystore
    `./gradlew testDebugUnitTest` and `./gradlew assembleDebug` in `android/`
    (`android-ci.yml`).
 
-Only a debug build accepts a relay address: to exchange messages, run the
-development relay (`arcium-relay` from `crates/relay`, see
-`docs/NET-MESSAGING.md`) and enter its `host:port` in Settings.
+## Configuring a relay
+
+Messaging stays off until a relay is entered in Settings; there is no
+default. Rules: `messaging/RelayRules.kt` (unit tests in
+`src/test/.../messaging/RelayRulesTest.kt`), applied by
+`messaging/RelaySettings.kt`.
+
+- **Every build** accepts a `RELAY_PROTOCOL_V2` connection string,
+  `arcium-relay-v2:<host>:<port>:<tls_pin>:<auth_pk>`, which the relay's
+  operator gets from `arcium-relay keygen` (`docs/NET-MESSAGING.md`,
+  section 3). The app then reaches the relay over TLS 1.3, accepts only the
+  pinned key, and authenticates as this device's identity key before it
+  reads, deletes or publishes; only this device can read or delete its
+  mailbox (the relay's operator still can). Settings shows "Encrypted relay
+  (V2)".
+- **Debug builds only** (`DEV_RELAY_ALLOWED` in `app/build.gradle.kts`) also
+  accept `host:port` of a development relay (`arcium-relay` without
+  `--keys`): no TLS and no authentication, so anyone on the network sees
+  what the relay sees and anyone who reaches it can read or delete any
+  mailbox. Settings shows "Development relay (V1)". A release build refuses
+  it, and ignores one stored by an earlier build.
+- A string that starts with `arcium-relay-v2:` but is malformed is refused,
+  never read as `host:port`. The Rust core parses the string again on every
+  connection; a wrong pin, a refused authentication or an address the core
+  refuses shows as the relay being unreachable.
+- No QR code yet: the string is pasted.
+
+The emulator workflows in CI run debug builds against a development (V1)
+relay.
 
 ## Background receive
 
@@ -87,8 +113,8 @@ server of its own: the service runs the app's sync loop
 - One loop at a time. The open app and the service share the loop behind a
   lock (`MessengerService.syncLoop`), and every round still runs on the one
   sync thread.
-- It runs only once start-up is Ready, with a relay configured (so only in
-  debug builds today) and with the app's notifications allowed, and it stops
+- It runs only once start-up is Ready, with a relay configured and with the
+  app's notifications allowed, and it stops
   itself when the switch is turned off or the relay is removed
   (`backgroundState` in `messaging/BackgroundRules.kt`). The open app starts
   it; Settings says why it is not running.
@@ -142,4 +168,5 @@ What it does not do:
   `lutOffset = new BN(0)` placeholder in `arcium-psi/tests/src/program.ts` must
   be replaced with the on-chain `mxeAccount.lutOffsetSlot` (`docs/HOME-DEPLOY.md`).
 - Push notifications, Bluetooth mesh, key backup.
-- A production relay and release signing.
+- A deployed production relay (the app can be configured with one; none
+  is run by this project yet) and release signing.

@@ -13,6 +13,11 @@
 //! acknowledged: they leave the outbox once the relay has accepted them, and
 //! if one is lost the sender retransmits the text, which is received as a
 //! duplicate and answered with a new receipt.
+//!
+//! The relay is either `RELAY_PROTOCOL_V2` (TLS 1.3 to its pinned key, and
+//! mailbox authentication with this device's identity key, which stays in
+//! [`ArciumCore`]) or, for development and the failure-injection tests only,
+//! `RELAY_PROTOCOL_V1` (plain TCP, no authentication); see [`Relay`].
 
 pub(crate) mod chat;
 pub(crate) mod wire;
@@ -22,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use core_storage::StorageError;
+use relay::address::{AddressError, RelayAddress, ADDRESS_PREFIX};
 use relay::client::{ClientError, Connection};
 use relay::protocol::{ErrorCode, DEFAULT_MAX_MAILBOX, MAX_FETCH, MIN_PAGE};
 use sha2::{Digest, Sha256};
@@ -97,10 +103,38 @@ pub struct SentText {
     pub state: TextState,
 }
 
+/// The relay a [`NetworkMessenger`] talks to, read from the string it was
+/// given (docs/NET-MESSAGING.md, sections 1 and 3).
+enum Relay {
+    /// `RELAY_PROTOCOL_V1` at `host:port`, as given: plain TCP, no
+    /// authentication. For development builds and the failure-injection
+    /// tests only; a release build of the app never passes one.
+    V1(String),
+    /// `RELAY_PROTOCOL_V2`: TLS 1.3 to the pinned key, and AUTH as this
+    /// device's identity key before any operation on its own mailbox or
+    /// bundle.
+    V2(RelayAddress),
+    /// A string with the V2 prefix that does not parse. Every connection
+    /// fails with this error; it is never tried as V1.
+    Invalid(AddressError),
+}
+
+impl Relay {
+    fn parse(s: String) -> Self {
+        if !s.starts_with(ADDRESS_PREFIX) {
+            return Relay::V1(s);
+        }
+        match RelayAddress::parse(&s) {
+            Ok(addr) => Relay::V2(addr),
+            Err(e) => Relay::Invalid(e),
+        }
+    }
+}
+
 #[derive(uniffi::Object)]
 pub struct NetworkMessenger {
     core: Arc<ArciumCore>,
-    relay: String,
+    relay: Relay,
     timeout: Duration,
     retransmit_after: Duration,
     /// When each message or handshake was last accepted by the relay, and
@@ -316,7 +350,15 @@ pub(crate) enum Pass {
 
 #[uniffi::export]
 impl NetworkMessenger {
-    /// `relay_address` is `host:port`. A pending message or handshake is sent
+    /// `relay_address` is a V2 connection string,
+    /// `arcium-relay-v2:<host>:<port>:<tls_pin>:<auth_pk>` (TLS to the pinned
+    /// key; this device authenticates for its own mailbox and bundle), or,
+    /// for development and tests only, `host:port` of a V1 relay (no TLS, no
+    /// authentication). A string with the V2 prefix that does not parse is
+    /// never tried as V1: every network call then fails with `Network`, as it
+    /// does for an address that cannot be reached. A failed TLS handshake (a
+    /// key other than the pinned one) and a refused AUTH are `Network` errors
+    /// too. A pending message or handshake is sent
     /// again by `sync` once `retransmit_after_ms` has passed without its
     /// receipt, and again after twice as long each time, up to 5 minutes.
     /// Every single read and write on the relay connection times out after
@@ -331,7 +373,7 @@ impl NetworkMessenger {
     ) -> Arc<Self> {
         Arc::new(Self {
             core,
-            relay: relay_address,
+            relay: Relay::parse(relay_address),
             timeout: Duration::from_millis(timeout_ms),
             retransmit_after: Duration::from_millis(retransmit_after_ms),
             last_sent: Mutex::new(HashMap::new()),
@@ -345,7 +387,7 @@ impl NetworkMessenger {
     /// Publishes this device's prekey bundle, creating prekeys first if none
     /// exist yet. Existing prekeys are never replaced here.
     pub fn publish_prekeys(&self) -> Result<(), CoreError> {
-        let mut conn = self.connect()?;
+        let mut conn = self.connect_owner()?;
         self.put_bundle(&mut conn)
     }
 
@@ -360,6 +402,7 @@ impl NetworkMessenger {
         if self.core.has_session(handle)? {
             return Err(CoreError::SessionAlreadyExists { session_id: handle });
         }
+        // GET_BUNDLE needs no AUTH, and this connection makes none.
         let bundle = self
             .connect()?
             .get_bundle(peer)
@@ -507,10 +550,57 @@ impl NetworkMessenger {
         })
     }
 
+    /// A connection to the relay that makes no AUTH: enough for SEND and
+    /// GET_BUNDLE.
     fn connect(&self) -> Result<Connection, CoreError> {
-        let mut conn = Connection::connect(&self.relay, self.timeout).map_err(network)?;
+        let mut conn = match &self.relay {
+            Relay::V1(addr) => Connection::connect(addr, self.timeout),
+            Relay::V2(addr) => Connection::connect_v2(addr, self.timeout),
+            Relay::Invalid(e) => return Err(CoreError::Network { msg: e.to_string() }),
+        }
+        .map_err(network)?;
         conn.set_request_deadline(self.limits().request_deadline);
         Ok(conn)
+    }
+
+    /// A connection that acts for this device's own mailbox and bundle
+    /// (FETCH, FETCH_AFTER, DELETE, PUT_BUNDLE). On a V2 relay it makes AUTH
+    /// as this device's identity key right after connecting; a V1 relay has
+    /// no authentication.
+    fn connect_owner(&self) -> Result<Connection, CoreError> {
+        let mut conn = self.connect()?;
+        if matches!(self.relay, Relay::V2(_)) {
+            self.authenticate(&mut conn)?;
+        }
+        Ok(conn)
+    }
+
+    /// AUTH on `conn` as this device's identity key, once. The identity
+    /// secret stays in [`ArciumCore`]: it writes the DH output with the
+    /// relay's auth key into the relay client's buffer, and the client
+    /// derives the tag from it and wipes it. A refused AUTH (the relay's
+    /// answer, or no usable DH output) is a `Network` error and is not
+    /// retried: the caller's operation, or the round, ends with it. Its text
+    /// names authentication, so it reads apart from a later operation the
+    /// relay refuses.
+    fn authenticate(&self, conn: &mut Connection) -> Result<(), CoreError> {
+        let our = self.core.our_identity_pk()?;
+        let mut failed = None;
+        // Without a usable DH output the buffer stays all zeros, which the
+        // client refuses without sending anything; `failed` says why.
+        let authenticated = conn.authenticate(our, |auth_pk, out| match self.core.identity_dh(auth_pk, out) {
+            Ok(true) => {}
+            Ok(false) => {
+                failed = Some(CoreError::Network {
+                    msg: "cannot authenticate to the relay: its auth key is of low order".into(),
+                });
+            }
+            Err(e) => failed = Some(e),
+        });
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        authenticated.map_err(|e| CoreError::Network { msg: format!("relay authentication failed: {e}") })
     }
 
     fn limits(&self) -> Limits {
@@ -584,7 +674,9 @@ impl NetworkMessenger {
         for (_, handle) in &sessions {
             self.settle_inbox(*handle, report)?;
         }
-        let mut conn = self.connect()?;
+        // One connection for the whole round, authenticated on V2: the round
+        // publishes the bundle and reads and deletes from the mailbox.
+        let mut conn = self.connect_owner()?;
         self.put_bundle(&mut conn)?;
         self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
 

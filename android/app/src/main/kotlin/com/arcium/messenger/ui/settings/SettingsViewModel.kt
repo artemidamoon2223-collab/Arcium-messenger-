@@ -10,7 +10,8 @@ import kotlinx.coroutines.flow.StateFlow
 data class SettingsState(
     val relayInput: String = "",
     val savedRelay: String? = null,
-    val relayAllowed: Boolean = BuildConfig.DEV_RELAY_ALLOWED,
+    /** This build also accepts a development relay's `host:port` (debug builds). */
+    val devRelayAllowed: Boolean = BuildConfig.DEV_RELAY_ALLOWED,
     val error: String? = null,
     /** The user turned background receive on. */
     val background: Boolean = false,
@@ -39,8 +40,6 @@ class SettingsViewModel(
             _state.value = _state.value.copy(savedRelay = service.relay.address.value, error = null)
             service.changed()
         } catch (e: IllegalArgumentException) {
-            _state.value = _state.value.copy(error = e.message)
-        } catch (e: IllegalStateException) {
             _state.value = _state.value.copy(error = e.message)
         }
     }

@@ -6,30 +6,39 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * The relay this device talks to. There is no default and no production
- * relay: the only relay that exists is the development relay
- * (`arcium-relay`, docs/NET-MESSAGING.md) — no TLS, no authentication, in
- * memory. Messaging stays off until a user enters one, and only a debug build
- * accepts one ([BuildConfig.DEV_RELAY_ALLOWED]), so a release build cannot
- * silently talk to an unauthenticated plaintext relay.
+ * The relay this device talks to. There is no default: messaging stays off
+ * until the user enters one.
+ *
+ * Every build accepts a V2 connection string from the relay's operator
+ * (`arcium-relay-v2:…`): TLS 1.3 to the relay's pinned key, and only this
+ * device can read or delete its mailbox (docs/NET-MESSAGING.md, section 3).
+ * Only a debug build ([BuildConfig.DEV_RELAY_ALLOWED]) also accepts
+ * `host:port` of a development relay (V1: no TLS, no authentication), so a
+ * release build never talks to an unauthenticated plaintext relay, not even
+ * one stored earlier: what is stored is checked again on every start
+ * ([relayChoice]).
  */
 class RelaySettings(context: Context) {
 
     private val prefs = context.getSharedPreferences("relay", Context.MODE_PRIVATE)
 
     private val _address = MutableStateFlow(
-        if (BuildConfig.DEV_RELAY_ALLOWED) prefs.getString(KEY, null) else null,
+        prefs.getString(KEY, null)?.let { relayChoice(it, BuildConfig.DEV_RELAY_ALLOWED)?.address },
     )
 
-    /** `host:port`, or null while none is configured. */
+    /**
+     * What the Rust core is given: a V2 connection string or, in a debug
+     * build, `host:port`; null while none is configured.
+     */
     val address: StateFlow<String?> = _address
 
-    /** Stores [value] after [validate]; throws IllegalArgumentException otherwise. */
+    /** Stores [value] if this build may use it ([relayChoice]); throws IllegalArgumentException otherwise. */
     fun set(value: String) {
-        check(BuildConfig.DEV_RELAY_ALLOWED) { "this build does not use a development relay" }
-        val address = requireNotNull(validate(value)) { "enter host:port, for example 10.0.2.2:7700" }
-        prefs.edit().putString(KEY, address).apply()
-        _address.value = address
+        val choice = requireNotNull(relayChoice(value, BuildConfig.DEV_RELAY_ALLOWED)) {
+            relayInputHint(BuildConfig.DEV_RELAY_ALLOWED)
+        }
+        prefs.edit().putString(KEY, choice.address).apply()
+        _address.value = choice.address
     }
 
     fun clear() {
@@ -37,18 +46,8 @@ class RelaySettings(context: Context) {
         _address.value = null
     }
 
-    companion object {
-        private const val KEY = "dev_relay_address"
-
-        /** `host:port` with a port from 1 to 65535, trimmed; null if it is not one. */
-        fun validate(value: String): String? {
-            val trimmed = value.trim()
-            val colon = trimmed.lastIndexOf(':')
-            if (colon <= 0) return null
-            val host = trimmed.substring(0, colon)
-            val port = trimmed.substring(colon + 1).toIntOrNull() ?: return null
-            if (port !in 1..65535 || host.any { it.isWhitespace() || it == '/' }) return null
-            return "$host:$port"
-        }
+    private companion object {
+        /** The name predates V2; kept so a configured relay survives the update. */
+        const val KEY = "dev_relay_address"
     }
 }

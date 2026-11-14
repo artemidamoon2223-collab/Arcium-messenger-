@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-14 01:49 UTC, by a Claude Code cloud session
+Updated: 2026-11-14 02:58 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -21,11 +21,8 @@ Updated: 2026-11-14 01:49 UTC, by a Claude Code cloud session
 - Tracker at `0a8dbd4` holds R-13 … R-19; R-7 (b) and R-10 are fixed in code (tracker PR #164 records it).
 - 14 Nov, merged on the Owner's instruction (D-023): #163 R-17 (`63b606d`), #164 tracker R-7 (b), R-10, R-17 fixed (`3ac0af5`); every check run success on each head.
 
-## In progress
-- Session recovery option C, "delete contact" (D-024): `Messenger::forget_peer` + `NetworkMessenger::delete_contact` + Android action; PR to follow. Its merge needs the Owner's instruction naming the PR.
-
-## Open PRs
-- None at this checkpoint.
+## Open PRs (each needs the Owner's merge instruction naming it)
+- #165 delete a contact (session recovery option C, D-024), head `826d2b5`: 507 passed locally; all 20 check runs success (two-devices green on one re-run after an SDK download failure); independent review MEDIUM and LOW fixed in the PR.
 
 ## Waiting for the Owner
 - Session recovery options A and B (C is being implemented, D-024).
@@ -33,7 +30,7 @@ Updated: 2026-11-14 01:49 UTC, by a Claude Code cloud session
 - Production relay (hosting cost), background receive (foreground service or push), release-signing key, R-18 items.
 
 ## Next work (D-014 order)
-Session recovery C (in progress) → R-15 → R-16 → production relay → background receive → release signing → Tor, devnet, PSI.
+Session recovery C (#165) → tracker PR for R-13/R-14 mitigation after #165 merges → R-15 → R-16 → production relay → background receive → release signing → Tor, devnet, PSI.
 
 ## Needs devices
 Two phones with a local relay; Pixel instrumentation; APK and `.so` signature check; H-8 on a release build; F-9 on a phone; devnet deploy at home (`docs/HOME-DEPLOY.md`).

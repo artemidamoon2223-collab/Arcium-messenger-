@@ -26,8 +26,13 @@ Alternatives considered:
 | a third-party push or messaging service | an external account and service, which needs the owner's approval |
 | **untrusted store-and-forward relay** | chosen: works with offline peers, runs locally and in CI, needs nothing external, and nothing about it is trusted |
 
-The relay is a development and test relay (`arcium-relay`): no TLS, no
-authentication, in memory unless started with `--db FILE`. With it, every
+The app talks to a development and test relay (`arcium-relay` without
+`--keys`): `RELAY_PROTOCOL_V1`, no TLS, no authentication. The relay crate
+also implements `RELAY_PROTOCOL_V2` (`arcium-relay --keys FILE`, section 3):
+TLS 1.3 with the relay's pinned key, and mailboxes only for their
+authenticated owners. The app, its tests and CI do not use V2 yet; V1 will be
+removed when they move to it. Either way the relay is in memory unless
+started with `--db FILE`. With it, every
 accepted envelope, deletion and bundle is committed to that SQLite file before
 the request is answered, and a restart loads it (envelopes past the TTL are
 dropped); a change that cannot be committed is not answered and the connection
@@ -65,7 +70,39 @@ There is no trust on first use in the application. (The CI peer in
 `RELAY_PROTOCOL_V1` (`crates/relay/src/protocol.rs`): length-prefixed frames,
 six operations — PUT_BUNDLE, GET_BUNDLE, SEND, FETCH, DELETE, FETCH_AFTER.
 Exact decoding; frames up to 1 MiB, envelopes up to 64 KiB, bundles up to
-1 KiB.
+1 KiB. This is what the app uses today.
+
+**V2 (in the relay crate, not yet used by the app).** `RELAY_PROTOCOL_V2` is
+the same frames inside TLS 1.3, plus one operation, AUTH, and one error,
+UNAUTHORIZED (`protocol.rs`, `auth.rs`, `tls.rs`):
+
+- `arcium-relay keygen --out FILE --address HOST:PORT` makes the relay's
+  Ed25519 TLS key and X25519 auth key, writes both secrets to a new file
+  (mode 0600, never over an existing one) and prints the connection string
+  `arcium-relay-v2:<host>:<port>:<tls_pin>:<auth_pk>`, where `tls_pin` is the
+  SHA-256 of the TLS key's `SubjectPublicKeyInfo` (both in 64 lowercase hex
+  digits; `address.rs` parses it strictly).
+- The relay presents its TLS key as an RFC 7250 raw public key, so no
+  certificate is involved. The client accepts the handshake only if that
+  key's SHA-256 equals the pin, and checks the TLS 1.3 signature under it.
+  No resumption, no early data, no SNI.
+- After the handshake the relay sends `HELLO = 0x02 || challenge(32)`, fresh
+  for every connection. To act for the owner `O` of a mailbox the client
+  sends `AUTH O tag`, with
+  `tag = HMAC-SHA256(k, challenge || exporter || O)`,
+  `k = HKDF-SHA256(salt = "arcium-relay-auth-salt-v1", ikm = DH(id_sk, auth_pk), info = "arcium-relay-auth-v1")`,
+  and `exporter` 32 bytes of this connection's TLS exported keying material
+  (label `"arcium-relay-auth-v1"`). The relay checks it with
+  `DH(auth_sk, O)`, in constant time. A tag is valid on its connection only;
+  one AUTH is checked per connection.
+- FETCH, FETCH_AFTER and DELETE need AUTH for the recipient, PUT_BUNDLE for
+  the owner; otherwise UNAUTHORIZED, and nothing is read or changed. SEND and
+  GET_BUNDLE need none.
+
+V2 keeps mailboxes from strangers and the network (R-9), not from the relay's
+operator, who still sees and can delete everything. It reuses the identity
+X25519 key in one more DH context (the auth key derivation), separated by
+its HKDF salt and label; that is not reviewed by a cryptographer yet.
 
 **Paging.** Each stored envelope gets a sequence number from one relay-wide
 counter: it starts at 1, only grows, and a relay that has used `u64::MAX`
@@ -167,8 +204,9 @@ recipient as a contact; but the refusal is no proof of it to anyone else (see
 section 6). They do
 not see plaintext, identity
 or prekey secrets, ratchet state or checkpoints. There is no anonymity and no
-Tor: a network observer sees the same as the relay, and the relay can link
-sender, recipient and time of every message.
+Tor: with V1, which the app uses, a network observer sees the same as the
+relay (with V2 it would see only connections, their sizes and timing), and
+the relay can link sender, recipient and time of every message.
 
 ## 4. Messages inside the ratchet
 

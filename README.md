@@ -20,7 +20,9 @@ Private contact discovery is a separate component: private set intersection
 - Messaging between devices goes through the development relay
   (`crates/relay`, binary `arcium-relay`): no TLS, no authentication, and
   in memory unless started with `--db FILE` (a SQLite file kept across
-  restarts). There is no production relay. Only debug builds accept a
+  restarts). The relay crate also implements a TLS protocol with mailbox
+  authentication (`RELAY_PROTOCOL_V2`, `arcium-relay --keys FILE`), which
+  the app does not use yet. There is no production relay. Only debug builds accept a
   relay address (`DEV_RELAY_ALLOWED` in `android/app/build.gradle.kts`;
   `android/app/src/main/kotlin/com/arcium/messenger/messaging/RelaySettings.kt`),
   so a release build cannot send or receive messages.

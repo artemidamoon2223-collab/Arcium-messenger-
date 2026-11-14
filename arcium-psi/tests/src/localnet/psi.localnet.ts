@@ -6,6 +6,20 @@
 // Follows the Arcium 0.10.4 example tests (arcium-hq/examples, coinflip at the
 // v0.10.4 tag): init the computation definition, upload the circuit, encrypt
 // inputs to the MXE key, queue the computation, await finalization.
+//
+// Two builds are tested. The deploy build registers the circuit off chain
+// (PSI_INTERSECT_CIRCUIT_URL and PSI_INTERSECT_CIRCUIT_HASH in
+// programs/arcium-psi/src/lib.rs). No computation can run against it here:
+// the release URL is not published, and the localnet Arx nodes refuse to
+// fetch a circuit from a private address (arx 0.10.4 logged "SSRF blocked:
+// 172.20.0.1 resolved to 172.20.0.1 - private address" for a test server on
+// the Docker host). So against the deploy build only the registration is
+// checked (LOCALNET_MPC_SCENARIO=off-chain-registration). A build with
+// ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT set registers no off-chain source, so
+// the circuit is uploaded on chain as in the examples; the MPC scenarios run
+// against that build only:
+//   ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT=1 arcium test
+//   LOCALNET_MPC_SCENARIO=off-chain-registration arcium test
 
 import * as anchor from '@anchor-lang/core';
 import {
@@ -16,7 +30,7 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import { expect } from 'chai';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -64,10 +78,19 @@ const BOB = ['+1234567890', '+9999999999', '+1111111111'].map(hashPhoneWithTrunc
 // definition to be fetched, and was registered first in every run observed.
 const MPC_SCENARIOS = ['matches', 'zero-hash', 'invalid-count'];
 const MPC_SCENARIO = process.env.LOCALNET_MPC_SCENARIO;
-if (MPC_SCENARIO !== undefined && !MPC_SCENARIOS.includes(MPC_SCENARIO)) {
+// Which build `arcium test` made: it builds and tests with the same environment.
+const ONCHAIN = process.env.ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT !== undefined;
+if (ONCHAIN && MPC_SCENARIO !== undefined && !MPC_SCENARIOS.includes(MPC_SCENARIO)) {
   throw new Error(`LOCALNET_MPC_SCENARIO must be one of ${MPC_SCENARIOS.join(', ')}`);
 }
-const runs = (scenario: string) => MPC_SCENARIO === undefined || MPC_SCENARIO === scenario;
+if (!ONCHAIN && MPC_SCENARIO !== 'off-chain-registration') {
+  throw new Error(
+    'the deploy build registers the off-chain circuit source, which no localnet computation can fetch: ' +
+      'run LOCALNET_MPC_SCENARIO=off-chain-registration arcium test, or build with ' +
+      'ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT=1 for the MPC scenarios',
+  );
+}
+const runs = (scenario: string) => ONCHAIN && (MPC_SCENARIO === undefined || MPC_SCENARIO === scenario);
 
 describe('LOCALNET — Arcium PSI program', function () {
   this.timeout(600_000);
@@ -149,7 +172,35 @@ describe('LOCALNET — Arcium PSI program', function () {
     expect(await provider.connection.getAccountInfo(compDefAccount)).to.equal(null);
   });
 
-  it('registers the psi_intersect computation definition', async () => {
+  // The deploy build: the definition stores the release URL, named after the
+  // hash, and the SHA-256 of the built circuit; nothing is uploaded.
+  if (!ONCHAIN) it('registers the psi_intersect computation definition with the off-chain circuit source', async () => {
+    const arcium: any = getArciumProgram(provider);
+    const mxe = await arcium.account.mxeAccount.fetch(mxeAccount);
+    await program.methods
+      .initPsiIntersectCompDef()
+      .accounts({
+        authority: owner,
+        mxeAccount,
+        compDefAccount,
+        addressLookupTable: getLookupTableAddress(programId, mxe.lutOffsetSlot),
+        lutProgram: AddressLookupTableProgram.programId,
+      })
+      .rpc({ commitment: 'confirmed' });
+
+    const hash = createHash('sha256').update(fs.readFileSync(CIRCUIT_PATH)).digest('hex');
+    const compDef = await arcium.account.computationDefinitionAccount.fetch(compDefAccount);
+    expect(compDef.circuitSource.onChain, 'circuit source is OnChain').to.equal(undefined);
+    const offChain = compDef.circuitSource.offChain?.[0];
+    expect(offChain, 'circuit source is not OffChain').to.not.equal(undefined);
+    expect(offChain.source).to.equal(
+      'https://github.com/artemidamoon2223-collab/Arcium-messenger-/releases/download/' +
+        `psi-intersect-${hash.slice(0, 16)}/psi_intersect.arcis`,
+    );
+    expect(Buffer.from(offChain.hash).toString('hex')).to.equal(hash);
+  });
+
+  if (ONCHAIN) it('registers the psi_intersect computation definition', async () => {
     const arcium: any = getArciumProgram(provider);
     const mxe = await arcium.account.mxeAccount.fetch(mxeAccount);
     await program.methods
@@ -292,7 +343,12 @@ describe('LOCALNET — Arcium PSI program', function () {
     return { ...query, output, plain };
   }
 
-  it('rejects a query whose Arcium account is substituted', async () => {
+  // On-chain build only, with the MPC scenarios. Against a build with an
+  // off-chain source (CI run 43568141458, a localnet URL) the runtime refused
+  // this transaction before the program ran ("Simulation failed. Message:
+  // invalid…"; cause not established), so it would not reach the constraint
+  // this checks.
+  if (ONCHAIN) it('rejects a query whose Arcium account is substituted', async () => {
     // Another address from the MXE's lookup table: a key outside it would
     // add 32 bytes and push the transaction past the size limit, so the
     // rejection would no longer be the program's.

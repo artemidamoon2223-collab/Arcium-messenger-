@@ -128,7 +128,7 @@ jobs:
       - name: Verify build artifacts
         working-directory: arcium-psi
         run: |
-          for f in build/psi_intersect.arcis build/psi_intersect.arcis.ir \
+          for f in build/psi_intersect.arcis build/psi_intersect.arcis.ir build/psi_intersect.hash \
                    target/deploy/arcium_psi.so target/idl/arcium_psi.json; do
             if [ ! -s "$f" ]; then
               echo "::error::arcium build produced no $f"
@@ -143,6 +143,34 @@ jobs:
             echo "::error::CIRCUIT_HASH ${recorded:-missing} is not the built circuit $built"
             exit 1
           fi
+          # The program's off-chain circuit source must be this build's
+          # circuit: PSI_INTERSECT_CIRCUIT_HASH is the SHA-256 of the compiled
+          # build/psi_intersect.arcis (which the build also writes to
+          # build/psi_intersect.hash), and the release URL is named after it.
+          # This is a deploy build (no ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT),
+          # so the program must hold the release URL.
+          lib=programs/arcium-psi/src/lib.rs
+          circuit=$(sha256sum build/psi_intersect.arcis | cut -d' ' -f1)
+          hashfile=$(python3 -c 'import json, sys; print(bytes(json.load(open(sys.argv[1]))).hex())' build/psi_intersect.hash)
+          program=$(sed -n '/^const PSI_INTERSECT_CIRCUIT_HASH/,/\];/p' "$lib" | grep -oE '0x[0-9a-f]{2}' | cut -c3- | tr -d '\n')
+          url="https://github.com/artemidamoon2223-collab/Arcium-messenger-/releases/download/psi-intersect-${circuit:0:16}/psi_intersect.arcis"
+          if [ "$hashfile" != "$circuit" ]; then
+            echo "::error::build/psi_intersect.hash ${hashfile:-missing} is not the SHA-256 of build/psi_intersect.arcis $circuit"
+            exit 1
+          fi
+          if [ "$program" != "$circuit" ]; then
+            echo "::error::PSI_INTERSECT_CIRCUIT_HASH ${program:-missing} is not the built circuit $circuit"
+            exit 1
+          fi
+          if ! grep -qF "\"$url\"" "$lib"; then
+            echo "::error::PSI_INTERSECT_CIRCUIT_URL is not $url"
+            exit 1
+          fi
+          if ! grep -qaF "$url" target/deploy/arcium_psi.so; then
+            echo "::error::the built program does not hold the release circuit URL $url"
+            exit 1
+          fi
+          echo "off-chain circuit source: $url sha256 $circuit"
       # Runs the compiled psi_intersect circuit on chosen inputs (padding,
       # zero hashes, invalid counts) through Arcis's mock MPC evaluation.
       - name: psi_intersect circuit tests
@@ -212,6 +240,12 @@ jobs:
       # with a manifest of their hashes. If that check cannot be completed,
       # nothing of that run is published. A failing scenario's diagnostics
       # are published the same way, and the step still fails.
+      #
+      # The MPC scenarios run against a build with
+      # ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT set, which uploads the circuit on
+      # chain: the localnet Arx nodes cannot fetch the off-chain circuit
+      # (tests/src/localnet/psi.localnet.ts). The last run is the deploy
+      # build, and checks only its off-chain registration.
       - name: arcium test, one fresh localnet per MPC scenario
         working-directory: arcium-psi
         env:
@@ -226,11 +260,13 @@ jobs:
           sudo prlimit --pid $$ --nofile=1048576:1048576
           run_scenario() {
             local scenario=$1 title=$2 raw="$LOCALNET_RAW_DIR/$1" status=0 events
+            local build=(ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT=1)
+            if [ "$scenario" = off-chain-registration ]; then build=(); fi
             mkdir -p "$raw"
             docker events --filter type=container --format '{{json .}}' \
               > "$raw/docker-events.jsonl" 2>&1 &
             events=$!
-            LOCALNET_MPC_SCENARIO=$scenario LOCALNET_DIAG_DIR=$raw \
+            env "${build[@]}" LOCALNET_MPC_SCENARIO="$scenario" LOCALNET_DIAG_DIR="$raw" \
               timeout 30m arcium test 2>&1 | tee "$raw/arcium-test.log" || status=$?
             kill "$events" 2>/dev/null || true
             wait "$events" 2>/dev/null || true
@@ -266,6 +302,7 @@ jobs:
           run_scenario matches 'runs a PSI computation on the MPC cluster and returns the expected matches'
           run_scenario zero-hash 'compares real entries only, including a real zero hash'
           run_scenario invalid-count 'fails closed on an invalid count inside the circuit'
+          run_scenario off-chain-registration 'registers the psi_intersect computation definition with the off-chain circuit source'
         shell: bash
       # Passes only if the publication directory holds nothing but sets the
       # scrubber wrote for this run, unchanged since. It must stay the last

@@ -4,6 +4,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- To sync again as soon as a network comes back. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      Background receive (messaging/BackgroundReceiveService.kt), only after the
+      user turns it on in Settings: a dataSync foreground service, and its
+      notifications (asked for at run time on Android 13 and later).
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".ArciumApp"
@@ -20,6 +28,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".messaging.BackgroundReceiveService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

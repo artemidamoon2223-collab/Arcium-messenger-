@@ -5,11 +5,14 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import com.arcium.messenger.ffi.ArciumCoreWrapper
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.arcium_core.CoreException
@@ -79,17 +82,21 @@ internal fun linkAfterRound(report: SyncReport, nowMs: Long, networkAvailable: (
  * UI when to read again ([revision]). It keeps no message, session or
  * delivery state of its own.
  *
- * Sync runs only while the app is visible ([syncWhileVisible], driven by the
- * activity's lifecycle): after a round in which something arrived, again after
+ * Sync runs while the app is visible ([syncWhileVisible], driven by the
+ * activity's lifecycle) and, if the user turned background receive on, from
+ * [BackgroundReceiveService] ([syncInBackground]). Both run the same loop, one
+ * at a time: after a round in which something arrived, again after
  * [ACTIVE_DELAY_MS], otherwise after [IDLE_DELAY_MS], backing off to
  * [MAX_BACKOFF_MS] while the relay is unreachable, and at once when the user
- * sends or Android reports a network. Nothing runs while the app is in the
- * background: messages wait on the relay until it is opened again.
+ * sends or Android reports a network. Without background receive nothing
+ * runs while the app is in the background: messages wait on the relay until
+ * it is opened again.
  */
 class MessengerService(
     context: Context,
     private val core: ArciumCoreWrapper,
     val relay: RelaySettings,
+    val background: BackgroundSettings,
 ) {
     private val connectivity = checkNotNull(context.getSystemService(ConnectivityManager::class.java))
 
@@ -106,6 +113,16 @@ class MessengerService(
     /** Rust calls may block on the store or the network: one thread for sync. */
     @OptIn(ExperimentalCoroutinesApi::class)
     private val syncDispatcher = Dispatchers.IO.limitedParallelism(1)
+
+    /**
+     * Held by the one loop that runs ([syncLoop]): the visible app's and the
+     * background service's never run side by side, so neither doubles the
+     * pace of rounds. The other waits until the holder is cancelled.
+     */
+    private val loopLock = Mutex()
+
+    /** Callers of [syncWhileVisible] running or waiting for [loopLock]. */
+    private val visibleCount = AtomicInteger()
 
     private var messenger: NetworkMessenger? = null
     private var messengerRelay: String? = null
@@ -151,36 +168,77 @@ class MessengerService(
 
     /**
      * Syncs until cancelled. Call from a lifecycle-bound coroutine that runs
-     * only while the app is visible.
+     * only while the app is visible. While the background service runs the
+     * loop, this waits for it instead of running a second one.
      */
     suspend fun syncWhileVisible() {
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                wake.trySend(Unit)
-            }
-
-            override fun onLost(network: Network) {
-                wake.trySend(Unit)
-            }
-        }
-        connectivity.registerDefaultNetworkCallback(callback)
+        visibleCount.incrementAndGet()
         try {
-            var backoff = ACTIVE_DELAY_MS
-            while (true) {
-                val delayMs = round()?.let { report ->
-                    if (report.reachedRelay()) {
-                        backoff = ACTIVE_DELAY_MS
-                        if (report.busy()) ACTIVE_DELAY_MS else IDLE_DELAY_MS
-                    } else {
-                        backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
-                        backoff
-                    }
-                } ?: if (_link.value is RelayLink.IdentityUnavailable) MAX_BACKOFF_MS else Long.MAX_VALUE
-                withTimeoutOrNull(delayMs) { wake.receive() }
-            }
+            syncLoop(onNewIncoming = null)
         } finally {
-            connectivity.unregisterNetworkCallback(callback)
+            visibleCount.decrementAndGet()
         }
+    }
+
+    /**
+     * Syncs until cancelled, for [BackgroundReceiveService]. Calls
+     * [onNewIncoming] after a round that recorded a text from a contact while
+     * the app was not visible ([notifyAfterRound]). While the visible app
+     * runs the loop, this waits for it.
+     */
+    suspend fun syncInBackground(onNewIncoming: () -> Unit) {
+        syncLoop(onNewIncoming)
+    }
+
+    private suspend fun syncLoop(onNewIncoming: (() -> Unit)?) {
+        loopLock.withLock {
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    wake.trySend(Unit)
+                }
+
+                override fun onLost(network: Network) {
+                    wake.trySend(Unit)
+                }
+            }
+            connectivity.registerDefaultNetworkCallback(callback)
+            try {
+                // What the next round is compared with, read only when someone
+                // is told about new texts.
+                var newest = if (onNewIncoming != null) readNewestEntries() else null
+                var backoff = ACTIVE_DELAY_MS
+                while (true) {
+                    val report = round()
+                    // Only a round that accepted a message is looked at: a text
+                    // from the relay is accepted and recorded in the same round.
+                    // One recorded later (a crash in between) shows at the next look.
+                    if (onNewIncoming != null && report != null && report.accepted > 0u) {
+                        val now = readNewestEntries()
+                        if (notifyAfterRound(newest, now, visible = visibleCount.get() > 0)) onNewIncoming()
+                        if (now != null) newest = now
+                    }
+                    val delayMs = report?.let {
+                        if (it.reachedRelay()) {
+                            backoff = ACTIVE_DELAY_MS
+                            if (it.busy()) ACTIVE_DELAY_MS else IDLE_DELAY_MS
+                        } else {
+                            backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
+                            backoff
+                        }
+                    } ?: if (_link.value is RelayLink.IdentityUnavailable) MAX_BACKOFF_MS else Long.MAX_VALUE
+                    withTimeoutOrNull(delayMs) { wake.receive() }
+                }
+            } finally {
+                connectivity.unregisterNetworkCallback(callback)
+            }
+        }
+    }
+
+    /** [newestEntries] of every conversation, or null if they could not be read. */
+    private suspend fun readNewestEntries(): Map<String, NewestEntry>? = try {
+        withContext(syncDispatcher) { newestEntries(messenger().conversations()) }
+    } catch (e: CoreException) {
+        null
     }
 
     /** One sync round; null if none can run (no relay, no identity, identity unreadable). */

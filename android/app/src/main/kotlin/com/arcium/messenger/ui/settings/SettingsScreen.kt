@@ -1,5 +1,8 @@
 package com.arcium.messenger.ui.settings
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,15 +22,22 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.arcium.messenger.messaging.BackgroundReceive
+import com.arcium.messenger.messaging.BackgroundState
+import com.arcium.messenger.messaging.backgroundState
+import com.arcium.messenger.startup.StartupState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,6 +46,13 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    val context = LocalContext.current
+    // On Android 13 and later, turning background receive on first asks for
+    // the notification permission. The choice is stored whatever the answer:
+    // without notifications the service does not run, and the status says so.
+    val askForNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        viewModel.setBackground(true)
+    }
 
     Scaffold(
         topBar = {
@@ -93,12 +110,59 @@ fun SettingsScreen(
                 modifier = Modifier.testTag("savedRelay"),
             )
             HorizontalDivider()
+            Text("Background receive", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Off by default. When on, the app keeps syncing with the relay after you leave " +
+                    "it, so messages arrive while it is closed. Android shows a notice for as long " +
+                    "as this runs, and a \"New message\" notification, without the sender or the " +
+                    "text, when one arrives. It costs battery and data, and messages can arrive " +
+                    "late while the phone sleeps. It stops if Android ends the app, and after the " +
+                    "phone restarts, until you open the app again.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Receive in the background", modifier = Modifier.weight(1f))
+                Switch(
+                    checked = state.background,
+                    onCheckedChange = { on ->
+                        if (on && BackgroundReceive.mustAskForNotifications(context)) {
+                            askForNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            viewModel.setBackground(on)
+                        }
+                    },
+                )
+            }
+            Text(
+                // This screen exists only once start-up is Ready (StartupGate).
+                backgroundStatus(
+                    backgroundState(
+                        enabled = state.background,
+                        startup = StartupState.Ready,
+                        relayAddress = state.savedRelay,
+                        notificationsAllowed = BackgroundReceive.notificationsAllowed(context),
+                    ),
+                ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            HorizontalDivider()
             Text("Not provided", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Messages are synced only while the app is open; nothing arrives while it is " +
-                    "closed. No Tor routing, no Bluetooth mesh, no key backup.",
+                "Unless background receive is on, messages are synced only while the app is " +
+                    "open. No push notifications: nothing wakes the app when a message reaches " +
+                    "the relay. No Tor routing, no Bluetooth mesh, no key backup.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
     }
+}
+
+/** What the screen says about background receive in [state]. */
+private fun backgroundStatus(state: BackgroundState): String = when (state) {
+    BackgroundState.OFF -> "Off: messages arrive only while the app is open."
+    BackgroundState.RUN -> "On: the app stays connected to the relay while it is closed."
+    BackgroundState.NO_RELAY -> "Not running: no relay is set."
+    BackgroundState.NOTIFICATIONS_BLOCKED ->
+        "Not running: Android does not allow this app's notifications. Allow them in Android settings."
+    BackgroundState.WAITING_FOR_STARTUP, BackgroundState.STARTUP_BLOCKED -> "Not running: the app has not started."
 }

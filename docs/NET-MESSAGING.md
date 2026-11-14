@@ -558,9 +558,14 @@ entry per logical message, never written by the ratchet.
   scan of the whole SQLite table on every call (`list_keys_with_prefix`), so
   a round keeps a cost that grows with the store's size; it no longer
   decrypts the history.
-- **Not provided.** Sync while the application is closed; unread state across
-  devices; a sender timestamp (entries carry the local time they were
-  recorded). The conversation screen reads a window of the newest entries
+- **Not provided.** Push delivery: nothing wakes the application when a
+  message reaches the relay (no FCM or other push service). Sync while the
+  application is closed exists on Android only as an opt-in foreground
+  service, off by default, that runs the open app's rounds and stops with
+  the app's process; it does not start after a reboot (`android/README.md`,
+  "Background receive"). Unread state across devices; a sender timestamp
+  (entries carry the local time they were recorded). The conversation
+  screen reads a window of the newest entries
   through `chat_entries_page` and widens it by 50 on "load earlier"
   (`loadWindow` in `android/.../ui/chat/ChatViewModel.kt`), so it no longer
   reads the whole history.

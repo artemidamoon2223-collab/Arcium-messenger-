@@ -2,6 +2,7 @@ package com.arcium.messenger
 
 import android.app.Application
 import com.arcium.messenger.ffi.ArciumCoreWrapper
+import com.arcium.messenger.messaging.BackgroundSettings
 import com.arcium.messenger.messaging.MessengerService
 import com.arcium.messenger.messaging.RelaySettings
 import com.arcium.messenger.startup.AppStartup
@@ -25,7 +26,7 @@ class ArciumApp : Application() {
         is StoreStartup.Result.Failed -> StartupState.Blocked(opened.problem)
         is StoreStartup.Result.Opened -> {
             val service = try {
-                MessengerService(this, opened.core, RelaySettings(this))
+                MessengerService(this, opened.core, RelaySettings(this), BackgroundSettings(this))
             } catch (e: Exception) {
                 opened.core.closeEncryptedDb()
                 throw e

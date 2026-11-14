@@ -304,6 +304,30 @@ fn a_missing_entry_is_skipped_rather_than_failing_every_read() {
     relay.stop();
 }
 
+/// R-10: an entry that the open-entry record names but the store no
+/// longer holds cannot be advanced; rounds skip it instead of failing, and
+/// later texts are still sent and delivered.
+#[test]
+fn an_open_entry_missing_from_the_store_is_skipped_by_rounds() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr, 2); // Entries 1..=4, all final.
+    say(&alice, &bob, "open", "still open"); // Entry 5, open.
+    assert_eq!(alice.net.open_record_and_scan(&bob.pk).0, vec![5]);
+    alice.net.drop_entry(&bob.pk, 5); // The record still names it.
+
+    for _ in 0..3 {
+        round(&[&alice, &bob]);
+    }
+    say(&alice, &bob, "after", "after the gap");
+    for _ in 0..3 {
+        round(&[&alice, &bob]);
+    }
+    let newest = alice.net.chat_entries_page(bob.pk.clone(), None, 1).unwrap();
+    assert_eq!((newest[0].seq, newest[0].state), (6, S::Delivered));
+    relay.stop();
+}
+
 /// Measurement, not a pass/fail check (run with `--ignored --nocapture`):
 /// the cost of an idle round, of the conversation list and of reading the
 /// newest page, at 50, 500 and 5000 history entries, debug build.

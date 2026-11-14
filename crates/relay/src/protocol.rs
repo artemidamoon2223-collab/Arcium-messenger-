@@ -1,4 +1,5 @@
-//! `RELAY_PROTOCOL_V1`: length-prefixed binary frames over TCP.
+//! `RELAY_PROTOCOL_V1` and `RELAY_PROTOCOL_V2`: length-prefixed binary frames
+//! over TCP (V1) or inside TLS 1.3 (V2).
 //!
 //! Every frame is `len(u32 BE) || body`, with `len <= MAX_FRAME`. A request
 //! body starts with an operation byte, a response body with a status byte.
@@ -14,7 +15,9 @@
 //! 5 DELETE recipient(32) count(2) seq(8)*   0 OK
 //! 6 FETCH_AFTER recipient(32) after(8) max(2)
 //!                                           0 OK count(2) {seq(8) len(4) envelope}*
+//! 7 AUTH owner(32) tag(32)        (V2 only) 0 OK
 //!                                           2 BAD_REQUEST | 3 TOO_LARGE | 4 FULL
+//!                                           5 UNAUTHORIZED (V2 only)
 //! ```
 //!
 //! FETCH returns the first `max` (at most [`MAX_FETCH`]) envelopes of the
@@ -37,8 +40,51 @@
 //! with BAD_REQUEST, as it answers every operation byte it does not know;
 //! there is no fallback in the client.
 //!
-//! Nothing here is secret or authenticated: the relay is untrusted, and every
-//! envelope it carries is end-to-end encrypted by the endpoints.
+//! # V1
+//!
+//! Plain TCP, nothing authenticated: anyone who reaches the relay can read or
+//! delete any mailbox and replace any bundle, and a network observer sees
+//! every key and envelope. A V1 relay answers AUTH with BAD_REQUEST, as an
+//! operation it does not know. V1 is for development and tests only, and will
+//! be removed once the app uses V2.
+//!
+//! # V2
+//!
+//! The same frames inside a TLS 1.3 connection (`crate::tls`): the client
+//! pins the relay's TLS key by the SHA-256 of its `SubjectPublicKeyInfo`,
+//! which the relay presents as an RFC 7250 raw public key. Right after the
+//! handshake, before any request, the relay sends one frame:
+//!
+//! ```text
+//! HELLO = 0x02 (version) || challenge(32)
+//! ```
+//!
+//! `challenge` is fresh from the relay's operating-system random number
+//! generator for every connection. Requests and responses then follow as in
+//! V1, with these rules:
+//!
+//! - AUTH proves that the connection acts for `owner`: `tag` is
+//!   `HMAC-SHA256(k, challenge || exporter || owner)`, with `k` derived from
+//!   the X25519 DH of the owner's identity key and the relay's auth key, and
+//!   `exporter` 32 bytes of this TLS connection's exported keying material
+//!   (`crate::auth`). A tag is therefore valid on one connection only.
+//! - AUTH is checked at most once per connection. A valid tag is answered OK,
+//!   and the connection acts for `owner` until it closes. A wrong tag is
+//!   answered UNAUTHORIZED. Either way, every later AUTH on that connection is
+//!   answered UNAUTHORIZED and changes nothing.
+//! - FETCH, FETCH_AFTER and DELETE are answered only for `recipient` equal to
+//!   the authenticated owner, PUT_BUNDLE only for `owner` equal to it.
+//!   Otherwise, and on a connection without a valid AUTH, they are answered
+//!   UNAUTHORIZED, and nothing is read or changed.
+//! - SEND and GET_BUNDLE need no AUTH: first contact needs both, and an
+//!   envelope names its sender anyway.
+//!
+//! What V2 does not hide: the relay operator still sees every key, envelope,
+//! size and time, and can read or delete any mailbox. A network observer
+//! sees that a connection exists, its sizes and its timing.
+//!
+//! In both versions the relay is untrusted, and every envelope it carries is
+//! end-to-end encrypted by the endpoints.
 
 use std::io::{self, Read, Write};
 
@@ -62,6 +108,11 @@ pub const DEFAULT_MAX_MAILBOX: usize = 4096;
 
 /// A mailbox or bundle owner: an X25519 identity public key.
 pub type Key = [u8; 32];
+
+/// The version byte of the V2 HELLO frame.
+pub const PROTOCOL_V2: u8 = 2;
+/// Length of the V2 HELLO challenge and of an AUTH tag.
+pub const CHALLENGE_LEN: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -89,6 +140,11 @@ pub enum Request {
         after: u64,
         max: u16,
     },
+    /// V2 only.
+    Auth {
+        owner: Key,
+        tag: [u8; CHALLENGE_LEN],
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +152,8 @@ pub enum ErrorCode {
     BadRequest,
     TooLarge,
     Full,
+    /// V2 only: the connection has not proved that it acts for that key.
+    Unauthorized,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +293,11 @@ impl Request {
                 out.extend_from_slice(&after.to_be_bytes());
                 out.extend_from_slice(&max.to_be_bytes());
             }
+            Request::Auth { owner, tag } => {
+                out.push(7);
+                out.extend_from_slice(owner);
+                out.extend_from_slice(tag);
+            }
         }
         out
     }
@@ -265,6 +328,10 @@ impl Request {
                 recipient: c.key()?,
                 after: c.u64()?,
                 max: c.u16()?,
+            },
+            7 => Request::Auth {
+                owner: c.key()?,
+                tag: c.key()?,
             },
             _ => return Err(ProtocolError::Malformed),
         };
@@ -300,6 +367,7 @@ impl Response {
                 ErrorCode::BadRequest => 2,
                 ErrorCode::TooLarge => 3,
                 ErrorCode::Full => 4,
+                ErrorCode::Unauthorized => 5,
             }),
         }
         out
@@ -310,7 +378,9 @@ impl Response {
         let mut c = Cursor(body);
         let resp = match c.u8()? {
             0 => match req {
-                Request::PutBundle { .. } | Request::Delete { .. } => Response::Ok,
+                Request::PutBundle { .. } | Request::Delete { .. } | Request::Auth { .. } => {
+                    Response::Ok
+                }
                 Request::GetBundle { .. } => Response::Bundle(c.rest().to_vec()),
                 Request::Send { .. } => Response::Accepted { seq: c.u64()? },
                 Request::Fetch { .. } | Request::FetchAfter { .. } => {
@@ -328,11 +398,32 @@ impl Response {
             2 => Response::Error(ErrorCode::BadRequest),
             3 => Response::Error(ErrorCode::TooLarge),
             4 => Response::Error(ErrorCode::Full),
+            5 => Response::Error(ErrorCode::Unauthorized),
             _ => return Err(ProtocolError::Malformed),
         };
         c.end()?;
         Ok(resp)
     }
+}
+
+/// The body of the V2 HELLO frame.
+pub fn encode_hello(challenge: &[u8; CHALLENGE_LEN]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + CHALLENGE_LEN);
+    out.push(PROTOCOL_V2);
+    out.extend_from_slice(challenge);
+    out
+}
+
+/// The challenge of a V2 HELLO frame body. Any other version or length is
+/// malformed.
+pub fn decode_hello(body: &[u8]) -> Result<[u8; CHALLENGE_LEN], ProtocolError> {
+    let mut c = Cursor(body);
+    if c.u8()? != PROTOCOL_V2 {
+        return Err(ProtocolError::Malformed);
+    }
+    let challenge = c.key()?;
+    c.end()?;
+    Ok(challenge)
 }
 
 #[cfg(test)]
@@ -364,10 +455,24 @@ mod tests {
                 after: u64::MAX - 1,
                 max: 3,
             },
+            Request::Auth {
+                owner: [7; 32],
+                tag: [8; 32],
+            },
         ];
         for r in &reqs {
             assert_eq!(&Request::decode(&r.encode()).unwrap(), r);
         }
+        assert_eq!(reqs[6].encode(), [vec![7], vec![7; 32], vec![8; 32]].concat());
+        assert_eq!(Response::decode(&reqs[6], &[0]).unwrap(), Response::Ok);
+        let unauthorized = Response::Error(ErrorCode::Unauthorized);
+        assert_eq!(unauthorized.encode(), vec![5]);
+        for r in &reqs {
+            assert_eq!(Response::decode(r, &[5]).unwrap(), unauthorized);
+        }
+        let hello = encode_hello(&[9; 32]);
+        assert_eq!(hello, [vec![2], vec![9; 32]].concat());
+        assert_eq!(decode_hello(&hello).unwrap(), [9; 32]);
         let fetch = &reqs[3];
         let items = Response::Items(vec![(1, vec![1, 2]), (9, vec![])]);
         assert_eq!(Response::decode(fetch, &items.encode()).unwrap(), items);
@@ -391,7 +496,9 @@ mod tests {
             [vec![6], vec![0; 32], vec![0; 8], vec![0]].concat(),       // short max
             [vec![6], vec![0; 32], vec![0; 8], vec![0, 1, 0]].concat(), // trailing byte
             [vec![6], vec![0; 32], vec![0; 7]].concat(),                // short cursor
-            vec![7],                                                    // unknown op
+            [vec![7], vec![0; 63]].concat(),                            // short tag
+            [vec![7], vec![0; 65]].concat(),                            // trailing byte
+            vec![8],                                                    // unknown op
         ] {
             assert!(Request::decode(&body).is_err(), "{body:?}");
         }
@@ -402,6 +509,22 @@ mod tests {
         // An item longer than the frame.
         let bad = [vec![0, 0, 1], vec![0; 8], vec![0, 0, 0, 9], vec![1]].concat();
         assert!(Response::decode(&fetch, &bad).is_err());
+        // An AUTH answer carries nothing after OK.
+        let auth = Request::Auth {
+            owner: [0; 32],
+            tag: [0; 32],
+        };
+        assert!(Response::decode(&auth, &[0, 0]).is_err());
+        for hello in [
+            vec![],
+            vec![2],
+            [vec![1], vec![0; 32]].concat(),
+            [vec![3], vec![0; 32]].concat(),
+            [vec![2], vec![0; 31]].concat(),
+            [vec![2], vec![0; 33]].concat(),
+        ] {
+            assert!(decode_hello(&hello).is_err(), "{hello:?}");
+        }
     }
 
     #[test]

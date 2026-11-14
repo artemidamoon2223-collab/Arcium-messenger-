@@ -1,10 +1,21 @@
 //! Untrusted store-and-forward relay for Arcium Messenger. Specification:
 //! `docs/NET-MESSAGING.md`.
+//!
+//! Two protocol versions (`protocol`): V1, plain TCP without authentication,
+//! for development and tests only, which the app still uses; and V2, TLS 1.3
+//! with the relay's pinned key (`tls`) and mailbox authentication (`auth`),
+//! reached with a connection string (`address`). V1 will be removed once the
+//! app uses V2.
 
+pub mod address;
+pub mod auth;
 pub mod client;
 mod disk;
 pub mod protocol;
 pub mod server;
+mod tls;
+#[cfg(test)]
+mod v2_tests;
 
 #[cfg(test)]
 mod tests {

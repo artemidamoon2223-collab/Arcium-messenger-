@@ -27,22 +27,40 @@
 //! Delivery does not depend on the relay keeping anything: senders keep every
 //! message until the recipient's end-to-end receipt arrives, and retransmit.
 //!
+//! # Versions
+//!
+//! [`serve`] speaks `RELAY_PROTOCOL_V1` on plain TCP. No authentication:
+//! anyone who can reach it can read or delete any mailbox and replace any
+//! bundle. No TLS: a network observer sees what the relay sees. It is for
+//! development and tests only, and will be removed once the app uses V2.
+//!
+//! [`serve_v2`] speaks `RELAY_PROTOCOL_V2` (`crate::protocol`): TLS 1.3 with
+//! the relay's pinned key (`crate::tls`), and FETCH, FETCH_AFTER, DELETE and
+//! PUT_BUNDLE only for the owner who authenticated on that connection
+//! (`crate::auth`). Same state, same limits, same persistence.
+//!
 //! # What it does not do
 //!
-//! No authentication: anyone who can reach it can read or delete any mailbox
-//! and replace any bundle. None of that exposes plaintext or keys (envelopes
-//! are end-to-end encrypted and bundles are verified by the fetcher against an
-//! out-of-band identity), but it can withhold, delay, reorder, replay or drop
-//! messages. No TLS: a network observer sees what the relay sees. Stored
-//! envelopes are kept as received, not encrypted again at rest. No limit on
-//! connections: each open one holds a thread and two descriptors until it
-//! closes or stays idle for 60 s, so anyone can hold enough of them open to
-//! keep others out. A closed connection releases both; when no descriptor is
-//! left, the accept loop waits instead of spinning.
+//! Neither version keeps anything from the relay's operator, who can read or
+//! delete any mailbox and replace any bundle. None of that exposes plaintext
+//! or keys (envelopes are end-to-end encrypted and bundles are verified by the
+//! fetcher against an out-of-band identity), but it can withhold, delay,
+//! reorder, replay or drop messages. Stored envelopes are kept as received,
+//! not encrypted again at rest. Each open connection holds a thread and two
+//! descriptors until it closes, stays idle for 60 s, blocks a write for 60 s
+//! (a client that sends and does not read), or, in V2, has not finished its
+//! TLS handshake within [`RelayConfig::handshake_timeout`]. At most
+//! [`RelayConfig::max_connections`] are open, and at most
+//! [`RelayConfig::max_connections_per_address`] from one IP address; one
+//! beyond either is closed at once. That bounds what one address can hold,
+//! not what many can. A closed connection releases both descriptors; when no
+//! descriptor is left, the accept loop waits instead of spinning. Log lines name keys by
+//! their first four bytes, and never contain a challenge, an exported key or
+//! an AUTH tag.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io;
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::io::{self, Read, Write};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,6 +68,12 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use rand_core::{OsRng, RngCore};
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
+use x25519_dalek::StaticSecret;
+use zeroize::Zeroizing;
+
+use crate::auth::{verify_auth_tag, RelayKeys, AUTH_LEN, EXPORTER_LABEL};
 use crate::disk::{now_ms, Disk};
 use crate::protocol::*;
 
@@ -71,10 +95,20 @@ pub struct RelayConfig {
     /// is refused with `FULL`. At least [`MAX_ENVELOPE`] ([`serve`] refuses
     /// less).
     pub max_total_bytes: usize,
+    /// Most connections open at once; at least 1.
+    pub max_connections: usize,
+    /// Most connections open at once from one IP address; at least 1.
+    pub max_connections_per_address: usize,
+    /// V2: how long a connection may take to finish its TLS handshake.
+    pub handshake_timeout: Duration,
 }
 
 /// The default [`RelayConfig::max_total_bytes`]: 1 GiB.
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 1 << 30;
+/// The default [`RelayConfig::max_connections`].
+pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+/// The default [`RelayConfig::max_connections_per_address`].
+pub const DEFAULT_MAX_CONNECTIONS_PER_ADDRESS: usize = 32;
 
 impl Default for RelayConfig {
     fn default() -> Self {
@@ -85,6 +119,9 @@ impl Default for RelayConfig {
             log: false,
             db: None,
             max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_connections_per_address: DEFAULT_MAX_CONNECTIONS_PER_ADDRESS,
+            handshake_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -181,13 +218,39 @@ impl RelayHandle {
     }
 }
 
-/// Serves `listener` on a background thread, one thread per connection.
+/// What a V2 relay needs for every connection.
+struct V2 {
+    tls: Arc<ServerConfig>,
+    auth_sk: StaticSecret,
+}
+
+/// Serves `RELAY_PROTOCOL_V1` on `listener`, on a background thread, one
+/// thread per connection. For development and tests only: see the module
+/// documentation.
 ///
 /// Refuses, with [`io::ErrorKind::InvalidInput`] and without starting
-/// anything, a `max_mailbox` outside 1 to [`DEFAULT_MAX_MAILBOX`]. Nothing is
-/// clamped. With [`RelayConfig::db`], opens (or creates) that file and loads
-/// it first; an error there also starts nothing.
+/// anything, a `max_mailbox` outside 1 to [`DEFAULT_MAX_MAILBOX`] or a
+/// `max_total_bytes` below [`MAX_ENVELOPE`]. Nothing is clamped. With
+/// [`RelayConfig::db`], opens (or creates) that file and loads it first; an
+/// error there also starts nothing.
 pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHandle> {
+    start(listener, config, None)
+}
+
+/// Serves `RELAY_PROTOCOL_V2` on `listener` with `keys`: every connection is
+/// TLS 1.3 with the relay's TLS key, and mailbox operations need AUTH
+/// (`crate::protocol`). Refuses what [`serve`] refuses, and starts nothing
+/// if the TLS configuration cannot be built.
+pub fn serve_v2(listener: TcpListener, config: RelayConfig, keys: &RelayKeys) -> io::Result<RelayHandle> {
+    let key = crate::tls::signing_key(keys.tls_seed()).map_err(io::Error::other)?;
+    let v2 = V2 {
+        tls: crate::tls::server_config(key).map_err(io::Error::other)?,
+        auth_sk: keys.auth_secret().clone(),
+    };
+    start(listener, config, Some(Arc::new(v2)))
+}
+
+fn start(listener: TcpListener, config: RelayConfig, v2: Option<Arc<V2>>) -> io::Result<RelayHandle> {
     if config.max_total_bytes < MAX_ENVELOPE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -195,6 +258,12 @@ pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHand
                 "max_total_bytes must be at least {MAX_ENVELOPE}, got {}",
                 config.max_total_bytes
             ),
+        ));
+    }
+    if config.max_connections == 0 || config.max_connections_per_address == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "max_connections and max_connections_per_address must be at least 1",
         ));
     }
     if !(1..=DEFAULT_MAX_MAILBOX).contains(&config.max_mailbox) {
@@ -211,7 +280,17 @@ pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHand
         ..State::default()
     };
     if let Some(path) = &config.db {
-        let disk = Disk::open(path)?;
+        let mut disk = Disk::open(path)?;
+        // A file a V2 relay has served holds mailboxes only their owners may
+        // read; a V1 relay (no authentication) must not open it.
+        if v2.is_some() {
+            disk.mark_v2()?;
+        } else if disk.is_v2()? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "this database belongs to a V2 relay (authenticated mailboxes): start it with its keys",
+            ));
+        }
         let loaded = disk.load(config.ttl)?;
         let now = Instant::now();
         initial.next_seq = loaded.next_seq;
@@ -228,6 +307,7 @@ pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHand
     let conns = Arc::new(Mutex::new(HashMap::new()));
     let state = Arc::new(Mutex::new(initial));
     let config = Arc::new(config);
+    let open: Arc<Mutex<Open>> = Arc::default();
     let thread = {
         let (stop, conns, state) = (stop.clone(), conns.clone(), state.clone());
         std::thread::spawn(move || {
@@ -246,6 +326,13 @@ pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHand
                         continue;
                     }
                 };
+                // Over a connection limit: closed at once, unanswered.
+                let ip = stream.peer_addr().map(|a| a.ip()).ok();
+                if !open.lock().expect("open").admit(ip, &config) {
+                    log(&config, || "connection refused: connection limit".to_string());
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
                 let id = next_id;
                 next_id += 1;
                 // Untracked if no descriptor is left for the clone: it is
@@ -253,13 +340,20 @@ pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHand
                 if let Ok(c) = stream.try_clone() {
                     conns.lock().expect("conns").insert(id, c);
                 }
-                let (state, config, stop, conns) =
-                    (state.clone(), config.clone(), stop.clone(), conns.clone());
+                let (state, config, stop, conns, v2, open) = (
+                    state.clone(),
+                    config.clone(),
+                    stop.clone(),
+                    conns.clone(),
+                    v2.clone(),
+                    open.clone(),
+                );
                 std::thread::spawn(move || {
-                    connection(stream, &state, &config, &stop);
+                    connection(stream, &state, &config, &stop, v2.as_deref());
                     // Release the clone with the connection, or every
                     // connection would keep a descriptor until `stop`.
                     conns.lock().expect("conns").remove(&id);
+                    open.lock().expect("open").release(ip);
                 });
             }
         })
@@ -276,36 +370,209 @@ pub fn serve(listener: TcpListener, config: RelayConfig) -> io::Result<RelayHand
 /// How long the accept loop waits after a failed accept before the next.
 const ACCEPT_RETRY: Duration = Duration::from_millis(50);
 
+/// How long a connection may wait on one read or one write.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Connections open now, in all and per IP address.
+#[derive(Default)]
+struct Open {
+    total: usize,
+    per_address: HashMap<IpAddr, usize>,
+}
+
+impl Open {
+    /// Counts a new connection from `ip` if both limits allow it.
+    fn admit(&mut self, ip: Option<IpAddr>, config: &RelayConfig) -> bool {
+        if self.total >= config.max_connections {
+            return false;
+        }
+        if let Some(ip) = ip {
+            let n = self.per_address.entry(ip).or_default();
+            if *n >= config.max_connections_per_address {
+                return false;
+            }
+            *n += 1;
+        }
+        self.total += 1;
+        true
+    }
+
+    fn release(&mut self, ip: Option<IpAddr>) {
+        self.total -= 1;
+        if let Some(ip) = ip {
+            if let Some(n) = self.per_address.get_mut(&ip) {
+                *n -= 1;
+                if *n == 0 {
+                    self.per_address.remove(&ip);
+                }
+            }
+        }
+    }
+}
+
 fn connection(
-    mut stream: TcpStream,
+    stream: TcpStream,
     state: &Mutex<State>,
     config: &RelayConfig,
     stop: &AtomicBool,
+    v2: Option<&V2>,
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+    let _ = stream.set_read_timeout(Some(IDLE_TIMEOUT));
+    // A client that sends requests and never reads the answers would block a
+    // write forever.
+    let _ = stream.set_write_timeout(Some(IDLE_TIMEOUT));
     // A response is written as length, then body; without this the body waits
     // for the client's delayed ACK of the length (tens of ms per request).
     let _ = stream.set_nodelay(true);
+    match v2 {
+        None => requests(stream, state, config, stop, None),
+        Some(v2) => {
+            if let Some((tls, session)) = accept_v2(stream, v2, config.handshake_timeout) {
+                requests(tls, state, config, stop, Some(session));
+            }
+        }
+    }
+}
+
+/// The TLS handshake and the HELLO frame of a V2 connection; `None`, and the
+/// connection closes, if either fails.
+fn accept_v2(
+    stream: TcpStream,
+    v2: &V2,
+    timeout: Duration,
+) -> Option<(StreamOwned<ServerConnection, TcpStream>, Session<'_>)> {
+    let mut tls = StreamOwned::new(ServerConnection::new(v2.tls.clone()).ok()?, stream);
+    // The whole handshake, not each read, has `timeout`: a client trickling
+    // its hello cannot hold the thread longer.
+    let deadline = Instant::now() + timeout;
+    while tls.conn.is_handshaking() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        tls.sock.set_read_timeout(Some(left)).ok()?;
+        tls.sock.set_write_timeout(Some(left)).ok()?;
+        tls.conn.complete_io(&mut tls.sock).ok()?;
+    }
+    tls.sock.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
+    tls.sock.set_write_timeout(Some(IDLE_TIMEOUT)).ok()?;
+    let mut challenge = [0u8; CHALLENGE_LEN];
+    if let Err(e) = OsRng.try_fill_bytes(&mut challenge) {
+        eprintln!("relay: no randomness for a challenge, closing the connection: {e}");
+        return None;
+    }
+    let exporter = tls
+        .conn
+        .export_keying_material(Zeroizing::new([0u8; AUTH_LEN]), EXPORTER_LABEL, None)
+        .ok()?;
+    write_frame(&mut tls, &encode_hello(&challenge)).ok()?;
+    let session = Session {
+        auth_sk: &v2.auth_sk,
+        challenge,
+        exporter,
+        auth: Auth::None,
+    };
+    Some((tls, session))
+}
+
+/// Answers requests until the connection closes or the relay stops. With a
+/// `session` (V2), every request passes [`Session::screen`] first.
+fn requests(
+    mut stream: impl Read + Write,
+    state: &Mutex<State>,
+    config: &RelayConfig,
+    stop: &AtomicBool,
+    mut session: Option<Session<'_>>,
+) {
     while !stop.load(Ordering::SeqCst) {
         let body = match read_frame(&mut stream) {
             Ok(Some(b)) => b,
             _ => return,
         };
         let response = match Request::decode(&body) {
-            Ok(req) => match handle(req, state, config) {
-                Ok(r) => r,
-                // Not committed, so not answered: the client sees the
-                // connection close and retries, as after a lost answer.
-                Err(e) => {
-                    eprintln!("relay: request not stored, closing the connection: {e}");
-                    return;
-                }
+            Ok(req) => match session.as_mut().and_then(|s| s.screen(&req, config)) {
+                Some(answer) => answer,
+                None => match handle(req, state, config) {
+                    Ok(r) => r,
+                    // Not committed, so not answered: the client sees the
+                    // connection close and retries, as after a lost answer.
+                    Err(e) => {
+                        eprintln!("relay: request not stored, closing the connection: {e}");
+                        return;
+                    }
+                },
             },
             Err(_) => Response::Error(ErrorCode::BadRequest),
         };
         if write_frame(&mut stream, &response.encode()).is_err() {
             return;
         }
+    }
+}
+
+/// What a V2 connection has proved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Auth {
+    /// No AUTH yet.
+    None,
+    /// A valid AUTH: the connection acts for this owner until it closes.
+    Owner(Key),
+    /// A wrong AUTH. No later AUTH is checked.
+    Refused,
+}
+
+/// The authentication state of one V2 connection.
+struct Session<'a> {
+    auth_sk: &'a StaticSecret,
+    /// Sent in HELLO; fresh for this connection.
+    challenge: [u8; CHALLENGE_LEN],
+    /// This connection's TLS exported keying material.
+    exporter: Zeroizing<[u8; AUTH_LEN]>,
+    auth: Auth,
+}
+
+impl Session<'_> {
+    /// The answer to `req` if this connection may not have it handled: AUTH
+    /// is always answered here, and so is an owner operation for any key but
+    /// the authenticated owner's. `None` lets [`handle`] answer.
+    fn screen(&mut self, req: &Request, config: &RelayConfig) -> Option<Response> {
+        let (op, key) = match req {
+            Request::Auth { owner, tag } => return Some(self.authenticate(owner, tag, config)),
+            Request::Send { .. } | Request::GetBundle { .. } => return None,
+            Request::PutBundle { owner, .. } => ("PUT_BUNDLE", owner),
+            Request::Fetch { recipient, .. } => ("FETCH", recipient),
+            Request::FetchAfter { recipient, .. } => ("FETCH_AFTER", recipient),
+            Request::Delete { recipient, .. } => ("DELETE", recipient),
+        };
+        if self.auth == Auth::Owner(*key) {
+            return None;
+        }
+        log(config, || format!("{op} for={} refused: not authenticated for it", short(key)));
+        Some(Response::Error(ErrorCode::Unauthorized))
+    }
+
+    /// Checks one AUTH; any AUTH after the first is refused unchecked.
+    fn authenticate(&mut self, owner: &Key, tag: &[u8; AUTH_LEN], config: &RelayConfig) -> Response {
+        if self.auth != Auth::None {
+            log(config, || format!("AUTH owner={} refused: not the first AUTH", short(owner)));
+            return Response::Error(ErrorCode::Unauthorized);
+        }
+        if verify_auth_tag(self.auth_sk, &self.challenge, &self.exporter, owner, tag) {
+            self.auth = Auth::Owner(*owner);
+            log(config, || format!("AUTH owner={} ok", short(owner)));
+            Response::Ok
+        } else {
+            self.auth = Auth::Refused;
+            log(config, || format!("AUTH owner={} refused: wrong tag", short(owner)));
+            Response::Error(ErrorCode::Unauthorized)
+        }
+    }
+}
+
+/// One log line, if [`RelayConfig::log`] is set.
+fn log(config: &RelayConfig, line: impl FnOnce() -> String) {
+    if config.log {
+        eprintln!("relay: {}", line());
     }
 }
 
@@ -481,6 +748,9 @@ fn handle(req: Request, state: &Mutex<State>, config: &RelayConfig) -> io::Resul
             ));
             Response::Ok
         }
+        // A V2 connection answers AUTH in `Session::screen`; V1 has no AUTH
+        // and answers it as any operation it does not know.
+        Request::Auth { .. } => Response::Error(ErrorCode::BadRequest),
     })
 }
 

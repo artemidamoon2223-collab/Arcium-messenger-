@@ -147,8 +147,8 @@ jobs:
           # circuit: PSI_INTERSECT_CIRCUIT_HASH is the SHA-256 of the compiled
           # build/psi_intersect.arcis (which the build also writes to
           # build/psi_intersect.hash), and the release URL is named after it.
-          # This build ran without ARCIUM_PSI_LOCALNET_CIRCUIT, so the program
-          # must hold the release URL and not the localnet one.
+          # This is a deploy build (no ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT),
+          # so the program must hold the release URL.
           lib=programs/arcium-psi/src/lib.rs
           circuit=$(sha256sum build/psi_intersect.arcis | cut -d' ' -f1)
           hashfile=$(python3 -c 'import json, sys; print(bytes(json.load(open(sys.argv[1]))).hex())' build/psi_intersect.hash)
@@ -168,10 +168,6 @@ jobs:
           fi
           if ! grep -qaF "$url" target/deploy/arcium_psi.so; then
             echo "::error::the built program does not hold the release circuit URL $url"
-            exit 1
-          fi
-          if grep -qaF 'http://172.20.0.1:' target/deploy/arcium_psi.so; then
-            echo "::error::the built program holds the localnet circuit URL"
             exit 1
           fi
           echo "off-chain circuit source: $url sha256 $circuit"
@@ -245,14 +241,14 @@ jobs:
       # nothing of that run is published. A failing scenario's diagnostics
       # are published the same way, and the step still fails.
       #
-      # ARCIUM_PSI_LOCALNET_CIRCUIT makes the program `arcium test` builds
-      # register the localnet circuit URL instead of the release URL; the
-      # test serves the built circuit there to the Arx nodes, and the hash
-      # they check it against is the same constant (programs/arcium-psi/src/lib.rs).
+      # The MPC scenarios run against a build with
+      # ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT set, which uploads the circuit on
+      # chain: the localnet Arx nodes cannot fetch the off-chain circuit
+      # (tests/src/localnet/psi.localnet.ts). The last run is the deploy
+      # build, and checks only its off-chain registration.
       - name: arcium test, one fresh localnet per MPC scenario
         working-directory: arcium-psi
         env:
-          ARCIUM_PSI_LOCALNET_CIRCUIT: "1"
           LOCALNET_RAW_DIR: ${{ runner.temp }}/localnet-raw
           LOCALNET_STAGING_DIR: ${{ runner.temp }}/localnet-staging
           LOCALNET_PUBLISH_DIR: ${{ runner.temp }}/localnet-publish
@@ -264,11 +260,13 @@ jobs:
           sudo prlimit --pid $$ --nofile=1048576:1048576
           run_scenario() {
             local scenario=$1 title=$2 raw="$LOCALNET_RAW_DIR/$1" status=0 events
+            local build=(ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT=1)
+            if [ "$scenario" = off-chain-registration ]; then build=(); fi
             mkdir -p "$raw"
             docker events --filter type=container --format '{{json .}}' \
               > "$raw/docker-events.jsonl" 2>&1 &
             events=$!
-            LOCALNET_MPC_SCENARIO=$scenario LOCALNET_DIAG_DIR=$raw \
+            env "${build[@]}" LOCALNET_MPC_SCENARIO="$scenario" LOCALNET_DIAG_DIR="$raw" \
               timeout 30m arcium test 2>&1 | tee "$raw/arcium-test.log" || status=$?
             kill "$events" 2>/dev/null || true
             wait "$events" 2>/dev/null || true
@@ -304,6 +302,7 @@ jobs:
           run_scenario matches 'runs a PSI computation on the MPC cluster and returns the expected matches'
           run_scenario zero-hash 'compares real entries only, including a real zero hash'
           run_scenario invalid-count 'fails closed on an invalid count inside the circuit'
+          run_scenario off-chain-registration 'registers the psi_intersect computation definition with the off-chain circuit source'
         shell: bash
       # Passes only if the publication directory holds nothing but sets the
       # scrubber wrote for this run, unchanged since. It must stay the last

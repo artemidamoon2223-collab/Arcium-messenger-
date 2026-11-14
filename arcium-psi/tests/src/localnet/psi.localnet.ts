@@ -4,14 +4,22 @@
 // Every step talks to that environment; nothing here is mocked or skipped.
 //
 // Follows the Arcium 0.10.4 example tests (arcium-hq/examples, coinflip at the
-// v0.10.4 tag): init the computation definition, encrypt inputs to the MXE
-// key, queue the computation, await finalization. Unlike the examples, the
-// circuit source is off chain, so nothing is uploaded: the Arx nodes download
-// the circuit from the URL the definition stores, and this test serves it.
+// v0.10.4 tag): init the computation definition, upload the circuit, encrypt
+// inputs to the MXE key, queue the computation, await finalization.
 //
-// The program must be built with ARCIUM_PSI_LOCALNET_CIRCUIT set, so that it
-// registers the localnet circuit URL below instead of the release URL:
-//   ARCIUM_PSI_LOCALNET_CIRCUIT=1 arcium test
+// Two builds are tested. The deploy build registers the circuit off chain
+// (PSI_INTERSECT_CIRCUIT_URL and PSI_INTERSECT_CIRCUIT_HASH in
+// programs/arcium-psi/src/lib.rs). No computation can run against it here:
+// the release URL is not published, and the localnet Arx nodes refuse to
+// fetch a circuit from a private address (arx 0.10.4 logged "SSRF blocked:
+// 172.20.0.1 resolved to 172.20.0.1 - private address" for a test server on
+// the Docker host). So against the deploy build only the registration is
+// checked (LOCALNET_MPC_SCENARIO=off-chain-registration). A build with
+// ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT set registers no off-chain source, so
+// the circuit is uploaded on chain as in the examples; the MPC scenarios run
+// against that build only:
+//   ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT=1 arcium test
+//   LOCALNET_MPC_SCENARIO=off-chain-registration arcium test
 
 import * as anchor from '@anchor-lang/core';
 import {
@@ -24,7 +32,6 @@ import {
 import { expect } from 'chai';
 import { createHash, randomBytes } from 'crypto';
 import * as fs from 'fs';
-import * as http from 'http';
 import * as path from 'path';
 import {
   awaitComputationFinalization,
@@ -44,7 +51,9 @@ import {
   getMempoolAccAddress,
   getMXEAccAddress,
   getMXEPublicKey,
+  getRawCircuitAccAddress,
   RescueCipher,
+  uploadCircuit,
   x25519,
 } from '@arcium-hq/client';
 import { hashPhoneWithTruncation } from '../utils';
@@ -53,18 +62,6 @@ import { BATCH_SIZE, CIPHERTEXTS, PsiRequest, contactInputPlaintext, decryptResu
 const ROOT = path.resolve(__dirname, '../../..');
 const IDL_PATH = path.join(ROOT, 'target/idl/arcium_psi.json');
 const CIRCUIT_PATH = path.join(ROOT, 'build/psi_intersect.arcis');
-
-// PSI_INTERSECT_LOCALNET_CIRCUIT_URL in programs/arcium-psi/src/lib.rs. The
-// Arx nodes run in Docker at 172.20.0.100 and .101 (Arcium.toml); 172.20.0.1
-// is assumed to be the gateway of their network, which is this host. The test
-// checks that the definition stores exactly this URL.
-const LOCALNET_CIRCUIT_URL = 'http://172.20.0.1:18080/psi_intersect.arcis';
-if (process.env.ARCIUM_PSI_LOCALNET_CIRCUIT === undefined) {
-  throw new Error(
-    'ARCIUM_PSI_LOCALNET_CIRCUIT is not set: without it the program registers the release ' +
-      'circuit URL, which this test cannot serve. Run: ARCIUM_PSI_LOCALNET_CIRCUIT=1 arcium test',
-  );
-}
 
 const ALICE = ['+1234567890', '+0987654321', '+1111111111'].map(hashPhoneWithTruncation);
 const BOB = ['+1234567890', '+9999999999', '+1111111111'].map(hashPhoneWithTruncation);
@@ -81,10 +78,19 @@ const BOB = ['+1234567890', '+9999999999', '+1111111111'].map(hashPhoneWithTrunc
 // definition to be fetched, and was registered first in every run observed.
 const MPC_SCENARIOS = ['matches', 'zero-hash', 'invalid-count'];
 const MPC_SCENARIO = process.env.LOCALNET_MPC_SCENARIO;
-if (MPC_SCENARIO !== undefined && !MPC_SCENARIOS.includes(MPC_SCENARIO)) {
+// Which build `arcium test` made: it builds and tests with the same environment.
+const ONCHAIN = process.env.ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT !== undefined;
+if (ONCHAIN && MPC_SCENARIO !== undefined && !MPC_SCENARIOS.includes(MPC_SCENARIO)) {
   throw new Error(`LOCALNET_MPC_SCENARIO must be one of ${MPC_SCENARIOS.join(', ')}`);
 }
-const runs = (scenario: string) => MPC_SCENARIO === undefined || MPC_SCENARIO === scenario;
+if (!ONCHAIN && MPC_SCENARIO !== 'off-chain-registration') {
+  throw new Error(
+    'the deploy build registers the off-chain circuit source, which no localnet computation can fetch: ' +
+      'run LOCALNET_MPC_SCENARIO=off-chain-registration arcium test, or build with ' +
+      'ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT=1 for the MPC scenarios',
+  );
+}
+const runs = (scenario: string) => ONCHAIN && (MPC_SCENARIO === undefined || MPC_SCENARIO === scenario);
 
 describe('LOCALNET — Arcium PSI program', function () {
   this.timeout(600_000);
@@ -114,10 +120,6 @@ describe('LOCALNET — Arcium PSI program', function () {
     programId,
     Buffer.from(getCompDefAccOffset('psi_intersect')).readUInt32LE(),
   );
-  const circuit = fs.readFileSync(CIRCUIT_PATH);
-  const circuitServer = serveCircuit(circuit);
-  before(() => circuitServer.listen());
-  after(() => circuitServer.close());
 
   // `arcium build` (anchor build) syncs declare_id! and Anchor.toml to the
   // program keypair it generates, so the ID is the one in the built IDL,
@@ -144,9 +146,9 @@ describe('LOCALNET — Arcium PSI program', function () {
   });
 
   // The program does not check who registers the computation definition; the
-  // Arcium program does, against the MXE authority. The definition can be
-  // registered only once, so an outside signer must not be able to register
-  // it first. (Its circuit URL and hash are program constants either way.)
+  // Arcium program does, against the MXE authority. Whoever registers it
+  // becomes the circuit upload authority, so an outside signer must not be
+  // able to register it first or write circuit data.
   it('rejects computation definition registration by a non-MXE-authority signer', async () => {
     const arcium: any = getArciumProgram(provider);
     const mxe = await arcium.account.mxeAccount.fetch(mxeAccount);
@@ -170,7 +172,9 @@ describe('LOCALNET — Arcium PSI program', function () {
     expect(await provider.connection.getAccountInfo(compDefAccount)).to.equal(null);
   });
 
-  it('registers the psi_intersect computation definition', async () => {
+  // The deploy build: the definition stores the release URL, named after the
+  // hash, and the SHA-256 of the built circuit; nothing is uploaded.
+  if (!ONCHAIN) it('registers the psi_intersect computation definition with the off-chain circuit source', async () => {
     const arcium: any = getArciumProgram(provider);
     const mxe = await arcium.account.mxeAccount.fetch(mxeAccount);
     await program.methods
@@ -184,16 +188,73 @@ describe('LOCALNET — Arcium PSI program', function () {
       })
       .rpc({ commitment: 'confirmed' });
 
-    // Off chain: no circuit upload, so no upload authority either. The
-    // definition stores the program's URL and the SHA-256 of the built
-    // circuit, which the Arx nodes check the downloaded file against.
+    const hash = createHash('sha256').update(fs.readFileSync(CIRCUIT_PATH)).digest('hex');
     const compDef = await arcium.account.computationDefinitionAccount.fetch(compDefAccount);
     expect(compDef.circuitSource.onChain, 'circuit source is OnChain').to.equal(undefined);
     const offChain = compDef.circuitSource.offChain?.[0];
     expect(offChain, 'circuit source is not OffChain').to.not.equal(undefined);
-    expect(offChain.source).to.equal(LOCALNET_CIRCUIT_URL);
-    expect(Buffer.from(offChain.hash).toString('hex'))
-      .to.equal(createHash('sha256').update(circuit).digest('hex'));
+    expect(offChain.source).to.equal(
+      'https://github.com/artemidamoon2223-collab/Arcium-messenger-/releases/download/' +
+        `psi-intersect-${hash.slice(0, 16)}/psi_intersect.arcis`,
+    );
+    expect(Buffer.from(offChain.hash).toString('hex')).to.equal(hash);
+  });
+
+  if (ONCHAIN) it('registers the psi_intersect computation definition', async () => {
+    const arcium: any = getArciumProgram(provider);
+    const mxe = await arcium.account.mxeAccount.fetch(mxeAccount);
+    await program.methods
+      .initPsiIntersectCompDef()
+      .accounts({
+        authority: owner,
+        mxeAccount,
+        compDefAccount,
+        addressLookupTable: getLookupTableAddress(programId, mxe.lutOffsetSlot),
+        lutProgram: AddressLookupTableProgram.programId,
+      })
+      .rpc({ commitment: 'confirmed' });
+
+    const compDef = await arcium.account.computationDefinitionAccount.fetch(compDefAccount);
+    const onChain = compDef.circuitSource.onChain?.[0];
+    expect(onChain, 'circuit source is not OnChain').to.not.equal(undefined);
+    expect(onChain.uploadAuth.toBase58()).to.equal(owner.toBase58());
+    expect(onChain.isCompleted).to.equal(false);
+
+    // An outside signer can neither write circuit data nor finalize the
+    // definition. `arcium test` pre-creates the raw circuit account at
+    // genesis, so this rewrites its first chunk with the bytes it already
+    // holds: accepted or not, the stored circuit is unchanged.
+    const outsider = await fundedKeypair(provider);
+    const offset = Buffer.from(getCompDefAccOffset('psi_intersect')).readUInt32LE();
+    const raw = await provider.connection.getAccountInfo(getRawCircuitAccAddress(compDefAccount, 0));
+    expect(raw, 'no raw circuit account').to.not.equal(null);
+    const sameBytes = Array.from(raw!.data.subarray(9, 9 + 814));
+    const uploadError = await rejection(
+      arcium.methods
+        .uploadCircuit(offset, programId, 0, sameBytes, 0)
+        .accounts({ signer: outsider.publicKey })
+        .signers([outsider])
+        .rpc({ commitment: 'confirmed' }),
+    );
+    expect(uploadError).to.include('InvalidAuthority');
+    const finalizeError = await rejection(
+      arcium.methods
+        .finalizeComputationDefinition(offset, programId)
+        .accounts({ signer: outsider.publicKey })
+        .signers([outsider])
+        .rpc({ commitment: 'confirmed' }),
+    );
+    expect(finalizeError).to.include('InvalidAuthority');
+
+    await uploadCircuit(
+      provider,
+      'psi_intersect',
+      programId,
+      fs.readFileSync(CIRCUIT_PATH),
+      true,
+    );
+    const finalized = await arcium.account.computationDefinitionAccount.fetch(compDefAccount);
+    expect(finalized.circuitSource.onChain[0].isCompleted).to.equal(true);
   });
 
   async function mxeLookupTable() {
@@ -271,9 +332,6 @@ describe('LOCALNET — Arcium PSI program', function () {
         300_000,
       ),
     );
-    // A finalized computation with no download would mean the nodes did not
-    // take the circuit from the off-chain source.
-    expect(circuitServer.downloads(), 'no Arx node downloaded the circuit').to.be.greaterThan(0);
     const output = await callbackOutput(provider, programId, idl, query.computationAccount);
     // The result is encrypted to the client's key, with the nonce after its own.
     expect(Array.from(output.encryptionKey)).to.deep.equal(Array.from(query.client.publicKey));
@@ -285,7 +343,12 @@ describe('LOCALNET — Arcium PSI program', function () {
     return { ...query, output, plain };
   }
 
-  it('rejects a query whose Arcium account is substituted', async () => {
+  // On-chain build only, with the MPC scenarios. Against a build with an
+  // off-chain source (CI run 43568141458, a localnet URL) the runtime refused
+  // this transaction before the program ran ("Simulation failed. Message:
+  // invalid…"; cause not established), so it would not reach the constraint
+  // this checks.
+  if (ONCHAIN) it('rejects a query whose Arcium account is substituted', async () => {
     // Another address from the MXE's lookup table: a key outside it would
     // add 32 bytes and push the transaction past the size limit, so the
     // rejection would no longer be the program's.
@@ -353,47 +416,6 @@ async function rejection(tx: Promise<unknown>): Promise<string> {
     return `${e?.message ?? e}\n${(e?.logs ?? []).join('\n')}`;
   }
   throw new Error('transaction from an outside signer was accepted');
-}
-
-// Serves the built circuit at LOCALNET_CIRCUIT_URL and counts the downloads.
-// The URL answers with a redirect to the file, as a GitHub release download
-// URL does (302 to release-assets.githubusercontent.com), so a passing run
-// also shows that the Arx nodes follow one. Every request is logged.
-function serveCircuit(circuit: Buffer) {
-  const url = new URL(LOCALNET_CIRCUIT_URL);
-  const asset = new URL(`/asset${url.pathname}`, url);
-  let downloads = 0;
-  const server = http.createServer((req, res) => {
-    const read = req.method === 'GET' || req.method === 'HEAD';
-    let status = 404;
-    if (read && req.url === url.pathname) {
-      status = 302;
-      res.writeHead(status, { Location: asset.href }).end();
-    } else if (read && req.url === asset.pathname) {
-      status = 200;
-      if (req.method === 'GET') downloads += 1;
-      res.writeHead(status, {
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': circuit.length,
-      }).end(circuit);
-    } else {
-      res.writeHead(status).end();
-    }
-    console.log(`    circuit server: ${req.method} ${req.url} from ${req.socket.remoteAddress} -> ${status}`);
-  });
-  return {
-    listen: () =>
-      new Promise<void>((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(Number(url.port), '0.0.0.0', () => resolve());
-      }),
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.closeAllConnections();
-        server.close(() => resolve());
-      }),
-    downloads: () => downloads,
-  };
 }
 
 // One side's plaintexts: real hashes first, then the padding values in turn,

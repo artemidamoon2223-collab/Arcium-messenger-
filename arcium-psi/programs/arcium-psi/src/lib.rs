@@ -28,21 +28,27 @@ const PSI_INTERSECT_CIRCUIT_HASH: [u8; 32] = [
 /// definition.
 const PSI_INTERSECT_CIRCUIT_URL: &str = "https://github.com/artemidamoon2223-collab/Arcium-messenger-/releases/download/psi-intersect-24e7f6133043d303/psi_intersect.arcis";
 
-/// Localnet only: `tests/src/localnet/psi.localnet.ts` serves
-/// `build/psi_intersect.arcis` here, the host as seen from the Docker network
-/// of the localnet Arx nodes. The hash stays `PSI_INTERSECT_CIRCUIT_HASH`.
-const PSI_INTERSECT_LOCALNET_CIRCUIT_URL: &str = "http://172.20.0.1:18080/psi_intersect.arcis";
-
-/// The circuit URL this build registers, chosen at compile time: the localnet
-/// URL only when ARCIUM_PSI_LOCALNET_CIRCUIT is set (to any value) in the
-/// environment of the build, as the arcium-test CI job sets it for
-/// `arcium test`. A deploy build must run without it; the arcium-build CI job
-/// checks that the program it builds holds the release URL and not the
-/// localnet one.
-const PSI_INTERSECT_CIRCUIT_SOURCE_URL: &str = match option_env!("ARCIUM_PSI_LOCALNET_CIRCUIT") {
-    Some(_) => PSI_INTERSECT_LOCALNET_CIRCUIT_URL,
-    None => PSI_INTERSECT_CIRCUIT_URL,
-};
+/// The circuit source this build registers, chosen at compile time. A build
+/// with ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT set (to any value) in its
+/// environment registers none, so the circuit is uploaded on chain after
+/// registration. Only the localnet MPC tests use such a build: the localnet
+/// Arx nodes refuse to fetch a circuit from a private address, and the release
+/// URL is not published (tests/src/localnet/psi.localnet.ts). A deploy build
+/// must run without it; the arcium-build CI job checks that the program it
+/// builds holds the release URL.
+fn psi_intersect_circuit_source() -> Option<CircuitSource> {
+    match option_env!("ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT") {
+        Some(_) => None,
+        // Arcium's OffChainCircuitSource, not the unused account struct of
+        // the same name at the end of this file.
+        None => Some(CircuitSource::OffChain(
+            arcium_client::idl::arcium::types::OffChainCircuitSource {
+                source: PSI_INTERSECT_CIRCUIT_URL.to_string(),
+                hash: PSI_INTERSECT_CIRCUIT_HASH,
+            },
+        )),
+    }
+}
 
 declare_id!("PSiArc1um1111111111111111111111111111111111");
 
@@ -79,13 +85,7 @@ pub mod arcium_psi {
     pub fn init_psi_intersect_comp_def(
         ctx: Context<InitPsiIntersectCompDef>,
     ) -> Result<()> {
-        // Arcium's OffChainCircuitSource, not the unused account struct of the
-        // same name at the end of this file.
-        let source = arcium_client::idl::arcium::types::OffChainCircuitSource {
-            source: PSI_INTERSECT_CIRCUIT_SOURCE_URL.to_string(),
-            hash: PSI_INTERSECT_CIRCUIT_HASH,
-        };
-        init_computation_def(&*ctx.accounts, Some(CircuitSource::OffChain(source)))?;
+        init_computation_def(&*ctx.accounts, psi_intersect_circuit_source())?;
         msg!("PSI circuit registered with Arcium");
         Ok(())
     }

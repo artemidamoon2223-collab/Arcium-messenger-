@@ -18,14 +18,14 @@ node --version          # expects 20.x
 
 ```bash
 cd arcium-psi
-env -u ARCIUM_PSI_LOCALNET_CIRCUIT arcium build
+env -u ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT arcium build
 # Output: build/psi_intersect.arcis.ir, build/psi_intersect.arcis and
 # build/psi_intersect.hash (as in .github/workflows/arcium-ci.yml, job arcium-build)
 ```
 
-`ARCIUM_PSI_LOCALNET_CIRCUIT` must not be set for a deploy build: with it, the program
-registers the localnet circuit URL (`programs/arcium-psi/src/lib.rs`), which only
-`arcium test` serves.
+`ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT` must not be set for a deploy build: with it, the
+program registers no off-chain source and expects the circuit to be uploaded on chain
+(`programs/arcium-psi/src/lib.rs`), which only the localnet MPC tests use.
 
 Two different hashes come out of this build:
 
@@ -74,10 +74,10 @@ curl -sSfL "<PSI_INTERSECT_CIRCUIT_URL>" | sha256sum
 > (Step 4) binds the computation definition to this URL, and the Arcium 0.10.4 program has
 > no instruction that changes the source of a registered definition (only deactivate and,
 > after a wait, close). A GitHub release download URL answers with a redirect (302 to
-> `release-assets.githubusercontent.com`); the localnet test serves its circuit through a
-> redirect too, but whether the devnet Arx nodes follow one to that host is not verified.
-> If the URL must change, change the constant and rebuild; the arcium-build CI job checks
-> the URL against the hash.
+> `release-assets.githubusercontent.com`); whether the Arx nodes follow it is not verified.
+> The localnet Arx nodes refused a circuit URL on a private address ("SSRF blocked"), so
+> the host must resolve to a public address. If the URL must change, change the constant
+> and rebuild; the arcium-build CI job checks the URL against the hash.
 
 ## Step 2 — Fund deployer wallet
 
@@ -91,7 +91,7 @@ solana balance --url devnet
 
 ```bash
 cd arcium-psi
-env -u ARCIUM_PSI_LOCALNET_CIRCUIT anchor build
+env -u ARCIUM_PSI_LOCALNET_ONCHAIN_CIRCUIT anchor build
 grep -caF "<PSI_INTERSECT_CIRCUIT_URL>" target/deploy/arcium_psi.so
 # must print 1 or more: the program holds the release circuit URL
 anchor deploy --provider.cluster devnet
@@ -119,7 +119,8 @@ cp .env.example .env
 `init_psi_intersect_comp_def` uploads no circuit. After it, check the stored source: the
 computation definition account's `circuitSource` must be `offChain` with `source` equal to
 `PSI_INTERSECT_CIRCUIT_URL` and `hash` equal to `PSI_INTERSECT_CIRCUIT_HASH` (the localnet
-test makes the same check against its own URL).
+test makes the same check on the deploy build, `LOCALNET_MPC_SCENARIO=off-chain-registration`).
+No computation has run against the off-chain source yet, on localnet or anywhere else.
 
 ## Step 5 — Initialize MXE and get lutOffset
 

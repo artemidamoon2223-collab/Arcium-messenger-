@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-14 21:35 UTC, by a Claude Code cloud session
+Updated: 2026-11-14 22:55 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -25,10 +25,12 @@ Updated: 2026-11-14 21:35 UTC, by a Claude Code cloud session
 ## Open PRs (each needs the Owner's merge instruction naming it)
 - #178 production relay design (docs only).
 - Relay stack, merge in this order (retarget each base to `main` after the previous merge; no branch deletion from the cloud): #179 SQLite persistence (head `e3a0578`, CI green) → #180 relay V2: TLS 1.3 + mailbox authentication (head `a830d99`, CI green, reviewed) → #181 app speaks V2, release builds V2-only (head `9385596`, 19/19 CI green; review: no blocker, MEDIUM R-9 wording + LOW fixed) → #182 deploy guide (head `95498de`, CI green). #178 design doc (head `6776e99`, CI green) is independent.
+- #183 instruction files (owner-only Fable switch, clearer rules; D-034), independent of the relay stack.
 - After the merges: tracker PR for R-9 (narrowed, still OPEN: mailbox occupancy visible via FULL) and R-14 (restart loss gone with `--db`; operator can still delete).
 
 ## Waiting for the Owner
-- Production relay hosting: the Owner is renting a server (D-026); the code is being written now (D-032).
+- Production relay hosting: the Owner is renting a server (D-026); the code is done and waits in PRs #179–#182 (D-032).
+- Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
 - Session recovery option B (after R-9 and X-6). Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 

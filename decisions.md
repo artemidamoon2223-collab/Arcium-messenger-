@@ -32,12 +32,12 @@ D-002 · 2026-10-19 · OWNER · DONE
 - What: continue verification (C002) inside the C001 boundaries.
 - Evidence: Owner message "Продолжай дальше". C002 changed nothing in the repository.
 
-D-003 · 2026-10-19 · OWNER · ACTIVE
+D-003 · 2026-10-19 · OWNER · SUPERSEDED by D-034
 - What: bump rustls 0.23.45 → 0.23.46 as a separate task.
 - Merge NOT authorized: it needs a separate Owner instruction naming PR #122.
 - Evidence: Owner message "Делай отдельную задачу: обнови rustls до 0.23.46". PR #122, head `8e693d7`.
 
-D-004 · 2026-10-19 · AGENT · ACTIVE (within D-003)
+D-004 · 2026-10-19 · AGENT · SUPERSEDED by D-034
 - What: in PR #122, keep the tooling-produced `Cargo.lock`, which includes one incidental edge: `tempfile` → `getrandom` 0.4.3 → 0.3.4.
 - Rejected: hand-editing the lockfile to remove that edge.
 - Why:
@@ -50,7 +50,7 @@ D-005 · 2026-10-20 · PROPOSAL · SUPERSEDED by D-006
 - What: continuity memory on an orphan branch `continuity`, plus a SessionStart hook in `.claude/settings.json`.
 - Evidence: the agent's proposal in the session of 2026-10-20.
 
-D-006 · 2026-10-20 · OWNER · ACTIVE
+D-006 · 2026-10-20 · OWNER · SUPERSEDED by D-034
 - What: Phase 1 only:
   - the orphan branch `continuity`, holding exactly `decisions.md` and `checkpoint.md`;
   - pushes of these two files allowed;
@@ -95,7 +95,7 @@ D-014 · 2026-11-13 · AGENT (under D-013) · ACTIVE
 - Why: a release build cannot send or receive at all (only debug builds accept a relay; `android/app/build.gradle.kts`, `RelaySettings.kt`), and the app calls no PSI code (`ArciumCore.submitPsiQuery` throws).
 - Evidence: the review report in the session above.
 
-D-015 · 2026-11-13 · AGENT (under D-013) · ACTIVE
+D-015 · 2026-11-13 · AGENT (under D-013) · SUPERSEDED by D-034
 - What: R-7 (b) and stubs. Remove the Bluetooth permissions; delete `BluetoothMeshManager`, `SolanaClient` (and the `SOLANA_RPC_URL` build field) and `ContactRepository`; keep `MessageRepository` (two tests use it). PR #157.
 - Merge NOT authorized: it needs an Owner instruction naming the PR.
 
@@ -127,14 +127,14 @@ D-021 · 2026-11-14 · OWNER · DONE
 - What: merge #157, #158, #159, #160, #161, #162 with normal merge commits, each only once every check on its current head is green, #159 before #160. Next: a tracker PR and R-17.
 - Evidence: Owner answer of 2026-11-14 in session `013Fd9w11HPCwF53H2tPuKpt` ("Да, все шесть", "Трекер + R-17"). Merged at 00:29–00:50 UTC, each pinned with `expectedHeadSha`; `main` = `0a8dbd4`.
 
-D-022 · 2026-11-14 · AGENT (under D-021) · ACTIVE
+D-022 · 2026-11-14 · AGENT (under D-021) · SUPERSEDED by D-034
 - What: R-17 fixed in PR #163 (`RelayLink.Online.problem`, shown in the banner); tracker PR #164 records R-7 (b) and R-10 as fixed. Neither merge is authorized by D-021.
 
 D-023 · 2026-11-14 · OWNER · DONE
 - What: merge #163, then the small tracker PR recording R-17 as fixed; "я тебе разрешаю, делай все" for the next steps of the plan.
 - Evidence: Owner message of 2026-11-14 in session `013Fd9w11HPCwF53H2tPuKpt`. #163 merged as `63b606d`; R-17 folded into tracker PR #164, merged as `3ac0af5`; every check run success on each head.
 
-D-024 · 2026-11-14 · AGENT (under D-023) · ACTIVE
+D-024 · 2026-11-14 · AGENT (under D-023) · SUPERSEDED by D-034
 - What: session recovery option C ("delete contact": forget a peer in any session state, in one transaction; pending outgoing marked abandoned; seen/send-id kept). Chosen over A and B as the smallest, local, user-triggered step (`docs/SESSION-RECOVERY-OPTIONS.md`). No wire, record-layout or crypto change. Merge of its PR is not authorized by D-023.
 
 D-025 · 2026-11-14 · OWNER · DONE
@@ -178,3 +178,8 @@ D-033 · 2026-11-14 · AGENT (under D-032) · ACTIVE
 - What: relay protocol V1 (plain, unauthenticated) is kept for development builds and for the failure-injection tests (the TCP proxy in the test harness inspects plaintext frames, impossible under TLS); release builds of the app accept only V2 connection strings. This amends decision 4 of the design ("V2 only"). A relay that served a database as V2 refuses to open it as V1.
 - Stack (each needs the Owner's merge instruction naming it, in this order): #179 persistence → #180 relay V2 (TLS + mailbox authentication) → #181 app speaks V2 → #182 deploy guide; #178 design doc independent.
 - Evidence: PR #180 independent security review (TLS pinning, AUTH and owner checks sound; LOW findings fixed in `a830d99`); PR #179 review (MEDIUM disk-full stall fixed in `e3a0578`).
+
+D-034 · 2026-11-14 · OWNER · ACTIVE
+- What: only the Owner switches work to the most expensive model tier (Fable 5.2), because it spends far more tokens and money; the agent may ask and must not choose it for a session, subagent or child session. All other edits from the agent's review of the instruction files against the vendor's prompting guide are approved; they are in PR #183 (its merge needs the Owner's instruction naming it).
+- Also: D-003, D-004 (rustls 0.23.46 is on main, `Cargo.lock`), D-006 (the continuity hook exists, `.claude/settings.json`; CLAUDE.md has changed with the Owner's approval since), D-015, D-022, D-024 (their PRs were merged under D-021, D-023, D-025) carried cautions whose reason no longer holds; set to SUPERSEDED by this entry.
+- Evidence: Owner message of 2026-11-14 in session `013Fd9w11HPCwF53H2tPuKpt` ("только я могу включить Fable … все остальное делай так, как … правки").

@@ -90,10 +90,14 @@ Little-endian, первые 8 байт.
 (D-010). Номер без канонической формы не хэшируется.
 
 ### OffChainCircuitSource
-- .arcis circuit хостится на IPFS/CDN, НЕ загружается on-chain
-- On-chain хранится только 32-байтный SHA256 хэш circuit
+- Скомпилированный circuit `build/psi_intersect.arcis` хостится вне цепи (по
+  URL — константе программы), НЕ загружается on-chain
+- On-chain хранятся только этот URL и 32-байтный SHA-256 файла `.arcis` (его
+  же пишет `build/psi_intersect.hash`); узлы Arx сверяют скачанный файл с ним
 - ❌ НИКОГДА не встраивай circuit в смарт-контракт (раздувает gas в 100x)
-- CIRCUIT_HASH ≠ git commit SHA. Это SHA256 файла psi_intersect.arcis.ir
+- Два разных хэша, оба ≠ git commit SHA: хэш на chain — SHA-256 `.arcis`;
+  `CIRCUIT_HASH` в тестах — SHA-256 `psi_intersect.arcis.ir` (отпечаток
+  версии circuit)
 
 ### RescueCipher в Rust (`crates/core-crypto/src/rescue.rs`)
 - Сейчас STUB на chacha20poly1305 как placeholder; API правильный

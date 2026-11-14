@@ -247,10 +247,14 @@ Where: `arcium-psi/programs/arcium-psi/src/lib.rs`,
   constrained; each `UncheckedAccount` has a stated reason.
 - **Callback authorization.** Only the Arcium computation callback can invoke
   the callback, and its output is bound to the query that started it.
-- **Circuit source and hash.** `OffChainCircuitSource` keeps only the hash on
-  chain, and that hash is the SHA-256 of `psi_intersect.arcis.ir`, not a git
-  SHA (`CLAUDE.md`). A circuit change changes the hash and every constant that
-  pins it.
+- **Circuit source and hash.** `OffChainCircuitSource` keeps only the circuit
+  URL and hash on chain. That hash is the SHA-256 of the compiled
+  `psi_intersect.arcis` (what `arcium build` writes to
+  `build/psi_intersect.hash`), not of `psi_intersect.arcis.ir` and not a git
+  SHA (`CLAUDE.md`); the tests' `CIRCUIT_HASH` is the `.arcis.ir` hash, a
+  version fingerprint. Both are program or test constants, so neither may come
+  from an instruction argument. A circuit change changes both hashes, the URL
+  and every constant that pins them.
 - **Open findings.** Server-dataset anchoring (F-4) is open: say whether the
   change touches it. Padding false positives (F-3) are fixed (PR #118): each
   encrypted input carries its number of real entries (`count`) and only real

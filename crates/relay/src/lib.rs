@@ -2,6 +2,7 @@
 //! `docs/NET-MESSAGING.md`.
 
 pub mod client;
+mod disk;
 pub mod protocol;
 pub mod server;
 
@@ -96,6 +97,101 @@ mod tests {
                 .is_err()
         );
         let again = serve(TcpListener::bind(addr).unwrap(), RelayConfig::default()).unwrap();
+        assert!(conn(&again).fetch([2; 32], 10).unwrap().is_empty());
+        again.stop();
+    }
+
+    /// With a database file, what the relay accepted survives a restart:
+    /// envelopes not deleted, deletions, bundles and the sequence counter.
+    /// Duplicate detection works on the loaded envelopes too.
+    #[test]
+    fn a_relay_with_a_database_keeps_mailboxes_and_bundles_across_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RelayConfig {
+            db: Some(dir.path().join("relay.db")),
+            ..RelayConfig::default()
+        };
+        let bob = [2u8; 32];
+        let relay = start(config.clone());
+        let mut c = conn(&relay);
+        let s1 = c.send(bob, b"one".to_vec()).unwrap();
+        let s2 = c.send(bob, b"two".to_vec()).unwrap();
+        c.put_bundle([1; 32], vec![5; 204]).unwrap();
+        c.put_bundle([1; 32], vec![6; 204]).unwrap();
+        c.delete(bob, vec![s1]).unwrap();
+        relay.stop();
+
+        let again = start(config.clone());
+        let mut c = conn(&again);
+        assert_eq!(c.fetch(bob, 10).unwrap(), vec![(s2, b"two".to_vec())]);
+        assert_eq!(c.get_bundle([1; 32]).unwrap(), Some(vec![6; 204]));
+        assert_eq!(c.send(bob, b"two".to_vec()).unwrap(), s2, "duplicate of a loaded envelope");
+        let s3 = c.send(bob, b"three".to_vec()).unwrap();
+        assert!(s3 > s2, "the counter continues after a restart");
+        again.stop();
+
+        let third = start(config);
+        assert_eq!(
+            conn(&third).fetch(bob, 10).unwrap(),
+            vec![(s2, b"two".to_vec()), (s3, b"three".to_vec())]
+        );
+        third.stop();
+    }
+
+    /// An envelope that expires while the relay runs is deleted from the
+    /// file too: a restart with a longer TTL does not bring it back.
+    #[test]
+    fn an_envelope_that_expires_while_running_leaves_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Some(dir.path().join("relay.db"));
+        let relay = start(RelayConfig {
+            ttl: Duration::from_millis(100),
+            db: db.clone(),
+            ..RelayConfig::default()
+        });
+        let mut c = conn(&relay);
+        c.send([2; 32], vec![1]).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(c.fetch([2; 32], 10).unwrap().is_empty(), "expired in memory");
+        relay.stop();
+        let again = start(RelayConfig {
+            db,
+            ..RelayConfig::default()
+        });
+        assert!(again.stored(&[2; 32]).is_empty(), "and deleted from the file");
+        again.stop();
+    }
+
+    /// A total-size cap smaller than one envelope is refused at start.
+    #[test]
+    fn a_total_size_cap_below_one_envelope_is_refused() {
+        let err = serve(
+            TcpListener::bind("127.0.0.1:0").unwrap(),
+            RelayConfig {
+                max_total_bytes: MAX_ENVELOPE - 1,
+                ..RelayConfig::default()
+            },
+        )
+        .err()
+        .expect("refused");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    /// An envelope older than the TTL is not loaded after a restart.
+    #[test]
+    fn a_restarted_relay_does_not_load_expired_envelopes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RelayConfig {
+            ttl: Duration::from_millis(100),
+            db: Some(dir.path().join("relay.db")),
+            ..RelayConfig::default()
+        };
+        let relay = start(config.clone());
+        conn(&relay).send([2; 32], vec![1]).unwrap();
+        relay.stop();
+        std::thread::sleep(Duration::from_millis(150));
+        let again = start(config);
+        assert!(again.stored(&[2; 32]).is_empty());
         assert!(conn(&again).fetch([2; 32], 10).unwrap().is_empty());
         again.stop();
     }

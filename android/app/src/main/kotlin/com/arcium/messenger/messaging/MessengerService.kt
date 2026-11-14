@@ -32,11 +32,43 @@ sealed interface RelayLink {
 
     data object Connecting : RelayLink
 
-    /** The last round reached the relay. */
-    data class Online(val atMs: Long) : RelayLink
+    /**
+     * The last round reached the relay. [problem] is the first other error
+     * that round reported (a storage or session error, a refused handshake,
+     * a relay refusal), or null if there was none: a round that reached the
+     * relay but failed on this device must not read as healthy (R-17).
+     */
+    data class Online(val atMs: Long, val problem: String? = null) : RelayLink
 
     /** The last round did not reach the relay; [networkAvailable] is Android's view. */
     data class Offline(val reason: String, val networkAvailable: Boolean) : RelayLink
+}
+
+/** How `CoreError::Network` is rendered in a sync report. */
+internal const val NETWORK_ERROR = "network:"
+
+/**
+ * The start of the line a round adds when its time budget ran out
+ * (`BUDGET_EXHAUSTED` in crates/mobile-ffi/src/network.rs). It is not an
+ * error: the next round continues (docs/NET-MESSAGING.md, section 7).
+ */
+internal const val BUDGET_NOTICE = "round budget exhausted"
+
+/**
+ * Where this device stands after a round that produced [report]. A network
+ * error means the relay was not reached ([RelayLink.Offline]); any other
+ * error, except the budget notice, is kept as [RelayLink.Online.problem].
+ */
+internal fun linkAfterRound(report: SyncReport, nowMs: Long, networkAvailable: () -> Boolean): RelayLink {
+    val networkError = report.errors.firstOrNull { it.startsWith(NETWORK_ERROR) }
+    return if (networkError == null) {
+        RelayLink.Online(
+            atMs = nowMs,
+            problem = report.errors.firstOrNull { !it.startsWith(BUDGET_NOTICE) },
+        )
+    } else {
+        RelayLink.Offline(reason = networkError, networkAvailable = networkAvailable())
+    }
 }
 
 /**
@@ -162,14 +194,7 @@ class MessengerService(
             if (_link.value !is RelayLink.Online) _link.value = RelayLink.Connecting
             messenger().syncConversations()
         }
-        _link.value = if (report.reachedRelay()) {
-            RelayLink.Online(System.currentTimeMillis())
-        } else {
-            RelayLink.Offline(
-                reason = report.errors.firstOrNull { it.startsWith(NETWORK_ERROR) } ?: "",
-                networkAvailable = networkAvailable(),
-            )
-        }
+        _link.value = linkAfterRound(report, System.currentTimeMillis()) { networkAvailable() }
         _revision.value++
         return report
     }
@@ -189,8 +214,6 @@ class MessengerService(
     private fun SyncReport.busy() = accepted > 0u || delivered > 0u || sessionsAccepted > 0u
 
     private companion object {
-        /** How `CoreError::Network` is rendered in a sync report. */
-        const val NETWORK_ERROR = "network:"
         const val ACTIVE_DELAY_MS = 1_500L
         const val IDLE_DELAY_MS = 4_000L
         const val MAX_BACKOFF_MS = 30_000L

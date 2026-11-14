@@ -112,7 +112,10 @@ fun LinkBanner(link: RelayLink, onOpenSettings: () -> Unit) {
         is RelayLink.IdentityUnavailable ->
             "Your identity could not be read: messages are not sent or received." to true
         RelayLink.Connecting -> "Connecting to the relay…" to false
-        is RelayLink.Online -> "Connected to the development relay" to false
+        is RelayLink.Online -> when (val problem = link.problem) {
+            null -> "Connected to the development relay" to false
+            else -> "Connected to the development relay, but the last sync reported: $problem" to true
+        }
         is RelayLink.Offline ->
             (if (link.networkAvailable) "Relay unreachable" else "No network") +
                 ": messages wait on this device and are sent when it is back." to true

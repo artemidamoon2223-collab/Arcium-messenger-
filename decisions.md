@@ -147,3 +147,7 @@ D-026 · 2026-11-14 · OWNER · DONE
 D-027 · 2026-11-14 · AGENT (under D-026) · ACTIVE
 - What: R-15 as a per-text user cancel (`NetworkMessenger::cancel_text`, new `ChatEntryState::Cancelled`, stored code 6; `publish_pending` abandons a cancelled text instead of sending it). No automatic give-up. No wire, protocol or crypto change; entry layout and `ENTRY_VERSION` unchanged; a build without code 6 cannot read such an entry (downgrade). PR #169; its merge needs the Owner's instruction naming it.
 - Evidence: 515 passed, 0 failed locally on `6d6acea` + the PR; clippy `--all-targets` exit 0; independent review: one MEDIUM race and a JVM-test import error, both fixed in the PR.
+
+D-028 · 2026-11-14 · OWNER · DONE
+- What: "мёрдж #169" (R-15, per-text cancel). Tracker PR #170 (R-15 fixed) merged under the approved pattern (small tracker PR after a fix merges).
+- Evidence: Owner message of 2026-11-14 in session `013Fd9w11HPCwF53H2tPuKpt`. #169 merged as `2cc79ff` (20 check runs success on head `5632ab6`); #170 merged as `4266537` (12 check runs success on head `7c01287`); both pinned with `expectedHeadSha`.

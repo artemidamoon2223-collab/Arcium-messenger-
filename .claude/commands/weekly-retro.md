@@ -19,18 +19,17 @@ steps 1–4.
    For a large diff, read the commit messages first, then only the diffs
    that matter. Commit messages that start "Correct…", "fix", "revert", or
    that state an earlier claim was wrong, are corrections.
-3. `specs/*/state.md`, if the files exist. If none exist, say so.
-4. QC loops in this clone, if any. Run `python3 .claude/qc/qc.py status <id>`
-   for each spec under `<git-dir>/arcium-qc/specs/`. Look for FAILED runs,
-   repair rounds and ESCALATE_TO_OWNER. This reads only; never write QC
-   state.
-5. If GitHub tools are available, use them read-only:
+3. QC loops in this clone, if any. Run `python3 .claude/qc/qc.py status <id>`
+   for each spec under `<git-dir>/arcium-qc/specs/` (one `<id>.json` each). If
+   there are none, say so. Look for FAILED runs, repair rounds and
+   ESCALATE_TO_OWNER. This reads only; never write QC state.
+4. If GitHub tools are available, use them read-only:
    - pull requests merged or updated in the period, with their review
      comments;
    - failed CI runs on `main` and on those PRs.
 
    If the tools are not available, say so and continue without them.
-6. `docs/SECURITY-FINDINGS.md` rows changed in the period: new findings and
+5. `docs/SECURITY-FINDINGS.md` rows changed in the period: new findings and
    corrections.
 
 Cite every observation with a SHA, a PR or run number, or a `path:line`.

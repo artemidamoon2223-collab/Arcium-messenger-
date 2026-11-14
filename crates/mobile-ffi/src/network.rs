@@ -926,15 +926,16 @@ impl NetworkMessenger {
                 // section 4b). Nothing is decided or changed here.
                 let legacy = has_session && self.core.is_legacy_unconfirmed(handle)?;
                 if has_session && !legacy {
-                    // Dropped: no session is ever replaced. If ours is an
-                    // unconfirmed start of our own, both sides initiated;
-                    // record it so the application can show it (section 8).
-                    // (A handshake only recorded here is not a session and
-                    // does not reach this branch: it may be replaced.)
-                    if self.core.initiator_handshake(handle)?.is_some()
-                        && !self.confirmed(handle)?
-                    {
-                        chat::set_flag(self, &sender, chat::CONFLICT)?;
+                    // No session is ever replaced. If ours is an unconfirmed
+                    // start of our own, the handshake is recorded beside it
+                    // and raises nothing: its bytes are public, so anyone
+                    // can make one (tracker R-13). Both sides having started
+                    // is recorded only once the contact's first message
+                    // under it authenticates (the `Message` branch). (A
+                    // handshake only recorded here is not a session and does
+                    // not reach this branch: it may be replaced.)
+                    if self.own_unconfirmed(handle)? {
+                        return self.record_beside(sender, &handshake, handle, report);
                     }
                     report.dropped += 1;
                     return Ok(Fate::Delete);
@@ -998,6 +999,31 @@ impl NetworkMessenger {
                     }
                     Err(CoreError::NoSession { .. }) => Ok(Fate::Keep),
                     Err(CoreError::Crypto { .. }) => {
+                        // Not a message of our session. If ours is an
+                        // unconfirmed start of our own, this may be the
+                        // contact's first message under a handshake
+                        // recorded beside it. If it authenticates there —
+                        // which needs the contact's identity secret — both
+                        // devices started a session with each other: the
+                        // conflict is recorded so the application can show
+                        // it (section 10). Nothing else is stored.
+                        //
+                        // The message is deleted, like any message that
+                        // does not decrypt here. That loses nothing: the
+                        // contact keeps it in its outbox and retransmits it,
+                        // with its handshake, until our receipt (which no
+                        // session here can give) or until it gives up that
+                        // session itself. It can only be accepted after
+                        // `resolve_session_conflict` removed our session, and
+                        // until then the contact's session stays unconfirmed,
+                        // so the retransmission is still running then.
+                        if !first
+                            && self.own_unconfirmed(handle)?
+                            && self.core.beside_authenticates(handle, &sender, &wire)?
+                        {
+                            chat::set_flag(self, &sender, chat::CONFLICT)?;
+                            crash_point("conflict_after_flag");
+                        }
                         report.dropped += 1;
                         Ok(Fate::Delete)
                     }
@@ -1022,6 +1048,55 @@ impl NetworkMessenger {
                         Ok(Fate::Keep)
                     }
                 }
+            }
+        }
+    }
+
+    /// Whether our session under `handle` is an unconfirmed start of our
+    /// own: this device initiated it and no message from the peer has
+    /// authenticated under it yet.
+    fn own_unconfirmed(&self, handle: u64) -> Result<bool, CoreError> {
+        Ok(self.core.initiator_handshake(handle)?.is_some() && !self.confirmed(handle)?)
+    }
+
+    /// Records `handshake` from the pinned contact `peer` beside our own
+    /// unconfirmed session with it (docs/S2-B2-DURABLE-MESSAGING.md,
+    /// section 4c). Nothing else changes and no flag is set: the record has
+    /// no authority, and a later handshake replaces it.
+    ///
+    /// A handshake this device can never answer (the prekeys it names were
+    /// consumed or rotated) is refused as a responder refuses one (section
+    /// 6): the refusal is sent, so a genuine initiator gives that session up
+    /// and starts again from the current bundle. Without it, a simultaneous
+    /// start in which the contact's handshake cannot be answered here would
+    /// never show a conflict on this device, and with this device's key the
+    /// greater nobody could resolve it. A refusal changes nothing at a peer
+    /// whose current handshake it does not name, so one elicited by a forged
+    /// handshake is dropped there. The `HANDSHAKE_REFUSED` flag is not set:
+    /// `sync_conversations` clears it whenever a session exists.
+    fn record_beside(
+        &self,
+        peer: [u8; 32],
+        handshake: &[u8],
+        handle: u64,
+        report: &mut SyncReport,
+    ) -> Result<Fate, CoreError> {
+        match self.core.record_handshake_beside(handle, handshake) {
+            Ok(()) => {
+                crash_point("beside_after_record");
+                Ok(Fate::Delete)
+            }
+            Err(e) if transient(&e) => {
+                report.errors.push(e.to_string());
+                Ok(Fate::Keep)
+            }
+            Err(e) => {
+                if let Some(reason) = RefusalReason::of(&e) {
+                    self.queue_refusal(peer, handshake, reason)?;
+                }
+                report.dropped += 1;
+                report.errors.push(format!("handshake refused: {e}"));
+                Ok(Fate::Delete)
             }
         }
     }

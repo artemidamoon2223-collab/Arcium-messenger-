@@ -51,6 +51,7 @@ pub fn message_id(wire: &[u8]) -> MessageId {
     h.finalize().into()
 }
 
+mod beside;
 mod helpers;
 mod legacy;
 mod records;
@@ -242,7 +243,9 @@ impl Messenger {
 
     /// The handshake recorded under `handle` by
     /// [`record_provisional_handshake`](Self::record_provisional_handshake)
-    /// and not yet turned into a session, if any.
+    /// and not yet turned into a session, or recorded beside this device's
+    /// own session by
+    /// [`record_handshake_beside`](Self::record_handshake_beside), if any.
     pub fn provisional_handshake(
         &self,
         store: &EncryptedStore,
@@ -478,6 +481,10 @@ impl Messenger {
     /// inbox record. Returns the plaintext only after that commit. A message
     /// accepted before is reported as a duplicate without touching the
     /// ratchet.
+    ///
+    /// A handshake from the peer recorded beside this session
+    /// ([`record_handshake_beside`](Self::record_handshake_beside)) is
+    /// deleted in the same transaction: the peer holds this session now.
     pub fn receive(
         &mut self,
         store: &mut EncryptedStore,
@@ -504,12 +511,14 @@ impl Messenger {
         let generation = staged.generation();
         let record = encode_inbox(generation, &id, staged.output());
         let staged_on_legacy = session.is_legacy_unconfirmed().then_some(peer);
+        let beside = beside::discard_beside(store, handle, &peer)?;
         #[cfg(test)]
         race_hook::run();
-        let side = [
+        let mut side = vec![
             SideWrite::insert(key.clone(), record).map_err(MessagingError::SideWrite)?,
             SideWrite::require_absent(seen.clone()).map_err(MessagingError::SideWrite)?,
         ];
+        side.extend(beside);
         match session.commit_with(&mut S1CheckpointStore::new(store), staged, &side) {
             Ok(plaintext) => Ok(Received::Accepted(IncomingMessage {
                 message_id: id,
@@ -517,10 +526,13 @@ impl Messenger {
                 plaintext,
             })),
             // Accepted (and possibly acknowledged) by another instance
-            // between the check above and this commit.
+            // between the check above and this commit: its inbox (0) or
+            // seen (1) record exists. A handshake recorded beside the session
+            // meanwhile (2) is a plain conflict; repeating the receive
+            // deletes it.
             Err(CommitError::SideConflict {
+                index: 0 | 1,
                 conflict: Conflict::RecordExists,
-                ..
             }) => read_duplicate(store, &key, &seen, id)?
                 .ok_or(MessagingError::InconsistentStore("inbox record vanished")),
             Err(e) => Err(self.commit_error(

@@ -1,7 +1,8 @@
 # Session recovery — options (design note, no decision)
 
 **Status:** proposal only, written 2026-11-14 against `main` @ `de328a1`.
-Nothing here is implemented or decided.
+Nothing here is implemented or decided. *(Later: C is implemented, PR #165;
+A is implemented by the PR of branch `fix/r13-option-a`; B is still open.)*
 
 Each option changes durable-state rules, the protocol, or both. So each one
 needs:
@@ -86,6 +87,22 @@ and is out of scope here.
 protocol message.
 
 ### A. Stop false conflicts at the source (local only; no wire change)
+
+**Implemented by the PR of branch `fix/r13-option-a`** (Owner decision of
+2026-11-14), pending the Owner's merge. Specification:
+`docs/S2-B2-DURABLE-MESSAGING.md` section 4c, `docs/NET-MESSAGING.md`
+section 10 ("Conflict"). Beyond the sketch below:
+- the handshake is recorded under the existing provisional-record key and
+  format, and goes when the device's own session is confirmed, removed or
+  forgotten; after a resolution the contact's retransmitted handshake is
+  recorded again, as today;
+- a handshake beside the own session that can never be answered is refused
+  with the R-1 refusal, so a genuine contact restarts;
+- the conflict flag that earlier builds raised on a handshake alone is no
+  longer read;
+- the replay claim below holds only in part: a replayed genuine handshake
+  and first message that this device never accepted, and can still
+  answer, still raise a conflict (`docs/NET-MESSAGING.md` section 8).
 
 **What it is**
 - A handshake that arrives while this device holds its own unconfirmed

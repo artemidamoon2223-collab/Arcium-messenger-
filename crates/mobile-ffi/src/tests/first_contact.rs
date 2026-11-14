@@ -179,9 +179,13 @@ fn two_first_contacts_to_an_offline_recipient_both_establish_in_either_key_order
 
 /// Bob, back online, writes to the refused contact before the refusal
 /// reaches it, so both hold an unconfirmed session of their own: a
-/// conflict. Whoever may resolve it does, and in both key orders the two
-/// end up with one established session. Before refusals, with Bob's key
-/// the greater, this was a dead end.
+/// conflict. Whoever may resolve it does, once it shows, and in both key
+/// orders one resolution is enough for the two to end up with one
+/// established session. Before refusals, with Bob's key the greater, this
+/// was a dead end. (Since a conflict is raised only by an authenticated
+/// first message, R-13 option A, Bob refuses Carol's unanswerable
+/// handshake beside his own session; with Carol's key the greater her
+/// conflict then shows a round later, under her restarted session.)
 #[test]
 fn a_conflict_after_a_refused_first_contact_resolves_in_either_key_order() {
     for carol_greater in [true, false] {
@@ -198,13 +202,19 @@ fn a_conflict_after_a_refused_first_contact_resolves_in_either_key_order() {
         say(&bob, carol, "b0", "hi, it's bob");
         bob.net.sync_conversations(); // Bob's own session with Carol.
         rounds(&[carol, &bob], 2);
-        let resolver = [(&bob, carol), (carol, &bob)]
-            .into_iter()
-            .find(|(d, w)| matches!(session(d, w), ChatSessionState::Conflict { can_resolve: true }));
-        if let Some((d, w)) = resolver {
-            d.net.resolve_session_conflict(w.pk.clone()).unwrap();
+        let mut resolutions = 0;
+        for i in 0..=10 {
+            for (d, w) in [(&bob, carol), (carol, &bob)] {
+                if matches!(session(d, w), ChatSessionState::Conflict { can_resolve: true }) {
+                    d.net.resolve_session_conflict(w.pk.clone()).unwrap();
+                    resolutions += 1;
+                }
+            }
+            if i < 10 {
+                rounds(&[&bob, carol, alice], 1);
+            }
         }
-        rounds(&[&bob, carol, alice], 10);
+        assert_eq!(resolutions, 1, "carol_greater={carol_greater}");
         assert_eq!(session(&bob, carol), ChatSessionState::Established, "carol_greater={carol_greater}");
         assert_eq!(session(carol, &bob), ChatSessionState::Established, "carol_greater={carol_greater}");
 

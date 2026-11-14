@@ -45,9 +45,11 @@ impl Messenger {
     }
 
     /// Deletes the session under `handle` — its checkpoint, handle record
-    /// and stored handshake — in one transaction, so that a new session with
-    /// that peer can be created (for example after the peer refused this
-    /// session's handshake). Duplicate-detection and send-id records stay.
+    /// and stored handshake, and a handshake from the peer recorded beside
+    /// it ([`record_handshake_beside`](Self::record_handshake_beside)) — in
+    /// one transaction, so that a new session with that peer can be created
+    /// (for example after the peer refused this session's handshake).
+    /// Duplicate-detection and send-id records stay.
     ///
     /// Only a session with no obligations left is removed. Refused, with
     /// nothing changed:
@@ -94,7 +96,20 @@ impl Messenger {
             }
             Err(e) => return Err(MessagingError::Store(e)),
         }
-        for key in [session_key, handle_key(handle), handshake_key(&peer)] {
+        let mut delete = vec![session_key, handle_key(handle), handshake_key(&peer)];
+        // The peer's handshake beside this session was recorded for it and
+        // goes with it (S2-B2 section 4c). Nothing is lost: the peer
+        // retransmits its handshake while its own session is unconfirmed,
+        // and it is then recorded as for any first contact. Another peer's
+        // handshake under a colliding handle is not this peer's to delete.
+        match tx.get(&provisional_key(handle)) {
+            Ok(bytes) if decode_provisional(&bytes).is_ok_and(|p| p.peer_identity_pk != peer) => {}
+            Ok(_) | Err(StorageError::NotFound | StorageError::Decryption) => {
+                delete.push(provisional_key(handle))
+            }
+            Err(e) => return Err(MessagingError::Store(e)),
+        }
+        for key in delete {
             tx.delete(&key).map_err(MessagingError::NotCommitted)?;
         }
         #[cfg(test)]

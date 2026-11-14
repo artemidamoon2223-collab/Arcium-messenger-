@@ -1018,6 +1018,42 @@ fn check_answerable(
     }
 }
 
+/// The responder's session for `handshake`: X3DH with this device's
+/// identity, its signed prekey `signed_prekey_sk` and the one-time prekey
+/// `opk` the handshake names (if any), and the Double Ratchet initialised
+/// from the root key. Shared by the promotion (`accept_first_message`, which
+/// has taken `opk` out of the prekey record) and the check beside an own
+/// session (`ArciumCore::beside_authenticates`, which only reads it), so
+/// both derive exactly the same keys.
+fn responder_session(
+    identity: &Identity,
+    our_identity_pk: PublicKey,
+    signed_prekey_sk: &StaticSecret,
+    opk: Option<&StaticSecret>,
+    handshake: &InitiatorHandshakeV1,
+) -> Session {
+    let bob_session = x3dh_respond(
+        &identity.dh_key,
+        our_identity_pk,
+        signed_prekey_sk,
+        opk,
+        handshake.identity_pk,
+        handshake.ephemeral_pk,
+    );
+    let ratchet = DoubleRatchet::init_bob(&bob_session.root_key, signed_prekey_sk.clone());
+    // This runs for every candidate first message, including ones that will
+    // not authenticate. The ratchet holds its own copy and wipes it on drop;
+    // this one is wiped now rather than after a store commit.
+    drop(bob_session.root_key);
+    // Owner is the initiator identity this handshake was answered for, not
+    // anything the caller asserted separately.
+    Session {
+        ratchet,
+        ad: bob_session.ad.clone(),
+        peer_identity_pk: handshake.identity_pk.to_bytes(),
+    }
+}
+
 /// Creates the responder session for `provisional` from the initiator's
 /// first message `wire`, if it authenticates (see `establish_session_responder`).
 ///
@@ -1062,26 +1098,13 @@ fn accept_first_message(
         pack_prekeys(&record)
     });
 
-    let bob_session = x3dh_respond(
-        &identity.dh_key,
+    let session = responder_session(
+        identity,
         our_identity_pk,
         &record.signed_prekey_sk,
         taken.as_ref(),
-        handshake.identity_pk,
-        handshake.ephemeral_pk,
+        &handshake,
     );
-    let ratchet = DoubleRatchet::init_bob(&bob_session.root_key, record.signed_prekey_sk.clone());
-    // This runs for every candidate first message, including ones that will
-    // not authenticate. The ratchet holds its own copy and wipes it on drop;
-    // this one is wiped now rather than after the store commit below.
-    drop(bob_session.root_key);
-    // Owner is the initiator identity this handshake was answered for, not
-    // anything the caller asserted separately.
-    let session = Session {
-        ratchet,
-        ad: bob_session.ad.clone(),
-        peer_identity_pk: handshake.identity_pk.to_bytes(),
-    };
     let extra = match rotated {
         Some(new_record) => vec![SideWrite::replace(PREKEYS_KEY.into(), record_bytes, new_record)
             .map_err(|_| CoreError::Storage {
@@ -1142,6 +1165,92 @@ impl ArciumCore {
         messenger
             .is_legacy_unconfirmed(&mut store, our, session_id)
             .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// Records `initiator_handshake`, received from the peer of this
+    /// device's own unconfirmed initiator session under `session_id`,
+    /// beside that session (`Messenger::record_handshake_beside`,
+    /// docs/S2-B2-DURABLE-MESSAGING.md section 4c). It is checked against
+    /// this device's prekeys first, by the rules of
+    /// `establish_session_responder`, and refused with the same errors when
+    /// it cannot be answered. Nothing is consumed and no session changes.
+    /// The record has no authority: nothing is derived from it until a
+    /// message authenticates under it (`beside_authenticates`).
+    pub(crate) fn record_handshake_beside(
+        &self,
+        session_id: u64,
+        initiator_handshake: &[u8],
+    ) -> Result<(), CoreError> {
+        let identity = self.require_identity()?;
+        let our_identity_pk = PublicKey::from(&identity.dh_key).to_bytes();
+        let handshake = unpack_initiator_handshake(initiator_handshake)?;
+        let (mut store, messenger) = self.lock()?;
+        let record_bytes = Zeroizing::new(store.get(PREKEYS_KEY)?);
+        check_answerable(&unpack_prekeys(&record_bytes)?, &handshake)?;
+        messenger
+            .record_handshake_beside(
+                &mut store,
+                our_identity_pk,
+                session_id,
+                &ProvisionalHandshake {
+                    peer_identity_pk: handshake.identity_pk.to_bytes(),
+                    handshake: initiator_handshake.to_vec(),
+                },
+            )
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// Whether `wire`, a message from `peer` that did not decrypt under this
+    /// device's own session under `session_id`, authenticates as `peer`'s
+    /// first message under a handshake recorded beside that session. X3DH
+    /// runs from the recorded handshake against the prekeys held now,
+    /// checked again by the same rules as for a promotion, with the one-time
+    /// prekey only read, and the message is decrypted on that result in
+    /// memory (`Messenger::first_message_authenticates`). Nothing is written
+    /// or consumed: the session, the recorded handshake and the prekey
+    /// record stay exactly as they are.
+    ///
+    /// `false` when no handshake is recorded beside the session, when it
+    /// names another peer, and when it can no longer be answered (its
+    /// one-time prekey was consumed, or its signed prekey is not the current
+    /// one): without that key no message can authenticate under it here.
+    pub(crate) fn beside_authenticates(
+        &self,
+        session_id: u64,
+        peer: &[u8; 32],
+        wire: &[u8],
+    ) -> Result<bool, CoreError> {
+        let identity = self.require_identity()?;
+        let (store, messenger) = self.lock()?;
+        let map = |e| CoreError::messaging(session_id, e);
+        let Some(provisional) = messenger
+            .provisional_handshake(&store, session_id)
+            .map_err(map)?
+        else {
+            return Ok(false);
+        };
+        if provisional.peer_identity_pk != *peer {
+            return Ok(false);
+        }
+        let handshake = unpack_initiator_handshake(&provisional.handshake)?;
+        if handshake.identity_pk.to_bytes() != *peer {
+            return Ok(false);
+        }
+        let record = unpack_prekeys(&Zeroizing::new(store.get(PREKEYS_KEY)?))?;
+        if check_answerable(&record, &handshake).is_err() {
+            return Ok(false);
+        }
+        let our_identity_pk = PublicKey::from(&identity.dh_key);
+        let session = responder_session(
+            &identity,
+            our_identity_pk,
+            &record.signed_prekey_sk,
+            record.opk.as_ref().map(|(_, sk)| sk),
+            &handshake,
+        );
+        messenger
+            .first_message_authenticates(our_identity_pk.to_bytes(), session, wire)
+            .map_err(map)
     }
 
     /// A `HANDSHAKE_REFUSAL_V1` from this device for `handshake`,
@@ -2384,4 +2493,5 @@ mod tests {
     mod outgoing;
     mod identity;
     mod unresolved;
+    mod false_conflict;
 }

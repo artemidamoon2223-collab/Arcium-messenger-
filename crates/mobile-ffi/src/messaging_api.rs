@@ -384,10 +384,11 @@ impl ArciumCore {
     }
 
     /// Deletes the session under `session_id` with its handle and stored
-    /// handshake, in one transaction, so a new session with that peer can be
-    /// established — for example after the peer refused this session's
-    /// handshake. Only a session with nothing left to settle is removed;
-    /// otherwise nothing changes and the call fails with:
+    /// handshake (and a handshake from the peer recorded beside it), in one
+    /// transaction, so a new session with that peer can be established — for
+    /// example after the peer refused this session's handshake. Only a
+    /// session with nothing left to settle is removed; otherwise nothing
+    /// changes and the call fails with:
     /// - `SessionUnresolved` until `recover_session`;
     /// - `SessionEstablished` once a message from the peer was accepted (the
     ///   peer holds the session too);

@@ -115,6 +115,9 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
     @Volatile
     private var deleted = false
 
+    /** A delete is in flight. */
+    private var deleting = false
+
     init {
         viewModelScope.launch { service.revision.collect { reload() } }
         viewModelScope.launch {
@@ -199,6 +202,10 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
      * is shown and the user can try again.
      */
     fun deleteContact(onDeleted: () -> Unit) {
+        // Called on the main thread: a second tap while one delete is in
+        // flight, or after it succeeded, does nothing, so onDeleted runs once.
+        if (deleting || deleted) return
+        deleting = true
         viewModelScope.launch {
             try {
                 // On the sync thread: a round in flight must not write this
@@ -207,6 +214,8 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
                 deleted = true
             } catch (e: CoreException) {
                 _state.value = _state.value.copy(error = "Not deleted: ${e.message}")
+            } finally {
+                deleting = false
             }
             service.changed()
             if (deleted) onDeleted()

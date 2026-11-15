@@ -211,3 +211,14 @@ D-039 · 2026-11-15 · OWNER · ACTIVE
 D-040 · 2026-11-15 · AGENT (under D-039) · DONE
 - What: #187 merged once every check on its head was green (D-039). Plan step 2 is done: the two-device emulator job ends on a V2 relay.
 - Evidence: #187 merged as `3f104e9` (15 check runs success on head `bdde40f`, incl. `two-devices`); on the earlier head `ee8ff3f` the V2 relay's log showed AUTH ok for both devices, 4 SENDs (text, receipt, answer, receipt), and no plaintext canary (job 132650429838).
+
+D-041 · 2026-11-15 · OWNER · DONE
+- What: "Мне нужно чтобы ты провела классификацию маршрутизацию и подитожила наш проект" (Haiku 5.5, ultracode on). A workflow (119 agents, about 12.4M tokens, 82 min) mapped eight areas, verified each open item against source and records, and sorted them: done, do now, waits on the Owner, needs phones, later. Spot-checked by the agent against `main` @ `3f104e9`. Lessons: refresh the local checkout before any audit (it was 30 commits behind); a smaller pass over what changed is enough; crypto items go to the Owner, not to "do now"; tracker status words were inconsistent.
+- Then "1,2,3 пункты" (approving: docs/CI fixes, a tracker update with three new findings and one set of status words, and the H-7 key-copy fix) and "Мерж и доску обнови", read as an instruction for the three open PRs it answered (#188, #189, #190), each merged only once every check on its head was green.
+- Merged: #188 `npm ci` in the TS crypto job and a stale heading reference (`d6bb4bb`; 15 check runs success on head `fd46fe0`); #189 H-7 partial, the hybrid X25519 secret held as `StaticSecret` (`14e77a0`; 18 on `62ffde8`; 580 passed locally; local security review: no finding); #190 tracker R-20 … R-22 (LOW, LOW, INFO; all OPEN) and status words OPEN / PARTIAL / FIXED / ACCEPTED / NOT A DEFECT (`79be252`; 12 on `81b2d83`). All normal merge commits pinned with `expectedHeadSha`. The pass's proposals to relabel R-9, R-14, F-15, R-8 and X-4 were not adopted (they conflict with the Owner-merged rows).
+- Board updated (main @ `79be252`, open findings, H-7 narrowed).
+- Evidence: Owner messages of 2026-11-15 in session `013Fd9w11HPCwF53H2tPuKpt`; workflow run `wf_8f50582c-47f`.
+
+D-042 · 2026-11-15 · OWNER · ACTIVE
+- What: "Делай трекер H-7 и continuity". PR #191 (`docs/tracker-h7-narrowed`, head `4310b68`) records H-7 as OPEN — narrowed by #189: the decapsulation copy is gone; four deserialisation sites remain (`ratchet/checkpoint.rs:324`, `mobile-ffi/src/lib.rs:266, 422, 432`), which need an upstream x25519-dalek API. Its merge needs the Owner's instruction naming it. This entry and the checkpoint below are the continuity update.
+- Evidence: Owner message of 2026-11-15 in session `013Fd9w11HPCwF53H2tPuKpt`.

@@ -12,6 +12,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **R-7 (b), R-10 and R-17 recorded as fixed 2026-11-14 against `main` @ `63b606d`** (PRs #157, #158, #163; see "Update 2026-11-14: R-7 (b), R-10 and R-17 fixed"), with a note on F-15 (a); no earlier row was changed.
 **Way out of R-13 and R-14 recorded 2026-11-14 against `main` @ `6714921`** (PR #165, delete a contact; see "Update 2026-11-14: delete a contact"); no earlier row was changed.
 **R-9 and R-14 narrowed, R-8 noted, 2026-11-14 against `main` @ `bd5dfed`** (production relay, PRs #179–#182; see "Update 2026-11-14: production relay"); no earlier row was changed.
+**Rows R-20 … R-22 and the status words added 2026-11-15 against `main` @ `3f104e9`** (see "Update 2026-11-15: R-20 … R-22 and status words"), with a note on H-7's anchors; no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -951,6 +952,49 @@ four PRs were merged on the Owner's instruction of 2026-11-14 ("мёрдж #179,
 | **R-9** (a reader of a mailbox learns whom its owner has pinned) | **OPEN — narrowed.** On a `RELAY_PROTOCOL_V2` relay a stranger can no longer read, delete or replace a mailbox: FETCH, FETCH_AFTER, DELETE and PUT_BUNDLE are answered only for the owner who authenticated on that connection, over TLS 1.3 to the pinned relay key. Release builds of the app accept only V2. **Remaining:** anyone may SEND (first contact needs it), and the SENDs accepted before FULL count a mailbox's free places. Planting forged messages that name X, waiting for the owner's round and counting again shows whether they were kept, that is, whether X is pinned (probe in the #181 review: with a cap of 10, 7 places left after forged messages from a pinned X against 10 from a stranger). The attack fills the mailbox, so it is visible. The relay's operator reads everything; V1 (development builds) is unchanged. The keep-versus-delete rule itself is unchanged. | `Session::screen` (`crates/relay/src/server.rs:539`); `NetworkMessenger::connect_owner` (`crates/mobile-ffi/src/network.rs:570`); keep on `NoSession` (`:1092`); `relayChoice` (`android/app/src/main/kotlin/com/arcium/messenger/messaging/RelayRules.kt:30`, V1 refused at `:35`); `docs/NET-MESSAGING.md:131`, `:489`. Tests `tests::relay_v2::only_a_mailboxs_owner_can_read_or_delete_it_or_publish_its_bundle` (`crates/mobile-ffi/src/tests/relay_v2.rs:85`), `v2_tests::without_auth_only_send_and_get_bundle_are_answered` (`crates/relay/src/v2_tests.rs:151`), `v2_tests::after_auth_another_owners_mailbox_and_bundle_are_unauthorized` (`:125`). | `SV`, tests `RV`; residual `RV` (probe, not committed) |
 | **R-14** (more than `MAX_SKIP` lost messages stop a direction) | **OPEN — narrowed.** Two of its causes are closed for a relay run as `docs/RELAY-DEPLOY.md` describes (V2 with `--db`). A restart no longer loses accepted envelopes: SEND, DELETE and a changed bundle are committed to SQLite (WAL, `synchronous=FULL`) before the answer. And strangers can no longer delete receipts (DELETE needs the owner's AUTH, as for R-9). **Remaining:** the relay's operator can still delete or withhold; a relay without `--db`, and any V1 relay, keep the old behaviour; more than 1000 consecutive losses in one sending chain still stop that direction, and the way out is still deleting the contact on both devices. | write-through in `handle` (`crates/relay/src/server.rs:642`, `:699`, `:734`); `Disk::store_envelope` (`crates/relay/src/disk.rs:243`), `synchronous` set at `:124`; `MAX_SKIP` unchanged. Tests `a_relay_with_a_database_keeps_mailboxes_and_bundles_across_restarts` (`crates/relay/src/lib.rs:118`), `v2_tests::persistence_works_under_v2` (`crates/relay/src/v2_tests.rs:220`). | `SV`, tests `RV`; power loss `NV` |
 | **R-8** (one full mailbox stopped every round) | Note only; status unchanged (FIXED, with its remaining item). The remaining item — delivery to a full mailbox's owner stays blocked until it has room — is not closed by V2: V2 authenticates owners, not senders, so anyone can still fill a mailbox. New for every relay: the envelope bytes of all mailboxes together are capped (default 1 GiB, refused with FULL beyond it). | `RelayConfig::max_total_bytes` (`crates/relay/src/server.rs:98`), default at `:107`; `Session::screen` lets SEND through unauthenticated (`:542`). | `SV` |
+
+---
+
+## Update 2026-11-15: R-20 … R-22 and status words (`main` @ `3f104e9`)
+
+**Snapshot:** `main` @ `3f104e941147d52a5f9e59ac65ea622a640fe6ad` (the merge of PR #187).
+Three new rows, found by the project classification pass of 2026-11-15 and each re-read in
+source at `3f104e9` for this update; a note on H-7's anchors; and the status words used from
+here on. No earlier row is changed. Nothing here was reproduced at runtime: the labels say
+what was read and what is inferred.
+
+### New rows
+
+| ID | Sev | Item | Anchor (`main` @ `3f104e9`) | Label |
+|----|-----|------|-----------------------------|-------|
+| **R-20** | LOW | **Cancelling texts that were already encrypted leaves a hole in the sending chain.** `send` encrypts at once and commits the new chain state with the outbox record, so the message number is used up (`ns += 1`). `cancel_text` then abandons the pending message: it leaves the outbox and is never sent, and nothing gives the number back. The receiver sees a gap; each gap stores skipped keys (see R-21), and a gap of more than `MAX_SKIP` (1000) in one chain makes the receiver refuse every later message of that chain — the same dead end as R-14. **Status: OPEN.** | `crates/core-protocol/src/messaging.rs:426-462` (`send`, encrypt then commit); `crates/core-crypto/src/ratchet.rs:182-194` (`encrypt`, `ns += 1`); `crates/mobile-ffi/src/network/chat.rs:764-800` (`cancel_text` → `abandon_outgoing`); `crates/core-protocol/src/messaging/removal.rs:22-45` (`abandon_outgoing`, no chain change); `ratchet.rs:41, 297` (`MAX_SKIP`) | `SV` (mechanism); `INF` (reachability: needs the local user to cancel more than 1000 encrypted texts in a row with none delivered after them; no remote party causes it) |
+| **R-21** | LOW | **A late message whose skipped key was evicted is lost for good, and its sender keeps resending it.** The ratchet keeps at most 2000 skipped keys and drops the oldest first. When a message arrives after its key was dropped, decryption fails, and the round deletes it like any message that does not decrypt (`CoreError::Crypto` → `Fate::Delete`). The sender's outbox holds the same ciphertext and retransmits it until a receipt that cannot come, so the text stays `Transmitted` until the user cancels it (R-15). **Status: OPEN.** | `crates/core-crypto/src/ratchet.rs:131, 148` (`max_skipped: 2000`), `:345-352` (`trim_skipped`, FIFO); `crates/core-crypto/src/ratchet/checkpoint.rs:102` (`MAX_SKIPPED_KEYS = 2000`); `crates/mobile-ffi/src/network.rs:1093-1132` (the `Crypto` branch deletes) | `SV` (mechanism); `INF` (reachability: more than 2000 messages must be missing at once and the evicted one delivered later — loss, or a relay operator that withholds and then releases; R-20's holes count too) |
+| **R-22** | INFO | **`last_sent` only grows for the life of the process.** It records each message and handshake the relay accepted (32-byte id, time, count) and is read for retransmission backoff. Entries are inserted and updated, never removed, also not when a message is acknowledged or a contact is forgotten (`forget_peer` says so). Memory only, so a restart clears it; with the foreground receive service the process can live for days. Roughly tens of bytes plus map overhead per message sent. **Status: OPEN.** | `crates/mobile-ffi/src/network.rs:143` (field), `:379` (created), `:869-873` (`mark_sent`, insert only); `crates/mobile-ffi/src/network/chat.rs:906-907` (comment: entries of a forgotten contact stay) | `SV` (no removal: `grep` finds no `remove` or `retain` on `last_sent`); `INF` (size; not measured) |
+
+### Notes on rows above
+
+| ID | Note | Label |
+|----|------|-------|
+| **H-7** | Anchors drifted, status unchanged (OPEN). The `mobile-ffi` copy sites are now `crates/mobile-ffi/src/lib.rs:266, 422, 432` (the row names `377, 387, 610`); `ratchet/checkpoint.rs:324` and `hybrid.rs:120` still match. The same by-value pattern exists at `crates/relay/src/auth.rs:150, 206`, outside the row. | `SV` |
+| **F-17 record** | The closure record cites `CLAUDE.md` sections by older names («Правила работы», «Что за проект»). Since PR #186 (`6f3a5e6`) the file has no such headings; the rule against inventories is in its opening section. The record keeps the snapshot it cites. | `SV` |
+
+### Status words from here on
+
+Earlier rows use several words for the same states (`NOT-FIXED`, `PARTIALLY_FIXED`,
+`NEEDS-HOME`, rows with no status word). They keep them; read them by this table. Rows and
+updates from this one on use only the five words on the left.
+
+| Word | Meaning | Earlier words read as it |
+|------|---------|--------------------------|
+| **OPEN** | The defect is present at the cited SHA. "OPEN — narrowed" says part of it was closed. | `NOT-FIXED`; `NOT-FIXED (design)`; an H-row with no status word (H-2, H-6, H-7, H-8: the H-series introduction says the rest are recorded and not fixed) |
+| **PARTIAL** | Named parts are fixed; the row lists what is not. | `PARTIALLY_FIXED`; `PARTIAL` |
+| **FIXED** | Fixed by a merged PR named in the row. A "remaining item" in a FIXED row is a limit of the fix, not an open defect, unless a later row opens it. | `FIXED — merged`; `FIXED` |
+| **ACCEPTED** | The Owner accepted the residual; the row names the decision. | `ACCEPTED` |
+| **NOT A DEFECT** | Checked and found harmless as used. | `VERIFIED-BENIGN` |
+
+Severity (`CRITICAL` … `INFO`) is a separate column and never a status. What a row waits for
+(home deploy, a phone, an Owner decision) is written in the row, not as a status:
+`NEEDS-HOME` is such a blocker, attached to an OPEN row.
 
 ---
 

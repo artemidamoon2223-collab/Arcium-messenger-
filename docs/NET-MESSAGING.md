@@ -36,8 +36,9 @@ secret is computed inside `ArciumCore`, which never hands the secret out).
 authentication, `host:port`) is kept for development only: debug builds of
 the app accept it, release builds accept V2 connection strings only
 (`messaging/RelayRules.kt`), and the failure-injection tests (their TCP
-proxy reads plaintext frames) and the Android emulator jobs in CI still use
-it. Either way the relay is in memory unless started with `--db FILE`. With
+proxy reads plaintext frames) and most of the Android emulator scenarios in
+CI still use it; the two-device job ends with both emulators on a V2 relay.
+Either way the relay is in memory unless started with `--db FILE`. With
 it, every accepted envelope, deletion and bundle is committed to that SQLite file before
 the request is answered, and a restart loads it (envelopes past the TTL are
 dropped); a change that cannot be committed is not answered and the connection

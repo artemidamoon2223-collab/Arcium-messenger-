@@ -128,7 +128,7 @@ class TwoDeviceMessengerTest {
         assertEquals("Using ${arg("relay")}", textOf("savedRelay"))
         tap("settingsBack")
         // A round reached the relay: the prekey bundle is published.
-        waitForText("Connected to the development relay", WAIT_MS)
+        waitForText("Connected to the relay", WAIT_MS)
         tap("openAddContact")
         waitFor("myCard")
         val card = textOf("myCard")
@@ -172,6 +172,48 @@ class TwoDeviceMessengerTest {
         val conversation = messenger { it.conversation(peerKey) }
         assertEquals(arg("peerFingerprint"), conversation.fingerprint)
         assertEquals(1, messenger { it.conversations() }.size)
+    }
+
+    /**
+     * The user moves to a `RELAY_PROTOCOL_V2` relay by entering the connection
+     * string its `keygen` printed: TLS to the pinned key, and only this
+     * device's identity may read its mailbox. A clean round there (the bundle
+     * is published after AUTH) shows as connected with no problem reported.
+     */
+    @Test
+    fun switchesToTheEncryptedRelay() {
+        waitFor("openAddContact", WAIT_MS)
+        tap("openSettings")
+        rule.onNodeWithTag("relayInput").performTextClearance()
+        rule.onNodeWithTag("relayInput").performTextInput(arg("relayV2"))
+        tap("saveRelay")
+        assertEquals("Using ${arg("relayV2")}", textOf("savedRelay"))
+        assertTrue(textOf("relayProtocol"), textOf("relayProtocol").startsWith("Encrypted relay (V2)"))
+        tap("settingsBack")
+        waitUntil("a clean round on the encrypted relay", WAIT_MS) {
+            rule.onAllNodesWithTag("link").fetchSemanticsNodes().isNotEmpty() &&
+                textOf("link") == "Connected to the relay"
+        }
+    }
+
+    /** On the encrypted relay: Alice writes, and Bob's receipt and answer come back. */
+    @Test
+    fun aliceWritesOverTheEncryptedRelay() {
+        openChat()
+        send(text("over the encrypted relay"))
+        waitForStatus(text("over the encrypted relay"), "Delivered")
+        waitForMessage(text("answer over the encrypted relay"))
+        assertEquals(1, stored(text("over the encrypted relay"), outgoing = true).size)
+    }
+
+    /** On the encrypted relay: Bob reads Alice's text and answers. */
+    @Test
+    fun bobAnswersOverTheEncryptedRelay() {
+        openChat()
+        waitForMessage(text("over the encrypted relay"))
+        send(text("answer over the encrypted relay"))
+        waitForStatus(text("answer over the encrypted relay"), "Delivered")
+        assertEquals(1, stored(text("over the encrypted relay"), outgoing = false).size)
     }
 
     /** Alice writes first; the session starts from that text. */

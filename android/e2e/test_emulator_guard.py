@@ -121,6 +121,10 @@ FAKE_ADB = textwrap.dedent(r'''
 ''').lstrip()
 
 
+
+# A V2 connection string; the fake adb never reaches the step that uses it.
+RELAY_V2 = "arcium-relay-v2:10.0.2.2:7701:" + "ab" * 32 + ":" + "cd" * 32
+
 class Harness:
     def __init__(self, profiles):
         self.dir = Path(tempfile.mkdtemp(prefix="fake-adb-"))
@@ -201,7 +205,7 @@ class GuardTest(unittest.TestCase):
                 with self.subTest(alice=alice, bob=bob):
                     h = Harness({"emulator-5554": alice, "emulator-5556": bob})
                     r = h.run("two_devices.py", "--alice", "emulator-5554", "--bob", "emulator-5556",
-                              "--relay", "10.0.2.2:7700")
+                              "--relay", "10.0.2.2:7700", "--relay-v2", RELAY_V2)
                     self.assertRefusedUntouched(h, r)
 
     def test_an_emulator_that_sets_only_ro_boot_qemu_is_accepted(self):
@@ -217,19 +221,19 @@ class GuardTest(unittest.TestCase):
             with self.subTest(alice=alice, bob=bob):
                 h = Harness({"emulator-5554": alice, "emulator-5556": bob})
                 r = h.run("two_devices.py", "--alice", "emulator-5554", "--bob", "emulator-5556",
-                          "--relay", "10.0.2.2:7700")
+                          "--relay", "10.0.2.2:7700", "--relay-v2", RELAY_V2)
                 self.assertRefusedUntouched(h, r)
 
     def test_two_device_driver_refuses_a_non_emulator_serial(self):
         h = Harness({"emulator-5554": "emulator", "0123456789ABCDEF": "emulator"})
         r = h.run("two_devices.py", "--alice", "emulator-5554", "--bob", "0123456789ABCDEF",
-                  "--relay", "10.0.2.2:7700")
+                  "--relay", "10.0.2.2:7700", "--relay-v2", RELAY_V2)
         self.assertRefusedUntouched(h, r)
 
     def test_two_device_driver_proceeds_on_two_verified_emulators(self):
         h = Harness({"emulator-5554": "emulator", "emulator-5556": "emulator"})
         r = h.run("two_devices.py", "--alice", "emulator-5554", "--bob", "emulator-5556",
-                  "--relay", "10.0.2.2:7700")
+                  "--relay", "10.0.2.2:7700", "--relay-v2", RELAY_V2)
         out = r.stdout + r.stderr
         self.assertIn("targets verified as emulators: emulator-5554, emulator-5556", out)
         cleared = {c["serial"] for c in h.calls() if c["args"][:3] == ["shell", "pm", "clear"]}

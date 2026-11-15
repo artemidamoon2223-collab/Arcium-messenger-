@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-15 01:45 UTC, by a Claude Code cloud session
+Updated: 2026-11-15 02:00 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-15 01:45 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `a68cea607d996935361de31daf844d5ebe179b7d` (merge of PR #184, 2026-11-14)
+- `main` = `2f9327bd91d9e175a9e414678074fb6f11bd6a0b` (merge of PR #178, 2026-11-15)
 
 ## Done
+- 15 Nov (D-039): #185 docs aligned (`c97cfd2`), #186 shorter CLAUDE.md trial started (`6f3a5e6`), #178 relay design doc (`2f9327b`).
 - 14 Nov (D-035): relay #179 (`9c36cf0`), #180 (`9b3f54f`), #181 (`b41050d`), #182 (`bc0dc19`); instruction files #183 (`bd5dfed`); tracker #184 R-9 and R-14 narrowed, both still OPEN (`a68cea6`; 12 check runs success on head `df296ba`).
 - 14 Nov (D-021, D-023, D-025): #157–#166 merged; R-7 (b), R-10, R-17 fixed; delete contact (option C) merged.
 - 14 Nov (D-026): #167 R-16 (`6d6acea`; 508 passed on its head), #168 tracker R-16 fixed (`33f93e7`).
@@ -23,11 +24,8 @@ Updated: 2026-11-15 01:45 UTC, by a Claude Code cloud session
 - 14 Nov (D-030): #171 R-18 (a)(c) (`92ad8eb`), #172 tracker R-18 partial (`ea7c3fe`).
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
-## Open PRs (each needs the Owner's merge instruction naming it)
-- #178 production relay design (docs only; head `e719564`).
-- #185 five stale documentation lines aligned with `main` (docs only; head `2a87dea`).
-- #186 two-day trial of a shorter CLAUDE.md, skills state rules not history (D-037; head `d8cd825`).
-- #187 plan step 2: the two-device emulator job ends on a V2 relay; link banner says "Connected to the relay" (head `ee8ff3f`; Kotlin compiled only by its CI).
+## Open PRs
+- #187 V2 relay in the two-device emulator job; neutral link banner (head `bdde40f`). The Owner's "Сделай по плану" (D-039) covers its merge once every check on its head is green.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.

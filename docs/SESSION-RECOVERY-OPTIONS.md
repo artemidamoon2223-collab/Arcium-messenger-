@@ -2,7 +2,7 @@
 
 **Status:** proposal only, written 2026-11-14 against `main` @ `de328a1`.
 Nothing here is implemented or decided. *(Later: C is implemented, PR #165;
-A is implemented by the PR of branch `fix/r13-option-a`; B is still open.)*
+A is implemented, PR #174, merged as `efd4c0e`; B is still open.)*
 
 Each option changes durable-state rules, the protocol, or both. So each one
 needs:
@@ -41,7 +41,9 @@ and is out of scope here.
 ## 2. What any option must keep
 
 - **No silent replacement by a third party.** Whoever can write to the relay
-  (today anyone: no relay authentication, R-9) must at most delay a session.
+  (anyone: SEND needs no authentication, also on a `RELAY_PROTOCOL_V2` relay,
+  which authenticates only a mailbox's owner; R-9) must at most delay a
+  session.
   They must never be able to replace it, read it or make it forget messages
   already delivered.
 - **Pinned identities.** A new session with a contact is keyed from that
@@ -88,8 +90,8 @@ protocol message.
 
 ### A. Stop false conflicts at the source (local only; no wire change)
 
-**Implemented by the PR of branch `fix/r13-option-a`** (Owner decision of
-2026-11-14), pending the Owner's merge. Specification:
+**Implemented by PR #174** (Owner decision of 2026-11-14), merged as
+`efd4c0e`. Specification:
 `docs/S2-B2-DURABLE-MESSAGING.md` section 4c, `docs/NET-MESSAGING.md`
 section 10 ("Conflict"). Beyond the sketch below:
 - the handshake is recorded under the existing provisional-record key and
@@ -174,7 +176,9 @@ It needs a cryptographic review, together with the refusal MAC of R-1
 1. **C**, the escape hatch. Smallest, local, and only the user can trigger it.
 2. **A**. It removes the most reachable trigger of situation 1.
 3. **B**, only if automatic recovery is wanted. It comes after the relay gets
-   authentication (R-9) and after X-6 is closed.
+   authentication (R-9) and after X-6 is closed. *(Later: the relay
+   authenticates mailbox owners since PRs #180 and #181; senders stay
+   unauthenticated, and X-6 is still open.)*
 
 Each step: Owner decision, then its own PR with tests that reproduce the
 situation first and fail on the base. Then `engineering-code-review` and

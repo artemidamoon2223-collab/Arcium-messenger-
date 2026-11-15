@@ -500,8 +500,9 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 - Automatic resending of texts a refusal or a conflict resolution marked
   `NotDelivered`.
 - One provisional handshake per contact. Whoever can put envelopes in the
-  mailbox (the relay has no authentication) can keep replacing a contact's
-  recorded handshake before its first message arrives; the genuine one is then
+  mailbox (SEND needs no authentication, on V1 or V2) can keep replacing a
+  contact's recorded handshake before its first message arrives; the genuine
+  one is then
   retransmitted and takes over. That delays first contact; it creates no
   session and consumes no prekey. Each such first message costs the responder
   one X3DH and one ratchet step. The same holds for the handshake recorded

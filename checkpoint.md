@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-15 00:40 UTC, by a Claude Code cloud session
+Updated: 2026-11-15 01:20 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -26,6 +26,7 @@ Updated: 2026-11-15 00:40 UTC, by a Claude Code cloud session
 ## Open PRs (each needs the Owner's merge instruction naming it)
 - #178 production relay design (docs only; head `e719564`).
 - #185 five stale documentation lines aligned with `main` (docs only; head `2a87dea`).
+- #186 two-day trial of a shorter CLAUDE.md, skills state rules not history (D-037; head `d8cd825`).
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.

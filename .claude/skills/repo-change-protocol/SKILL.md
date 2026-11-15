@@ -144,5 +144,5 @@ those two files, push normally (never force), then re-read both from GitHub.
 ## What does not belong here
 
 Procedure only. Project facts — crypto layering rules, the canonical contact
-hash, sandbox constraints — belong in `CLAUDE.md`. Duplicating them here
-recreates the drift that was removed from `CLAUDE.md`.
+hash, sandbox constraints — belong in `CLAUDE.md`, in one place, so that two
+copies cannot drift apart.

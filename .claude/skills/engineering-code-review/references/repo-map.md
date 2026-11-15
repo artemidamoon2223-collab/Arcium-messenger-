@@ -95,3 +95,8 @@ here.
   clone, ends a loop, and recovers when a guard blocks work. Off by default.
 - `docs/HOME-DEPLOY.md` — devnet deploy, which needs open network and toolchain
   the agent sandbox does not have.
+- `docs/RELAY-DEPLOY.md` — running one `arcium-relay` (V2, with `--db` and
+  `--keys`) on a rented Linux server, and configuring the app for it. Not yet
+  run on a real server.
+- `docs/SESSION-RECOVERY-OPTIONS.md` — the options for recovering a session
+  (C and A implemented, B open), with what any option must keep.

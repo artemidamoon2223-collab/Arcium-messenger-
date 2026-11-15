@@ -3,9 +3,8 @@
 How to review a change against the four principles, inside an ordinary Claude
 Code session, before owner acceptance. It needs no CI job and no API key.
 
-This used to be the `karpathy-review` GitHub Actions job. The job was removed
-because it called the paid Anthropic API on every pull-request push; the
-methodology and its completion discipline are kept here.
+It is not a CI job: CI must not call a paid model API (`CLAUDE.md`,
+«Ревью и CI»).
 
 ## What this review is, and is not
 

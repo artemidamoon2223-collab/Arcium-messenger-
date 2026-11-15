@@ -144,8 +144,8 @@ the Android contact-card and add-contact code. Specification:
   `NotDelivered`, abandoned, our session removed, wait for the peer's
   handshake). A probe at `de328a1` showed that a resolved false conflict can
   dead-end the conversation for good: the contact accepts the original
-  handshake while this device waits for one that never comes (recorded in
-  the tracker by PR #160). A change must not let a forged or replayed object reach a
+  handshake while this device waits for one that never comes (tracker R-13).
+  A change must not let a forged or replayed object reach a
   restart or a session removal without either a verified refusal or the
   user's own resolve.
 
@@ -186,13 +186,15 @@ Where: `crates/mobile-ffi/src/network.rs`, `network/wire.rs`,
   learns whom its owner has pinned: a message from a pinned sender without a
   session is kept (`NoSession` → `Fate::Keep`), one from a stranger is
   deleted, and refusals go only to pinned contacts (R-9, open;
-  `NET-MESSAGING.md` §8). Check that a change adds no further keep/delete,
+  `NET-MESSAGING.md` §8). On a `RELAY_PROTOCOL_V2` relay only the owner and
+  the operator read a mailbox, but anyone can still tell kept from deleted by
+  counting its free places (SENDs accepted until FULL). Check that a change adds no further keep/delete,
   answer/no-answer or timing difference that depends on who is pinned.
 - **History numbering.** History entries are numbered without gaps and never
-  deleted, so a number is missing only from a damaged store. At `de328a1`,
-  paging (`chat_entries_page`), the summary and the one-time build of the
-  open-entry record (`open_seqs`) fail on a missing number (`network/chat.rs`;
-  R-10); PR #158 makes them skip it. A change that deletes, skips or reorders
+  deleted, so a number is missing only from a damaged store. Paging
+  (`chat_entries_page`), the summary and the one-time build of the open-entry
+  record (`open_seqs`) skip a missing number (`network/chat.rs`; tracker R-10).
+  A change that deletes, skips or reorders
   entry numbers, or reads them some other way, must say what happens to that
   assumption.
 - **Offline and recovery.** After lost network, lost relay or process death:
@@ -256,7 +258,7 @@ Where: `arcium-psi/programs/arcium-psi/src/lib.rs`,
   from an instruction argument. A circuit change changes both hashes, the URL
   and every constant that pins them.
 - **Open findings.** Server-dataset anchoring (F-4) is open: say whether the
-  change touches it. Padding false positives (F-3) are fixed (PR #118): each
+  change touches it. Padding false positives (F-3) are fixed: each
   encrypted input carries its number of real entries (`count`) and only real
   slots are compared (`real_slots` in `arcium-psi/encrypted-ixs/src/lib.rs`).
   A change to `count` or `real_slots` changes the circuit and so its hash; a

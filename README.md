@@ -27,7 +27,7 @@ Private contact discovery is a separate component: private set intersection
   `DEV_RELAY_ALLOWED` in `android/app/build.gradle.kts`,
   `android/app/src/main/kotlin/com/arcium/messenger/messaging/RelayRules.kt`).
   The Android CI jobs use V1; the two-device job ends on a V2 relay. No
-  production relay is deployed.
+  production relay is deployed; how to run one is in `docs/RELAY-DEPLOY.md`.
 - Messages sync while the app is open. While it is closed they arrive only
   if the user turned on background receive in Settings (off by default): a
   foreground service with a permanent notification

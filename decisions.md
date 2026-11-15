@@ -222,3 +222,7 @@ D-041 · 2026-11-15 · OWNER · DONE
 D-042 · 2026-11-15 · OWNER · ACTIVE
 - What: "Делай трекер H-7 и continuity". PR #191 (`docs/tracker-h7-narrowed`, head `4310b68`) records H-7 as OPEN — narrowed by #189: the decapsulation copy is gone; four deserialisation sites remain (`ratchet/checkpoint.rs:324`, `mobile-ffi/src/lib.rs:266, 422, 432`), which need an upstream x25519-dalek API. Its merge needs the Owner's instruction naming it. This entry and the checkpoint below are the continuity update.
 - Evidence: Owner message of 2026-11-15 in session `013Fd9w11HPCwF53H2tPuKpt`.
+
+D-043 · 2026-11-15 · OWNER · DONE
+- What: "мёрдж #191". Merged once every check on its head was green. The tracker now records H-7 as OPEN — narrowed by #189.
+- Evidence: Owner message of 2026-11-15 in session `013Fd9w11HPCwF53H2tPuKpt`; #191 merged as `06c990c` (12 check runs success on head `4310b68`), a normal merge commit pinned with `expectedHeadSha`.

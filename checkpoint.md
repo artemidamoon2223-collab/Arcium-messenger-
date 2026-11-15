@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-15 02:00 UTC, by a Claude Code cloud session
+Updated: 2026-11-15 02:30 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-15 02:00 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `2f9327bd91d9e175a9e414678074fb6f11bd6a0b` (merge of PR #178, 2026-11-15)
+- `main` = `3f104e941147d52a5f9e59ac65ea622a640fe6ad` (merge of PR #187, 2026-11-15)
 
 ## Done
+- 15 Nov (D-040): #187 V2 relay in the two-device emulator job, neutral link banner (`3f104e9`).
 - 15 Nov (D-039): #185 docs aligned (`c97cfd2`), #186 shorter CLAUDE.md trial started (`6f3a5e6`), #178 relay design doc (`2f9327b`).
 - 14 Nov (D-035): relay #179 (`9c36cf0`), #180 (`9b3f54f`), #181 (`b41050d`), #182 (`bc0dc19`); instruction files #183 (`bd5dfed`); tracker #184 R-9 and R-14 narrowed, both still OPEN (`a68cea6`; 12 check runs success on head `df296ba`).
 - 14 Nov (D-021, D-023, D-025): #157–#166 merged; R-7 (b), R-10, R-17 fixed; delete contact (option C) merged.
@@ -25,7 +26,7 @@ Updated: 2026-11-15 02:00 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #187 V2 relay in the two-device emulator job; neutral link banner (head `bdde40f`). The Owner's "Сделай по плану" (D-039) covers its merge once every check on its head is green.
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -35,7 +36,7 @@ Updated: 2026-11-15 02:00 UTC, by a Claude Code cloud session
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.
-2. A V2 relay in the emulator CI jobs — PR #187 (done on the Owner's "доделай недоделки").
+2. A V2 relay in the emulator CI jobs — done (#187).
 3. Two phones through that relay, incl. background receive — needs phones.
 4. Release build and signing — needs the Owner's decision on the key.
 5. Phone checks: R-18 (b), H-8, F-9.

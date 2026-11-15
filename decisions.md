@@ -207,3 +207,7 @@ D-038 · 2026-11-15 · OWNER · ACTIVE
 D-039 · 2026-11-15 · OWNER · ACTIVE
 - What: "Мерж", then, asked which PRs (the question listed #178, #185, #186 green and #187 in CI), "Сделай по плану": merge the plan's open PRs, #187 only once its checks are green. Merged #185, #186 (the two-day CLAUDE.md trial of D-037 starts now), #178. #187 conflicted in README.md with #185 after that merge; main merged into its branch, conflict resolved by keeping both edits; its CI runs again.
 - Evidence: Owner messages of 2026-11-15 in session `013Fd9w11HPCwF53H2tPuKpt`. #185 merged as `c97cfd2` (12 check runs success on head `2a87dea`); #186 as `6f3a5e6` (16 on `d8cd825`); #178 as `2f9327b` (12 on `e719564`); all normal merge commits pinned with `expectedHeadSha`. #187 head `bdde40f`.
+
+D-040 · 2026-11-15 · AGENT (under D-039) · DONE
+- What: #187 merged once every check on its head was green (D-039). Plan step 2 is done: the two-device emulator job ends on a V2 relay.
+- Evidence: #187 merged as `3f104e9` (15 check runs success on head `bdde40f`, incl. `two-devices`); on the earlier head `ee8ff3f` the V2 relay's log showed AUTH ok for both devices, 4 SENDs (text, receipt, answer, receipt), and no plaintext canary (job 132650429838).

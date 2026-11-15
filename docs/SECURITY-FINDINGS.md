@@ -13,6 +13,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **Way out of R-13 and R-14 recorded 2026-11-14 against `main` @ `6714921`** (PR #165, delete a contact; see "Update 2026-11-14: delete a contact"); no earlier row was changed.
 **R-9 and R-14 narrowed, R-8 noted, 2026-11-14 against `main` @ `bd5dfed`** (production relay, PRs #179–#182; see "Update 2026-11-14: production relay"); no earlier row was changed.
 **Rows R-20 … R-22 and the status words added 2026-11-15 against `main` @ `3f104e9`** (see "Update 2026-11-15: R-20 … R-22 and status words"), with a note on H-7's anchors; no earlier row was changed.
+**H-7 narrowed 2026-11-15 against `main` @ `79be252`** (PR #189; see "Update 2026-11-15: H-7 narrowed"); no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -995,6 +996,24 @@ updates from this one on use only the five words on the left.
 Severity (`CRITICAL` … `INFO`) is a separate column and never a status. What a row waits for
 (home deploy, a phone, an Owner decision) is written in the row, not as a status:
 `NEEDS-HOME` is such a blocker, attached to an OPEN row.
+
+---
+
+## Update 2026-11-15: H-7 narrowed (`main` @ `79be252`)
+
+**Snapshot:** `main` @ `79be252` (the merge of PR #190). The H-7 change is PR #189, merged
+as `14e77a0` on the Owner's instruction of 2026-11-15. Only the H-7 row changes; every other
+row keeps the snapshot it cites. Each `path:line` was re-read at `79be252`.
+
+**Runtime evidence.** PR #189 (head `62ffde8`): 18 check runs success, including
+`core-rust`, `connected-tests` and `two-devices`; `cargo test --workspace --locked` 580
+passed, 0 failed locally. Its local `arcium-security-review` reported no finding at full
+coverage of `hybrid.rs`. Analysis, not proof; compiled code and device memory were not
+examined.
+
+| ID | Status at `79be252` | Evidence (`main` @ `79be252`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **H-7** (copies of secret arrays are not wiped) | **OPEN — narrowed.** `HybridSecretKey` now holds the X25519 secret as a `StaticSecret`, which wipes itself on drop, and `hybrid_decaps` borrows it: the per-decapsulation copy (`StaticSecret::from(sk.x25519)`) is gone. Keygen still leaves one moved-from location, as before. **Remaining:** the four sites that load a secret from stored bytes, where the bytes are already in `Zeroizing` and the unwiped copy is the by-value argument of `StaticSecret::from([u8; 32])`, x25519-dalek 2.0.1's only constructor from bytes. Removing it needs an upstream API or `unsafe`; neither is proposed. The same pattern at `crates/relay/src/auth.rs:150, 206` stays outside the row. Whether any copy persists in memory remains inferred (see H-8). | `crates/core-crypto/src/hybrid.rs:38` (field), `:123` (borrowed in decaps), `:377-380` (test pins `Zeroize` and drop); remaining: `crates/core-crypto/src/ratchet/checkpoint.rs:324`, `crates/mobile-ffi/src/lib.rs:266, 422, 432` | `SV` (code); `RUNTIME_VERIFIED` (tests, PR #189); `INF` (persistence of copies) |
 
 ---
 

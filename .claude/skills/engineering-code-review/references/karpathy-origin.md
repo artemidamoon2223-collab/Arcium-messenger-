@@ -42,9 +42,7 @@ always-loaded context. They are motivational rather than testable, and the
 concrete requirements above stand on their own without the branding.
 
 The four principles are still scored per change, by a local review in a
-Claude Code session: `karpathy-review.md`. A GitHub Actions job,
-`karpathy-review`, used to do this; it was removed because it called the paid
-Anthropic API on every pull-request push.
+Claude Code session: `karpathy-review.md`.
 
 ## Parallel checks
 

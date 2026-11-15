@@ -98,7 +98,9 @@ default. Rules: `messaging/RelayRules.kt` (unit tests in
 - No QR code yet: the string is pasted.
 
 The emulator workflows in CI run debug builds against a development (V1)
-relay.
+relay. The two-device job then moves both emulators to a V2 relay by
+entering its connection string in Settings, and exchanges a text and its
+receipt each way there (`android-two-device-e2e.yml`).
 
 ## Background receive
 

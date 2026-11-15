@@ -27,7 +27,7 @@ first line matches the expected pattern exactly. Raw output of every step is
 kept in --out; what a step reports, apart from cards and envelopes, is
 printed with its result.
 
-Usage: two_devices.py --alice SERIAL --bob SERIAL --relay HOST:PORT --out DIR
+Usage: two_devices.py --alice SERIAL --bob SERIAL --relay HOST:PORT --relay-v2 STRING --out DIR
 """
 
 import argparse
@@ -136,6 +136,7 @@ class Run:
         self.out.mkdir(parents=True, exist_ok=True)
         self.serial = {"alice": a.alice, "bob": a.bob}
         self.relay = a.relay
+        self.relay_v2 = a.relay_v2
         self.cards = {}
         self.last_pid = {}
         self.passed = self.failed = 0
@@ -161,7 +162,7 @@ class Run:
 
     def peer_args(self, who):
         peer = "bob" if who == "alice" else "alice"
-        args = {"relay": self.relay, "peerName": peer.capitalize()}
+        args = {"relay": self.relay, "relayV2": self.relay_v2, "peerName": peer.capitalize()}
         if peer in self.cards:
             args["peerCard"], args["peerFingerprint"] = self.cards[peer]
         return args
@@ -231,6 +232,8 @@ def main():
     p.add_argument("--alice", required=True)
     p.add_argument("--bob", required=True)
     p.add_argument("--relay", required=True, help="the relay as the emulators reach it")
+    p.add_argument("--relay-v2", required=True,
+                   help="the connection string of a RELAY_PROTOCOL_V2 relay the emulators reach")
     p.add_argument("--out", required=True)
     args = p.parse_args()
     # The fake-adb regression check of the target guard runs first, with no
@@ -330,9 +333,13 @@ def main():
     r.step("bob", final)
     r.step("alice", final, {"checkPeerMailbox": "1"})
 
+    print("13. Both move to an encrypted relay (V2) and write to each other there")
+    r.together(("alice", "switchesToTheEncryptedRelay"), ("bob", "switchesToTheEncryptedRelay"))
+    r.together(("alice", "aliceWritesOverTheEncryptedRelay"), ("bob", "bobAnswersOverTheEncryptedRelay"))
+
     print(r.summary())
 
-    print("13. D-007: master-key loss and corruption across real restarts, on Alice's emulator")
+    print("14. D-007: master-key loss and corruption across real restarts, on Alice's emulator")
     restart = subprocess.run([sys.executable, str(Path(__file__).with_name("master_key_restart.py")),
                               "--serial", r.serial["alice"], "--out", str(r.out / "master-key-restart")])
     if restart.returncode != 0:

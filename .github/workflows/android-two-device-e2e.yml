@@ -2,7 +2,9 @@ name: Android two-device messaging (two emulators)
 
 # Two people messaging through the app's screens on two independent x86_64
 # emulators — separate identities, encrypted databases and processes — over a
-# development relay on this host (docs/NET-MESSAGING.md). The steps are in
+# development relay on this host (docs/NET-MESSAGING.md), and at the end over
+# a RELAY_PROTOCOL_V2 relay (TLS to its pinned key, mailbox authentication),
+# entered in Settings as its connection string. The steps are in
 # TwoDeviceMessengerTest; android/e2e/two_devices.py runs them on the right
 # emulator, in order or side by side, and switches Bob's network off and on.
 #
@@ -69,13 +71,21 @@ jobs:
       - name: Build the relay
         run: cargo build --locked -p relay --bin arcium-relay
 
-      # The relay alerts if a stored envelope contains the plaintext canary
-      # every test text carries; the check after the run fails on that.
-      - name: Start the relay
+      # Each relay alerts if a stored envelope contains the plaintext canary
+      # every test text carries; the check after the run fails on that. The
+      # V2 relay's keys are made for this run only and stay out of e2e-out,
+      # which is uploaded; its connection string is public.
+      - name: Start the relays
         run: |
+          set -euo pipefail
           mkdir -p e2e-out
           ./target/debug/arcium-relay --listen 0.0.0.0:7700 --log \
             --canary CANARY-PLAINTEXT-7f3a > e2e-out/relay.log 2>&1 &
+          ./target/debug/arcium-relay keygen --out "$RUNNER_TEMP/relay-v2.keys" \
+            --address 10.0.2.2:7701 > e2e-out/relay-v2.address
+          grep -q '^arcium-relay-v2:10\.0\.2\.2:7701:' e2e-out/relay-v2.address
+          ./target/debug/arcium-relay --listen 0.0.0.0:7701 --keys "$RUNNER_TEMP/relay-v2.keys" \
+            --log --canary CANARY-PLAINTEXT-7f3a > e2e-out/relay-v2.log 2>&1 &
 
       - name: Enable KVM
         run: |
@@ -133,25 +143,27 @@ jobs:
       - name: Run the two-device scenario
         run: |
           python3 android/e2e/two_devices.py --alice emulator-5554 --bob emulator-5556 \
-            --relay 10.0.2.2:7700 --out e2e-out/steps
+            --relay 10.0.2.2:7700 --relay-v2 "$(cat e2e-out/relay-v2.address)" --out e2e-out/steps
 
       # The driver fails on any failed, erroring, ignored or missing step.
-      # This also refuses a run in which plaintext reached the relay or the
-      # relay saw no traffic.
-      - name: Require relay traffic and no plaintext on the relay
+      # This also refuses a run in which plaintext reached either relay or
+      # either relay saw no SEND.
+      - name: Require relay traffic and no plaintext on the relays
         if: always()
         run: |
           set -euo pipefail
           cat e2e-out/steps/summary.txt || true
-          echo "--- relay requests (last 60) ---"
-          grep -E '^relay: ' e2e-out/relay.log | tail -60 || true
-          sends=$(grep -c '^relay: SEND' e2e-out/relay.log || true)
-          echo "RELAY SEND requests: ${sends}"
-          if grep -q 'ALERT plaintext canary' e2e-out/relay.log; then
-            echo "::error::plaintext reached the relay" >&2
-            exit 1
-          fi
-          test "${sends}" -gt 0
+          for log in relay relay-v2; do
+            echo "--- $log requests (last 60) ---"
+            grep -E '^relay: ' "e2e-out/$log.log" | tail -60 || true
+            sends=$(grep -c '^relay: SEND' "e2e-out/$log.log" || true)
+            echo "$log SEND requests: ${sends}"
+            if grep -q 'ALERT plaintext canary' "e2e-out/$log.log"; then
+              echo "::error::plaintext reached $log" >&2
+              exit 1
+            fi
+            test "${sends}" -gt 0
+          done
 
       - name: Upload logs
         if: always()

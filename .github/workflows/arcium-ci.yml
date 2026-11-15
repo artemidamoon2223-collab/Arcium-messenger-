@@ -71,7 +71,7 @@ jobs:
           node-version: '20'
       - name: Install deps
         working-directory: arcium-psi/tests
-        run: npm install
+        run: npm ci
       - name: tsc + crypto tests
         working-directory: arcium-psi/tests
         run: |

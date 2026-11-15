@@ -31,7 +31,7 @@ Source referenced by the original `CLAUDE.md`:
 | Simplicity First | `SKILL.md` workflow step 3 — no speculative features, no single-caller abstractions, no unreachable error branches |
 | Surgical Changes | `SKILL.md` workflow step 2, and `repo-change-protocol` §3 |
 | Goal-Driven | `SKILL.md` workflow step 4 + `references/delivery-checklist.md` |
-| Не падай молча / Не притворяйся | `CLAUDE.md` → «Границы доказательств и формулировок» |
+| Не падай молча / Не притворяйся | `CLAUDE.md` → «Границы доказательств» |
 | Короткие блоки кода | `SKILL.md` constraints |
 
 ## Deliberately not carried over

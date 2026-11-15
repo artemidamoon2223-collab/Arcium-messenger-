@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-15 05:35 UTC, by a Claude Code cloud session
+Updated: 2026-11-15 05:40 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-15 05:35 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `79be252b0e5d5d41fcd7be98ba07ea14cfe54c6a` (merge of PR #190, 2026-11-15)
+- `main` = `06c990c8c7707d7aedb0d5a7187e2e461064072e` (merge of PR #191, 2026-11-15)
 
 ## Done
+- 15 Nov (D-043): #191 tracker, H-7 OPEN — narrowed (`06c990c`).
 - 15 Nov (D-041): classification of the project; #188 `npm ci` (`d6bb4bb`), #189 H-7 partial (`14e77a0`), #190 tracker R-20 … R-22 and status words (`79be252`).
 - 15 Nov (D-040): #187 V2 relay in the two-device emulator job, neutral link banner (`3f104e9`).
 - 15 Nov (D-039): #185 docs aligned (`c97cfd2`), #186 shorter CLAUDE.md trial started (`6f3a5e6`), #178 relay design doc (`2f9327b`).
@@ -27,7 +28,7 @@ Updated: 2026-11-15 05:35 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #191 tracker: H-7 narrowed (D-042); merge needs the Owner's instruction naming it.
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.

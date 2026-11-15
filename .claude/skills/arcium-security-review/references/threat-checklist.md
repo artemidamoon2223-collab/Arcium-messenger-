@@ -186,7 +186,9 @@ Where: `crates/mobile-ffi/src/network.rs`, `network/wire.rs`,
   learns whom its owner has pinned: a message from a pinned sender without a
   session is kept (`NoSession` → `Fate::Keep`), one from a stranger is
   deleted, and refusals go only to pinned contacts (R-9, open;
-  `NET-MESSAGING.md` §8). Check that a change adds no further keep/delete,
+  `NET-MESSAGING.md` §8). On a `RELAY_PROTOCOL_V2` relay only the owner and
+  the operator read a mailbox, but anyone can still tell kept from deleted by
+  counting its free places (SENDs accepted until FULL). Check that a change adds no further keep/delete,
   answer/no-answer or timing difference that depends on who is pinned.
 - **History numbering.** History entries are numbered without gaps and never
   deleted, so a number is missing only from a damaged store. At `de328a1`,

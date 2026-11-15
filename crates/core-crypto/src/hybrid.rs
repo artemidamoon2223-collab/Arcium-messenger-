@@ -370,5 +370,13 @@ mod tests {
         is_wiping(&sent);
         let received = hybrid_decaps(&sk, &hybrid_encaps(&pk).unwrap().0).unwrap();
         is_wiping(&received);
+        // H-7: the X25519 secret is held as `StaticSecret`, not a plain array.
+        // x25519-dalek marks it `#[zeroize(drop)]`, which generates a `Drop`
+        // that calls `zeroize` but not the `ZeroizeOnDrop` marker, so pin both
+        // halves: it implements `Zeroize` (the feature is on) and has a `Drop`.
+        fn wipes_on_drop<T: zeroize::Zeroize>(_: &T) -> bool {
+            std::mem::needs_drop::<T>()
+        }
+        assert!(wipes_on_drop(&sk.x25519));
     }
 }

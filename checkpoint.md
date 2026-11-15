@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-15 01:20 UTC, by a Claude Code cloud session
+Updated: 2026-11-15 01:45 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -27,6 +27,7 @@ Updated: 2026-11-15 01:20 UTC, by a Claude Code cloud session
 - #178 production relay design (docs only; head `e719564`).
 - #185 five stale documentation lines aligned with `main` (docs only; head `2a87dea`).
 - #186 two-day trial of a shorter CLAUDE.md, skills state rules not history (D-037; head `d8cd825`).
+- #187 plan step 2: the two-device emulator job ends on a V2 relay; link banner says "Connected to the relay" (head `ee8ff3f`; Kotlin compiled only by its CI).
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -36,7 +37,7 @@ Updated: 2026-11-15 01:20 UTC, by a Claude Code cloud session
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.
-2. A V2 relay in the emulator CI jobs — needs only the Owner's go-ahead (a workflow change).
+2. A V2 relay in the emulator CI jobs — PR #187 (done on the Owner's "доделай недоделки").
 3. Two phones through that relay, incl. background receive — needs phones.
 4. Release build and signing — needs the Owner's decision on the key.
 5. Phone checks: R-18 (b), H-8, F-9.

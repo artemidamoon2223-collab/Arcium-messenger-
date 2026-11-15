@@ -2,11 +2,13 @@
 
 Status: decided. The Owner delegated the relay's design to the agent
 (continuity record D-032), so section 6 records the agent's decisions under
-that delegation, with one amendment (D-033, decision 4). Implemented in
-PR #179 (persistence), PR #180 (TLS and mailbox authentication in the relay
-and its client) and PR #181 (the app); deployment is in
-`docs/RELAY-DEPLOY.md` (PR #182). Each PR still needs the Owner's merge
-instruction. Written against `main` @ `41a0d8d`.
+that delegation, with one amendment (D-033, decision 4). Implemented and
+merged on 2026-11-14: PR #179 (persistence, `9c36cf0`), PR #180 (TLS and
+mailbox authentication in the relay and its client, `9b3f54f`) and PR #181
+(the app, `b41050d`); deployment is in `docs/RELAY-DEPLOY.md` (PR #182,
+`bc0dc19`). Written against `main` @ `41a0d8d`; sections 1 and 2 describe the
+relay as it was then. What the work left open is in the tracker ("Update
+2026-11-14: production relay": R-9 and R-14 narrowed, both still open).
 
 ## 1. What the relay is today
 

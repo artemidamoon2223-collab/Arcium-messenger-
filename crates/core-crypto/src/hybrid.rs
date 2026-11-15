@@ -31,14 +31,16 @@ pub struct HybridPublicKey {
 }
 
 /// Secret key: X25519 secret + 64-byte ML-KEM-768 seed (derives DecapsulationKey).
+///
+/// The X25519 secret is kept as a `StaticSecret`, which wipes itself on drop,
+/// so neither keygen nor decapsulation copies it out into a plain array (H-7).
 pub struct HybridSecretKey {
-    pub x25519: [u8; 32],
+    pub x25519: StaticSecret,
     pub ml_kem: Vec<u8>,
 }
 
 impl Drop for HybridSecretKey {
     fn drop(&mut self) {
-        self.x25519.zeroize();
         self.ml_kem.zeroize();
     }
 }
@@ -63,7 +65,7 @@ pub fn hybrid_keygen() -> (HybridPublicKey, HybridSecretKey) {
             ml_kem: ek.to_bytes().as_slice().to_vec(),
         },
         HybridSecretKey {
-            x25519: x25519_sk.to_bytes(),
+            x25519: x25519_sk,
             ml_kem: seed_bytes.to_vec(),
         },
     )
@@ -117,12 +119,11 @@ pub fn hybrid_decaps(sk: &HybridSecretKey, ct: &[u8]) -> Result<Zeroizing<[u8; 6
     }
 
     // X25519 decapsulation
-    let our_x25519_sk = StaticSecret::from(sk.x25519);
     let eph_pk_bytes: [u8; 32] = ct[..X25519_LEN].try_into().map_err(|_| HybridError)?;
-    let x25519_ss = our_x25519_sk.diffie_hellman(&PublicKey::from(eph_pk_bytes));
+    let x25519_ss = sk.x25519.diffie_hellman(&PublicKey::from(eph_pk_bytes));
     // Our own X25519 public key, re-derived from the secret — this is the
     // "recipient public key" the sender bound into its transcript (F-7).
-    let our_x25519_pk = PublicKey::from(&our_x25519_sk);
+    let our_x25519_pk = PublicKey::from(&sk.x25519);
 
     // ML-KEM decapsulation
     let seed_bytes: Zeroizing<[u8; 64]> =
@@ -198,7 +199,7 @@ mod tests {
     fn keygen_produces_valid_keys() {
         let (pk, sk) = hybrid_keygen();
         assert_eq!(pk.x25519.len(), 32);
-        assert_eq!(sk.x25519.len(), 32);
+        assert_eq!(sk.x25519.as_bytes().len(), 32);
         assert!(!pk.ml_kem.is_empty(), "ML-KEM EK must not be empty");
         assert_eq!(sk.ml_kem.len(), 64, "ML-KEM SK seed is 64 bytes");
     }
@@ -369,5 +370,13 @@ mod tests {
         is_wiping(&sent);
         let received = hybrid_decaps(&sk, &hybrid_encaps(&pk).unwrap().0).unwrap();
         is_wiping(&received);
+        // H-7: the X25519 secret is held as `StaticSecret`, not a plain array.
+        // x25519-dalek marks it `#[zeroize(drop)]`, which generates a `Drop`
+        // that calls `zeroize` but not the `ZeroizeOnDrop` marker, so pin both
+        // halves: it implements `Zeroize` (the feature is on) and has a `Drop`.
+        fn wipes_on_drop<T: zeroize::Zeroize>(_: &T) -> bool {
+            std::mem::needs_drop::<T>()
+        }
+        assert!(wipes_on_drop(&sk.x25519));
     }
 }

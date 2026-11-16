@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-15 05:40 UTC, by a Claude Code cloud session
+Updated: 2026-11-16 16:10 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-15 05:40 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `06c990c8c7707d7aedb0d5a7187e2e461064072e` (merge of PR #191, 2026-11-15)
+- `main` = `b142ed732596fce3ea9373750094131e4ebbe798` (merge of PR #193, 2026-11-16)
 
 ## Done
+- 16 Nov (D-044): #192 CLAUDE.md done-when / two attempts / fresh reviewer incl. CI (`c15cb0c`); #193 advisory CI check and merge/deploy guard hook (`b142ed7`).
 - 15 Nov (D-043): #191 tracker, H-7 OPEN — narrowed (`06c990c`).
 - 15 Nov (D-041): classification of the project; #188 `npm ci` (`d6bb4bb`), #189 H-7 partial (`14e77a0`), #190 tracker R-20 … R-22 and status words (`79be252`).
 - 15 Nov (D-040): #187 V2 relay in the two-device emulator job, neutral link banner (`3f104e9`).
@@ -36,6 +37,7 @@ Updated: 2026-11-15 05:40 UTC, by a Claude Code cloud session
 - Session recovery option B (after R-9 and X-6). Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 - Verdict on the shorter `CLAUDE.md` trial (D-037), about 17 Nov: keep it or revert #186.
+- GitHub setting on `main`: "Require branches to be up to date" or a merge queue (D-044).
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

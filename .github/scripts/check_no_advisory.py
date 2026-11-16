@@ -12,13 +12,17 @@ and fails on:
 
   continue-on-error with any value but false       always; no allowlist
   shell: <custom template> without -e (e.g. bash {0})   always; no allowlist
-  a `||` whose fallback does not fail              unless allowlisted
-  set +e, set +<flags with e>, set +o errexit      unless allowlisted
+  any `||` whose fallback does not fail           unless allowlisted
+  set +e, set +<flags with e>, set +o errexit,
+  shopt -u -o errexit, trap '... exit 0' EXIT     unless allowlisted
 
-A fallback fails when it is `exit N` (N > 0), `false`, or a `{ ... }` block
-that contains `exit N`. A line ending in `||` is judged by the next line.
-Everything else after `||` (`true`, `:`, `echo`, `rc=$?`, a command) needs an
-allowlist entry stating why the step's verdict does not depend on it.
+Every `||` on a line is judged. A fallback fails only when it is `exit N`
+(N > 0) or `false` with nothing chained after it, or a `{ ... }` block whose
+last command (quotes and comments removed) is `exit N`. A line ending in `||`
+is judged by the next line. Everything else after `||` (`true`, `:`, `echo`,
+`rc=$?`, a command) needs an allowlist entry stating why the step's verdict
+does not depend on it. GitHub expressions (`${{ ... }}`) and `if:` values are
+not shell and are skipped.
 
 Allowlist (advisory_allowlist.txt), one entry per line:
   <path> TAB <the line, stripped> TAB <next non-empty line, stripped> TAB <reason>
@@ -27,9 +31,10 @@ the file is not covered. One entry allows one occurrence; an entry that
 matches nothing fails, so the list cannot rot.
 
 Not covered (review still has to catch these): a pipe without `pipefail` under
-the default shell, exit codes swallowed inside scripts a step calls, `bash -c`
-strings, steps or jobs skipped by `if:` or path filters, and forms not listed
-above.
+the default shell; `!` before a command; `cmd && other` that is not the last
+command; `if cmd; then ...; fi`; `eval`; exit codes swallowed inside scripts a
+step calls; steps or jobs skipped by `if:` or path filters; and any form not
+listed above. This is a denylist of known forms, not a proof.
 
 Usage: check_no_advisory.py              check the repository this file is in
        check_no_advisory.py --self-test  check the checker itself
@@ -44,8 +49,21 @@ from pathlib import Path
 ALLOWLIST = Path(".github/scripts/advisory_allowlist.txt")
 COE_RE = re.compile(r"""["']?continue-on-error["']?\s*:\s*([^,}#]*)""")
 SHELL_RE = re.compile(r"^\s*(?:-\s+)?shell\s*:\s*(.*?)\s*(?:#.*)?$")
-SET_RE = re.compile(r"(?:^|[\s;&|(])set\s+(?:\+[a-z]*e[a-z]*\b|\+o\s+errexit\b)")
-FAILING_RE = re.compile(r"^\s*(?:\(?\s*exit\s+[1-9]\d*\b|false\b)")
+SET_RE = re.compile(
+    r"""(?:^|[\s;&|("'])set\s+(?:\+[a-z]*e[a-z]*\b|\+o\s+errexit\b)"""
+    r"|\bshopt\s+-[a-z]*u[a-z]*(?:\s+-o)?\s+errexit\b"
+    r"""|\btrap\s+["'][^"']*\bexit\s+0\b"""
+)
+FAILING_RE = re.compile(r"^\s*\(?\s*(?:exit\s+[1-9]\d*|false)\s*\)?\s*(?:;\s*)?$")
+EXPR_RE = re.compile(r"\$\{\{.*?\}\}")
+IF_RE = re.compile(r"^\s*(?:-\s+)?if\s*:")
+QUOTED_RE = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+
+
+def strip_noise(text):
+    """Remove quoted strings and trailing comments, for judging a { } block."""
+    text = QUOTED_RE.sub("''", text)
+    return re.sub(r"(?:^|\s)#.*$", "", text)
 
 
 def scanned_files(root):
@@ -67,22 +85,35 @@ def code_lines(text):
 
 
 def fallback_fails(lines, i, after):
-    """Whether the text after the last `||` on lines[i] makes the step fail."""
+    """Whether one `||` fallback (the text after it, up to the next `||`) fails."""
     if not after.strip():
         if i + 1 >= len(lines):
             return False
-        return fallback_fails(lines, i + 1, lines[i + 1][1])
+        return all_fallbacks_fail(lines, i + 1, "||" + shell_text(lines[i + 1][1]))
     if after.lstrip().startswith("{"):
-        depth = 0
-        for _, line in lines[i:]:
-            segment = after if line is lines[i][1] else line
-            if re.search(r"\bexit\s+[1-9]\d*\b", segment):
-                return True
+        block, depth = [], 0
+        for k, (_, line) in enumerate(lines[i:]):
+            segment = strip_noise(after if k == 0 else line)
+            block.append(segment)
             depth += segment.count("{") - segment.count("}")
             if depth <= 0:
-                return False
-        return False
-    return bool(FAILING_RE.match(after))
+                break
+        body = " ; ".join(block).strip()
+        body = body[1:] if body.startswith("{") else body
+        body = body[: body.rfind("}")] if "}" in body else body
+        commands = [c.strip() for c in re.split(r"[;\n]", body) if c.strip()]
+        return bool(commands) and bool(re.fullmatch(r"exit\s+[1-9]\d*", commands[-1]))
+    return bool(FAILING_RE.match(strip_noise(after)))
+
+
+def shell_text(line):
+    """The line with GitHub expressions removed; empty for an `if:` key."""
+    return "" if IF_RE.match(line) else EXPR_RE.sub("", line)
+
+
+def all_fallbacks_fail(lines, i, text):
+    parts = text.split("||")
+    return all(fallback_fails(lines, i, part) for part in parts[1:])
 
 
 def findings(root):
@@ -102,10 +133,9 @@ def findings(root):
                 out.append((rel, number, stripped, following, "custom shell without -e", False))
             if SET_RE.search(line):
                 out.append((rel, number, stripped, following, "errexit turned off", True))
-            if "||" in line:
-                after = line.rsplit("||", 1)[1]
-                if not fallback_fails(lines, i, after):
-                    out.append((rel, number, stripped, following, "|| fallback does not fail", True))
+            text = shell_text(line)
+            if "||" in text and not all_fallbacks_fail(lines, i, text):
+                out.append((rel, number, stripped, following, "|| fallback does not fail", True))
     return out
 
 
@@ -171,6 +201,17 @@ def self_test():
         "set +ex": ("  set +ex\n", "", 1),
         "set +o errexit": ("  set +o errexit\n", "", 1),
         "set -e": ("  set -euo pipefail\n", "", 0),
+        "every or": ("run: make || true || exit 1\n", "", 1),
+        "false then and": ("run: make || false && true\n", "", 1),
+        "exit in quotes": ('make || { echo "exit 1"; }\n', "", 1),
+        "exit in comment": ("make || { echo bad; } # exit 1\n", "", 1),
+        "exit not last": ("make || { if false; then exit 1; fi; }\n", "", 1),
+        "exit 1 in block line": ("make || { echo bad; exit 1; }\n", "", 0),
+        "shopt": ("  shopt -uo errexit\n", "", 1),
+        "trap exit 0": ("  trap 'exit 0' EXIT\n", "", 1),
+        "quoted set": ('  bash -c "set +e; make"\n', "", 1),
+        "expression": ("  name: ${{ inputs.a || 'x' }}\n", "", 0),
+        "if key": ("  if: failure() || cancelled()\n", "", 0),
         "comment": ("# make || true\n", "", 0),
         "allowed": ("a || true\nb\n", f"{w}\ta || true\tb\tdiag\n", 0),
         "moved": ("a || true\nc\n", f"{w}\ta || true\tb\tdiag\n", 2),

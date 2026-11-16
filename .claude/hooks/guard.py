@@ -9,17 +9,21 @@ answers `ask` for the known forms of those calls:
   - mcp__github__merge_pull_request, mcp__github__enable_pr_auto_merge;
   - mcp__github__push_files, create_or_update_file, delete_file when the
     branch is main or master (a direct write to main);
-  - Bash: `gh ... pr merge`, `gh api` calls with `/merge` or
-    `mergePullRequest`, `git ... push` naming main or master;
+  - Bash: `gh ... pr merge`, `gh api` calls with `/merge`, `/merges`,
+    `mergePullRequest` or `git/refs/heads/main|master`, any command naming
+    api.github.com with one of those, `git ... push` naming main or master;
     `solana ... airdrop`, `solana ... program deploy|upgrade|close`,
     `anchor ... deploy|upgrade`, `arcium ... deploy`, a devnet or mainnet
-    cluster (`--provider.cluster`, `-u`/`--url devnet|mainnet`), `test:devnet`.
+    cluster (`--provider.cluster`, `-u`/`--url devnet|mainnet`), `test:devnet`,
+    and any command naming api.devnet.solana.com or api.mainnet-beta.solana.com.
+  - MCP file writes with no branch given also ask.
 
 It is a denylist of known forms, not a sandbox: a command built another way
-(a script, an alias, `eval`) is not seen, and the rules in CLAUDE.md still
-apply. Everything else passes through (no output, exit 0). Unreadable input
-answers `ask`. If the hook itself fails to run, the command in
-`.claude/settings.json` prints the same `ask`. It never answers `allow`.
+(a script, an alias, `eval`, a bare `git push` while on main) is not seen, and
+the rules in CLAUDE.md still apply. Everything else passes through (no output, exit 0). Unreadable input
+answers `ask`. If python is missing or the script fails, the command in
+`.claude/settings.json` prints the same `ask`; a hook killed by its timeout
+gets no answer from either. It never answers `allow`.
 Whether the harness shows the prompt in every permission mode is decided by
 Claude Code, not here.
 
@@ -35,9 +39,11 @@ MERGE_TOOLS = {"mcp__github__merge_pull_request", "mcp__github__enable_pr_auto_m
 WRITE_TOOLS = {"mcp__github__push_files", "mcp__github__create_or_update_file", "mcp__github__delete_file"}
 START = r"(?:^|[\s;&|()`'\"])"
 ARGS = r"[^;&|\n]*?"
+MERGE_API = r"(?:/merges?\b|mergePullRequest|git/refs/heads/(?:main|master)\b)"
 BASH_RULES = [
     (re.compile(START + r"(?:\S*/)?gh\b" + ARGS + r"\bpr\s+merge\b"), "merge"),
-    (re.compile(START + r"(?:\S*/)?gh\b" + ARGS + r"\bapi\b" + ARGS + r"(?:/merge\b|mergePullRequest)"), "merge"),
+    (re.compile(START + r"(?:\S*/)?gh\b" + ARGS + r"\bapi\b" + ARGS + MERGE_API), "merge"),
+    (re.compile(r"api\.github\.com" + ARGS + MERGE_API), "merge"),
     (re.compile(START + r"git\b" + ARGS + r"\bpush\b" + ARGS + r"(?:[\s:/]|^)(?:main|master)\b"), "merge"),
     (re.compile(START + r"solana\b" + ARGS + r"\bairdrop\b"), "deploy"),
     (re.compile(START + r"solana\b" + ARGS + r"\bprogram\s+(?:deploy|upgrade|close)\b"), "deploy"),
@@ -46,6 +52,7 @@ BASH_RULES = [
     (re.compile(r"--provider\.cluster[\s=]+(?:devnet|mainnet)"), "deploy"),
     (re.compile(START + r"solana\b" + ARGS + r"(?:-u|--url)[\s=]+(?:d|m|devnet|mainnet-beta|mainnet)\b"), "deploy"),
     (re.compile(r"\btest:devnet\b"), "deploy"),
+    (re.compile(r"api\.(?:devnet|mainnet-beta)\.solana\.com"), "deploy"),
 ]
 REASONS = {
     "merge": "Merge or write to main: CLAUDE.md allows a merge only on the owner's instruction "
@@ -62,7 +69,7 @@ def decide(event):
         return "merge"
     if tool in WRITE_TOOLS:
         branch = str((event.get("tool_input") or {}).get("branch", "")).strip()
-        return "merge" if branch in ("main", "master", "refs/heads/main", "refs/heads/master") else None
+        return "merge" if branch in ("", "main", "master", "refs/heads/main", "refs/heads/master") else None
     if tool == "Bash":
         command = (event.get("tool_input") or {}).get("command", "")
         for pattern, kind in BASH_RULES:
@@ -114,6 +121,12 @@ def self_test():
         ({"tool_name": "mcp__github__push_files", "tool_input": {"branch": "main"}}, "merge"),
         ({"tool_name": "mcp__github__create_or_update_file", "tool_input": {"branch": "fix/x"}}, None),
         ({"tool_name": "mcp__github__delete_file", "tool_input": {"branch": "master"}}, "merge"),
+        ({"tool_name": "mcp__github__create_or_update_file", "tool_input": {}}, "merge"),
+        ({"tool_name": "Bash", "tool_input": {"command": "gh api repos/o/r/merges -f base=main"}}, "merge"),
+        ({"tool_name": "Bash", "tool_input": {"command": "gh api -X PATCH repos/o/r/git/refs/heads/main"}}, "merge"),
+        ({"tool_name": "Bash", "tool_input": {"command": "curl -X PUT https://api.github.com/repos/o/r/pulls/1/merge"}}, "merge"),
+        ({"tool_name": "Bash", "tool_input": {"command": "SOLANA_RPC_URL=https://api.devnet.solana.com npm test"}}, "deploy"),
+        ({"tool_name": "Bash", "tool_input": {"command": "gh api repos/o/r/pulls/1"}}, None),
     ]
     failures = [f"{c} -> {decide(c)!r}, expected {e!r}" for c, e in cases if decide(c) != e]
     for failure in failures:

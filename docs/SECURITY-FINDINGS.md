@@ -14,6 +14,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **R-9 and R-14 narrowed, R-8 noted, 2026-11-14 against `main` @ `bd5dfed`** (production relay, PRs #179–#182; see "Update 2026-11-14: production relay"); no earlier row was changed.
 **Rows R-20 … R-22 and the status words added 2026-11-15 against `main` @ `3f104e9`** (see "Update 2026-11-15: R-20 … R-22 and status words"), with a note on H-7's anchors; no earlier row was changed.
 **H-7 narrowed 2026-11-15 against `main` @ `79be252`** (PR #189; see "Update 2026-11-15: H-7 narrowed"); no earlier row was changed.
+**Rows R-23 and R-24 (C004 NEW-1, NEW-2) added 2026-11-16 against `main` @ `b142ed7`** (see "Update 2026-11-16: R-23 and R-24"), with a note on R-21; no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -1014,6 +1015,31 @@ examined.
 | ID | Status at `79be252` | Evidence (`main` @ `79be252`) | Label |
 |----|---------------------|-------------------------------|-------|
 | **H-7** (copies of secret arrays are not wiped) | **OPEN — narrowed.** `HybridSecretKey` now holds the X25519 secret as a `StaticSecret`, which wipes itself on drop, and `hybrid_decaps` borrows it: the per-decapsulation copy (`StaticSecret::from(sk.x25519)`) is gone. Keygen still leaves one moved-from location, as before. **Remaining:** the four sites that load a secret from stored bytes, where the bytes are already in `Zeroizing` and the unwiped copy is the by-value argument of `StaticSecret::from([u8; 32])`, x25519-dalek 2.0.1's only constructor from bytes. Removing it needs an upstream API or `unsafe`; neither is proposed. The same pattern at `crates/relay/src/auth.rs:150, 206` stays outside the row. Whether any copy persists in memory remains inferred (see H-8). | `crates/core-crypto/src/hybrid.rs:38` (field), `:123` (borrowed in decaps), `:377-380` (test pins `Zeroize` and drop); remaining: `crates/core-crypto/src/ratchet/checkpoint.rs:324`, `crates/mobile-ffi/src/lib.rs:266, 422, 432` | `SV` (code); `RUNTIME_VERIFIED` (tests, PR #189); `INF` (persistence of copies) |
+
+---
+
+## Update 2026-11-16: R-23 and R-24 (C004 NEW-1, NEW-2) (`main` @ `b142ed7`)
+
+**Snapshot:** `main` @ `b142ed732596fce3ea9373750094131e4ebbe798` (the merge of PR #193).
+Two findings from the experimental C004 pass of 2026-10-30 (named NEW-1 and NEW-2 there,
+found with a harness that was never committed) were not in this tracker. The code they
+describe has not changed since. Each is re-read at `b142ed7` and reproduced for this
+update with a probe test in a disposable clone; the probes are not committed. Recorded on
+the Owner's instruction of 2026-11-16 ("Занеси NEW-1 и NEW-2 в трекер"). No earlier row is
+changed.
+
+### New rows
+
+| ID | Sev | Item | Anchor (`main` @ `b142ed7`) | Label |
+|----|-----|------|-----------------------------|-------|
+| **R-23** (C004 NEW-1) | LOW (availability) | **Skipped-key eviction is not oldest-first once a late message has been read.** A late message's key is taken out with `IndexMap::swap_remove`, which moves the newest stored key into the freed slot. `trim_skipped` evicts from index 0 and assumes that index order is insertion order. After a `swap_remove` at or near the front, the cap evicts a recent key while older ones stay, and the message that key belongs to is lost for good (it fails to decrypt and is deleted, as in R-21). Confidentiality is not affected. The existing FIFO tests insert keys directly and never call `swap_remove`, so they do not see this. **Status: OPEN.** | `crates/core-crypto/src/ratchet.rs:240` (`swap_remove`), `:345-352` (`trim_skipped`), test `trim_skipped_fifo_oldest_evicted_newest_retained` (`:473`) | `SV`; `RUNTIME_VERIFIED` (probe: cap 3; Bob reads m3, then m0 late, then m6; afterwards the older m1 still decrypts and the newer m2 does not) |
+| **R-24** (C004 NEW-2) | INFO (defence in depth) | **X3DH accepts low-order X25519 keys from the peer.** Neither `x3dh_respond` nor `x3dh_initiate` checks that a DH output is contributory, and a contact card's DH key is not checked either. With a low-order identity and ephemeral key from the initiator, every DH output is all-zero, so the root key is the same whatever the responder's identity, signed-prekey and one-time-prekey secrets are: anyone can compute it, not only the two parties. Only the party whose keys these are can cause it (the contact itself, or whoever supplied the pinned card), so it cannot reveal more than that party could leak anyway (`INF`). The refusal MAC already makes this check (`was_contributory`); the Ed25519 signing key already rejects small-order points (`verify_strict`). **Status: OPEN.** A fix changes the handshake and needs its own Owner task. | `crates/core-crypto/src/x3dh.rs:125-160` (`x3dh_initiate`), `:169-197` (`x3dh_respond`); `crates/mobile-ffi/src/contacts.rs:38-50` (`Card::decode`); the existing check at `crates/core-crypto/src/refusal_mac.rs:62` | `SV`; `RUNTIME_VERIFIED` at the `x3dh_respond` level (probe: two runs with different responder secrets and peer keys at u = 0 gave the same root key, with and without a one-time prekey); app level `NV` |
+
+### Notes on rows above
+
+| ID | Note | Label |
+|----|------|-------|
+| **R-21** | Its row says the ratchet drops "the oldest first". R-23 refines that: after a late message has been read, the dropped key need not be the oldest. The loss and its consequence are as R-21 describes. | `SV` |
 
 ---
 

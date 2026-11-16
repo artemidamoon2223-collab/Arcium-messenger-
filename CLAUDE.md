@@ -107,7 +107,8 @@ production-ready.
 
 Песочница не пускает на api.devnet.solana.com, Anchor и Solana CLI в ней нет:
 deploy, airdrop и devnet-тесты отсюда не запускай. Deploy на devnet —
-`docs/HOME-DEPLOY.md`.
+`docs/HOME-DEPLOY.md`. Хук `.claude/hooks/guard.py` спрашивает владельца перед
+известными формами таких команд; правило действует и без него.
 
 ## Команды проверки
 
@@ -160,7 +161,9 @@ cd arcium-psi/tests && npx mocha --require ts-node/register 'src/crypto.test.ts'
 ## Постоянные ограничения
 
 - Мёрдж: обычный merge commit (не squash) и только по явному указанию
-  владельца, называющему PR. Зелёный CI указанием не является.
+  владельца, называющему PR. Зелёный CI указанием не является. Хук
+  `.claude/hooks/guard.py` спрашивает владельца перед известными путями мёрджа
+  и записи в `main`; это страховка, а не замена правилу.
 - Состав required status checks на `main` доступными инструментами не читается;
   не выводи его по косвенным признакам.
 - RUSTSEC-2025-0009 (ring 0.16) и RUSTSEC-2023-0071 (rsa 0.9): ignore в

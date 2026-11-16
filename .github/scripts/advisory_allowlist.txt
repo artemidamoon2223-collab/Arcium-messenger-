@@ -1,0 +1,31 @@
+# Workflow lines allowed to hide an exit code, read by check_no_advisory.py.
+# Format: <path>TAB<the line, stripped>TAB<next non-empty line, stripped>TAB<why the step's verdict does not depend on it>
+# The next line pins where an entry applies; one entry allows one occurrence.
+# Adding an entry is a CI change: it goes through review, and making a
+# blocking check advisory needs the owner's explicit instruction
+# (CLAUDE.md, «Ревью и CI»). `check_no_advisory.py --list` prints candidates.
+.github/actions/uniffi-android-bridge/action.yml	set +e	yes | "${SDKMANAGER}" --licenses >/dev/null	PIPESTATUS pattern: `yes` dies of SIGPIPE; sdkmanager's own exit code is saved on the next line and tested with `test ... -eq 0` right after `set -e`
+.github/workflows/android-ci.yml	set +e	yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses	PIPESTATUS pattern: `yes` dies of SIGPIPE; sdkmanager's own exit code is saved on the next line and tested with `test ... -eq 0` right after `set -e`
+.github/workflows/android-ci.yml	const body = `## 🔴 Android CI — Build Failure\n\n**Errors:**\n\`\`\`\n${errors || '(none matched)'}\n\`\`\`\n\n**Last 30 lines:**\n\`\`\`\n${tail}\n\`\`\``;	await github.rest.issues.createComment({	JavaScript inside actions/github-script, not a shell fallback
+.github/workflows/android-instrumentation.yml	grep -E '^relay: ' net-e2e/relay.log | tail -40 || true	echo "--- peer (last 60 lines) ---"	diagnostic print only; the step's verdict comes from the checks after it
+.github/workflows/android-instrumentation.yml	tail -60 net-e2e/peer.log || true	sends=$(grep -c '^relay: SEND' net-e2e/relay.log || true)	diagnostic print only; the step's verdict comes from the checks after it
+.github/workflows/android-instrumentation.yml	sends=$(grep -c '^relay: SEND' net-e2e/relay.log || true)	echo "RELAY SEND requests: ${sends}"	grep -c exits 1 on zero matches; the count is tested after (test sends -gt 0)
+.github/workflows/android-native-bridge.yml	APK_LIBS="$(unzip -l "${APK}" | grep -E 'lib/' || true)"	FAIL=0	an empty list is a valid input; each ABI is then checked against it and fails the step
+.github/workflows/android-two-device-e2e.yml	set +e	yes | "$SDKM" --licenses > /dev/null	PIPESTATUS pattern: `yes` dies of SIGPIPE; sdkmanager's own exit code is saved on the next line and tested with `test ... -eq 0` right after `set -e`
+.github/workflows/android-two-device-e2e.yml	head -40 "e2e-out/emulator-$who.log" || true	done	diagnostic print only; the step's verdict comes from the checks after it
+.github/workflows/android-two-device-e2e.yml	cat e2e-out/steps/summary.txt || true	for log in relay relay-v2; do	diagnostic print only; the step's verdict comes from the checks after it
+.github/workflows/android-two-device-e2e.yml	grep -E '^relay: ' "e2e-out/$log.log" | tail -60 || true	sends=$(grep -c '^relay: SEND' "e2e-out/$log.log" || true)	diagnostic print only; the step's verdict comes from the checks after it
+.github/workflows/android-two-device-e2e.yml	sends=$(grep -c '^relay: SEND' "e2e-out/$log.log" || true)	echo "$log SEND requests: ${sends}"	grep -c exits 1 on zero matches; the count is tested after (test sends -gt 0)
+.github/workflows/arcium-ci.yml	arcium --version || true	anchor --version || true	diagnostic print of the tool version; the next step builds with the tool and fails if it is missing
+.github/workflows/arcium-ci.yml	anchor --version || true	solana --version || true	diagnostic print of the tool version; the next step builds with the tool and fails if it is missing
+.github/workflows/arcium-ci.yml	solana --version || true	- name: arcium build	diagnostic print of the tool version; the next step builds with the tool and fails if it is missing
+.github/workflows/arcium-ci.yml	test -f ~/.config/solana/id.json ||	solana-keygen new --no-bip39-passphrase --silent --outfile ~/.config/solana/id.json	creates the key only if it is absent; the fallback is a real command and its failure fails the step
+.github/workflows/arcium-ci.yml	trap 'kill $(jobs -p) 2>/dev/null || true' EXIT	sudo prlimit --pid $$ --nofile=1048576:1048576	cleanup or diagnostics copy after the scenario ran; the scenario's own status is kept in $status
+.github/workflows/arcium-ci.yml	timeout 30m arcium test 2>&1 | tee "$raw/arcium-test.log" || status=$?	kill "$events" 2>/dev/null || true	the scenario's exit status is kept in $status and decides the step after the diagnostics are copied
+.github/workflows/arcium-ci.yml	kill "$events" 2>/dev/null || true	wait "$events" 2>/dev/null || true	cleanup or diagnostics copy after the scenario ran; the scenario's own status is kept in $status
+.github/workflows/arcium-ci.yml	wait "$events" 2>/dev/null || true	cp .anchor/test-ledger/validator.log "$raw/" 2>/dev/null || true	cleanup or diagnostics copy after the scenario ran; the scenario's own status is kept in $status
+.github/workflows/arcium-ci.yml	cp .anchor/test-ledger/validator.log "$raw/" 2>/dev/null || true	find artifacts -type f -name '*.log' -not -path 'artifacts/localnet/*' \	cleanup or diagnostics copy after the scenario ran; the scenario's own status is kept in $status
+.github/workflows/arcium-ci.yml	-exec cp --parents {} "$raw/" \; 2>/dev/null || true	find artifacts -type f > "$raw/artifacts-files.txt" 2>/dev/null || true	cleanup or diagnostics copy after the scenario ran; the scenario's own status is kept in $status
+.github/workflows/arcium-ci.yml	find artifacts -type f > "$raw/artifacts-files.txt" 2>/dev/null || true	python3 ../.github/scripts/scrub_localnet_diagnostics.py publish \	cleanup or diagnostics copy after the scenario ran; the scenario's own status is kept in $status
+.github/workflows/native-artifact-baseline.yml	set +e	yes | "${SDKMANAGER}" --licenses >/dev/null	PIPESTATUS pattern: `yes` dies of SIGPIPE; sdkmanager's own exit code is saved on the next line and tested with `test ... -eq 0` right after `set -e`
+.github/workflows/native-artifact-baseline.yml	echo "kotlin_package=$(grep -m1 '^package ' "${KOTLIN_FILE}" || true)"	} > "${OUT}/METADATA.txt"	metadata line only; an absent package line is recorded as empty, nothing is decided by it

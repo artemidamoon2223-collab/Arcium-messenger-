@@ -26,6 +26,17 @@ jobs:
         run: python3 .github/scripts/check_action_pins.py --self-test
       - name: Action references are pinned
         run: python3 .github/scripts/check_action_pins.py
+      # CLAUDE.md «Ревью и CI»: a blocking check is never made advisory without
+      # the owner. Known forms only (see the script's docstring): any
+      # continue-on-error fails; a non-failing || fallback or set +e needs a
+      # reviewed entry in .github/scripts/advisory_allowlist.txt.
+      - name: Advisory checker self-test
+        run: python3 .github/scripts/check_no_advisory.py --self-test
+      - name: Known failure-hiding forms are absent or listed
+        run: python3 .github/scripts/check_no_advisory.py
+      # .claude/hooks/guard.py asks the owner before known merge and deploy paths.
+      - name: Claude guard hook self-test
+        run: python3 .claude/hooks/guard.py --self-test
 
   # ── Job 1: Core Rust — root workspace only, no Arcium toolchain needed ──
   # arcium-psi borsh tests are NOT here: arcium-macros reads build/psi_intersect.arcis

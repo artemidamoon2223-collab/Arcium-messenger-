@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
-"""PreToolUse guard: turns two CLAUDE.md "never" rules into a confirmation.
+"""PreToolUse guard: asks the owner before known merge and deploy paths.
 
 CLAUDE.md says a merge needs the owner's instruction naming the PR, and that
 deploy and airdrop do not run from the sandbox (`docs/HOME-DEPLOY.md` is a
 separate task). Text alone relies on the session remembering it. This hook
-answers `ask` for those tool calls, so the harness shows the owner a
-confirmation prompt whatever the permission mode:
+answers `ask` for the known forms of those calls:
 
   - mcp__github__merge_pull_request, mcp__github__enable_pr_auto_merge;
-  - a Bash command that runs `gh pr merge`, `solana airdrop`,
-    `solana program deploy|upgrade|close`, `anchor deploy|upgrade`,
-    `arcium deploy`.
+  - mcp__github__push_files, create_or_update_file, delete_file when the
+    branch is main or master (a direct write to main);
+  - Bash: `gh ... pr merge`, `gh api` calls with `/merge` or
+    `mergePullRequest`, `git ... push` naming main or master;
+    `solana ... airdrop`, `solana ... program deploy|upgrade|close`,
+    `anchor ... deploy|upgrade`, `arcium ... deploy`, a devnet or mainnet
+    cluster (`--provider.cluster`, `-u`/`--url devnet|mainnet`), `test:devnet`.
 
-Everything else passes through untouched (no output, exit 0). Input it cannot
-parse also answers `ask`: the guard fails closed. It never answers `allow`.
+It is a denylist of known forms, not a sandbox: a command built another way
+(a script, an alias, `eval`) is not seen, and the rules in CLAUDE.md still
+apply. Everything else passes through (no output, exit 0). Unreadable input
+answers `ask`. If the hook itself fails to run, the command in
+`.claude/settings.json` prints the same `ask`. It never answers `allow`.
+Whether the harness shows the prompt in every permission mode is decided by
+Claude Code, not here.
 
 Usage: guard.py               read the hook JSON on stdin
        guard.py --self-test   check the guard itself
@@ -24,18 +32,25 @@ import re
 import sys
 
 MERGE_TOOLS = {"mcp__github__merge_pull_request", "mcp__github__enable_pr_auto_merge"}
-WORD = r"(?:^|[\s;&|()`'\"])"
+WRITE_TOOLS = {"mcp__github__push_files", "mcp__github__create_or_update_file", "mcp__github__delete_file"}
+START = r"(?:^|[\s;&|()`'\"])"
+ARGS = r"[^;&|\n]*?"
 BASH_RULES = [
-    (re.compile(WORD + r"gh\s+pr\s+merge\b"), "merge"),
-    (re.compile(WORD + r"solana\s+airdrop\b"), "deploy"),
-    (re.compile(WORD + r"solana\s+program\s+(?:deploy|upgrade|close)\b"), "deploy"),
-    (re.compile(WORD + r"anchor\s+(?:deploy|upgrade)\b"), "deploy"),
-    (re.compile(WORD + r"arcium\s+deploy\b"), "deploy"),
+    (re.compile(START + r"(?:\S*/)?gh\b" + ARGS + r"\bpr\s+merge\b"), "merge"),
+    (re.compile(START + r"(?:\S*/)?gh\b" + ARGS + r"\bapi\b" + ARGS + r"(?:/merge\b|mergePullRequest)"), "merge"),
+    (re.compile(START + r"git\b" + ARGS + r"\bpush\b" + ARGS + r"(?:[\s:/]|^)(?:main|master)\b"), "merge"),
+    (re.compile(START + r"solana\b" + ARGS + r"\bairdrop\b"), "deploy"),
+    (re.compile(START + r"solana\b" + ARGS + r"\bprogram\s+(?:deploy|upgrade|close)\b"), "deploy"),
+    (re.compile(START + r"anchor\b" + ARGS + r"\b(?:deploy|upgrade)\b"), "deploy"),
+    (re.compile(START + r"arcium\b" + ARGS + r"\bdeploy\b"), "deploy"),
+    (re.compile(r"--provider\.cluster[\s=]+(?:devnet|mainnet)"), "deploy"),
+    (re.compile(START + r"solana\b" + ARGS + r"(?:-u|--url)[\s=]+(?:d|m|devnet|mainnet-beta|mainnet)\b"), "deploy"),
+    (re.compile(r"\btest:devnet\b"), "deploy"),
 ]
 REASONS = {
-    "merge": "Merge: CLAUDE.md allows it only on the owner's instruction naming this PR. "
-    "Owner, confirm only if you asked for this merge.",
-    "deploy": "Deploy/airdrop: CLAUDE.md («Окружение») keeps it out of the sandbox; "
+    "merge": "Merge or write to main: CLAUDE.md allows a merge only on the owner's instruction "
+    "naming the PR. Owner, confirm only if you asked for this.",
+    "deploy": "Deploy/airdrop/devnet: CLAUDE.md («Окружение») keeps it out of the sandbox; "
     "it is a separate task (docs/HOME-DEPLOY.md). Owner, confirm only if you asked for it.",
     "unparsed": "guard.py could not read the tool call, so it asks instead of guessing.",
 }
@@ -45,6 +60,9 @@ def decide(event):
     tool = event.get("tool_name", "")
     if tool in MERGE_TOOLS:
         return "merge"
+    if tool in WRITE_TOOLS:
+        branch = str((event.get("tool_input") or {}).get("branch", "")).strip()
+        return "merge" if branch in ("main", "master", "refs/heads/main", "refs/heads/master") else None
     if tool == "Bash":
         command = (event.get("tool_input") or {}).get("command", "")
         for pattern, kind in BASH_RULES:
@@ -78,6 +96,24 @@ def self_test():
         ({"tool_name": "Bash", "tool_input": {"command": "cargo test --workspace"}}, None),
         ({"tool_name": "Bash", "tool_input": {"command": "solana --version"}}, None),
         ({"tool_name": "Read", "tool_input": {"file_path": "docs/HOME-DEPLOY.md"}}, None),
+        ({"tool_name": "Bash", "tool_input": {"command": "gh -R o/r pr merge 12"}}, "merge"),
+        ({"tool_name": "Bash", "tool_input": {"command": "/usr/bin/gh pr merge 1"}}, "merge"),
+        ({"tool_name": "Bash", "tool_input": {"command": "gh api -X PUT repos/o/r/pulls/12/merge"}}, "merge"),
+        ({"tool_name": "Bash", "tool_input": {"command": "gh api graphql -f query='mutation{mergePullRequest}'"}}, "merge"),
+        ({"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD:main"}}, "merge"),
+        ({"tool_name": "Bash", "tool_input": {"command": "git push -u origin main"}}, "merge"),
+        ({"tool_name": "Bash", "tool_input": {"command": "git push -u origin fix/x"}}, None),
+        ({"tool_name": "Bash", "tool_input": {"command": "git push origin continuity"}}, None),
+        ({"tool_name": "Bash", "tool_input": {"command": "git push origin docs/maintenance"}}, None),
+        ({"tool_name": "Bash", "tool_input": {"command": "git fetch origin main"}}, None),
+        ({"tool_name": "Bash", "tool_input": {"command": "solana -u devnet airdrop 2"}}, "deploy"),
+        ({"tool_name": "Bash", "tool_input": {"command": "solana --url devnet program deploy x.so"}}, "deploy"),
+        ({"tool_name": "Bash", "tool_input": {"command": "solana config set --url devnet"}}, "deploy"),
+        ({"tool_name": "Bash", "tool_input": {"command": "anchor test --provider.cluster devnet"}}, "deploy"),
+        ({"tool_name": "Bash", "tool_input": {"command": "cd arcium-psi/tests && npm run test:devnet"}}, "deploy"),
+        ({"tool_name": "mcp__github__push_files", "tool_input": {"branch": "main"}}, "merge"),
+        ({"tool_name": "mcp__github__create_or_update_file", "tool_input": {"branch": "fix/x"}}, None),
+        ({"tool_name": "mcp__github__delete_file", "tool_input": {"branch": "master"}}, "merge"),
     ]
     failures = [f"{c} -> {decide(c)!r}, expected {e!r}" for c, e in cases if decide(c) != e]
     for failure in failures:
@@ -92,7 +128,7 @@ def main(argv):
     try:
         event = json.load(sys.stdin)
         kind = decide(event) if isinstance(event, dict) else "unparsed"
-    except (ValueError, AttributeError, TypeError):
+    except Exception:  # noqa: BLE001 - any failure to read the call asks
         kind = "unparsed"
     if kind:
         print(answer(kind))

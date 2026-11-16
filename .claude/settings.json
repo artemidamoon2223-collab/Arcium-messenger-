@@ -14,11 +14,11 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|mcp__github__merge_pull_request|mcp__github__enable_pr_auto_merge",
+        "matcher": "Bash|mcp__github__merge_pull_request|mcp__github__enable_pr_auto_merge|mcp__github__push_files|mcp__github__create_or_update_file|mcp__github__delete_file",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\"",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\" || printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"guard.py failed to run, so it asks instead of letting the call through.\"}}'",
             "timeout": 10
           }
         ]

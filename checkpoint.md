@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-17 06:20 UTC, by a Claude Code cloud session
+Updated: 2026-11-17 18:35 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-17 06:20 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `9d76423c2edb51811d17fb1fe502073f00169c33` (merge of PR #198, 2026-11-17)
+- `main` = `d52395e7095ed88e5edc4f420f4ce54efe7bb57f` (merge of PR #201, 2026-11-17)
 
 ## Done
+- 17 Nov (D-051): #199 R-25 one-pass eviction (`5061041`), #200 H-6 reserved capacity (`e4e2313`), #201 tracker R-25 FIXED, H-6 narrowed (`d52395e`).
 - 17 Nov (D-050): #197 `when_to_use` in review skills (`54be38a`), #198 tracker R-23 FIXED (`9d76423`).
 - 17 Nov (D-049): #196 R-23 fixed, `shift_remove` keeps skipped-key order (`b1257df`).
 - 17 Nov (D-048): shorter CLAUDE.md kept (trial of D-037 closed).
@@ -35,10 +36,9 @@ Updated: 2026-11-17 06:20 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #199 R-25 one-pass skipped-key eviction (crypto; two fresh reviews; Owner decision on the DH-replay residual pending).
+- None.
 
 ## Waiting for the Owner
-- #199: merge as is and record the DH-replay residual (H-6), or a third approach; then a tracker PR for R-25 and the H-6 row anchors.
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
 - Session recovery option B (after R-9 and X-6). Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
@@ -49,7 +49,7 @@ Updated: 2026-11-17 06:20 UTC, by a Claude Code cloud session
 2. A V2 relay in the emulator CI jobs — done (#187).
 3. Two phones through that relay, incl. background receive — needs phones.
 4. Release build and signing — needs the Owner's decision on the key.
-5. Phone checks: R-18 (b), H-8, F-9.
+5. Phone checks: R-18 (b), H-8, F-9; memory and time of #200 on a phone (scudo).
 6. Protocol leftovers after Owner decisions: R-9 occupancy residual, X-6, option B; R-20, R-21 (same family as R-14), R-22, R-24 (contributory check in X3DH).
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 

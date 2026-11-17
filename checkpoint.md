@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-17 03:00 UTC, by a Claude Code cloud session
+Updated: 2026-11-17 03:10 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -16,6 +16,7 @@ Updated: 2026-11-17 03:00 UTC, by a Claude Code cloud session
 - `main` = `1e9e464ee9eb57da5a987eda72ea7a953dc11078` (merge of PR #195, 2026-11-17)
 
 ## Done
+- 17 Nov (D-048): shorter CLAUDE.md kept (trial of D-037 closed).
 - 17 Nov (D-047): branch protection on `main` requires 6 Arcium CI checks and up-to-date branches (Owner; screenshots).
 - 17 Nov (D-046): weekly retro; #195 three review/process rules in skills (`1e9e464`).
 - 16 Nov (D-045): #194 tracker R-23, R-24 (C004 NEW-1, NEW-2) (`546f5c2`); claude.ai project texts refreshed.
@@ -39,7 +40,6 @@ Updated: 2026-11-17 03:00 UTC, by a Claude Code cloud session
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
 - Session recovery option B (after R-9 and X-6). Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
-- Verdict on the shorter `CLAUDE.md` trial (D-037), about 17 Nov: keep it or revert #186.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

@@ -245,3 +245,7 @@ D-046 · 2026-11-17 · OWNER · DONE
 D-047 · 2026-11-17 · OWNER · DONE
 - What: the Owner edited the classic branch protection rule for `main` (not converted to rulesets): "Require status checks to pass" with "Require branches to be up to date before merging", and six required checks from GitHub Actions: `core-rust`, `ts-crypto`, `action-pins`, `qc-unit`, `arcium-build`, `arcium-test`. Before this the rule had no required checks. Android checks are not required (path-filtered; they would block PRs that do not trigger them). Left unchanged: "Require a pull request before merging" off; "Do not allow bypassing" off (the Owner as admin can bypass).
 - Evidence: Owner's screenshots of 2026-11-17 in session `013Fd9w11HPCwF53H2tPuKpt` (the agent cannot read branch protection itself; NOT_VERIFIED beyond the screenshots) and the Owner's message "Сделал".
+
+D-048 · 2026-11-17 · OWNER · DONE
+- What: verdict on the shorter-CLAUDE.md trial (D-037, #186): "Короткий CLAUDE.md оставляем". The shorter file stays; no revert of #186. Rules added since (#192, #193) stay as they are.
+- Evidence: Owner message of 2026-11-17 in session `013Fd9w11HPCwF53H2tPuKpt`.

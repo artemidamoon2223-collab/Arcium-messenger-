@@ -18,6 +18,7 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
+use std::ops::Range;
 use indexmap::IndexMap;
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -299,26 +300,26 @@ impl DoubleRatchet {
         if self.nr.saturating_add(MAX_SKIP) < until {
             return Err(RatchetError::SkipLimit);
         }
-        if self.ckr.is_some() {
-            // Make room before the new keys go in. Evicting afterwards would
-            // leave copies of up to that many kept keys in the freed slots at
-            // the end of the map's buffer; this way the new keys are written
-            // over those slots (R-25, H-6).
-            self.make_room(until.saturating_sub(self.nr) as usize);
+        if self.ckr.is_none() {
+            return Ok(());
         }
-        if let Some(ckr) = self.ckr.as_mut() {
-            while self.nr < until {
-                let (new_ckr, mk) = kdf_ck(ckr);
-                // Each assignment wipes the chain key it replaces; the message
-                // key moves into `skipped`, where it stays until it is
-                // consumed or evicted.
-                *ckr = new_ckr;
-                let dhr_bytes = *self.dhr.expect("dhr set when ckr is").as_bytes();
+        let dhr_bytes = *self.dhr.expect("dhr set when ckr is").as_bytes();
+        let overwritten_then_evicted = self.make_room(dhr_bytes, self.nr..until);
+        let ckr = self.ckr.as_mut().expect("checked above");
+        while self.nr < until {
+            let (new_ckr, mk) = kdf_ck(ckr);
+            // Each assignment wipes the chain key it replaces; the message
+            // key moves into `skipped`, where it stays until it is consumed
+            // or evicted, or is dropped (wiped) here if the old code would
+            // have stored it and evicted it at once.
+            *ckr = new_ckr;
+            if overwritten_then_evicted.binary_search(&self.nr).is_err() {
                 self.skipped.insert((dhr_bytes, self.nr), mk);
-                self.nr += 1;
             }
-            self.trim_skipped();
+            self.nr += 1;
         }
+        // Only has work left if more keys are skipped than the cap holds.
+        self.trim_skipped();
         Ok(())
     }
 
@@ -351,24 +352,46 @@ impl DoubleRatchet {
         Ok(())
     }
 
+    /// Evict the oldest-inserted keys (FIFO by IndexMap insertion order)
+    /// down to `max_skipped`, in one pass: `drain` moves the kept entries
+    /// once, where removing one key at a time moved them once per evicted key
+    /// (R-25). Dropping the iterator unread drops, and so wipes, each evicted
+    /// key.
     fn trim_skipped(&mut self) {
-        self.make_room(0);
+        let excess = self.skipped.len().saturating_sub(self.max_skipped);
+        drop(self.skipped.drain(..excess));
     }
 
-    /// Evict the oldest-inserted keys (FIFO by IndexMap insertion order) so
-    /// that `incoming` more fit under `max_skipped`, all in one pass: `drain`
-    /// moves the kept entries once, where removing one key at a time moved
-    /// them once per evicted key (R-25). Dropping the iterator unread drops,
-    /// and so wipes, every evicted key.
+    /// Make room for the keys `(dh, n)`, `n` in `ns`, before they are
+    /// inserted, so that the result is the one the old code reached by
+    /// inserting them all and then evicting the oldest keys (R-25):
     ///
-    /// `incoming` counts every key about to be skipped. A key that is already
-    /// stored (only if the peer reuses a DH key) is overwritten in place rather
-    /// than added, so in that case one more old key per reused key is evicted
-    /// than strictly needed.
-    fn make_room(&mut self, incoming: usize) {
+    /// - only keys not yet stored count as new: `insert` overwrites a stored
+    ///   one in place (possible only if a header repeats an earlier DH key);
+    /// - the oldest `len + new - max_skipped` keys are evicted in one `drain`,
+    ///   which drops, and so wipes, each of them;
+    /// - a key of `ns` that is stored among those evicted keys was, in the
+    ///   old code, overwritten and then evicted. Its `n` is returned (in
+    ///   ascending order) so the caller drops the new key instead of storing
+    ///   it again.
+    ///
+    /// While the store is within its cap, the new keys are then written over
+    /// exactly the slots the eviction freed at the end of the map's buffer,
+    /// so no copies of kept keys stay behind there (H-6).
+    fn make_room(&mut self, dh: [u8; 32], ns: Range<u32>) -> Vec<u32> {
         let len = self.skipped.len();
-        let excess = (len + incoming).saturating_sub(self.max_skipped).min(len);
+        let stored: Vec<(u32, usize)> = ns
+            .clone()
+            .filter_map(|n| self.skipped.get_index_of(&(dh, n)).map(|i| (n, i)))
+            .collect();
+        let new = ns.len() - stored.len();
+        let excess = (len + new).saturating_sub(self.max_skipped).min(len);
         drop(self.skipped.drain(..excess));
+        stored
+            .into_iter()
+            .filter(|&(_, i)| i < excess)
+            .map(|(n, _)| n)
+            .collect()
     }
 }
 
@@ -1362,6 +1385,63 @@ mod tests {
         }
         for i in [3usize, 4, 6, 7, 8] {
             assert_eq!(*bob.decrypt(&sent[i].0, &sent[i].1, ad).unwrap(), [i as u8]);
+        }
+    }
+
+    /// Room is made before the new keys go in, so skipping into a full store
+    /// never holds more than `max_skipped` keys and its buffer does not grow
+    /// (evicting after the inserts would grow it, and leave copies of kept
+    /// keys in the slots it freed: R-25, H-6).
+    #[test]
+    fn skipping_into_a_full_store_does_not_grow_it() {
+        let (mut alice, mut bob) = established_pair();
+        bob.max_skipped = 5;
+        let ad = b"assoc";
+        let sent: Vec<_> = (0..10u8).map(|i| alice.encrypt(&[i], ad).unwrap()).collect();
+        bob.decrypt(&sent[5].0, &sent[5].1, ad).unwrap();
+        assert_eq!(bob.skipped.len(), 5, "the store is full");
+        bob.skipped.shrink_to_fit();
+        let cap = bob.skipped.capacity();
+
+        assert_eq!(*bob.decrypt(&sent[9].0, &sent[9].1, ad).unwrap(), [9]);
+        assert_eq!(bob.skipped.len(), 5);
+        assert_eq!(bob.skipped.capacity(), cap, "the buffer did not grow");
+    }
+
+    /// A header that repeats an earlier DH key derives keys whose `(dh, n)`
+    /// may already be stored. The result is the old one (insert all, then
+    /// evict the oldest): a stored key among the evicted ones is gone, one
+    /// that stays is overwritten in place, and nothing else is evicted.
+    #[test]
+    fn a_repeated_dh_key_is_stored_and_evicted_as_before() {
+        let (mut alice, mut bob) = established_pair();
+        bob.max_skipped = 5;
+        let ad = b"assoc";
+        let a: Vec<_> = (0..3u8).map(|i| alice.encrypt(&[i], ad).unwrap()).collect();
+        bob.decrypt(&a[2].0, &a[2].1, ad).unwrap();
+        let (h, c) = bob.encrypt(b"r", ad).unwrap();
+        alice.decrypt(&h, &c, ad).unwrap();
+        let b: Vec<_> = (0..4u8).map(|i| alice.encrypt(&[i], ad).unwrap()).collect();
+        bob.decrypt(&b[3].0, &b[3].1, ad).unwrap();
+        let (a_dh, b_dh) = (a[0].0.dh, b[0].0.dh);
+        let keys = |dr: &DoubleRatchet| dr.skipped.keys().copied().collect::<Vec<_>>();
+        assert_eq!(keys(&bob), [(a_dh, 0), (a_dh, 1), (b_dh, 0), (b_dh, 1), (b_dh, 2)]);
+        let b_values: Vec<[u8; 32]> = (0..3).map(|n| *bob.skipped[&(b_dh, n)]).collect();
+        let a1_before = *bob.skipped[&(a_dh, 1)];
+
+        // Chain `a_dh` again, skipped up to n = 3: (a, 0) and (a, 1) are
+        // stored, (a, 2) is new. One key must go, the oldest: (a, 0).
+        bob.dh_ratchet_step(PublicKey::from(a_dh)).unwrap();
+        bob.skip_message_keys(3).unwrap();
+
+        assert_eq!(
+            keys(&bob),
+            [(a_dh, 1), (b_dh, 0), (b_dh, 1), (b_dh, 2), (a_dh, 2)],
+            "(a, 0) evicted, (a, 1) overwritten in place, (a, 2) added"
+        );
+        assert_ne!(*bob.skipped[&(a_dh, 1)], a1_before, "(a, 1) holds the new key");
+        for n in 0..3 {
+            assert_eq!(*bob.skipped[&(b_dh, n)], b_values[n as usize], "(b, {n}) untouched");
         }
     }
 

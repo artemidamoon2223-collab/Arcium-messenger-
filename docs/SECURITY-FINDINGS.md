@@ -17,6 +17,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **Rows R-23 and R-24 (C004 NEW-1, NEW-2) added 2026-11-16 against `main` @ `b142ed7`** (see "Update 2026-11-16: R-23 and R-24"), with a note on R-21; no earlier row was changed.
 **R-23 recorded as fixed 2026-11-17 against `main` @ `b1257df`** (PR #196; see "Update 2026-11-17: R-23 fixed"), with notes on R-21 and H-6; no earlier row was changed.
 **R-25 added as fixed and H-6 narrowed 2026-11-17 against `main` @ `e4e2313`** (PRs #199, #200; see "Update 2026-11-17: R-25 fixed, H-6 narrowed"), with a note on R-21; no earlier row was changed.
+**R-24 recorded as fixed 2026-11-17 against `main` @ `3767d94`** (PR #203; see "Update 2026-11-17: R-24 fixed"); no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -1100,6 +1101,29 @@ NOT_VERIFIED.
 
 **Not established:** behaviour, time and memory on a phone; the contents of freed memory
 (the probes count copies in live buffers and reallocations; they do not read freed memory).
+
+---
+
+## Update 2026-11-17: R-24 fixed (`main` @ `3767d94`)
+
+**Snapshot:** `main` @ `3767d94a11c2a19abe41ca4a0b35307c531e307b` (the merge of PR #203). The fix was
+asked for by the Owner on 2026-11-17 ("Делай R-24") and merged on the Owner's instruction
+("мёрдж #203"). Each `path:line` below was re-read at `3767d94`.
+
+**Runtime evidence.** PR #203: 18 check runs success on head `8a9f268`, including
+`core-rust`, `connected-tests` and `two-devices`. Locally `cargo test --workspace --locked` →
+591 passed, 0 failed on `8b2f8e4`; `cargo test -p mobile-ffi --locked --lib` → 210 passed,
+0 failed on `8a9f268`. The two new mobile-ffi tests fail on the unfixed code (clean
+build). A fresh-context review (`engineering-code-review`, `arcium-security-review`) found
+nothing above INFO; a review is analysis, not proof.
+
+| ID | Status at `3767d94` | Evidence (`main` @ `3767d94`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-24** (C004 NEW-2; X3DH accepts low-order X25519 peer keys) | **FIXED.** `x3dh_initiate` and `x3dh_respond` refuse the handshake (`X3dhError::LowOrderKey`) if any DH output is not contributory, so no root key is derived from a low-order identity, signed prekey, one-time prekey or ephemeral key. In the app, an initiator handshake with a low-order identity or ephemeral key is refused when decoded (`InvalidHandshake`), after every structural check: it is dropped on receipt, never recorded, and no refusal is sent. A key made from a secret never has low order, so honest peers are unaffected. **Remaining (INFO):** (a) a contact card's DH key is still not checked (`Card::decode`); a session with such a card now fails both ways, so nothing leaks; (b) a provisional handshake with a low-order key recorded by an older build makes its first message wait on the relay, with an error each round, until the contact's next handshake replaces the record (review probe; only possible if such a handshake arrived before this build). | `crates/core-crypto/src/x3dh.rs:32` (`LowOrderKey`), `:150, 190` (checks in `x3dh_initiate` / `x3dh_respond`), `:216` (`check_contributory`); `crates/mobile-ffi/src/lib.rs:587` (decode check), `:607` (`has_low_order`), `:1051` (`responder_session`); tests `x3dh.rs:608, 628, 661`, `mobile-ffi/src/lib.rs:2173, 2198`; `crates/mobile-ffi/src/contacts.rs:38` (`Card::decode`, unchanged) | `SV`; `RUNTIME_VERIFIED` (tests; CI on `8a9f268`); phone `NV` |
+
+**Not established:** behaviour on a phone; a cryptographer's review; data from older builds.
+The Double Ratchet DH step with `header.dh` is unchanged (its root key also mixes in the
+previous root key; only the peer can choose that key) and is outside R-24.
 
 ---
 

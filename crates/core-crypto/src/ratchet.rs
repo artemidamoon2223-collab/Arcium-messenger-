@@ -345,13 +345,12 @@ impl DoubleRatchet {
     }
 
     fn trim_skipped(&mut self) {
-        // Evict oldest-inserted entries first (FIFO by IndexMap insertion order).
-        // The evicted key is dropped, and so wiped, by the end of the condition.
-        while self.skipped.len() > self.max_skipped {
-            if self.skipped.shift_remove_index(0).is_none() {
-                break;
-            }
-        }
+        // Evict oldest-inserted entries first (FIFO by IndexMap insertion order),
+        // all in one pass: `drain` moves the kept entries once, where removing
+        // one key at a time moved them once per evicted key (R-25). Dropping
+        // the iterator unread drops, and so wipes, every evicted key.
+        let excess = self.skipped.len().saturating_sub(self.max_skipped);
+        drop(self.skipped.drain(..excess));
     }
 }
 

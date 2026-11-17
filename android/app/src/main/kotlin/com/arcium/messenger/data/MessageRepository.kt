@@ -187,8 +187,9 @@ class MessageRepository(
      * call encrypts [plaintext] and commits it to the durable outbox with the
      * new session state; repeating the call with the same id — after a crash,
      * a restart or an unknown commit outcome — returns what was committed and
-     * never encrypts the message a second time. Ids starting with `t` or `r`,
-     * and `o` alone, are reserved for the network layer and refused.
+     * never encrypts the message a second time. Ids starting with `t`, `r`
+     * or `g`, and `o` alone or followed by 8 bytes, are reserved for the
+     * network layer and refused.
      *
      * **This does not transmit anything.** Pending bytes are in [pendingOutgoingTo].
      */

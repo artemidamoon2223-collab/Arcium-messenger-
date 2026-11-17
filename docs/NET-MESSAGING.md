@@ -263,18 +263,24 @@ whose header names a position of the session's current receiving chain
 behind the next expected one, with no skipped key stored for it (evicted
 from the full store of 2,000, or used). A late message of an older chain is
 not recognised and is only deleted, as before. The messages found in one
-round are named at its end, one GONE per session for up to 256 ids. The
+round are named at its end: at most one GONE per session per round, naming
+the first 256 of them in id order (the others are found again when the peer
+sends them again). A GONE leaves the outbox once the relay accepted it, like
+a receipt (section 5); when the peer sends a named message again, a later
+GONE for the same ids is committed, at most one per minute. The
 peer abandons each named id that is a text still pending in its outbox: it
 is not sent again and its history entry shows `NotDelivered`, so the user
-can send it again. Any other id changes nothing. Builds before GONE discard
-it as an unknown payload.
+can send it again. Any other id changes nothing. A message that only looks
+late (altered so that it does not decrypt; anyone who saw its header can
+make one) is named too, and changes nothing at the peer. Builds before GONE
+discard it as an unknown payload.
 
 Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
 `r || message_id [|| round]` (receipts), `o || sha256(handshake)[0..8]`
 (OPEN: one per session, so a session that replaces an abandoned one commits
-its own; builds before this one used `o` alone), `g || sha256(ids)` (GONE:
-the same ids give the same client id, so naming them again commits nothing
-new). `send_message` refuses all of these.
+its own; builds before this one used `o` alone), `g || sha256(ids) [|| round]`
+(GONE: the same ids give the same client id, so naming them again within a
+minute commits nothing new). `send_message` refuses all of these.
 
 ## 5. Acknowledgements
 
@@ -292,14 +298,15 @@ new). `send_message` refuses all of these.
 - The recipient commits the receipt when the text is accepted (in the same
   sync, before deleting it from the relay), so a crash cannot lose it.
 - Receipts are not acknowledged: a receipt leaves the outbox once the relay
-  accepted it; so does a GONE message (section 4). If it is lost, the sender sends the text again; the recipient
-  receives a duplicate and commits a new receipt (at most one per message per
-  minute). Only a message that was answered when first accepted (a text or
+  accepted it; so does a GONE message (section 4). If it is lost, the sender
+  sends the text again; the recipient receives a duplicate and commits a new
+  receipt (at most one per message per minute; a message it can no longer
+  read draws a new GONE the same way, section 4). Only a message that was answered when first accepted (a text or
   OPEN) is answered again; a duplicate of a receipt, or of a payload this
   build does not know, is not answered.
 - A missing receipt is never read as non-delivery; the text stays pending.
-  Only a GONE message from the recipient (section 4), naming the text's id,
-  ends it as `NotDelivered`.
+  The recipient can end it only with a GONE message naming its id
+  (section 4), which abandons it (`NotDelivered`).
 - Neither `acknowledge_outgoing` nor `abandon_outgoing` is exported through
   UniFFI: only this layer takes a text out of the outbox, on a receipt, or
   in `resolve_session_conflict`, on a GONE message naming it (abandoned),
@@ -333,8 +340,8 @@ new). `send_message` refuses all of these.
 Outgoing text: `committed (outbox)` → `published (relay accepted; in memory,
 repeated after a restart)` → `delivered (receipt; outbox record deleted,
 send-id kept)` or `abandoned (abandon_outgoing: a conflict resolution, a
-deleted contact, or a cancel by the user)`. Repeating `send_text` with
-the same app id never encrypts again (S2-B2).
+GONE message from the peer, a deleted contact, or a cancel by the user)`.
+Repeating `send_text` with the same app id never encrypts again (S2-B2).
 
 Incoming envelope: fetched → `accepted (inbox committed, receipt committed)` →
 deleted from the relay → shown → `mark_read (seen)`. A message whose session
@@ -342,7 +349,9 @@ does not exist yet stays on the relay until its handshake arrives; it is not
 copied, acknowledged or counted as delivered meanwhile, and it does not hide
 the envelopes behind it (section 3, reading a mailbox). A message
 that does not decrypt, is malformed or comes from an unknown sender is
-deleted from the relay and changes nothing.
+deleted from the relay and changes nothing; one of the session's current
+receiving chain whose key is gone is also named to the peer in a GONE
+message (section 4).
 
 Handshake: retransmitted by the initiator until the session has received a
 message from the peer (its receipt of OPEN). The responder records it as
@@ -515,8 +524,14 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   initiator's identity secret can make one the initiator accepts, and so end
   its pending first contact (its texts become `NotDelivered`) and make it
   start again. That secret already allows impersonating the initiator.
-- Automatic resending of texts a refusal or a conflict resolution marked
-  `NotDelivered`.
+- Automatic resending of texts a refusal, a conflict resolution or a GONE
+  message marked `NotDelivered`.
+- Naming a late message of an older receiving chain (tracker R-21): only a
+  message of the session's current receiving chain whose key is gone is
+  named in a GONE message (section 4). One of an older chain is deleted,
+  and its sender keeps sending it until the user cancels it. A GONE lost
+  after the relay accepted it is named again only when the sender sends
+  the message again, at most once a minute.
 - One provisional handshake per contact. Whoever can put envelopes in the
   mailbox (SEND needs no authentication, on V1 or V2) can keep replacing a
   contact's recorded handshake before its first message arrives; the genuine
@@ -584,7 +599,7 @@ entry per logical message, never written by the ratchet.
 | `Pending` | committed to the outbox (encrypted) |
 | `Transmitted` | the relay accepted it; nothing is known about the peer |
 | `Delivered` | the peer's authenticated receipt arrived (its device committed it); not a read receipt |
-| `NotDelivered` | given up after a conflict resolution; the peer never accepts it |
+| `NotDelivered` | given up after a conflict resolution, or named by the peer in a GONE message (it arrived after its key was gone); the peer never accepts it |
 | `Cancelled` | given up by the user (`cancel_text`); no longer sent, and a copy the relay already accepted may still be accepted by the peer |
 | `Received` | a text from the peer |
 
@@ -749,6 +764,7 @@ entry per logical message, never written by the ratchet.
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
 | request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt, a replayed receipt not answered | `tests::network` V6 tests | runtime |
+| a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history); a GONE lost on the relay is sent again when the text is repeated, and not again within the minute; ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`) | runtime, local relay over TCP |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |

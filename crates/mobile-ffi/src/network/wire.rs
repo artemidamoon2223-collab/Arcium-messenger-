@@ -178,8 +178,8 @@ fn decode_ids(bytes: &[u8]) -> Option<Vec<[u8; 32]>> {
 }
 
 /// Client message ids of what the network layer sends through the durable
-/// outbox. The first byte keeps the three kinds apart; the application's own
-/// id follows `b't'`.
+/// outbox. The first byte keeps the kinds apart; the application's own id
+/// follows `b't'`.
 pub mod client_id {
     pub const TEXT: u8 = b't';
     pub const RECEIPT: u8 = b'r';
@@ -190,7 +190,7 @@ pub mod client_id {
 
     /// Whether `id` is in the space of ids above, which only the network
     /// layer may send under (`ArciumCore::send_message` refuses them): any
-    /// text or receipt id, and an OPEN id in either form, `b"o"` alone
+    /// text, receipt or GONE id, and an OPEN id in either form, `b"o"` alone
     /// (builds before per-session OPEN ids) or [`open`].
     pub fn is_reserved(id: &[u8]) -> bool {
         match id.first() {
@@ -224,14 +224,19 @@ pub mod client_id {
     }
 
     /// The GONE message naming `ids`: the same ids give the same client id,
-    /// so naming them again commits nothing new.
-    pub fn gone(ids: &[[u8; 32]]) -> Vec<u8> {
+    /// so naming them again commits nothing new. `round` > 0 names a later
+    /// GONE for the same ids, sent because the peer sent one of them again.
+    pub fn gone(ids: &[[u8; 32]], round: u64) -> Vec<u8> {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         for id in ids {
             h.update(id);
         }
-        [&[GONE][..], &h.finalize()[..]].concat()
+        let mut out = [&[GONE][..], &h.finalize()[..]].concat();
+        if round > 0 {
+            out.extend_from_slice(&round.to_be_bytes());
+        }
+        out
     }
 }
 
@@ -298,10 +303,13 @@ mod tests {
     #[test]
     fn gone_client_ids_are_reserved_and_follow_their_ids() {
         let ids = [[1; 32], [2; 32]];
-        assert_eq!(client_id::gone(&ids), client_id::gone(&ids));
-        assert_ne!(client_id::gone(&ids), client_id::gone(&ids[..1]));
-        assert!(client_id::gone(&ids).len() <= 64);
-        assert!(client_id::is_reserved(&client_id::gone(&ids)));
+        assert_eq!(client_id::gone(&ids, 0), client_id::gone(&ids, 0));
+        assert_ne!(client_id::gone(&ids, 0), client_id::gone(&ids[..1], 0));
+        assert_ne!(client_id::gone(&ids, 0), client_id::gone(&ids, 1));
+        assert_ne!(client_id::gone(&ids, 1), client_id::gone(&ids, 2));
+        assert!(client_id::gone(&ids, u64::MAX).len() <= 64);
+        assert!(client_id::is_reserved(&client_id::gone(&ids, 0)));
+        assert!(client_id::is_reserved(&client_id::gone(&ids, 7)));
         assert!(client_id::is_reserved(b"g"));
     }
 

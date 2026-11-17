@@ -304,8 +304,8 @@ impl ArciumCore {
     /// Not exported: the chat history shows a text Delivered when its send
     /// record reads acknowledged, which this makes it, so only the network
     /// layer may call this, on an authenticated receipt from the peer (or
-    /// for a receipt once the relay has accepted it, since receipts are not
-    /// themselves acknowledged).
+    /// for a receipt or GONE message once the relay has accepted it, since
+    /// neither is itself acknowledged).
     pub(crate) fn acknowledge_outgoing(
         &self,
         session_id: u64,
@@ -325,10 +325,12 @@ impl ArciumCore {
     /// is harmless.
     ///
     /// Not exported, for the same reason as
-    /// [`acknowledge_outgoing`](Self::acknowledge_outgoing): only
-    /// `resolve_session_conflict` calls it, after marking the texts not
-    /// delivered in the history; a text committed after that marking is
-    /// shown `NotDelivered` from its send record.
+    /// [`acknowledge_outgoing`](Self::acknowledge_outgoing): only the
+    /// network layer calls it — `resolve_session_conflict`, after marking
+    /// the texts not delivered in the history (a text committed after that
+    /// marking is shown `NotDelivered` from its send record); a deleted
+    /// contact; a cancelled text; and a GONE message from the peer naming a
+    /// pending text, shown `NotDelivered` from its send record (R-21).
     pub(crate) fn abandon_outgoing(
         &self,
         session_id: u64,

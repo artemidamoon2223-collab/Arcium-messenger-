@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-17 05:20 UTC, by a Claude Code cloud session
+Updated: 2026-11-17 06:20 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-17 05:20 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `b1257df0f7cd0b3759e30e3b480a27ffcfc1ccd8` (merge of PR #196, 2026-11-17)
+- `main` = `9d76423c2edb51811d17fb1fe502073f00169c33` (merge of PR #198, 2026-11-17)
 
 ## Done
+- 17 Nov (D-050): #197 `when_to_use` in review skills (`54be38a`), #198 tracker R-23 FIXED (`9d76423`).
 - 17 Nov (D-049): #196 R-23 fixed, `shift_remove` keeps skipped-key order (`b1257df`).
 - 17 Nov (D-048): shorter CLAUDE.md kept (trial of D-037 closed).
 - 17 Nov (D-047): branch protection on `main` requires 6 Arcium CI checks and up-to-date branches (Owner; screenshots).
@@ -34,12 +35,10 @@ Updated: 2026-11-17 05:20 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #197 `when_to_use` in the two review skills (docs/skills only).
-- #198 tracker: R-23 FIXED, notes on R-21 and H-6.
+- #199 R-25 one-pass skipped-key eviction (crypto; two fresh reviews; Owner decision on the DH-replay residual pending).
 
 ## Waiting for the Owner
-- Merge #197 and #198 (each needs its number named).
-- One-by-one skipped-key eviction under a forged header (~16 ms, review of #196 item 4): fix with one `drain` and/or a tracker row — Owner's word needed.
+- #199: merge as is and record the DH-replay residual (H-6), or a third approach; then a tracker PR for R-25 and the H-6 row anchors.
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
 - Session recovery option B (after R-9 and X-6). Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.

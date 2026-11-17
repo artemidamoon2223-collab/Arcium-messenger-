@@ -1513,13 +1513,20 @@ mod tests {
         let keys = |m: &IndexMap<([u8; 32], u32), MessageKey>| {
             m.iter().map(|(k, v)| (*k, **v)).collect::<Vec<_>>()
         };
-        // A store with a small buffer, as a plain clone gets when the index
-        // table it copies has filled up with removals, and an empty one.
-        let mut small = IndexMap::new();
-        for n in 0..3u32 {
-            small.insert(([9u8; 32], n), Zeroizing::new([n as u8; 32]));
-        }
-        for store in [small, IndexMap::new()] {
+        // Stores with a buffer below the cap, as a plain clone gets when the
+        // index table it copies has filled up with removals: a small one, one
+        // with room for about 1,800 keys (so a copy rule weaker than the full
+        // cap is caught), and an empty one.
+        let store_of = |count: u32| {
+            let mut m = IndexMap::new();
+            for n in 0..count {
+                m.insert(([9u8; 32], n), Zeroizing::new([n as u8; 32]));
+            }
+            m
+        };
+        let large = store_of(1000);
+        assert!(large.clone().capacity() > MAX_SKIPPED_KEYS / 2);
+        for store in [store_of(3), large, IndexMap::new()] {
             assert!(store.capacity() < MAX_SKIPPED_KEYS);
             bob.skipped = store;
             let staged = bob.staged_copy();

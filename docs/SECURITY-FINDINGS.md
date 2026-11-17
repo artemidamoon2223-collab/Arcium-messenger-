@@ -18,6 +18,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **R-23 recorded as fixed 2026-11-17 against `main` @ `b1257df`** (PR #196; see "Update 2026-11-17: R-23 fixed"), with notes on R-21 and H-6; no earlier row was changed.
 **R-25 added as fixed and H-6 narrowed 2026-11-17 against `main` @ `e4e2313`** (PRs #199, #200; see "Update 2026-11-17: R-25 fixed, H-6 narrowed"), with a note on R-21; no earlier row was changed.
 **R-24 recorded as fixed 2026-11-17 against `main` @ `3767d94`** (PR #203; see "Update 2026-11-17: R-24 fixed"); no earlier row was changed.
+**R-22 recorded as fixed 2026-11-17 against `main` @ `3f0cf9f`** (PR #205; see "Update 2026-11-17: R-22 fixed"); no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -1124,6 +1125,26 @@ nothing above INFO; a review is analysis, not proof.
 **Not established:** behaviour on a phone; a cryptographer's review; data from older builds.
 The Double Ratchet DH step with `header.dh` is unchanged (its root key also mixes in the
 previous root key; only the peer can choose that key) and is outside R-24.
+
+---
+
+## Update 2026-11-17: R-22 fixed (`main` @ `3f0cf9f`)
+
+**Snapshot:** `main` @ `3f0cf9fa943b33b566bd42bd26ff956abd6aee1e` (the merge of PR #205). The fix was
+asked for by the Owner on 2026-11-17 ("Делай R-22") and merged on the Owner's instruction
+("Мерж"). Each `path:line` below was re-read at `3f0cf9f`.
+
+**Runtime evidence.** PR #205: 18 check runs success on head `5977f8b` (one `two-devices`
+run failed before any test ran, when the emulator refused the APK install with a broken
+pipe; it passed on its one re-run, and the other `two-devices` run on the same head
+passed). Locally `cargo test --workspace --locked` → 594 passed, 0 failed. Three new tests,
+each failing when the behaviour it guards is removed. Two fresh-context reviews
+(`engineering-code-review`, `arcium-security-review`); the second found nothing above LOW.
+A review is analysis, not proof.
+
+| ID | Status at `3f0cf9f` | Evidence (`main` @ `3f0cf9f`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-22** (`last_sent` only grows for the life of the process) | **FIXED.** After every sync round, also one that failed part way, `prune_sent` keeps an entry only while its key is the id of a pending outgoing message or the hash of a session's initiator handshake, or it was written after the pass began. Its two readers (`due`, `was_sent`) ask about nothing else. Delivered and abandoned messages, receipts and everything of a deleted contact are dropped, so the map is bounded by the pending messages plus one handshake hash per session. **Remaining (LOW, cost):** each `sync()` now reads and decrypts every session's outbox once more, also when the relay is unreachable; the review measured about 0.65 s per `sync()` with 500 pending 4 KB texts in a debug build (release and phone not measured; usual outboxes are small). **INFO:** the same store error can be reported twice; a corrupt stored handshake of a confirmed session would make the prune fail each round (it then drops nothing); the guard for parallel rounds has no test (the app runs rounds on one thread). | `crates/mobile-ffi/src/network.rs:144` (field), `:517` (call after every round), `:886` (`prune_sent`), `:851` (`was_sent`), `:861` (`due`), `:906` (`mark_sent`); tests `crates/mobile-ffi/src/tests/net_limits.rs:249, 286, 311` | `SV`; `RUNTIME_VERIFIED` (tests, mutations; CI on `5977f8b`); memory and time on a phone `NV` |
 
 ---
 

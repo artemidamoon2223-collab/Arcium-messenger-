@@ -52,6 +52,26 @@ pub const NONCE_SIZE: usize = 24;
 // the default.
 type ChainKey = Zeroizing<[u8; 32]>;
 type MessageKey = Zeroizing<[u8; 32]>;
+
+/// A copy of a skipped-key store with room for `MAX_SKIPPED_KEYS` keys, so
+/// that skipping into the copy never grows its buffer (H-6). A plain clone
+/// sizes its entries to the source's index table, which can be smaller after
+/// many removals, or have none at all for an empty store. Then the keys are
+/// cloned into a store reserved in full instead, and the short clone is
+/// dropped, which wipes its keys where they lie.
+fn copy_skipped(
+    skipped: &IndexMap<([u8; 32], u32), MessageKey>,
+) -> IndexMap<([u8; 32], u32), MessageKey> {
+    if !skipped.is_empty() {
+        let copy = skipped.clone();
+        if copy.capacity() >= MAX_SKIPPED_KEYS {
+            return copy;
+        }
+    }
+    let mut roomy = IndexMap::with_capacity(MAX_SKIPPED_KEYS);
+    roomy.extend(skipped.iter().map(|(k, v)| (*k, v.clone())));
+    roomy
+}
 type RootKey = Zeroizing<[u8; 32]>;
 
 #[derive(Debug, Error)]
@@ -128,7 +148,9 @@ impl DoubleRatchet {
             ns: 0,
             nr: 0,
             pn: 0,
-            skipped: IndexMap::new(),
+            // Room for every key up front: a buffer that grows moves the
+            // stored keys and frees the old one unwiped (H-6).
+            skipped: IndexMap::with_capacity(MAX_SKIPPED_KEYS),
             max_skipped: 2000,
         }
     }
@@ -145,7 +167,9 @@ impl DoubleRatchet {
             ns: 0,
             nr: 0,
             pn: 0,
-            skipped: IndexMap::new(),
+            // Room for every key up front: a buffer that grows moves the
+            // stored keys and frees the old one unwiped (H-6).
+            skipped: IndexMap::with_capacity(MAX_SKIPPED_KEYS),
             max_skipped: 2000,
         }
     }
@@ -278,7 +302,7 @@ impl DoubleRatchet {
             ns: self.ns,
             nr: self.nr,
             pn: self.pn,
-            skipped: self.skipped.clone(),
+            skipped: copy_skipped(&self.skipped),
         }
     }
 
@@ -1442,6 +1466,68 @@ mod tests {
         assert_ne!(*bob.skipped[&(a_dh, 1)], a1_before, "(a, 1) holds the new key");
         for n in 0..3 {
             assert_eq!(*bob.skipped[&(b_dh, n)], b_values[n as usize], "(b, {n}) untouched");
+        }
+    }
+
+    /// A store has room for `MAX_SKIPPED_KEYS` keys from the start, whether
+    /// new or restored from a checkpoint holding fewer keys, so skipping into
+    /// it never grows the buffer: growth moves the stored keys and frees the
+    /// old buffer unwiped (H-6).
+    #[test]
+    fn a_new_or_restored_store_never_grows() {
+        let (mut alice, mut bob) = established_pair();
+        assert!(bob.skipped.capacity() >= MAX_SKIPPED_KEYS, "new store");
+        let ad = b"assoc";
+        let mut last = None;
+        for _ in 0..1001u32 {
+            last = Some(alice.encrypt(&[1], ad).unwrap());
+        }
+        let (h, c) = last.unwrap();
+        bob.decrypt(&h, &c, ad).unwrap();
+        let (h, c) = bob.encrypt(&[2], ad).unwrap();
+        alice.decrypt(&h, &c, ad).unwrap();
+        let mut last = None;
+        for _ in 0..501u32 {
+            last = Some(alice.encrypt(&[3], ad).unwrap());
+        }
+        let (h, c) = last.unwrap();
+        bob.decrypt(&h, &c, ad).unwrap();
+        assert_eq!(bob.skipped.len(), 1500);
+
+        let mut restored = DoubleRatchet::from_checkpoint(&bob.to_checkpoint().unwrap()).unwrap();
+        let cap = restored.skipped.capacity();
+        assert!(cap >= MAX_SKIPPED_KEYS, "restored store");
+        let until = restored.nr + 1000;
+        restored.skip_message_keys(until).unwrap();
+        assert_eq!(restored.skipped.len(), MAX_SKIPPED_KEYS);
+        assert_eq!(restored.skipped.capacity(), cap, "the buffer did not grow");
+    }
+
+    /// Every store has room for `MAX_SKIPPED_KEYS` keys: Alice's and Bob's
+    /// new ones, and the copies `staged_copy` and the rollback snapshot make,
+    /// whatever the capacity of the store they copy (H-6).
+    #[test]
+    fn copies_of_a_store_have_room_for_every_key() {
+        let (alice, mut bob) = established_pair();
+        assert!(alice.skipped.capacity() >= MAX_SKIPPED_KEYS, "alice");
+        let keys = |m: &IndexMap<([u8; 32], u32), MessageKey>| {
+            m.iter().map(|(k, v)| (*k, **v)).collect::<Vec<_>>()
+        };
+        // A store with a small buffer, as a plain clone gets when the index
+        // table it copies has filled up with removals, and an empty one.
+        let mut small = IndexMap::new();
+        for n in 0..3u32 {
+            small.insert(([9u8; 32], n), Zeroizing::new([n as u8; 32]));
+        }
+        for store in [small, IndexMap::new()] {
+            assert!(store.capacity() < MAX_SKIPPED_KEYS);
+            bob.skipped = store;
+            let staged = bob.staged_copy();
+            let snap = bob.snapshot();
+            for (copy, what) in [(&staged.skipped, "staged copy"), (&snap.skipped, "snapshot")] {
+                assert!(copy.capacity() >= MAX_SKIPPED_KEYS, "{what}");
+                assert_eq!(keys(copy), keys(&bob.skipped), "{what}: same keys, same order");
+            }
         }
     }
 

@@ -904,7 +904,8 @@ impl NetworkMessenger {
                 .map_err(|e| CoreError::messaging(handle, e))?;
         }
         // In-memory state kept per contact. `last_sent` is keyed by message
-        // id: its entries for this contact are never consulted again.
+        // id: its entries for this contact are never consulted again, and
+        // the next round drops them (`prune_sent`).
         self.refused.lock().expect("refused").remove(&key);
         let mut refusals = self.refusals.lock().expect("refusals");
         refusals.queued.retain(|(to, _, _)| *to != key);

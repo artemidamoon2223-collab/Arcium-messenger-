@@ -1,6 +1,7 @@
 ---
 name: engineering-code-review
 description: "Concrete engineering requirements for making and reviewing changes in this repository: scope discipline, the pre-delivery verification checklist, the local Karpathy-style review of a change (four principles, every changed file read in full), how claims must be worded, and where things live. Use when writing a non-trivial change, reviewing a diff, or preparing to report a task as done. Describes engineering practice only — it is not a security or cryptographic review, and it authorizes nothing."
+when_to_use: "Before opening or updating a PR with more than a one-line change; when asked to review a branch, PR, commit range or diff; before writing a final report or PR body that says done, fixed, passing or all/every/none; after a rename, to grep for the old name; when a reviewer agent is spawned for a change. Not for a security verdict: pair it with arcium-security-review when the change touches crypto, protocol, durable state, network, FFI, PSI, CI, dependencies or secrets."
 ---
 
 # engineering-code-review

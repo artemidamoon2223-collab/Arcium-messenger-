@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-16 22:40 UTC, by a Claude Code cloud session
+Updated: 2026-11-17 02:35 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-16 22:40 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `546f5c2e3ce922448ebdcd7ca07481347bfd9d63` (merge of PR #194, 2026-11-16)
+- `main` = `1e9e464ee9eb57da5a987eda72ea7a953dc11078` (merge of PR #195, 2026-11-17)
 
 ## Done
+- 17 Nov (D-046): weekly retro; #195 three review/process rules in skills (`1e9e464`).
 - 16 Nov (D-045): #194 tracker R-23, R-24 (C004 NEW-1, NEW-2) (`546f5c2`); claude.ai project texts refreshed.
 - 16 Nov (D-044): #192 CLAUDE.md done-when / two attempts / fresh reviewer incl. CI (`c15cb0c`); #193 advisory CI check and merge/deploy guard hook (`b142ed7`).
 - 15 Nov (D-043): #191 tracker, H-7 OPEN — narrowed (`06c990c`).

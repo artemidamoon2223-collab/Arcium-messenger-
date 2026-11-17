@@ -379,7 +379,7 @@ impl DoubleRatchet {
             ns: self.ns,
             nr: self.nr,
             pn: self.pn,
-            skipped: self.skipped.clone(),
+            skipped: super::copy_skipped(&self.skipped),
             max_skipped: self.max_skipped,
         }
     }

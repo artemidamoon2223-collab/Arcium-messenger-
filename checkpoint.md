@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-17 20:50 UTC, by a Claude Code cloud session
+Updated: 2026-11-17 21:45 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-17 20:50 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `cf8d96e52e4234bc9f0b3732d0a170b35d094162` (merge of PR #204, 2026-11-17)
+- `main` = `3f0cf9fa943b33b566bd42bd26ff956abd6aee1e` (merge of PR #205, 2026-11-17)
 
 ## Done
+- 17 Nov (D-054): #205 R-22 `last_sent` pruned after every round (`3f0cf9f`).
 - 17 Nov (D-053): #203 R-24 X3DH refuses low-order keys (`3767d94`); #204 tracker R-24 FIXED (`cf8d96e`).
 - 17 Nov (D-052): #202 test catches a weaker copy-room threshold (`1c5b2c1`).
 - 17 Nov (D-051): #199 R-25 one-pass eviction (`5061041`), #200 H-6 reserved capacity (`e4e2313`), #201 tracker R-25 FIXED, H-6 narrowed (`d52395e`).
@@ -38,7 +39,7 @@ Updated: 2026-11-17 20:50 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- None.
+- #206 tracker: R-22 FIXED.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -51,8 +52,8 @@ Updated: 2026-11-17 20:50 UTC, by a Claude Code cloud session
 2. A V2 relay in the emulator CI jobs — done (#187).
 3. Two phones through that relay, incl. background receive — needs phones.
 4. Release build and signing — needs the Owner's decision on the key.
-5. Phone checks: R-18 (b), H-8, F-9; memory and time of #200 on a phone (scudo).
-6. Protocol leftovers after Owner decisions: R-9 occupancy residual, X-6, option B; R-20, R-21 (same family as R-14), R-22; contact-card low-order DH key check (R-24 remainder, optional).
+5. Phone checks: R-18 (b), H-8, F-9; memory and time of #200 and #205 on a phone (scudo).
+6. Protocol leftovers after Owner decisions: R-9 occupancy residual, X-6, option B; R-20, R-21 (same family as R-14); contact-card low-order DH key check (R-24 remainder, optional).
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Needs devices

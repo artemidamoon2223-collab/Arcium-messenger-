@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-17 18:35 UTC, by a Claude Code cloud session
+Updated: 2026-11-17 19:15 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-17 18:35 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `d52395e7095ed88e5edc4f420f4ce54efe7bb57f` (merge of PR #201, 2026-11-17)
+- `main` = `1c5b2c12aa41c61e8508e3dc69bd0b39e72f0eb5` (merge of PR #202, 2026-11-17)
 
 ## Done
+- 17 Nov (D-052): #202 test catches a weaker copy-room threshold (`1c5b2c1`).
 - 17 Nov (D-051): #199 R-25 one-pass eviction (`5061041`), #200 H-6 reserved capacity (`e4e2313`), #201 tracker R-25 FIXED, H-6 narrowed (`d52395e`).
 - 17 Nov (D-050): #197 `when_to_use` in review skills (`54be38a`), #198 tracker R-23 FIXED (`9d76423`).
 - 17 Nov (D-049): #196 R-23 fixed, `shift_remove` keeps skipped-key order (`b1257df`).

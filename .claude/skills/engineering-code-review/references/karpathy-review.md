@@ -98,3 +98,18 @@ KARPATHY_REVIEW_END
 ```
 
 Give it to the owner in the session report. Post it on a PR only when asked.
+
+## Rules Learned Over Time
+
+- **A rename is finished only when nothing still uses the old name.** When a
+  change renames a heading, function, file, status word or command, grep the
+  old name across `.claude/`, `docs/`, `README*` and `CLAUDE.md`. A live
+  reference left behind is a `surgical_changes` finding. (2026-11: #186
+  renamed a CLAUDE.md heading and missed a skill reference, fixed in #188;
+  #185 fixed five lines left stale by the relay PRs.)
+- **"All", "every" or "none" in a PR or a report needs the command that
+  checked it.** Quote the command and its output line, or narrow the claim
+  to what was checked. An unbacked universal claim is a `goal_driven`
+  finding. (2026-11: #186 claimed every cited section still existed; the
+  first version of #193 claimed wider coverage than its tests, corrected in
+  27265c1.)

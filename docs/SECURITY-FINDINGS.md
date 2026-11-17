@@ -15,6 +15,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **Rows R-20 … R-22 and the status words added 2026-11-15 against `main` @ `3f104e9`** (see "Update 2026-11-15: R-20 … R-22 and status words"), with a note on H-7's anchors; no earlier row was changed.
 **H-7 narrowed 2026-11-15 against `main` @ `79be252`** (PR #189; see "Update 2026-11-15: H-7 narrowed"); no earlier row was changed.
 **Rows R-23 and R-24 (C004 NEW-1, NEW-2) added 2026-11-16 against `main` @ `b142ed7`** (see "Update 2026-11-16: R-23 and R-24"), with a note on R-21; no earlier row was changed.
+**R-23 recorded as fixed 2026-11-17 against `main` @ `b1257df`** (PR #196; see "Update 2026-11-17: R-23 fixed"), with notes on R-21 and H-6; no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -1040,6 +1041,30 @@ changed.
 | ID | Note | Label |
 |----|------|-------|
 | **R-21** | Its row says the ratchet drops "the oldest first". R-23 refines that: after a late message has been read, the dropped key need not be the oldest. The loss and its consequence are as R-21 describes. | `SV` |
+
+---
+
+## Update 2026-11-17: R-23 fixed (`main` @ `b1257df`)
+
+**Snapshot:** `main` @ `b1257df0f7cd0b3759e30e3b480a27ffcfc1ccd8` (the merge of PR #196). The fix
+was asked for by the Owner on 2026-11-17 ("Делай R-23") and merged on the Owner's
+instruction ("мёрдж #196"). Each `path:line` below was re-read at `b1257df`.
+
+**Runtime evidence.** PR #196 (head `dfc0c96`): 18 check runs success, including
+`core-rust`, `connected-tests` and `two-devices`. Locally `cargo test --workspace --locked`:
+581 passed, 0 failed. The new test fails with the old call put back (`left: [2, 1]`) and
+passes with the fix. An independent review with a fresh context (`engineering-code-review`,
+`arcium-security-review`, `mbr-integration`) reported only INFO items. A review is analysis,
+not proof.
+
+| ID | Status at `b1257df` | Evidence (`main` @ `b1257df`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-23** (skipped-key eviction not oldest-first after a late read) | **FIXED.** A late message's key is now removed with `shift_remove`, which keeps insertion order, so `trim_skipped` evicts the oldest key. **Remaining:** a checkpoint written by the old code keeps the order it had. Keys it reordered stay in that order until each is used or evicted; at most one key is out of place per late read made before the update. The order cannot be rebuilt from the record, so no code change is proposed. | `crates/core-crypto/src/ratchet.rs:242` (`shift_remove`), `:347-355` (`trim_skipped`), test `late_read_keeps_skipped_keys_in_insertion_order` (`:531`); the checkpoint writes the map in order (`crates/core-crypto/src/ratchet/checkpoint.rs:43, 244`) | `SV`; `RUNTIME_VERIFIED` (test; CI on `dfc0c96`); remaining part `INF` (from the code; not observed on real data) |
+| **R-21** (late message lost when its skipped key is evicted) | Note only; status unchanged (OPEN). After the fix the evicted key is the oldest, as the row says; the loss itself remains. | as R-23 | `SV` |
+| **H-6** (stale key copies in the `IndexMap`) | Note only; status unchanged (still listed under remaining work, item 5). The row names `swap_remove` and `ratchet.rs:108, 233, 342`; the late-read removal is now `shift_remove` at `ratchet.rs:242`. The review found that both calls leave the same single stale entry at the old last slot, so the exposure is unchanged. | `crates/core-crypto/src/ratchet.rs:242`; indexmap 2.14.2 `inner.rs:564-571` (`shift_remove`), `:587-602` (`swap_remove`) | `INF` (from the indexmap source; memory not observed) |
+
+**Not established:** behaviour on a phone; any effect on stored data beyond what the code
+shows; the cost of eviction under a forged header (the review's item 4, outside this fix).
 
 ---
 

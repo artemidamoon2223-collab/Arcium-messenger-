@@ -601,8 +601,9 @@ fn unpack_initiator_handshake(bytes: &[u8]) -> Result<InitiatorHandshakeV1, Core
 
 /// Whether `pk` encodes an X25519 point of low order (order 1, 2, 4 or 8):
 /// exactly the keys for which every X25519 output is zero. The scalar is a
-/// public constant; any clamped scalar gives zero for these points and only
-/// for them, since it is below both prime subgroup orders.
+/// public constant. A clamped scalar is 8·k′ with 2^251 ≤ k′ < 2^252, so it
+/// sends every point of order dividing 8 to zero, and no other point: k′ is
+/// below the large prime orders of the curve and of its twist.
 fn has_low_order(pk: &PublicKey) -> bool {
     !StaticSecret::from([1u8; 32]).diffie_hellman(pk).was_contributory()
 }
@@ -2128,7 +2129,7 @@ mod tests {
             assert!(
                 matches!(
                     bob.establish_session_responder(1, hs),
-                    Err(CoreError::InvalidHandshake { .. })
+                    Err(CoreError::InvalidHandshake { msg }) if !msg.contains("low order")
                 ),
                 "handshake byte {idx} = {value:#04x} must be refused"
             );
@@ -2160,7 +2161,7 @@ mod tests {
         assert!(
             matches!(
                 bob.establish_session_responder(1, hs),
-                Err(CoreError::InvalidHandshake { .. })
+                Err(CoreError::InvalidHandshake { msg }) if !msg.contains("low order")
             ),
             "handshake with used_otp=0 and a non-zero id must be refused"
         );

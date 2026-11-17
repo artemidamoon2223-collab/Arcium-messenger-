@@ -663,6 +663,13 @@ impl DurableSession {
         self.session.peer_identity_pk
     }
 
+    /// Whether a message with `header` can never be decrypted under this
+    /// session because its key is gone (`DoubleRatchet::is_beyond_recall`;
+    /// tracker R-21). Reads state only.
+    pub fn is_beyond_recall(&self, header: &Header) -> bool {
+        self.session.ratchet.is_beyond_recall(header)
+    }
+
     /// Whether this session has committed a message from the peer, i.e. the
     /// peer is known to hold it.
     pub fn has_received(&self) -> bool {

@@ -252,15 +252,29 @@ unchanged; this is only what is encrypted):
 | 1 TEXT | application bytes | the application (`received_texts`, `mark_read`) |
 | 2 RECEIPT | 1–256 message ids | the network layer |
 | 3 OPEN | nothing | the network layer |
+| 4 GONE | 1–256 message ids | the network layer |
 
 OPEN is the initiator's first message. It lets the responder send before the
 initiator's first text (a responder has no sending chain until it receives).
 
+GONE names messages of the peer's that arrived after their key was gone, so
+they can never be decrypted (tracker R-21): a message that did not decrypt,
+whose header names a position of the session's current receiving chain
+behind the next expected one, with no skipped key stored for it (evicted
+from the full store of 2,000, or used). A late message of an older chain is
+not recognised and is only deleted, as before. The messages found in one
+round are named at its end, one GONE per session for up to 256 ids. The
+peer abandons each named id that is a text still pending in its outbox: it
+is not sent again and its history entry shows `NotDelivered`, so the user
+can send it again. Any other id changes nothing. Builds before GONE discard
+it as an unknown payload.
+
 Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
 `r || message_id [|| round]` (receipts), `o || sha256(handshake)[0..8]`
 (OPEN: one per session, so a session that replaces an abandoned one commits
-its own; builds before this one used `o` alone). `send_message` refuses all
-of these.
+its own; builds before this one used `o` alone), `g || sha256(ids)` (GONE:
+the same ids give the same client id, so naming them again commits nothing
+new). `send_message` refuses all of these.
 
 ## 5. Acknowledgements
 
@@ -278,15 +292,18 @@ of these.
 - The recipient commits the receipt when the text is accepted (in the same
   sync, before deleting it from the relay), so a crash cannot lose it.
 - Receipts are not acknowledged: a receipt leaves the outbox once the relay
-  accepted it. If it is lost, the sender sends the text again; the recipient
+  accepted it; so does a GONE message (section 4). If it is lost, the sender sends the text again; the recipient
   receives a duplicate and commits a new receipt (at most one per message per
   minute). Only a message that was answered when first accepted (a text or
   OPEN) is answered again; a duplicate of a receipt, or of a payload this
   build does not know, is not answered.
 - A missing receipt is never read as non-delivery; the text stays pending.
+  Only a GONE message from the recipient (section 4), naming the text's id,
+  ends it as `NotDelivered`.
 - Neither `acknowledge_outgoing` nor `abandon_outgoing` is exported through
   UniFFI: only this layer takes a text out of the outbox, on a receipt, or
-  in `resolve_session_conflict`, or when the user deletes the contact
+  in `resolve_session_conflict`, on a GONE message naming it (abandoned),
+  or when the user deletes the contact
   (`delete_contact`), which marks it abandoned, or for a history entry the
   user cancelled (`cancel_text`, section 10), which is abandoned too.
 - The history never reads a text missing from the outbox as delivered by
@@ -300,7 +317,7 @@ of these.
   `resolve_session_conflict` runs (after its NotDelivered pass) still ends
   `NotDelivered`.
 - The exported raw `send_message` refuses the client ids this layer sends
-  under (starting with `t` or `r`, or `o` alone). `send_text` and
+  under (starting with `t`, `r` or `g`, or `o` alone). `send_text` and
   `chat_send` share the text id space (`t` + app id) and exclude each other
   per app id and peer: `send_text` records a claim (`chat-r:`), `chat_send`
   an entry (`chat-o:`), each in an IMMEDIATE transaction that checks for the

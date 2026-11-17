@@ -242,6 +242,18 @@ impl ArciumCore {
             .map(send_result))
     }
 
+    /// Whether `message`, which did not decrypt under the session
+    /// `session_id`, can never be decrypted here because its key is gone
+    /// (`Messenger::beyond_recall`; tracker R-21).
+    pub(crate) fn beyond_recall(&self, session_id: u64, message: &[u8]) -> Result<bool, CoreError> {
+        let identity = self.require_identity()?;
+        let our = PublicKey::from(&identity.dh_key).to_bytes();
+        let (mut store, messenger) = self.lock()?;
+        messenger
+            .beyond_recall(&mut store, our, session_id, message)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
     /// [`receive_message`](Self::receive_message), without converting the
     /// result into the application's record.
     pub(crate) fn receive_committed(
@@ -355,8 +367,8 @@ impl ArciumCore {
     /// under `session_id`.
     ///
     /// Ids the network layer uses for its own messages are refused with
-    /// `InvalidClientMessageId`: one starting with `t` (texts) or `r`
-    /// (receipts), and `o` alone (the session opener). Otherwise a caller
+    /// `InvalidClientMessageId`: one starting with `t` (texts), `r`
+    /// (receipts) or `g` (GONE notices), and `o` alone (the session opener). Otherwise a caller
     /// could commit its own message under a chat text's id, and the peer's
     /// receipt for that message would show the text as delivered. (This
     /// closes that only for this call: `NetworkMessenger::send_text` shares

@@ -291,6 +291,19 @@ impl DoubleRatchet {
         aead_decrypt(&mk, ciphertext, &full_ad)
     }
 
+    /// Whether a message with `header` can never be decrypted by this
+    /// ratchet because its key is gone: the header names a position of the
+    /// current receiving chain behind the next expected one, and that
+    /// position's key is not among the skipped keys (it was used, or evicted
+    /// when the store was full). Reads state only; changes nothing. A header
+    /// of an older chain is not recognised (`false`): its peer key is not
+    /// kept once the chain is left (tracker R-21).
+    pub fn is_beyond_recall(&self, header: &Header) -> bool {
+        self.dhr.is_some_and(|dhr| *dhr.as_bytes() == header.dh)
+            && header.n < self.nr
+            && !self.skipped.contains_key(&(header.dh, header.n))
+    }
+
     /// Capture all mutable state so a failed `decrypt_inner` can be rolled back.
     fn snapshot(&self) -> RatchetSnapshot {
         RatchetSnapshot {
@@ -1536,6 +1549,27 @@ mod tests {
                 assert_eq!(keys(copy), keys(&bob.skipped), "{what}: same keys, same order");
             }
         }
+    }
+
+    /// R-21: a position of the current chain whose key was evicted (or
+    /// used) is beyond recall; a stored, a future and another chain's
+    /// position are not.
+    #[test]
+    fn a_position_whose_key_is_gone_is_beyond_recall() {
+        let (mut alice, mut bob) = established_pair();
+        bob.max_skipped = 2;
+        let ad = b"assoc";
+        let m: Vec<_> = (0..6u8).map(|i| alice.encrypt(&[i], ad).unwrap()).collect();
+        // m4 first: keys 0..3 are skipped, the cap of 2 evicts 0 and 1.
+        bob.decrypt(&m[4].0, &m[4].1, ad).unwrap();
+        assert!(bob.is_beyond_recall(&m[0].0), "evicted");
+        assert!(bob.is_beyond_recall(&m[1].0), "evicted");
+        assert!(!bob.is_beyond_recall(&m[2].0), "stored");
+        assert!(bob.is_beyond_recall(&m[4].0), "used");
+        assert!(!bob.is_beyond_recall(&m[5].0), "not yet received");
+        assert!(bob.decrypt(&m[0].0, &m[0].1, ad).is_err(), "and indeed cannot be read");
+        let other = Header { dh: [7; 32], pn: 0, n: 0 };
+        assert!(!bob.is_beyond_recall(&other), "another chain");
     }
 
     /// The 64-byte block the root KDF expands into (new root key || new chain

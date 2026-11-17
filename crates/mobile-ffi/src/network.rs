@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::contacts::{pinned, Card};
-use core_protocol::messaging::{MessageId, Received};
+use core_protocol::messaging::{message_id, MessageId, Received};
 
 use crate::{
     handshake_hash, unpack_prekey_bundle, ArciumCore, CoreError, PlaintextBytes,
@@ -154,6 +154,11 @@ pub struct NetworkMessenger {
     resume: Mutex<Resume>,
     /// Handshake refusals to send, and which were sent. In memory only.
     refusals: Mutex<Refusals>,
+    /// Per session, messages that arrived after their key was gone (R-21),
+    /// collected during a round and named to the peer in GONE messages at
+    /// its end ([`Self::commit_gone`]). In memory only: a message lost by a
+    /// crash is sent again by the peer and found again.
+    gone: Mutex<HashMap<u64, Vec<[u8; 32]>>>,
 }
 
 /// Refusals this process owes or sent (docs/NET-MESSAGING.md, section 6).
@@ -380,6 +385,7 @@ impl NetworkMessenger {
             last_sent: Mutex::new(HashMap::new()),
             refused: Mutex::new(HashMap::new()),
             refusals: Mutex::new(Refusals::default()),
+            gone: Mutex::new(HashMap::new()),
             limits: Mutex::new(Limits::default()),
             resume: Mutex::new(Resume::default()),
         })
@@ -719,7 +725,9 @@ impl NetworkMessenger {
             };
         }
         self.send_refusals(&mut conn, &budget, relay_refusals, report)?;
-        // Receipts produced above, and the first messages of new sessions.
+        self.commit_gone(report);
+        // Receipts and GONE messages produced above, and the first messages
+        // of new sessions.
         let sessions = self.sessions()?;
         self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
         if budget.cut.get() {
@@ -1014,7 +1022,12 @@ impl NetworkMessenger {
                 }
                 self.mark_sent(id);
                 report.published += 1;
-                if m.client_message_id.first() == Some(&client_id::RECEIPT) {
+                // Receipts and GONE messages are not answered: each leaves
+                // the outbox once the relay accepted it.
+                if matches!(
+                    m.client_message_id.first(),
+                    Some(&client_id::RECEIPT) | Some(&client_id::GONE)
+                ) {
                     self.core.acknowledge_outgoing(*handle, m.message_id)?;
                 }
             }
@@ -1163,6 +1176,29 @@ impl NetworkMessenger {
                                 Err(e) => report
                                     .errors
                                     .push(format!("checking a first message beside our session: {e}")),
+                            }
+                        }
+                        // A message of our session whose key is gone (it
+                        // arrived after the key was evicted) can never be
+                        // read: name it to the contact, who then stops
+                        // sending it (R-21). Only the contact can read the
+                        // GONE message, and it changes nothing for an id the
+                        // contact has not pending, so a forged message that
+                        // only looks late gains nothing. A failed check is
+                        // reported and must not abort the round.
+                        if !first {
+                            match self.core.beyond_recall(handle, &wire) {
+                                Ok(true) => self
+                                    .gone
+                                    .lock()
+                                    .expect("gone")
+                                    .entry(handle)
+                                    .or_default()
+                                    .push(message_id(&wire)),
+                                Ok(false) => {}
+                                Err(e) => report
+                                    .errors
+                                    .push(format!("checking whether a message is beyond recall: {e}")),
                             }
                         }
                         report.dropped += 1;
@@ -1436,12 +1472,54 @@ impl NetworkMessenger {
                     .acknowledge_incoming(handle, id.to_vec())
                     .map(|_| ())
             }
+            // The contact cannot read these: a text of ours still pending
+            // among them is abandoned, so it is not sent again and shows
+            // NotDelivered (R-21). Any other id is ignored.
+            Some(Payload::Gone(ids)) => {
+                let texts: Vec<Vec<u8>> = self
+                    .core
+                    .pending_outgoing(handle)?
+                    .into_iter()
+                    .filter(|m| m.client_message_id.first() == Some(&client_id::TEXT))
+                    .map(|m| m.message_id)
+                    .collect();
+                for gone in ids {
+                    if texts.iter().any(|t| t[..] == gone[..]) {
+                        self.core.abandon_outgoing(handle, gone.to_vec())?;
+                    }
+                }
+                self.core
+                    .acknowledge_incoming(handle, id.to_vec())
+                    .map(|_| ())
+            }
             None => {
                 report.dropped += 1;
                 report.errors.push("unknown payload type discarded".into());
                 self.core
                     .acknowledge_incoming(handle, id.to_vec())
                     .map(|_| ())
+            }
+        }
+    }
+
+    /// Commits one GONE message per session for the messages this round
+    /// found beyond recall, up to [`wire::MAX_RECEIPT_IDS`] ids each (R-21).
+    /// A failure is reported and leaves the round going: the contact sends
+    /// those messages again, and they are found again.
+    fn commit_gone(&self, report: &mut SyncReport) {
+        let found = std::mem::take(&mut *self.gone.lock().expect("gone"));
+        for (handle, mut ids) in found {
+            ids.sort_unstable();
+            ids.dedup();
+            for chunk in ids.chunks(wire::MAX_RECEIPT_IDS) {
+                let committed = self.core.send_committed(
+                    handle,
+                    &client_id::gone(chunk),
+                    &Payload::Gone(chunk.to_vec()).encode(),
+                );
+                if let Err(e) = committed {
+                    report.errors.push(format!("naming messages beyond recall: {e}"));
+                }
             }
         }
     }

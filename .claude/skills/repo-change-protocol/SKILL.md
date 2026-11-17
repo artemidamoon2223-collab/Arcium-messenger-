@@ -31,7 +31,10 @@ Every write goes in a fresh disposable clone of freshly fetched `main` (or of
 the base the task names) under `/tmp`. Verify the clone's HEAD equals the
 expected tip before starting.
 
-Never write to the persistent checkout. Read-only inspection of it is fine.
+Never write to the persistent checkout. Read-only inspection of it is fine
+after `git fetch`, against `origin/main` rather than its local branch; give an
+audit or a subagent a fresh clone or `origin/main` the same way (2026-11: a
+classification pass read a checkout 30 commits behind `main`).
 
 The reason, recorded so it does not get optimised away: a checkout's branch
 and remote-tracking refs may be stale, and nothing in the checkout says so. A

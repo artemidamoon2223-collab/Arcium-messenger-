@@ -128,7 +128,9 @@ impl DoubleRatchet {
             ns: 0,
             nr: 0,
             pn: 0,
-            skipped: IndexMap::new(),
+            // Room for every key up front: a buffer that grows moves the
+            // stored keys and frees the old one unwiped (H-6).
+            skipped: IndexMap::with_capacity(MAX_SKIPPED_KEYS),
             max_skipped: 2000,
         }
     }
@@ -145,7 +147,9 @@ impl DoubleRatchet {
             ns: 0,
             nr: 0,
             pn: 0,
-            skipped: IndexMap::new(),
+            // Room for every key up front: a buffer that grows moves the
+            // stored keys and frees the old one unwiped (H-6).
+            skipped: IndexMap::with_capacity(MAX_SKIPPED_KEYS),
             max_skipped: 2000,
         }
     }
@@ -1443,6 +1447,40 @@ mod tests {
         for n in 0..3 {
             assert_eq!(*bob.skipped[&(b_dh, n)], b_values[n as usize], "(b, {n}) untouched");
         }
+    }
+
+    /// A store has room for `MAX_SKIPPED_KEYS` keys from the start, whether
+    /// new or restored from a checkpoint holding fewer keys, so skipping into
+    /// it never grows the buffer: growth moves the stored keys and frees the
+    /// old buffer unwiped (H-6).
+    #[test]
+    fn a_new_or_restored_store_never_grows() {
+        let (mut alice, mut bob) = established_pair();
+        assert!(bob.skipped.capacity() >= MAX_SKIPPED_KEYS, "new store");
+        let ad = b"assoc";
+        let mut last = None;
+        for _ in 0..1001u32 {
+            last = Some(alice.encrypt(&[1], ad).unwrap());
+        }
+        let (h, c) = last.unwrap();
+        bob.decrypt(&h, &c, ad).unwrap();
+        let (h, c) = bob.encrypt(&[2], ad).unwrap();
+        alice.decrypt(&h, &c, ad).unwrap();
+        let mut last = None;
+        for _ in 0..501u32 {
+            last = Some(alice.encrypt(&[3], ad).unwrap());
+        }
+        let (h, c) = last.unwrap();
+        bob.decrypt(&h, &c, ad).unwrap();
+        assert_eq!(bob.skipped.len(), 1500);
+
+        let mut restored = DoubleRatchet::from_checkpoint(&bob.to_checkpoint().unwrap()).unwrap();
+        let cap = restored.skipped.capacity();
+        assert!(cap >= MAX_SKIPPED_KEYS, "restored store");
+        let until = restored.nr + 1000;
+        restored.skip_message_keys(until).unwrap();
+        assert_eq!(restored.skipped.len(), MAX_SKIPPED_KEYS);
+        assert_eq!(restored.skipped.capacity(), cap, "the buffer did not grow");
     }
 
     /// The 64-byte block the root KDF expands into (new root key || new chain

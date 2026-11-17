@@ -331,7 +331,9 @@ impl DoubleRatchet {
             ns,
             nr,
             pn,
-            skipped: IndexMap::with_capacity(count as usize),
+            // Room for every key, not just the `count` stored: a buffer that
+            // grows later moves the keys and frees the old one unwiped (H-6).
+            skipped: IndexMap::with_capacity(MAX_SKIPPED_KEYS),
             max_skipped: MAX_SKIPPED_KEYS,
         };
         // The exact-length check above leaves no partial entry; refuse one

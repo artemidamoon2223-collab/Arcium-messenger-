@@ -239,3 +239,39 @@ fn the_retransmit_waits_double_from_five_seconds_to_five_minutes() {
     assert_eq!(net.retransmit_wait(u32::MAX, cap).as_secs(), 300);
     relay.stop();
 }
+
+/// R-22. The record of what the relay accepted keeps only what is still
+/// read: a pending message (for its backoff) and the initiator's handshake.
+/// Delivered texts, the receipts for them, and everything of a deleted
+/// contact are dropped by the next round.
+#[test]
+fn sent_records_are_dropped_once_nothing_reads_them() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let key = |id: &[u8]| <[u8; 32]>::try_from(id).unwrap();
+
+    let first = key(&alice.send(&bob, "r22-0", "pending"));
+    alice.sync();
+    assert!(alice.net.sent_keys().contains(&first), "pending: kept for its backoff");
+
+    for i in 1..20 {
+        alice.send(&bob, &format!("r22-{i}"), &format!("a{i}"));
+        bob.send(&alice, &format!("r22-b{i}"), &format!("b{i}"));
+    }
+    settle(&[&alice, &bob]);
+    assert_eq!((alice.undelivered(&bob), bob.undelivered(&alice)), (0, 0));
+    // At most the initiator's handshake is left; the responder has none.
+    assert!(alice.net.sent_keys().len() <= 1, "{}", alice.net.sent_keys().len());
+    assert!(!alice.net.sent_keys().contains(&first));
+    assert!(bob.net.sent_keys().is_empty(), "{}", bob.net.sent_keys().len());
+
+    // A contact deleted with a text still pending: dropped by the next round.
+    alice.send(&bob, "r22-last", "never delivered");
+    alice.sync();
+    assert!(!alice.net.sent_keys().is_empty());
+    alice.net.delete_contact(bob.pk.clone()).unwrap();
+    alice.sync();
+    assert!(alice.net.sent_keys().is_empty(), "{}", alice.net.sent_keys().len());
+    relay.stop();
+}

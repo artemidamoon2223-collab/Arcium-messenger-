@@ -299,6 +299,13 @@ impl DoubleRatchet {
         if self.nr.saturating_add(MAX_SKIP) < until {
             return Err(RatchetError::SkipLimit);
         }
+        if self.ckr.is_some() {
+            // Make room before the new keys go in. Evicting afterwards would
+            // leave copies of up to that many kept keys in the freed slots at
+            // the end of the map's buffer; this way the new keys are written
+            // over those slots (R-25, H-6).
+            self.make_room(until.saturating_sub(self.nr) as usize);
+        }
         if let Some(ckr) = self.ckr.as_mut() {
             while self.nr < until {
                 let (new_ckr, mk) = kdf_ck(ckr);
@@ -345,11 +352,22 @@ impl DoubleRatchet {
     }
 
     fn trim_skipped(&mut self) {
-        // Evict oldest-inserted entries first (FIFO by IndexMap insertion order),
-        // all in one pass: `drain` moves the kept entries once, where removing
-        // one key at a time moved them once per evicted key (R-25). Dropping
-        // the iterator unread drops, and so wipes, every evicted key.
-        let excess = self.skipped.len().saturating_sub(self.max_skipped);
+        self.make_room(0);
+    }
+
+    /// Evict the oldest-inserted keys (FIFO by IndexMap insertion order) so
+    /// that `incoming` more fit under `max_skipped`, all in one pass: `drain`
+    /// moves the kept entries once, where removing one key at a time moved
+    /// them once per evicted key (R-25). Dropping the iterator unread drops,
+    /// and so wipes, every evicted key.
+    ///
+    /// `incoming` counts every key about to be skipped. A key that is already
+    /// stored (only if the peer reuses a DH key) is overwritten in place rather
+    /// than added, so in that case one more old key per reused key is evicted
+    /// than strictly needed.
+    fn make_room(&mut self, incoming: usize) {
+        let len = self.skipped.len();
+        let excess = (len + incoming).saturating_sub(self.max_skipped).min(len);
         drop(self.skipped.drain(..excess));
     }
 }
@@ -1300,6 +1318,51 @@ mod tests {
             "the message key of the decrypted message"
         );
         assert_eq!(*bob.skipped[&(sent[2].0.dh, 2)], mks[2]);
+    }
+
+    /// Skipping past a full store evicts the oldest keys, several at once,
+    /// each exactly once, and keeps the rest in insertion order (R-25).
+    #[test]
+    fn skipping_past_a_full_store_evicts_the_oldest_keys_once_each() {
+        let (mut alice, mut bob) = established_pair();
+        bob.max_skipped = 5;
+        let ad = b"assoc";
+        let mks = message_keys(&alice, 10);
+        let sent: Vec<_> = (0..10u8).map(|i| alice.encrypt(&[i], ad).unwrap()).collect();
+        let order = |dr: &DoubleRatchet| dr.skipped.keys().map(|(_, n)| *n).collect::<Vec<u32>>();
+
+        bob.decrypt(&sent[5].0, &sent[5].1, ad).unwrap();
+        assert_eq!(order(&bob), [0, 1, 2, 3, 4], "the store is full");
+
+        // m9 skips 6, 7 and 8: three more keys, so the three oldest go.
+        let (live0, held0) = (live_keys(), held(&alice) + held(&bob));
+        start_log();
+        assert_eq!(*bob.decrypt(&sent[9].0, &sent[9].1, ad).unwrap(), [9]);
+        let log = take_log();
+        let times = |k: &[u8; 32]| log.iter().filter(|x| *x == k).count();
+
+        assert_eq!(order(&bob), [3, 4, 6, 7, 8], "oldest out, the rest in order");
+        for i in [0, 1, 2] {
+            assert_eq!(times(&mks[i]), 2, "evicted {i}: its rollback copy and the key");
+        }
+        for i in [3, 4] {
+            assert_eq!(times(&mks[i]), 1, "kept {i}: only its rollback copy");
+        }
+        for i in [6, 7, 8] {
+            assert_eq!(times(&mks[i]), 0, "new {i}: still held");
+        }
+        assert_eq!(
+            live_keys() - live0,
+            held(&alice) + held(&bob) - held0,
+            "no key container left over"
+        );
+
+        for i in [0, 1, 2] {
+            assert!(bob.decrypt(&sent[i].0, &sent[i].1, ad).is_err(), "evicted {i}");
+        }
+        for i in [3usize, 4, 6, 7, 8] {
+            assert_eq!(*bob.decrypt(&sent[i].0, &sent[i].1, ad).unwrap(), [i as u8]);
+        }
     }
 
     /// The 64-byte block the root KDF expands into (new root key || new chain

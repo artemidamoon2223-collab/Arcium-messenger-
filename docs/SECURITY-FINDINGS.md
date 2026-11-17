@@ -16,6 +16,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **H-7 narrowed 2026-11-15 against `main` @ `79be252`** (PR #189; see "Update 2026-11-15: H-7 narrowed"); no earlier row was changed.
 **Rows R-23 and R-24 (C004 NEW-1, NEW-2) added 2026-11-16 against `main` @ `b142ed7`** (see "Update 2026-11-16: R-23 and R-24"), with a note on R-21; no earlier row was changed.
 **R-23 recorded as fixed 2026-11-17 against `main` @ `b1257df`** (PR #196; see "Update 2026-11-17: R-23 fixed"), with notes on R-21 and H-6; no earlier row was changed.
+**R-25 added as fixed and H-6 narrowed 2026-11-17 against `main` @ `e4e2313`** (PRs #199, #200; see "Update 2026-11-17: R-25 fixed, H-6 narrowed"), with a note on R-21; no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -1065,6 +1066,40 @@ not proof.
 
 **Not established:** behaviour on a phone; any effect on stored data beyond what the code
 shows; the cost of eviction under a forged header (the review's item 4, outside this fix).
+
+---
+
+## Update 2026-11-17: R-25 fixed, H-6 narrowed (`main` @ `e4e2313`)
+
+**Snapshot:** `main` @ `e4e2313bed54e44e6f34e694c6480c28eacf8fa3` (the merge of PR #200). The work was
+asked for by the Owner on 2026-11-17 ("вытесняй ключи", "1 вариант делай", "сразу
+резервировать место под 2000 ключей при загрузке … закрой и всё остальное мерж"). Each
+`path:line` below was re-read at `e4e2313`.
+
+**Runtime evidence.**
+- PR #199 (merged as `5061041`): 18 check runs success on head `d662ee0`. Locally `cargo test --workspace --locked` → 584 passed, 0 failed.
+- PR #200 (merged as `e4e2313`): 18 check runs success on head `e95cd3f`. Locally → 586 passed, 0 failed.
+- Fresh-context reviews (`engineering-code-review`, `arcium-security-review`, `mbr-integration`): three rounds on #199 and two on #200, each round on the version that fixed the previous round's findings. The last round on each PR found nothing at LOW or above. Reviews are analysis, not proof.
+
+| ID | Status at `e4e2313` | Evidence (`main` @ `e4e2313`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **H-6** (stale key copies in the skipped-key `IndexMap`) | **OPEN — narrowed.** Closed: (a) eviction no longer shifts the kept keys once per evicted key, and the new keys are written over the slots the eviction freed, so a full store leaves no copies of kept keys behind on the forged-header, repeated-DH and checkpoint paths (#199); (b) the entries buffer of a new or restored store, and of every copy (`staged_copy`, the rollback snapshot), has room for `MAX_SKIPPED_KEYS`, so it is never reallocated while it holds keys (#200). **Remaining:** the late-read `shift_remove` leaves one stale entry in spare capacity, freed unwiped with the map; copies of key bytes outside the map (stack, AEAD) are untouched. The row's anchors (`ratchet.rs:108, 233, 342`, `swap_remove`, `shift_remove_index`) are stale. | `crates/core-crypto/src/ratchet.rs:62-74` (`copy_skipped`), `:153, 172` (constructors), `:267` (late read), `:305` (snapshot), `:323` (`skip_message_keys`), `:384-387` (`trim_skipped`), `:405` (`make_room`); `crates/core-crypto/src/ratchet/checkpoint.rs:336, 382`; tests `skipping_into_a_full_store_does_not_grow_it` (`ratchet.rs:1420`), `a_new_or_restored_store_never_grows` (`:1477`), `copies_of_a_store_have_room_for_every_key` (`:1510`) | `SV`; `RUNTIME_VERIFIED` (tests; probes counting slots beyond `len` and entries reallocations, x86, uncommitted); freed memory not read (`NV`) |
+| **R-21** (late message lost when its skipped key is evicted) | Note only; status unchanged (OPEN). Eviction order is unchanged by #199 (equal to the old code on random traces, repeated DH keys included). The row's anchor `ratchet.rs:345-352` is now `:384-387` and `:405`. | as above | `SV`; `RUNTIME_VERIFIED` (equivalence probes) |
+
+### New rows
+
+| ID | Sev | Item | Anchor (`main` @ `e4e2313`) | Label |
+|----|-----|------|-----------------------------|-------|
+| **R-25** | LOW (availability) | **A forged header with a new DH key and a large skip was expensive to reject.** Against a full skipped-key store (2,000 keys), a header with a new DH key, `pn = nr + 1000` and `n = 1000` made the receiver derive about 2,000 message keys and evict about 1,000 keys twice **one at a time**, each eviction an O(n) shift, before AEAD failed and the state was rolled back. Found by the review of #196 (item 4). **Status: FIXED** by #199: `make_room` evicts the excess in one `drain` before the new keys are inserted; the resulting store equals the old one in every case checked (random-trace comparison, repeated DH keys included). Release probe on x86 (counting `Zeroizing` stand-in): about 17 ms → about 1.2–1.3 ms per forged header; an ordinary forgery about 30 µs either way. **Remaining:** the up to 2 × 1,000 key derivations `MAX_SKIP` allows (by design); a phone was not measured. | `crates/core-crypto/src/ratchet.rs:323` (`skip_message_keys`), `:405` (`make_room`), `:384-387` (`trim_skipped`); `MAX_SKIP` (`:42`); tests `skipping_past_a_full_store_evicts_the_oldest_keys_once_each` (`:1373`), `a_repeated_dh_key_is_stored_and_evicted_as_before` (`:1440`) | `SV`; `RUNTIME_VERIFIED` (tests; probe, x86 release, uncommitted); phone `NV` |
+
+**Cost of #200 (review, production `Zeroizing`, x86 glibc).** Each received message now
+allocates and frees about 0.6–0.85 MB of short-lived buffers (the reserved store and its
+copies), where a small store used to allocate a few KB. Time per in-order message rose from
+about 3–4 µs to about 3.5–5.7 µs. Bounded; nothing accumulates. Android (scudo, arm64):
+NOT_VERIFIED.
+
+**Not established:** behaviour, time and memory on a phone; the contents of freed memory
+(the probes count copies in live buffers and reallocations; they do not read freed memory).
 
 ---
 

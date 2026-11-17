@@ -580,12 +580,32 @@ fn unpack_initiator_handshake(bytes: &[u8]) -> Result<InitiatorHandshakeV1, Core
         None
     };
 
+    // R-24: a low-order key would make X3DH refuse the handshake later, when
+    // its first message arrives; refusing it here drops it on receipt, so it
+    // is never recorded and no message waits on it.
+    for (pk, what) in [(&identity_pk, "identity"), (&ephemeral_pk, "ephemeral")] {
+        if has_low_order(pk) {
+            return Err(CoreError::InvalidHandshake {
+                msg: format!("the initiator {what} key has low order"),
+            });
+        }
+    }
+
     Ok(InitiatorHandshakeV1 {
         identity_pk,
         ephemeral_pk,
         spk_id,
         opk_id,
     })
+}
+
+/// Whether `pk` encodes an X25519 point of low order (order 1, 2, 4 or 8):
+/// exactly the keys for which every X25519 output is zero. The scalar is a
+/// public constant. A clamped scalar is 8·k′ with 2^251 ≤ k′ < 2^252, so it
+/// sends every point of order dividing 8 to zero, and no other point: k′ is
+/// below the large prime orders of the curve and of its twist.
+fn has_low_order(pk: &PublicKey) -> bool {
+    !StaticSecret::from([1u8; 32]).diffie_hellman(pk).was_contributory()
 }
 
 // ── HANDSHAKE_REFUSAL_V1 ──────────────────────────────────────────────────────
@@ -868,8 +888,11 @@ impl ArciumCore {
 
         // x3dh_initiate verifies the signed-prekey object first; surface that as
         // its own error rather than as a generic handshake failure.
-        let alice_session = x3dh_initiate(&identity.dh_key, our_identity_pk, &bundle)
-            .map_err(|X3dhError::BadSignature| CoreError::BadSignedPrekeySignature)?;
+        let alice_session =
+            x3dh_initiate(&identity.dh_key, our_identity_pk, &bundle).map_err(|e| match e {
+                X3dhError::BadSignature => CoreError::BadSignedPrekeySignature,
+                other => CoreError::from(other),
+            })?;
 
         let ratchet = DoubleRatchet::init_alice(
             &alice_session.root_key,
@@ -1031,7 +1054,7 @@ fn responder_session(
     signed_prekey_sk: &StaticSecret,
     opk: Option<&StaticSecret>,
     handshake: &InitiatorHandshakeV1,
-) -> Session {
+) -> Result<Session, CoreError> {
     let bob_session = x3dh_respond(
         &identity.dh_key,
         our_identity_pk,
@@ -1039,7 +1062,7 @@ fn responder_session(
         opk,
         handshake.identity_pk,
         handshake.ephemeral_pk,
-    );
+    )?;
     let ratchet = DoubleRatchet::init_bob(&bob_session.root_key, signed_prekey_sk.clone());
     // This runs for every candidate first message, including ones that will
     // not authenticate. The ratchet holds its own copy and wipes it on drop;
@@ -1047,11 +1070,11 @@ fn responder_session(
     drop(bob_session.root_key);
     // Owner is the initiator identity this handshake was answered for, not
     // anything the caller asserted separately.
-    Session {
+    Ok(Session {
         ratchet,
         ad: bob_session.ad.clone(),
         peer_identity_pk: handshake.identity_pk.to_bytes(),
-    }
+    })
 }
 
 /// Creates the responder session for `provisional` from the initiator's
@@ -1104,7 +1127,7 @@ fn accept_first_message(
         &record.signed_prekey_sk,
         taken.as_ref(),
         &handshake,
-    );
+    )?;
     let extra = match rotated {
         Some(new_record) => vec![SideWrite::replace(PREKEYS_KEY.into(), record_bytes, new_record)
             .map_err(|_| CoreError::Storage {
@@ -1247,7 +1270,7 @@ impl ArciumCore {
             &record.signed_prekey_sk,
             record.opk.as_ref().map(|(_, sk)| sk),
             &handshake,
-        );
+        )?;
         messenger
             .first_message_authenticates(our_identity_pk.to_bytes(), session, wire)
             .map_err(map)
@@ -2106,7 +2129,7 @@ mod tests {
             assert!(
                 matches!(
                     bob.establish_session_responder(1, hs),
-                    Err(CoreError::InvalidHandshake { .. })
+                    Err(CoreError::InvalidHandshake { msg }) if !msg.contains("low order")
                 ),
                 "handshake byte {idx} = {value:#04x} must be refused"
             );
@@ -2138,10 +2161,55 @@ mod tests {
         assert!(
             matches!(
                 bob.establish_session_responder(1, hs),
-                Err(CoreError::InvalidHandshake { .. })
+                Err(CoreError::InvalidHandshake { msg }) if !msg.contains("low order")
             ),
             "handshake with used_otp=0 and a non-zero id must be refused"
         );
+    }
+
+    /// R-24: a handshake whose initiator identity or ephemeral key has low
+    /// order is refused on receipt, as a malformed one is.
+    #[test]
+    fn handshake_with_a_low_order_key_is_rejected() {
+        let (bob, _bundle) = peer_with_prekeys(214);
+        let good = PublicKey::from(&StaticSecret::random_from_rng(rand_core::OsRng));
+        let mut low = [0u8; 32];
+        low[0] = 1; // u = 1, order 4
+        for (identity, ephemeral) in [(low, good.to_bytes()), (good.to_bytes(), low), ([0u8; 32], good.to_bytes())] {
+            let mut hs = vec![0u8; INITIATOR_HANDSHAKE_V1_LEN];
+            hs[0] = PROTOCOL_VERSION;
+            hs[1] = CIPHER_SUITE;
+            hs[4..36].copy_from_slice(&identity);
+            hs[36..68].copy_from_slice(&ephemeral);
+            let err = bob
+                .establish_session_responder(1, hs)
+                .expect_err("a low-order key must be refused");
+            assert!(
+                matches!(&err, CoreError::InvalidHandshake { msg } if msg.contains("low order")),
+                "expected InvalidHandshake (low order), got {err:?}"
+            );
+        }
+    }
+
+    /// R-24: a bundle whose one-time prekey has low order is refused by the
+    /// initiator. That field is outside the signature, so anyone on the path
+    /// could set it; the signature still verifies.
+    #[test]
+    fn bundle_with_a_low_order_one_time_prekey_is_rejected() {
+        let (_bob, bundle) = peer_with_prekeys(215);
+        let alice = fresh_core(216);
+        alice.save_identity(Identity::generate()).unwrap();
+        assert_eq!(bundle[2], FLAG_OTP, "the bundle carries a one-time prekey");
+        let mut forged = bundle.clone();
+        forged[172..204].copy_from_slice(&[0u8; 32]);
+        let err = alice
+            .establish_session_initiator(1, forged)
+            .expect_err("a low-order one-time prekey must be refused");
+        assert!(
+            matches!(&err, CoreError::Handshake { msg } if msg.contains("low order")),
+            "expected Handshake (low order), got {err:?}"
+        );
+        assert!(alice.establish_session_initiator(1, bundle).is_ok(), "the genuine bundle works");
     }
 
     // ── Signed prekey ────────────────────────────────────────────────────────

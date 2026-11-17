@@ -5,7 +5,7 @@ use hkdf::Hkdf;
 use rand_core::OsRng;
 use sha2::Sha256;
 use thiserror::Error;
-use x25519_dalek::{PublicKey, StaticSecret};
+use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Protocol version carried by `ARCIUM_X3DH_FORMAT_V1` structures.
@@ -23,6 +23,13 @@ pub const SIGNED_PREKEY_OBJECT_LEN: usize = 116;
 pub enum X3dhError {
     #[error("signed prekey signature verification failed")]
     BadSignature,
+    /// A Diffie-Hellman output was all zeros: one of the peer's public keys
+    /// has low order. That term then adds nothing secret to the root key, and
+    /// with every term zero anyone could compute it (tracker R-24). A public
+    /// key made from a secret by `PublicKey::from` never has low order, so
+    /// only a malformed or malicious key is refused.
+    #[error("a peer public key has low order")]
+    LowOrderKey,
 }
 
 pub struct PrekeyBundle {
@@ -140,6 +147,8 @@ pub fn x3dh_initiate(
         .as_ref()
         .map(|opk| ephemeral_sk.diffie_hellman(opk));
 
+    check_contributory([Some(&dh1), Some(&dh2), Some(&dh3), dh4.as_ref()])?;
+
     let root_key = derive_root(
         dh1.as_bytes(),
         dh2.as_bytes(),
@@ -173,11 +182,12 @@ pub fn x3dh_respond(
     our_one_time_prekey_sk: Option<&StaticSecret>,
     their_identity_pk: PublicKey,
     their_ephemeral_pk: PublicKey,
-) -> BobSession {
+) -> Result<BobSession, X3dhError> {
     let dh1 = our_signed_prekey_sk.diffie_hellman(&their_identity_pk);
     let dh2 = our_identity_sk.diffie_hellman(&their_ephemeral_pk);
     let dh3 = our_signed_prekey_sk.diffie_hellman(&their_ephemeral_pk);
     let dh4 = our_one_time_prekey_sk.map(|opk| opk.diffie_hellman(&their_ephemeral_pk));
+    check_contributory([Some(&dh1), Some(&dh2), Some(&dh3), dh4.as_ref()])?;
 
     let root_key = derive_root(
         dh1.as_bytes(),
@@ -190,10 +200,24 @@ pub fn x3dh_respond(
     ad.extend_from_slice(their_identity_pk.as_bytes());
     ad.extend_from_slice(our_identity_pk.as_bytes());
 
-    BobSession {
+    Ok(BobSession {
         root_key,
         their_ephemeral_pk,
         ad,
+    })
+}
+
+/// Refuses the handshake if any Diffie-Hellman output is all zeros, which
+/// happens exactly when the peer's key in it has low order (R-24). Every term
+/// is checked, not only the case where all are zero: a legitimate peer never
+/// produces a zero term, so a single one already marks the key as malformed
+/// or malicious. `was_contributory` compares in constant time; which term
+/// failed depends only on public keys.
+fn check_contributory(outputs: [Option<&SharedSecret>; 4]) -> Result<(), X3dhError> {
+    if outputs.iter().flatten().all(|dh| dh.was_contributory()) {
+        Ok(())
+    } else {
+        Err(X3dhError::LowOrderKey)
     }
 }
 
@@ -536,6 +560,116 @@ mod key_lifetime_tests {
             for needle in renderings(&alice.root_key) {
                 assert!(!text.contains(&needle), "the derived root key is printed");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod low_order_key_tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    /// Encodings of X25519 points of order 1, 2, 4 or 8, canonical and not
+    /// (the list libsodium refuses): u = 0, u = 1, the two points of order
+    /// 8, and p - 1, p, p + 1.
+    fn low_order_keys() -> Vec<PublicKey> {
+        let mut keys = vec![[0u8; 32], {
+            let mut k = [0u8; 32];
+            k[0] = 1;
+            k
+        }];
+        keys.push([
+            0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f,
+            0xc4, 0x6a, 0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16,
+            0x5f, 0x49, 0xb8, 0x00,
+        ]);
+        keys.push([
+            0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83,
+            0xef, 0x5b, 0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd,
+            0xd0, 0x9f, 0x11, 0x57,
+        ]);
+        for low in [0xec_u8, 0xed, 0xee] {
+            let mut k = [0xff_u8; 32];
+            k[0] = low;
+            k[31] = 0x7f;
+            keys.push(k);
+        }
+        keys.into_iter().map(PublicKey::from).collect()
+    }
+
+    fn secret() -> StaticSecret {
+        StaticSecret::random_from_rng(OsRng)
+    }
+
+    /// The responder refuses an initiator identity or ephemeral key of low
+    /// order, with and without a one-time prekey; before R-24 both keys at
+    /// u = 0 gave a root key independent of the responder's secrets.
+    #[test]
+    fn responder_refuses_a_low_order_initiator_key() {
+        let (id, spk, opk) = (secret(), secret(), secret());
+        let good = PublicKey::from(&secret());
+        for bad in low_order_keys() {
+            for one_time in [None, Some(&opk)] {
+                for (their_id, their_eph) in [(bad, good), (good, bad), (bad, bad)] {
+                    let r = x3dh_respond(&id, PublicKey::from(&id), &spk, one_time, their_id, their_eph);
+                    assert!(
+                        matches!(r, Err(X3dhError::LowOrderKey)),
+                        "{:02x?} must be refused",
+                        bad.as_bytes()
+                    );
+                }
+            }
+        }
+    }
+
+    /// A correctly signed bundle whose identity, signed prekey or one-time
+    /// prekey has low order is refused by the initiator.
+    #[test]
+    fn initiator_refuses_a_low_order_bundle_key() {
+        let signing = SigningKey::generate(&mut OsRng);
+        let bundle = |identity_pk: PublicKey, signed_prekey_pk: PublicKey, opk: Option<PublicKey>| {
+            let object = signed_prekey_object_v1(&identity_pk, &signing.verifying_key(), &signed_prekey_pk);
+            PrekeyBundle {
+                identity_pk,
+                signing_pk: signing.verifying_key(),
+                signed_prekey_pk,
+                signed_prekey_signature: signing.sign(&object),
+                one_time_prekey_pk: opk,
+                one_time_prekey_id: opk.map(|_| 7),
+            }
+        };
+        let good = || PublicKey::from(&secret());
+        let a = secret();
+        assert!(x3dh_initiate(&a, PublicKey::from(&a), &bundle(good(), good(), Some(good()))).is_ok());
+        for bad in low_order_keys() {
+            for b in [
+                bundle(bad, good(), None),
+                bundle(good(), bad, None),
+                bundle(good(), good(), Some(bad)),
+            ] {
+                assert!(
+                    matches!(x3dh_initiate(&a, PublicKey::from(&a), &b), Err(X3dhError::LowOrderKey)),
+                    "{:02x?} must be refused",
+                    bad.as_bytes()
+                );
+            }
+        }
+    }
+
+    /// Keys made from secrets pass, as every existing handshake test also shows.
+    #[test]
+    fn honest_keys_pass() {
+        let (id, spk, opk, a, e) = (secret(), secret(), secret(), secret(), secret());
+        for one_time in [None, Some(&opk)] {
+            assert!(x3dh_respond(
+                &id,
+                PublicKey::from(&id),
+                &spk,
+                one_time,
+                PublicKey::from(&a),
+                PublicKey::from(&e),
+            )
+            .is_ok());
         }
     }
 }

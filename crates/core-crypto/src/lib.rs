@@ -91,7 +91,8 @@ mod tests {
             None,
             a_id_pk,
             alice.ephemeral_pk,
-        );
+        )
+        .expect("respond");
 
         assert_eq!(alice.root_key, bob.root_key, "root keys must match");
     }
@@ -119,7 +120,8 @@ mod tests {
             None,
             a_id_pk,
             alice.ephemeral_pk,
-        );
+        )
+        .expect("respond");
 
         assert_eq!(alice.root_key, bob.root_key);
         // AD: alice prepends hers, bob prepends theirs — the bytes must be identical.
@@ -150,7 +152,8 @@ mod tests {
             Some(&otpk_sk),
             a_id_pk,
             alice.ephemeral_pk,
-        );
+        )
+        .expect("respond");
 
         assert_eq!(alice.root_key, bob.root_key);
     }
@@ -213,7 +216,8 @@ mod tests {
             None,
             a1_id_pk,
             s1.ephemeral_pk,
-        );
+        )
+        .expect("respond");
         let b2 = x3dh_respond(
             &b_id_sk,
             b_id_pk,
@@ -221,7 +225,8 @@ mod tests {
             None,
             a2_id_pk,
             s2.ephemeral_pk,
-        );
+        )
+        .expect("respond");
         assert_eq!(s1.root_key, b1.root_key);
         assert_eq!(s2.root_key, b2.root_key);
     }
@@ -250,7 +255,8 @@ mod tests {
             None,
             a_id_pk,
             alice_x3dh.ephemeral_pk,
-        );
+        )
+        .expect("respond");
 
         // Alice uses Bob's signed prekey as the initial DH public key.
         let alice_r = DoubleRatchet::init_alice(&alice_x3dh.root_key, b_spk_pk);

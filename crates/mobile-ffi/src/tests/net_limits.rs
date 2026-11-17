@@ -12,6 +12,7 @@ use super::net_harness::*;
 use crate::network::wire::Envelope;
 use crate::network::{scan_hook, NetworkMessenger, Pass, BUDGET_EXHAUSTED};
 use relay::protocol::{read_frame, write_frame, MAX_FETCH};
+use sha2::{Digest, Sha256};
 
 /// A relay that answers every request with a frame header announcing 1 MiB
 /// and then sends one byte every 100 ms: each read succeeds within any
@@ -252,7 +253,8 @@ fn sent_records_are_dropped_once_nothing_reads_them() {
     let key = |id: &[u8]| <[u8; 32]>::try_from(id).unwrap();
 
     let first = key(&alice.send(&bob, "r22-0", "pending"));
-    alice.sync();
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
     assert!(alice.net.sent_keys().contains(&first), "pending: kept for its backoff");
 
     for i in 1..20 {
@@ -267,11 +269,56 @@ fn sent_records_are_dropped_once_nothing_reads_them() {
     assert!(bob.net.sent_keys().is_empty(), "{}", bob.net.sent_keys().len());
 
     // A contact deleted with a text still pending: dropped by the next round.
-    alice.send(&bob, "r22-last", "never delivered");
-    alice.sync();
-    assert!(!alice.net.sent_keys().is_empty());
+    let last = key(&alice.send(&bob, "r22-last", "never delivered"));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert!(alice.net.sent_keys().contains(&last));
     alice.net.delete_contact(bob.pk.clone()).unwrap();
-    alice.sync();
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
     assert!(alice.net.sent_keys().is_empty(), "{}", alice.net.sent_keys().len());
     relay.stop();
+}
+
+/// R-22. While the contact has not answered, the initiator's handshake and
+/// its pending messages keep their records: their retransmission backs off.
+#[test]
+fn an_unanswered_handshake_and_its_messages_keep_their_records() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = (Device::new(&addr, 31), Device::new(&addr, 32));
+    alice.knows(&bob);
+    bob.knows(&alice);
+    bob.net.publish_prekeys().unwrap();
+    alice.net.start_session(bob.pk.clone()).unwrap();
+    let text = <[u8; 32]>::try_from(alice.send(&bob, "r22-u", "unanswered").as_slice()).unwrap();
+    for _ in 0..3 {
+        let r = alice.sync(); // Bob never syncs.
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+    }
+    let handle = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let hs = alice.core.initiator_handshake(handle).unwrap().expect("unconfirmed initiator");
+    let hs_key: [u8; 32] = Sha256::digest(&hs).into();
+    let keys = alice.net.sent_keys();
+    assert!(keys.contains(&hs_key), "the handshake keeps its backoff");
+    assert!(keys.contains(&text), "the pending text keeps its backoff");
+    relay.stop();
+}
+
+/// R-22. The record is pruned after a round that fails, too: here the relay
+/// is gone, and the deleted contact's entries are dropped all the same.
+#[test]
+fn sent_records_are_pruned_after_a_failed_round() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let id = <[u8; 32]>::try_from(alice.send(&bob, "r22-f", "pending").as_slice()).unwrap();
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert!(alice.net.sent_keys().contains(&id));
+    relay.stop();
+    alice.net.delete_contact(bob.pk.clone()).unwrap();
+    let r = alice.sync();
+    assert!(!r.errors.is_empty(), "the relay is gone, the round fails");
+    assert!(alice.net.sent_keys().is_empty(), "{}", alice.net.sent_keys().len());
 }

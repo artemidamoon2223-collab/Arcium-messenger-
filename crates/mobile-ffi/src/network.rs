@@ -512,6 +512,11 @@ impl NetworkMessenger {
         if let Err(e) = self.sync_round(&mut report, &mut relay_refusals) {
             report.errors.push(e.to_string());
         }
+        // After every round, also one that failed part way: a relay that
+        // breaks each round must not keep this record growing (R-22).
+        if let Err(e) = self.prune_sent() {
+            report.errors.push(e.to_string());
+        }
         report.errors.extend(relay_refusals.line());
         report
     }
@@ -717,7 +722,6 @@ impl NetworkMessenger {
         // Receipts produced above, and the first messages of new sessions.
         let sessions = self.sessions()?;
         self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
-        self.prune_sent(&sessions, Instant::now())?;
         if budget.cut.get() {
             // What this round processed is committed and deleted; the rest
             // stays on the relay (or in the outbox) for the next round.
@@ -841,7 +845,9 @@ impl NetworkMessenger {
             .map_err(|e| CoreError::messaging(handle, e))
     }
 
-    /// Whether the relay accepted the message `id` in this process's lifetime.
+    /// Whether the relay accepted the pending message `id` in this process's
+    /// lifetime (entries of messages no longer pending are dropped:
+    /// [`Self::prune_sent`]).
     fn was_sent(&self, id: &[u8]) -> bool {
         let Ok(id) = <[u8; 32]>::try_from(id) else {
             return false;
@@ -874,16 +880,17 @@ impl NetworkMessenger {
     /// acknowledged or abandoned message, a receipt (acknowledged as it is
     /// sent) and anything of a contact without a session are never asked
     /// about again. So an entry stays while its key is the id of a pending
-    /// outgoing message or the hash of the initiator handshake of one of
-    /// `sessions`, and also when it was written at or after `since`, by a
-    /// send this pass may not have seen.
-    fn prune_sent(&self, sessions: &[([u8; 32], u64)], since: Instant) -> Result<(), CoreError> {
+    /// outgoing message or the hash of the initiator handshake of a session
+    /// read here, and also when it was written after this pass began, by a
+    /// send (possibly on a session created meanwhile) it may not have seen.
+    fn prune_sent(&self) -> Result<(), CoreError> {
+        let since = Instant::now();
         let mut live = HashSet::new();
-        for (_, handle) in sessions {
-            if let Some(hs) = self.core.initiator_handshake(*handle)? {
+        for (_, handle) in self.sessions()? {
+            if let Some(hs) = self.core.initiator_handshake(handle)? {
                 live.insert(<[u8; 32]>::from(Sha256::digest(&hs)));
             }
-            for m in self.core.pending_outgoing(*handle)? {
+            for m in self.core.pending_outgoing(handle)? {
                 if let Ok(id) = <[u8; 32]>::try_from(m.message_id.as_slice()) {
                     live.insert(id);
                 }

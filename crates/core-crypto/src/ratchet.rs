@@ -523,7 +523,6 @@ mod tests {
         assert_eq!(*dr.skipped[&(dhr, 3)], recent_mk, "recently-skipped key value intact");
     }
 
-
     /// R-23 regression: reading a late message must not reorder the skipped
     /// keys. `trim_skipped` evicts from index 0 and relies on insertion order;
     /// a `swap_remove` here moved the newest key into the freed slot, so a
@@ -534,12 +533,16 @@ mod tests {
         bob.max_skipped = 3;
         let ad = b"ad";
         let m: Vec<_> = (0u8..7).map(|i| alice.encrypt(&[i], ad).unwrap()).collect();
+        let order = |dr: &DoubleRatchet| dr.skipped.keys().map(|(_, n)| *n).collect::<Vec<u32>>();
         // m3 first: keys 0, 1, 2 are stored in that order.
         bob.decrypt(&m[3].0, &m[3].1, ad).unwrap();
-        // m0 arrives late and takes its key out.
+        assert_eq!(order(&bob), [0, 1, 2]);
+        // m0 arrives late and takes its key out; the rest keep their order.
         bob.decrypt(&m[0].0, &m[0].1, ad).unwrap();
+        assert_eq!(order(&bob), [1, 2]);
         // m6: keys 4 and 5 are stored, the cap of 3 evicts exactly one key.
         bob.decrypt(&m[6].0, &m[6].1, ad).unwrap();
+        assert_eq!(order(&bob), [2, 4, 5]);
         // The evicted key must be the oldest one left (1), not the newer 2.
         assert!(bob.decrypt(&m[1].0, &m[1].1, ad).is_err(), "oldest key (1) is evicted");
         assert_eq!(*bob.decrypt(&m[2].0, &m[2].1, ad).unwrap(), [2u8], "newer key (2) survives");

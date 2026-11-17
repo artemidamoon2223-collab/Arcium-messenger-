@@ -249,3 +249,8 @@ D-047 · 2026-11-17 · OWNER · DONE
 D-048 · 2026-11-17 · OWNER · DONE
 - What: verdict on the shorter-CLAUDE.md trial (D-037, #186): "Короткий CLAUDE.md оставляем". The shorter file stays; no revert of #186. Rules added since (#192, #193) stay as they are.
 - Evidence: Owner message of 2026-11-17 in session `013Fd9w11HPCwF53H2tPuKpt`.
+
+D-049 · 2026-11-17 · OWNER · DONE (fix) / OPEN (follow-ups)
+- What: "Делай R-23", then "мёрдж #196". #196 replaces `swap_remove` with `shift_remove` for a late message's skipped key (`crates/core-crypto/src/ratchet.rs:242`), so `trim_skipped` evicts the oldest key; new test `late_read_keeps_skipped_keys_in_insertion_order`. Tracker PR #198 records R-23 FIXED with the remaining effect (checkpoints written by the old code keep their order), notes on R-21 and H-6. "Добавь when_to_use в навыки ревью": #197 adds a `when_to_use` line to `engineering-code-review` and `arcium-security-review` (Claude Code skills docs read by the Owner's request).
+- Not done, Owner's call: the review of #196 (item 4, INFO, pre-existing) measured about 16 ms to reject a forged header with a new DH and a large skip (one-by-one eviction in `trim_skipped`) against about 22 µs for an ordinary forgery. A fix (evict the excess with one `drain`) and a tracker row wait for the Owner's word; nothing recorded in the tracker yet.
+- Evidence: Owner messages of 2026-11-17 in session `013Fd9w11HPCwF53H2tPuKpt`; #196 merged as `b1257df` (18 check runs success on head `dfc0c96`), a normal merge commit pinned with `expectedHeadSha`; locally 581 passed, 0 failed; the new test fails on the old call (`left: [2, 1]`).

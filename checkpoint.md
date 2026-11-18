@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-18 14:05 UTC, by a Claude Code cloud session
+Updated: 2026-11-18 14:15 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,10 +13,10 @@ Updated: 2026-11-18 14:05 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `f452eb3bf110022b7e4c8cd5aa586533774493ec` (merge of PR #211, 2026-11-18)
+- `main` = `c8489d9f612326dba79282e5867ff43d696347d4` (merge of PR #212, 2026-11-18)
 
 ## Done
-- 18 Nov (D-057): #211 X-6 a handshake without a one-time prekey is never answered (`f452eb3`); tracker PR #212 open (X-6 FIXED, R-6 revisit due).
+- 18 Nov (D-057): #211 X-6 a handshake without a one-time prekey is never answered (`f452eb3`); #212 tracker X-6 FIXED, R-6 revisit due (`c8489d9`).
 - 18 Nov (D-056): #209 R-14 far skip up to 100,000 after a 10-minute wait (`7755efd`); #210 tracker R-14, R-20 PARTIAL (`88969c6`).
 - 18 Nov (D-055): #207 R-21 GONE notice for the current receiving chain (`6e00a7f`); #208 tracker R-21 PARTIAL (`b729891`).
 - 17 Nov (D-054): #205 R-22 `last_sent` pruned after every round (`3f0cf9f`); #206 tracker R-22 FIXED (`003af23`).
@@ -42,7 +42,7 @@ Updated: 2026-11-18 14:05 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #212 tracker: X-6 FIXED, R-6 revisit due (merge only on the Owner's word).
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.

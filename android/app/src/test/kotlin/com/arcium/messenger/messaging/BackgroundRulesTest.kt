@@ -71,7 +71,7 @@ class BackgroundRulesTest {
     )
 
     private fun conversation(key: Byte, last: ChatEntry?, unread: UInt = 0u) = Conversation(
-        ByteArray(32) { key }, "Bob", "fp", ChatSessionState.Established, false, false, "", unread, last,
+        ByteArray(32) { key }, "Bob", "fp", ChatSessionState.Established, false, false, false, "", unread, last,
     )
 
     private val keyA = "01".repeat(32)

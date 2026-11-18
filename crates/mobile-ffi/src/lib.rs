@@ -2584,4 +2584,5 @@ mod tests {
     mod unresolved;
     mod false_conflict;
     mod relay_v2;
+    mod beyond_recall;
 }

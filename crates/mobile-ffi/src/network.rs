@@ -7,12 +7,14 @@
 //! can repeat a transmission but never produce a second ciphertext for a
 //! logical message or a second acceptance of one.
 //!
-//! Delivery is decided end to end. A text leaves the outbox only when the
-//! recipient's receipt arrives inside the ratchet, naming its exact message id;
-//! the relay accepting it proves nothing. Receipts themselves are not
-//! acknowledged: they leave the outbox once the relay has accepted them, and
-//! if one is lost the sender retransmits the text, which is received as a
-//! duplicate and answered with a new receipt.
+//! Delivery is decided end to end. A text leaves the outbox as delivered only
+//! when the recipient's receipt arrives inside the ratchet, naming its exact
+//! message id; the relay accepting it proves nothing. (The recipient can also
+//! name it in a GONE message, when it can never read it: the text is then
+//! abandoned.) Receipts and GONE messages themselves are not acknowledged:
+//! they leave the outbox once the relay has accepted them, and if one is lost
+//! the sender retransmits the text, which is received again and answered
+//! again.
 //!
 //! The relay is either `RELAY_PROTOCOL_V2` (TLS 1.3 to its pinned key, and
 //! mailbox authentication with this device's identity key, which stays in
@@ -34,7 +36,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::contacts::{pinned, Card};
-use core_protocol::messaging::{MessageId, Received};
+use core_protocol::messaging::{message_id, MessageId, Received};
 
 use crate::{
     handshake_hash, unpack_prekey_bundle, ArciumCore, CoreError, PlaintextBytes,
@@ -154,6 +156,15 @@ pub struct NetworkMessenger {
     resume: Mutex<Resume>,
     /// Handshake refusals to send, and which were sent. In memory only.
     refusals: Mutex<Refusals>,
+    /// Per session, messages that arrived after their key was gone (R-21),
+    /// collected during a round and named to the peer in GONE messages at
+    /// its end ([`Self::commit_gone`]). In memory only, and emptied after
+    /// every round: a message not named (a crash, a round that failed) is
+    /// sent again by the peer and found again.
+    gone: Mutex<HashMap<u64, Vec<[u8; 32]>>>,
+    /// Test aid: the minute [`Self::this_minute`] reads instead of the clock.
+    #[cfg(test)]
+    minute: Mutex<Option<u64>>,
 }
 
 /// Refusals this process owes or sent (docs/NET-MESSAGING.md, section 6).
@@ -380,6 +391,9 @@ impl NetworkMessenger {
             last_sent: Mutex::new(HashMap::new()),
             refused: Mutex::new(HashMap::new()),
             refusals: Mutex::new(Refusals::default()),
+            gone: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            minute: Mutex::new(None),
             limits: Mutex::new(Limits::default()),
             resume: Mutex::new(Resume::default()),
         })
@@ -517,6 +531,9 @@ impl NetworkMessenger {
         if let Err(e) = self.prune_sent() {
             report.errors.push(e.to_string());
         }
+        // Nor the messages found beyond recall in a round that failed before
+        // naming them: the contact sends them again, and they are found again.
+        self.gone.lock().expect("gone").clear();
         report.errors.extend(relay_refusals.line());
         report
     }
@@ -719,7 +736,9 @@ impl NetworkMessenger {
             };
         }
         self.send_refusals(&mut conn, &budget, relay_refusals, report)?;
-        // Receipts produced above, and the first messages of new sessions.
+        self.commit_gone(report);
+        // Receipts and GONE messages produced above, and the first messages
+        // of new sessions.
         let sessions = self.sessions()?;
         self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
         if budget.cut.get() {
@@ -1014,7 +1033,12 @@ impl NetworkMessenger {
                 }
                 self.mark_sent(id);
                 report.published += 1;
-                if m.client_message_id.first() == Some(&client_id::RECEIPT) {
+                // Receipts and GONE messages are not answered: each leaves
+                // the outbox once the relay accepted it.
+                if matches!(
+                    m.client_message_id.first(),
+                    Some(&client_id::RECEIPT) | Some(&client_id::GONE)
+                ) {
                     self.core.acknowledge_outgoing(*handle, m.message_id)?;
                 }
             }
@@ -1165,6 +1189,30 @@ impl NetworkMessenger {
                                     .push(format!("checking a first message beside our session: {e}")),
                             }
                         }
+                        // A message of our session whose key is gone (it
+                        // arrived after the key was evicted) can never be
+                        // read: name it to the contact, who then stops
+                        // sending it (R-21). Only the contact can read the
+                        // GONE message, and it changes nothing for an id the
+                        // contact has not pending, so a forged message that
+                        // only looks late gains nothing, and draws at most
+                        // one GONE per session per round. A failed check is
+                        // reported and must not abort the round.
+                        if !first {
+                            match self.core.beyond_recall(handle, &wire) {
+                                Ok(true) => self
+                                    .gone
+                                    .lock()
+                                    .expect("gone")
+                                    .entry(handle)
+                                    .or_default()
+                                    .push(message_id(&wire)),
+                                Ok(false) => {}
+                                Err(e) => report
+                                    .errors
+                                    .push(format!("checking whether a message is beyond recall: {e}")),
+                            }
+                        }
                         report.dropped += 1;
                         Ok(Fate::Delete)
                     }
@@ -1240,6 +1288,18 @@ impl NetworkMessenger {
                 Ok(Fate::Delete)
             }
         }
+    }
+
+    /// Test aid: the minute [`Self::this_minute`] reads (`None`: the clock).
+    #[cfg(test)]
+    pub(crate) fn set_minute(&self, minute: Option<u64>) {
+        *self.minute.lock().expect("minute") = minute;
+    }
+
+    /// Test aid: how many messages found beyond recall wait to be named.
+    #[cfg(test)]
+    pub(crate) fn gone_len(&self) -> usize {
+        self.gone.lock().expect("gone").values().map(Vec::len).sum()
     }
 
     /// Test aid: the keys `last_sent` holds.
@@ -1436,6 +1496,26 @@ impl NetworkMessenger {
                     .acknowledge_incoming(handle, id.to_vec())
                     .map(|_| ())
             }
+            // The contact cannot read these: a text of ours still pending
+            // among them is abandoned, so it is not sent again and shows
+            // NotDelivered (R-21). Any other id is ignored.
+            Some(Payload::Gone(ids)) => {
+                let texts: Vec<Vec<u8>> = self
+                    .core
+                    .pending_outgoing(handle)?
+                    .into_iter()
+                    .filter(|m| m.client_message_id.first() == Some(&client_id::TEXT))
+                    .map(|m| m.message_id)
+                    .collect();
+                for gone in ids {
+                    if texts.iter().any(|t| t[..] == gone[..]) {
+                        self.core.abandon_outgoing(handle, gone.to_vec())?;
+                    }
+                }
+                self.core
+                    .acknowledge_incoming(handle, id.to_vec())
+                    .map(|_| ())
+            }
             None => {
                 report.dropped += 1;
                 report.errors.push("unknown payload type discarded".into());
@@ -1444,6 +1524,40 @@ impl NetworkMessenger {
                     .map(|_| ())
             }
         }
+    }
+
+    /// Commits at most one GONE message per session for the messages this
+    /// round found beyond recall (R-21), naming the first
+    /// [`wire::MAX_RECEIPT_IDS`] of them in id order. The others are found
+    /// again when the contact sends them again; and forged messages that only
+    /// look late draw no more than one GONE per session per round. A GONE
+    /// leaves the outbox once the relay accepted it, so the contact sending
+    /// a named message again may never have got it: as for a receipt
+    /// ([`Self::receipt_again`]), a later GONE for the same ids is committed,
+    /// at most one per minute. A failure is reported and leaves the round
+    /// going: the contact sends those messages again, and they are found
+    /// again.
+    fn commit_gone(&self, report: &mut SyncReport) {
+        let found = std::mem::take(&mut *self.gone.lock().expect("gone"));
+        for (handle, mut ids) in found {
+            ids.sort_unstable();
+            ids.dedup();
+            ids.truncate(wire::MAX_RECEIPT_IDS);
+            if let Err(e) = self.name_gone(handle, &ids) {
+                report.errors.push(format!("naming messages beyond recall: {e}"));
+            }
+        }
+    }
+
+    fn name_gone(&self, handle: u64, ids: &[[u8; 32]]) -> Result<(), CoreError> {
+        let payload = Payload::Gone(ids.to_vec()).encode();
+        if let SendResult::AlreadyAcknowledged { .. } =
+            self.core.send_committed(handle, &client_id::gone(ids, 0), &payload)?
+        {
+            self.core
+                .send_committed(handle, &client_id::gone(ids, self.this_minute() + 1), &payload)?;
+        }
+        Ok(())
     }
 
     fn receipt(&self, handle: u64, id: &[u8; 32], round: u64) -> Result<SendResult, CoreError> {
@@ -1471,13 +1585,22 @@ impl NetworkMessenger {
             return Ok(());
         }
         if let SendResult::AlreadyAcknowledged { .. } = self.receipt(handle, &id32, 0)? {
-            let minute = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() / 60)
-                .unwrap_or(0);
-            self.receipt(handle, &id32, minute + 1)?;
+            self.receipt(handle, &id32, self.this_minute() + 1)?;
         }
         Ok(())
+    }
+
+    /// Minutes since the Unix epoch: the round of a receipt or GONE sent
+    /// again, so each is sent again at most once a minute.
+    fn this_minute(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(minute) = *self.minute.lock().expect("minute") {
+            return minute;
+        }
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() / 60)
+            .unwrap_or(0)
     }
 }
 

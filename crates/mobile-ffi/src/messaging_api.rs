@@ -242,6 +242,18 @@ impl ArciumCore {
             .map(send_result))
     }
 
+    /// Whether `message`, which did not decrypt under the session
+    /// `session_id`, can never be decrypted here because its key is gone
+    /// (`Messenger::beyond_recall`; tracker R-21).
+    pub(crate) fn beyond_recall(&self, session_id: u64, message: &[u8]) -> Result<bool, CoreError> {
+        let identity = self.require_identity()?;
+        let our = PublicKey::from(&identity.dh_key).to_bytes();
+        let (mut store, messenger) = self.lock()?;
+        messenger
+            .beyond_recall(&mut store, our, session_id, message)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
     /// [`receive_message`](Self::receive_message), without converting the
     /// result into the application's record.
     pub(crate) fn receive_committed(
@@ -292,8 +304,8 @@ impl ArciumCore {
     /// Not exported: the chat history shows a text Delivered when its send
     /// record reads acknowledged, which this makes it, so only the network
     /// layer may call this, on an authenticated receipt from the peer (or
-    /// for a receipt once the relay has accepted it, since receipts are not
-    /// themselves acknowledged).
+    /// for a receipt or GONE message once the relay has accepted it, since
+    /// neither is itself acknowledged).
     pub(crate) fn acknowledge_outgoing(
         &self,
         session_id: u64,
@@ -313,10 +325,12 @@ impl ArciumCore {
     /// is harmless.
     ///
     /// Not exported, for the same reason as
-    /// [`acknowledge_outgoing`](Self::acknowledge_outgoing): only
-    /// `resolve_session_conflict` calls it, after marking the texts not
-    /// delivered in the history; a text committed after that marking is
-    /// shown `NotDelivered` from its send record.
+    /// [`acknowledge_outgoing`](Self::acknowledge_outgoing): only the
+    /// network layer calls it — `resolve_session_conflict`, after marking
+    /// the texts not delivered in the history (a text committed after that
+    /// marking is shown `NotDelivered` from its send record); a deleted
+    /// contact; a cancelled text; and a GONE message from the peer naming a
+    /// pending text, shown `NotDelivered` from its send record (R-21).
     pub(crate) fn abandon_outgoing(
         &self,
         session_id: u64,
@@ -355,8 +369,9 @@ impl ArciumCore {
     /// under `session_id`.
     ///
     /// Ids the network layer uses for its own messages are refused with
-    /// `InvalidClientMessageId`: one starting with `t` (texts) or `r`
-    /// (receipts), and `o` alone (the session opener). Otherwise a caller
+    /// `InvalidClientMessageId`: one starting with `t` (texts), `r`
+    /// (receipts) or `g` (GONE notices), and `o` alone or followed by 8
+    /// bytes (the session opener). Otherwise a caller
     /// could commit its own message under a chat text's id, and the peer's
     /// receipt for that message would show the text as delivered. (This
     /// closes that only for this call: `NetworkMessenger::send_text` shares

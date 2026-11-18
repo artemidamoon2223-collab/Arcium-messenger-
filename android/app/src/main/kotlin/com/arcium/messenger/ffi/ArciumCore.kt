@@ -150,8 +150,9 @@ class ArciumCoreWrapper {
      * Any later call with the same id encrypts nothing and returns the stored
      * message (`AlreadyPending`), `AlreadyAcknowledged` or `Abandoned` — so
      * after a crash or CoreException.CommitOutcomeUnknown, call again with
-     * the same id. Ids the network layer reserves (starting with `t` or `r`,
-     * or `o` alone) fail with CoreException.InvalidClientMessageId.
+     * the same id. Ids the network layer reserves (starting with `t`, `r` or
+     * `g`, or `o` alone or followed by 8 bytes) fail with
+     * CoreException.InvalidClientMessageId.
      */
     fun sendMessage(
         sessionId: ULong,
@@ -167,9 +168,9 @@ class ArciumCoreWrapper {
      * removed: it fails with CoreException.SessionEstablished once a message
      * from the peer was accepted, and with CoreException.PendingOutgoing
      * while outgoing messages are neither acknowledged nor abandoned. Only
-     * the Rust network layer does either (on the peer's receipt, in
-     * `resolveSessionConflict`, or in `deleteContact`, which also deletes
-     * the session); neither is exported to Kotlin.
+     * the Rust network layer does either (on the peer's receipt or GONE
+     * message, in `resolveSessionConflict`, or in `deleteContact`, which
+     * also deletes the session); neither is exported to Kotlin.
      */
     fun removeSession(sessionId: ULong) {
         requireCore().removeSession(sessionId)

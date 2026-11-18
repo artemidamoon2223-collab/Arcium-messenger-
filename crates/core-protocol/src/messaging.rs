@@ -406,6 +406,30 @@ impl Messenger {
         Ok(self.load(store, our_identity_pk, handle)?.0.has_received())
     }
 
+    /// Whether `wire`, a message that did not decrypt under the session
+    /// `handle`, names a position of that session's current receiving chain
+    /// whose key is gone, so it can never be decrypted here (tracker R-21).
+    /// `false` for bytes too short or malformed to have a header. Reads
+    /// state only; changes nothing.
+    pub fn beyond_recall(
+        &self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+        wire: &[u8],
+    ) -> Result<bool, MessagingError> {
+        let Some(header_bytes) = wire.get(..HEADER_SIZE) else {
+            return Ok(false);
+        };
+        let Ok(header) = Header::from_bytes(header_bytes) else {
+            return Ok(false);
+        };
+        Ok(self
+            .load(store, our_identity_pk, handle)?
+            .0
+            .is_beyond_recall(&header))
+    }
+
     /// The initial outbound bytes stored with the session, if any.
     pub fn initial_outbound(
         &self,

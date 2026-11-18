@@ -74,8 +74,10 @@ pub enum ChatEntryState {
     /// The peer's authenticated receipt arrived: its device accepted and
     /// committed the message. Not a read receipt.
     Delivered,
-    /// Given up on by this device without a receipt (after a session
-    /// conflict was resolved here). The peer did not and will not accept it.
+    /// Given up on by this device without a receipt: after a session
+    /// conflict was resolved here, or because the peer named it in a GONE
+    /// message (it arrived after its key was gone, R-21). The peer did not
+    /// and will not accept it.
     NotDelivered,
     /// A text from the peer, accepted by the ratchet.
     Received,

@@ -17,7 +17,11 @@
 //! type(1) = 1 TEXT     rest = application bytes
 //! type(1) = 2 RECEIPT  count(2) {message_id(32)}*   (count >= 1)
 //! type(1) = 3 OPEN     nothing else
+//! type(1) = 4 GONE     count(2) {message_id(32)}*   (count >= 1)
 //! ```
+//!
+//! GONE names messages from the peer that arrived after their key was gone
+//! and can never be decrypted (tracker R-21); the peer stops sending them.
 //!
 //! The sender field is not authenticated by the envelope. It only selects the
 //! session; a message decrypts only under the session whose keys (and AD,
@@ -33,8 +37,10 @@ const KIND_REFUSAL: u8 = 3;
 const TYPE_TEXT: u8 = 1;
 const TYPE_RECEIPT: u8 = 2;
 const TYPE_OPEN: u8 = 3;
+const TYPE_GONE: u8 = 4;
 
-/// Receipts listed in one receipt message at most.
+/// Receipts listed in one receipt message at most; also the most ids one
+/// GONE message names.
 pub const MAX_RECEIPT_IDS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +111,8 @@ pub enum Payload {
     Text(Zeroizing<Vec<u8>>),
     Receipt(Vec<[u8; 32]>),
     Open,
+    /// Messages of the peer's that arrived here after their key was gone.
+    Gone(Vec<[u8; 32]>),
 }
 
 /// A text is the application's plaintext, and `Zeroizing` derives `Debug` over
@@ -116,6 +124,7 @@ impl std::fmt::Debug for Payload {
             Payload::Text(_) => f.debug_tuple("Text").field(&"<redacted>").finish(),
             Payload::Receipt(ids) => f.debug_tuple("Receipt").field(ids).finish(),
             Payload::Open => f.write_str("Open"),
+            Payload::Gone(ids) => f.debug_tuple("Gone").field(ids).finish(),
         }
     }
 }
@@ -125,57 +134,67 @@ impl Payload {
     pub fn encode(&self) -> Zeroizing<Vec<u8>> {
         Zeroizing::new(match self {
             Payload::Text(t) => [&[TYPE_TEXT][..], t].concat(),
-            Payload::Receipt(ids) => {
-                let mut out = vec![TYPE_RECEIPT];
-                out.extend_from_slice(&(ids.len() as u16).to_be_bytes());
-                for id in ids {
-                    out.extend_from_slice(id);
-                }
-                out
-            }
+            Payload::Receipt(ids) => encode_ids(TYPE_RECEIPT, ids),
             Payload::Open => vec![TYPE_OPEN],
+            Payload::Gone(ids) => encode_ids(TYPE_GONE, ids),
         })
     }
 
-    /// `None` for an unknown type or a malformed receipt.
+    /// `None` for an unknown type or a malformed receipt or GONE.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         match *bytes.first()? {
             TYPE_TEXT => Some(Payload::Text(Zeroizing::new(bytes[1..].to_vec()))),
-            TYPE_RECEIPT => {
-                let count = u16::from_be_bytes(bytes.get(1..3)?.try_into().ok()?) as usize;
-                let ids = bytes.get(3..)?;
-                if count == 0 || count > MAX_RECEIPT_IDS || ids.len() != count * 32 {
-                    return None;
-                }
-                Some(Payload::Receipt(
-                    ids.chunks(32)
-                        .map(|c| c.try_into().expect("32 bytes"))
-                        .collect(),
-                ))
-            }
+            TYPE_RECEIPT => decode_ids(bytes).map(Payload::Receipt),
             TYPE_OPEN if bytes.len() == 1 => Some(Payload::Open),
+            TYPE_GONE => decode_ids(bytes).map(Payload::Gone),
             _ => None,
         }
     }
 }
 
+/// `type || count(2) || ids`, the layout RECEIPT and GONE share.
+fn encode_ids(kind: u8, ids: &[[u8; 32]]) -> Vec<u8> {
+    let mut out = vec![kind];
+    out.extend_from_slice(&(ids.len() as u16).to_be_bytes());
+    for id in ids {
+        out.extend_from_slice(id);
+    }
+    out
+}
+
+/// The ids of a RECEIPT or GONE: 1 to [`MAX_RECEIPT_IDS`] of them, nothing
+/// else after.
+fn decode_ids(bytes: &[u8]) -> Option<Vec<[u8; 32]>> {
+    let count = u16::from_be_bytes(bytes.get(1..3)?.try_into().ok()?) as usize;
+    let ids = bytes.get(3..)?;
+    if count == 0 || count > MAX_RECEIPT_IDS || ids.len() != count * 32 {
+        return None;
+    }
+    Some(
+        ids.chunks(32)
+            .map(|c| c.try_into().expect("32 bytes"))
+            .collect(),
+    )
+}
+
 /// Client message ids of what the network layer sends through the durable
-/// outbox. The first byte keeps the three kinds apart; the application's own
-/// id follows `b't'`.
+/// outbox. The first byte keeps the kinds apart; the application's own id
+/// follows `b't'`.
 pub mod client_id {
     pub const TEXT: u8 = b't';
     pub const RECEIPT: u8 = b'r';
     pub const OPEN: u8 = b'o';
+    pub const GONE: u8 = b'g';
     /// Bytes of the handshake hash an OPEN id carries after `b'o'`.
     const OPEN_TAG_LEN: usize = 8;
 
     /// Whether `id` is in the space of ids above, which only the network
     /// layer may send under (`ArciumCore::send_message` refuses them): any
-    /// text or receipt id, and an OPEN id in either form, `b"o"` alone
+    /// text, receipt or GONE id, and an OPEN id in either form, `b"o"` alone
     /// (builds before per-session OPEN ids) or [`open`].
     pub fn is_reserved(id: &[u8]) -> bool {
         match id.first() {
-            Some(&TEXT) | Some(&RECEIPT) => true,
+            Some(&TEXT) | Some(&RECEIPT) | Some(&GONE) => true,
             Some(&OPEN) => id.len() == 1 || id.len() == 1 + OPEN_TAG_LEN,
             _ => false,
         }
@@ -198,6 +217,22 @@ pub mod client_id {
     pub fn receipt(id: &[u8; 32], round: u64) -> Vec<u8> {
         let mut out = vec![RECEIPT];
         out.extend_from_slice(id);
+        if round > 0 {
+            out.extend_from_slice(&round.to_be_bytes());
+        }
+        out
+    }
+
+    /// The GONE message naming `ids`: the same ids give the same client id,
+    /// so naming them again commits nothing new. `round` > 0 names a later
+    /// GONE for the same ids, sent because the peer sent one of them again.
+    pub fn gone(ids: &[[u8; 32]], round: u64) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for id in ids {
+            h.update(id);
+        }
+        let mut out = [&[GONE][..], &h.finalize()[..]].concat();
         if round > 0 {
             out.extend_from_slice(&round.to_be_bytes());
         }
@@ -247,6 +282,8 @@ mod tests {
             Payload::Text(Zeroizing::new(vec![])),
             Payload::Receipt(vec![[7; 32], [8; 32]]),
             Payload::Open,
+            Payload::Gone(vec![[9; 32]]),
+            Payload::Gone(vec![[1; 32]; MAX_RECEIPT_IDS]),
         ] {
             assert_eq!(Payload::decode(&p.encode()), Some(p));
         }
@@ -256,9 +293,24 @@ mod tests {
             &[2, 0, 0],       // zero receipts
             &[2, 0, 1, 1, 2], // truncated id
             &[3, 0],          // OPEN with a body
+            &[4, 0, 0],       // GONE naming nothing
+            &[4, 0, 1, 1, 2], // GONE with a truncated id
         ] {
             assert_eq!(Payload::decode(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn gone_client_ids_are_reserved_and_follow_their_ids() {
+        let ids = [[1; 32], [2; 32]];
+        assert_eq!(client_id::gone(&ids, 0), client_id::gone(&ids, 0));
+        assert_ne!(client_id::gone(&ids, 0), client_id::gone(&ids[..1], 0));
+        assert_ne!(client_id::gone(&ids, 0), client_id::gone(&ids, 1));
+        assert_ne!(client_id::gone(&ids, 1), client_id::gone(&ids, 2));
+        assert!(client_id::gone(&ids, u64::MAX).len() <= 64);
+        assert!(client_id::is_reserved(&client_id::gone(&ids, 0)));
+        assert!(client_id::is_reserved(&client_id::gone(&ids, 7)));
+        assert!(client_id::is_reserved(b"g"));
     }
 
     #[test]

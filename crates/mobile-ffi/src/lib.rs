@@ -819,6 +819,13 @@ impl ArciumCore {
     /// holds, so handshakes built from those bundles are refused with
     /// `StaleSignedPrekey` / `OneTimePrekeyUnavailable` rather than silently
     /// deriving a key the peer cannot match.
+    ///
+    /// The network layer calls it only when no record exists, so the signed
+    /// prekey is kept for the life of the identity (tracker R-6). What makes
+    /// that safe: every answered handshake used a one-time prekey (X-6), and
+    /// the first message replaces it, so what this device keeps afterwards
+    /// cannot read that first message again (test
+    /// `what_a_device_keeps_after_a_first_contact_does_not_read_it_again`).
     pub fn establish_prekeys(&self) -> Result<(), CoreError> {
         let identity = self.require_identity()?;
         let signed_prekey_sk = StaticSecret::random_from_rng(OsRng);
@@ -2468,6 +2475,72 @@ mod tests {
             bob.encrypt_message(3, b"x".to_vec()),
             Err(CoreError::NoSession { session_id: 3 })
         ));
+    }
+
+    /// R-6: the signed prekey is kept for the life of the identity. That
+    /// holds up only while what this device keeps after a first contact
+    /// cannot read that contact's first message again: its identity, its
+    /// signed prekey and its prekey record, with the one-time prekey that
+    /// replaced the used one or with none. The one-time prekey the
+    /// handshake used (one is required since X-6) is gone, and without it
+    /// the root key cannot be derived. The control shows that the check
+    /// below does open the message with that prekey.
+    #[test]
+    fn what_a_device_keeps_after_a_first_contact_does_not_read_it_again() {
+        let (bob, bob_bundle) = peer_with_prekeys(233);
+        let alice = fresh_core(234);
+        alice.save_identity(Identity::generate()).unwrap();
+
+        let handshake = alice.establish_session_initiator(1, bob_bundle.clone()).unwrap();
+        bob.establish_session_responder(1, handshake.clone()).unwrap();
+        let first = alice.encrypt_message(1, b"first contact".to_vec()).unwrap();
+        let before = unpack_prekeys(&read_record(&bob)).unwrap();
+        assert_eq!(bob.decrypt_message(1, first.clone()).unwrap(), b"first contact");
+        let after = unpack_prekeys(&read_record(&bob)).unwrap();
+
+        assert_eq!(
+            after.signed_prekey_pk(),
+            before.signed_prekey_pk(),
+            "the signed prekey is not rotated (R-6)"
+        );
+        let id = |r: &PrekeyRecordV2| r.opk.as_ref().map(|(id, _)| *id);
+        assert!(id(&after).is_some(), "a new one-time prekey is published");
+        assert_ne!(id(&after), id(&before), "the used one-time prekey is replaced");
+
+        // Whether the first message authenticates under the session derived
+        // from Bob's identity, `record`'s signed prekey and `opk`.
+        let opens = |record: &PrekeyRecordV2, opk: Option<&StaticSecret>| {
+            let identity = bob.require_identity().unwrap();
+            let our = PublicKey::from(&identity.dh_key);
+            let hs = unpack_initiator_handshake(&handshake).unwrap();
+            let session = responder_session(&identity, our, &record.signed_prekey_sk, opk, &hs).unwrap();
+            let (_store, messenger) = bob.lock().unwrap();
+            messenger
+                .first_message_authenticates(our.to_bytes(), session, &first)
+                .unwrap()
+        };
+        let opk = |r: &PrekeyRecordV2| r.opk.as_ref().map(|(_, sk)| sk.clone());
+        assert!(
+            opens(&before, opk(&before).as_ref()),
+            "control: the one-time prekey it used opens the first message"
+        );
+        assert!(
+            !opens(&after, opk(&after).as_ref()),
+            "what is kept, with the new one-time prekey, must not open it"
+        );
+        assert!(
+            !opens(&after, None),
+            "what is kept, without a one-time prekey, must not open it"
+        );
+
+        // Nor is the signed prekey the session's own ratchet key any more:
+        // the first message moved it on (Bob's reply names his new one).
+        let reply = bob.encrypt_message(1, b"reply".to_vec()).unwrap();
+        assert_ne!(
+            reply[..32],
+            bob_bundle[68..100],
+            "the session no longer uses the signed prekey"
+        );
     }
 
     // ── Atomicity ────────────────────────────────────────────────────────────

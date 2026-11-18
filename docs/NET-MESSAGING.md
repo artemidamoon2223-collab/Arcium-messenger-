@@ -213,11 +213,16 @@ stored twice.
 the recipient's receipt arrives, and sends it again after
 `retransmit_after_ms`, then after twice as long each time, up to 5 minutes
 (section 7). A relay that loses, withholds or restarts only delays
-delivery, with one exception: if more than `MAX_SKIP` (1000) consecutive
-messages of one sending chain are lost (receipts included, which are never
-sent again once the relay has stored them), the recipient refuses every
-later message of that chain and that direction stops for good (tracker
-R-14).
+delivery. Receipts and GONE messages are never sent again once the relay
+has stored them, so losing them leaves gaps in the sender's chain. A
+message more than `MAX_SKIP` (1000) positions ahead of what the recipient
+read is decrypted with a far skip, up to `MAX_FAR_SKIP` (100,000)
+positions, one try per session per sync round; another such message waits
+on the relay for the next round (tracker R-14). Only the keys of the last
+1,000 skipped positions are kept: a lost text from before them that
+arrives later can never be read, and is named back in a GONE message
+(section 4). More than 100,000 consecutive lost messages of one sending
+chain still stop that direction for good.
 
 `ENVELOPE_V1` (what the relay stores):
 `"ARN1" || kind(1) || sender_x25519_pk(32) || body`, kind 1 = the unchanged
@@ -561,6 +566,17 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   store lock. It is bounded by what the sender can store in the mailbox; it
   was not measured. A beside record that cannot be read counts as none: the
   check is reported and the message deleted, and the round goes on.
+- Free far skips. A message of an existing session more than `MAX_SKIP`
+  (1000) positions ahead in its chain is decrypted with a far skip, which
+  derives up to `MAX_FAR_SKIP` (100,000) chain keys for each chain it
+  crosses before the message authenticates: about 47 ms per 100,000 in a
+  release build on one 2.1 GHz Xeon core (phones not measured). Each
+  session gets one such try per sync round (`sync_conversations` may run
+  two rounds); further far messages wait on the relay. Whoever saw a header
+  of the current chain and can write to the mailbox (the relay's operator;
+  anyone on V1) can make forged far messages: each costs a try and delays a
+  genuine far message by a round. A kept far message is visible to a
+  reader of the mailbox, as any kept message is (tracker R-9).
 - A second initiator racing for the same one-time prekey is refused and
   starts again (section 6). With k contacts racing, the k-th may wait up to
   about 10 minutes per further refusal (the per-contact limit).
@@ -778,6 +794,7 @@ entry per logical message, never written by the ratchet.
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
 | request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt, a replayed receipt not answered | `tests::network` V6 tests | runtime |
+| a gap of more than `MAX_SKIP` in one chain (texts given up after they were encrypted, or lost on the relay) is crossed with a far skip and both directions go on; one far try per session per round, forged far messages waiting their turn; a lost text from before the kept keys named back in a GONE message; in the ratchet, the gap in the current chain and in the chain being left, the last `MAX_SKIP` keys kept, `MAX_FAR_SKIP` and no further, a forged far message changing nothing, no far skip past `MAX_RESUMABLE_NR` | `tests::far_skip`; `core_crypto::ratchet` (`a_far_skip_*`, `a_forged_far_message_changes_nothing`, `a_stored_key_needs_no_far_skip`), `ratchet::checkpoint` (`a_far_skip_never_moves_nr_past_the_resumable_limit`) | runtime, local relay over TCP; unit |
 | a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history); a GONE lost on the relay is sent again when the text is repeated, not again within the minute, and once more a minute later (the minute set by a test aid); ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`) | runtime, local relay over TCP |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |

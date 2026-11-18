@@ -254,6 +254,35 @@ impl ArciumCore {
             .map_err(|e| CoreError::messaging(session_id, e))
     }
 
+    /// Whether `message` needs a far skip under the existing session
+    /// `session_id` (`Messenger::needs_far_skip`; tracker R-14).
+    pub(crate) fn needs_far_skip(&self, session_id: u64, message: &[u8]) -> Result<bool, CoreError> {
+        let identity = self.require_identity()?;
+        let our = PublicKey::from(&identity.dh_key).to_bytes();
+        let (mut store, messenger) = self.lock()?;
+        messenger
+            .needs_far_skip(&mut store, our, session_id, message)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// [`receive_committed`](Self::receive_committed) for a message of the
+    /// existing session `session_id` that needs a far skip
+    /// (`Messenger::receive_far`; tracker R-14). Not exported: its cost
+    /// before authentication is bounded by the network layer, which allows
+    /// one such receive per session per round.
+    pub(crate) fn receive_committed_far(
+        &self,
+        session_id: u64,
+        message: &[u8],
+    ) -> Result<Received, CoreError> {
+        let identity = self.require_identity()?;
+        let our = PublicKey::from(&identity.dh_key).to_bytes();
+        let (mut store, mut messenger) = self.lock()?;
+        messenger
+            .receive_far(&mut store, our, session_id, message)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
     /// [`receive_message`](Self::receive_message), without converting the
     /// result into the application's record.
     pub(crate) fn receive_committed(

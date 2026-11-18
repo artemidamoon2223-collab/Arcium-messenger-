@@ -66,7 +66,8 @@
 //!   to `0` in a release build:
 //!   - `encrypt` adds one to `ns`, so `ns == u32::MAX` cannot send again.
 //!   - `decrypt` first skips `nr` forward to the header's `n` (allowed while
-//!     `n <= nr + MAX_SKIP`) and then adds one. A message with
+//!     `n <= nr + MAX_SKIP`; `decrypt_far` allows more, but never past
+//!     `MAX_RESUMABLE_NR`) and then adds one. A message with
 //!     `n == u32::MAX` therefore overflows `nr` whenever
 //!     `nr >= u32::MAX - MAX_SKIP` — before the message is authenticated, so
 //!     a forged header is enough in a debug build, and in a release build an
@@ -752,6 +753,30 @@ mod tests {
         for nr in [u32::MAX - MAX_SKIP, u32::MAX - 1] {
             rec[166..170].copy_from_slice(&nr.to_be_bytes());
             assert_eq!(decode_err(&rec), CheckpointError::CounterExhausted("nr"));
+        }
+    }
+
+    /// R-14. A far skip never ends past `MAX_RESUMABLE_NR`, so the increment
+    /// after it cannot overflow `nr`: below the limit, a header beyond it
+    /// fails the skip limit before any key is derived (no panic in a debug
+    /// build), in a resumed state and in one no checkpoint could hold.
+    #[test]
+    fn a_far_skip_never_moves_nr_past_the_resumable_limit() {
+        for at in [MAX_RESUMABLE_NR - 50_000, u32::MAX - 60_000] {
+            let (alice, bob) = in_step_at(at);
+            let mut bob = if at <= MAX_RESUMABLE_NR { restore(&bob) } else { bob };
+            for n in [MAX_RESUMABLE_NR + 1, u32::MAX] {
+                let forged = Header {
+                    dh: alice.our_dh_public().to_bytes(),
+                    pn: 0,
+                    n,
+                };
+                assert!(
+                    matches!(bob.decrypt_far(&forged, &[0u8; 40], AD), Err(RatchetError::SkipLimit)),
+                    "at {at}, n {n}"
+                );
+                assert_eq!(bob.nr, at, "state untouched");
+            }
         }
     }
 

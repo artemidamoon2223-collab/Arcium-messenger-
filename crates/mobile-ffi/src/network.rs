@@ -162,6 +162,9 @@ pub struct NetworkMessenger {
     /// every round: a message not named (a crash, a round that failed) is
     /// sent again by the peer and found again.
     gone: Mutex<HashMap<u64, Vec<[u8; 32]>>>,
+    /// Sessions that tried a far skip this round (tracker R-14): one try
+    /// per session per round. Emptied after every round.
+    far_tried: Mutex<HashSet<u64>>,
     /// Test aid: the minute [`Self::this_minute`] reads instead of the clock.
     #[cfg(test)]
     minute: Mutex<Option<u64>>,
@@ -392,6 +395,7 @@ impl NetworkMessenger {
             refused: Mutex::new(HashMap::new()),
             refusals: Mutex::new(Refusals::default()),
             gone: Mutex::new(HashMap::new()),
+            far_tried: Mutex::new(HashSet::new()),
             #[cfg(test)]
             minute: Mutex::new(None),
             limits: Mutex::new(Limits::default()),
@@ -534,6 +538,7 @@ impl NetworkMessenger {
         // Nor the messages found beyond recall in a round that failed before
         // naming them: the contact sends them again, and they are found again.
         self.gone.lock().expect("gone").clear();
+        self.far_tried.lock().expect("far_tried").clear();
         report.errors.extend(relay_refusals.line());
         report
     }
@@ -1134,7 +1139,33 @@ impl NetworkMessenger {
                 // recorded handshake — which creates the session if it
                 // authenticates — or waits for its handshake (`NoSession`).
                 let first = !self.core.has_session(handle)?;
-                match self.core.receive_committed(handle, &wire) {
+                // A message more than `MAX_SKIP` positions ahead in its
+                // chain (more than a thousand of the contact's messages in a
+                // row were lost) needs a far skip, which may derive up to
+                // `MAX_FAR_SKIP` keys before it authenticates. One try per
+                // session per round bounds what forged far messages cost;
+                // another far message waits on the relay for the next
+                // round (tracker R-14). A failed check is reported, and the
+                // message is then received as before.
+                let far = !first
+                    && match self.core.needs_far_skip(handle, &wire) {
+                        Ok(far) => far,
+                        Err(e) => {
+                            report
+                                .errors
+                                .push(format!("checking how far ahead a message lies: {e}"));
+                            false
+                        }
+                    };
+                if far && !self.far_tried.lock().expect("far_tried").insert(handle) {
+                    return Ok(Fate::Keep);
+                }
+                let received = if far {
+                    self.core.receive_committed_far(handle, &wire)
+                } else {
+                    self.core.receive_committed(handle, &wire)
+                };
+                match received {
                     Ok(Received::Accepted(message)) => {
                         report.accepted += 1;
                         if first {

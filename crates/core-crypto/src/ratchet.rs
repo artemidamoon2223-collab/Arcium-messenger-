@@ -342,13 +342,7 @@ impl DoubleRatchet {
         if need_dh {
             // Save remaining keys from the old chain (so late messages from old chain still decrypt).
             self.skip_message_keys(header.pn, reach)?;
-            // The chain being left ended at `pn`: remember where (R-21).
-            if let (Some(old), Some(_)) = (self.dhr, &self.ckr) {
-                if self.prev_chains.len() == MAX_PREV_CHAINS {
-                    self.prev_chains.remove(0);
-                }
-                self.prev_chains.push((*old.as_bytes(), header.pn));
-            }
+            self.leave_chain(&header.dh, header.pn);
             self.dh_ratchet_step(PublicKey::from(header.dh))?;
         }
 
@@ -382,6 +376,22 @@ impl DoubleRatchet {
                 .any(|(dh, end)| *dh == header.dh && header.n < *end)
         };
         behind && !self.skipped.contains_key(&(header.dh, header.n))
+    }
+
+    /// At a DH step into the chain of `entering`: remembers the receiving
+    /// chain being left, which ended at `pn` (R-21), if there is one, and
+    /// forgets any earlier record of `entering`. A peer that repeats a
+    /// ratchet key would otherwise leave that key both current and
+    /// remembered, which no checkpoint holds (`DuplicateChain`); so the
+    /// remembered keys stay distinct and never equal the current one.
+    fn leave_chain(&mut self, entering: &[u8; 32], pn: u32) {
+        self.prev_chains.retain(|(dh, _)| dh != entering);
+        if let (Some(old), Some(_)) = (self.dhr, &self.ckr) {
+            if self.prev_chains.len() == MAX_PREV_CHAINS {
+                self.prev_chains.remove(0);
+            }
+            self.prev_chains.push((*old.as_bytes(), pn));
+        }
     }
 
     /// Capture all mutable state so a failed `decrypt_inner` can be rolled back.

@@ -814,6 +814,23 @@ mod tests {
         assert_eq!(bob.to_checkpoint().unwrap_err(), CheckpointError::DuplicateChain);
     }
 
+    /// A peer that repeats a ratchet key Bob remembers as an earlier chain:
+    /// entering that chain again forgets its record, so the state still
+    /// has distinct earlier chains, none equal to the current one, and
+    /// round-trips through a checkpoint.
+    #[test]
+    fn entering_a_remembered_chain_again_keeps_the_state_storable() {
+        let (_, mut bob, _) = with_skipped();
+        let current = *bob.dhr.unwrap().as_bytes();
+        bob.prev_chains = vec![([1; 32], 3), ([2; 32], 4)];
+        bob.leave_chain(&[1; 32], 7);
+        assert_eq!(bob.prev_chains, vec![([2; 32], 4), (current, 7)]);
+        // As after the DH step into the repeated key.
+        bob.dhr = Some(PublicKey::from([1; 32]));
+        let rec = bob.to_checkpoint().unwrap();
+        assert_same_state(&bob, &DoubleRatchet::from_checkpoint(&rec).unwrap());
+    }
+
     #[test]
     fn absent_fields_must_be_zero() {
         let (alice, bob) = pair();

@@ -53,7 +53,8 @@ and is out of scope here.
 - **No replay.** A recorded handshake and first message must not be able to
   replace a session again. Today replay is stopped by the one-time prekey
   being consumed. The prekey-less path (X-6) must be closed before any option
-  lets a handshake replace an existing session.
+  lets a handshake replace an existing session. *(Later: closed; a handshake
+  without a one-time prekey is never answered.)*
 - **Durability.** Every step is one S2-B2 transaction, and a crash between
   steps is safe to repeat.
 - **Honest delivery state.**
@@ -182,7 +183,8 @@ It needs a cryptographic review, together with the refusal MAC of R-1
 3. **B**, only if automatic recovery is wanted. It comes after the relay gets
    authentication (R-9) and after X-6 is closed. *(Later: the relay
    authenticates mailbox owners since PRs #180 and #181; senders stay
-   unauthenticated, and X-6 is still open.)*
+   unauthenticated. X-6 is closed: a handshake without a one-time prekey is
+   never answered.)*
 
 Each step: Owner decision, then its own PR with tests that reproduce the
 situation first and fail on the base. Then `engineering-code-review` and

@@ -28,6 +28,7 @@ use super::wire::client_id;
 use super::{crash_point, handle_of, peer_key, NetworkMessenger, SyncReport, TextState};
 use crate::messaging_api::SendResult;
 use crate::contacts::{contact_card_fingerprint, contact_key};
+use crate::accepted_handshake_key;
 use crate::{CoreError, PlaintextText};
 
 /// Longest contact name accepted, in bytes.
@@ -84,9 +85,13 @@ pub enum ChatEntryState {
     /// committed the message. Not a read receipt.
     Delivered,
     /// Given up on by this device without a receipt: after a session
-    /// conflict was resolved here, or because the peer named it in a GONE
-    /// message (it arrived after its key was gone, R-21). The peer did not
-    /// and will not accept it.
+    /// conflict was resolved here, after the session it was committed to
+    /// was given up (a refusal, `reset_session`, or the contact's restart),
+    /// or because the peer named it in a GONE message (it arrived after its
+    /// key was gone, R-21). It is not sent again and never becomes
+    /// `Delivered`. Usually the peer did not accept it; when the session was
+    /// given up, a copy sent before may have reached the peer, whose receipt
+    /// can then no longer be read here.
     NotDelivered,
     /// A text from the peer, accepted by the ratchet.
     Received,
@@ -880,6 +885,50 @@ impl NetworkMessenger {
         })
     }
 
+    /// Starts the secure session with `peer` again, on the user's request
+    /// (option B; `docs/NET-MESSAGING.md` section 10, "Reset"). The session
+    /// this device holds with the contact, in any state but a conflict
+    /// (`resolve_session_conflict` is for that), is given up: texts committed
+    /// to it are marked `NotDelivered` and abandoned, and it is removed; a
+    /// handshake the contact sent beside it is kept. The next round
+    /// (`sync_conversations`) starts a new session from the contact's current
+    /// bundle, also with no text queued. The contact replaces its own copy of
+    /// the old session once this device's first message under the new one
+    /// authenticates there. Until then texts sent here go out on the new
+    /// session and wait for it, and what the contact sends under the old
+    /// session cannot be read here: the contact's texts read `NotDelivered`
+    /// there once it replaces the session. Texts marked `NotDelivered` are
+    /// not sent again (the user can send them again). A commit on the
+    /// session whose outcome is unknown is settled first, as a round does,
+    /// and a text `chat_send` commits on another thread while the session
+    /// is given up is given up with it. Every step repeats safely after a
+    /// crash; calling it again completes it. Works without a connection.
+    pub fn reset_session(&self, peer: Vec<u8>) -> Result<(), CoreError> {
+        let key = peer_key(&peer)?;
+        self.require_contact(&key)?;
+        if self.meta(&key)?.flags & FLAG_CONFLICT != 0 {
+            return Err(invalid("resolve the session conflict instead"));
+        }
+        let handle = handle_of(&key);
+        // The removal is refused while a commit has an unknown outcome.
+        self.core.recover_if_unresolved(handle)?;
+        if self.core.has_session(handle)? {
+            // A text committed after the abandon pass makes the removal
+            // fail; one more pass gives it up too.
+            match self.retire_session_texts(&key, "reset", Retire::Any) {
+                Err(CoreError::PendingOutgoing { .. }) => {
+                    self.retire_session_texts(&key, "reset", Retire::Any)?
+                }
+                other => other?,
+            }
+        }
+        crash_point("reset_after_retire");
+        self.update_known_meta(&key, |m| {
+            m.flags = (m.flags | FLAG_RESTART) & !(FLAG_ACCEPT_ONLY | FLAG_PEER_RESET | FLAG_HANDSHAKE_REFUSED);
+            m.note.clear();
+        })
+    }
+
     /// Deletes the contact `peer` and everything this device keeps for it,
     /// in one store transaction: the pinned card, its name and flags, the
     /// whole conversation history, the session in whatever state it is
@@ -890,11 +939,10 @@ impl NetworkMessenger {
     /// `sendid:`) stay: nothing already received becomes new, and no logical
     /// id is encrypted twice (`Messenger::forget_peer`).
     ///
-    /// This is the way out of a session that can no longer progress, such as
-    /// the dead end after a false conflict was resolved: both users delete
-    /// each other and exchange cards again, and the next text starts a new
-    /// session. Texts not yet delivered are lost. The peer is told nothing
-    /// and keeps its session until its user deletes this contact too.
+    /// Texts not yet delivered are lost. The peer is told nothing and keeps
+    /// its session; if the contact is added again and a text is sent, the
+    /// new session replaces the peer's as after a reset (option B). To start
+    /// a new session with a contact who stays, use `reset_session`.
     ///
     /// The contact need not be pinned: deleting again removes whatever is
     /// left. Refused if the contact's session handle is registered to
@@ -906,37 +954,6 @@ impl NetworkMessenger {
     /// round in flight can still act on the durable layer for the contact
     /// (for example start a session) after it; so do not run the two
     /// concurrently. The Android app runs both on its one sync thread.
-    /// Starts the secure session with `peer` again, on the user's request
-    /// (option B; `docs/NET-MESSAGING.md` section 10, "Reset"). The session
-    /// this device holds with the contact, in any state but a conflict
-    /// (`resolve_session_conflict` is for that), is given up: texts committed
-    /// to it are marked `NotDelivered` and abandoned, and it is removed; a
-    /// handshake the contact sent beside it is kept. The next round
-    /// (`sync_conversations`) starts a new session from the contact's current
-    /// bundle, also with no text queued. The contact replaces its own copy of
-    /// the old session once this device's first message under the new one
-    /// authenticates there. Until then texts queued here wait for it, and
-    /// what the contact sends under the old session cannot be read here: the
-    /// contact's texts read `NotDelivered` there once it replaces the session.
-    /// Texts marked `NotDelivered` are not sent again (the user can send them
-    /// again). Every step repeats safely after a crash; calling it again
-    /// completes it. Works without a connection.
-    pub fn reset_session(&self, peer: Vec<u8>) -> Result<(), CoreError> {
-        let key = peer_key(&peer)?;
-        self.require_contact(&key)?;
-        if self.meta(&key)?.flags & FLAG_CONFLICT != 0 {
-            return Err(invalid("resolve the session conflict instead"));
-        }
-        if self.core.has_session(handle_of(&key))? {
-            self.retire_session_texts(&key, "reset", Retire::Any)?;
-        }
-        crash_point("reset_after_retire");
-        self.update_known_meta(&key, |m| {
-            m.flags = (m.flags | FLAG_RESTART) & !(FLAG_ACCEPT_ONLY | FLAG_PEER_RESET | FLAG_HANDSHAKE_REFUSED);
-            m.note.clear();
-        })
-    }
-
     pub fn delete_contact(&self, peer: Vec<u8>) -> Result<(), CoreError> {
         let key = peer_key(&peer)?;
         let handle = handle_of(&key);
@@ -945,7 +962,12 @@ impl NetworkMessenger {
         self.core.recover_if_unresolved(handle)?;
         {
             let (mut store, mut messenger) = self.core.lock()?;
-            let mut also = vec![contact_key(&key), meta_key(&key), open_key(&key)];
+            let mut also = vec![
+                contact_key(&key),
+                meta_key(&key),
+                open_key(&key),
+                accepted_handshake_key(&key),
+            ];
             also.extend(store.list_keys_with_prefix(&entry_namespace(&key))?);
             // Each index key with an empty last part is this contact's prefix
             // in a namespace shared by all contacts.
@@ -1143,6 +1165,8 @@ impl NetworkMessenger {
             self.core.abandon_outgoing(handle, m.message_id)?;
         }
         crash_point(&format!("{stage}_after_abandon"));
+        #[cfg(test)]
+        test_hooks::before_retire();
         match retire {
             Retire::Unconfirmed => self.core.remove_session(handle)?,
             Retire::Any => self.core.retire_session(handle)?,
@@ -1577,6 +1601,7 @@ pub(crate) mod test_hooks {
     thread_local! {
         static BETWEEN: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
         static BEFORE_RECORD: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+        static BEFORE_RETIRE: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
     }
 
     /// Runs `f` once, on this thread, in the next `chat_send` on this thread
@@ -1588,6 +1613,19 @@ pub(crate) mod test_hooks {
 
     pub(super) fn chat_send_before_record() {
         if let Some(f) = BEFORE_RECORD.with(|h| h.borrow_mut().take()) {
+            f();
+        }
+    }
+
+    /// Runs `f` once, on this thread, after the abandon pass of the next
+    /// session given up on this thread (`reset_session`, a resolution, a
+    /// refusal or a restart) and before the session is removed.
+    pub(crate) fn set_before_retire(f: impl FnOnce() + 'static) {
+        BEFORE_RETIRE.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(super) fn before_retire() {
+        if let Some(f) = BEFORE_RETIRE.with(|h| h.borrow_mut().take()) {
             f();
         }
     }

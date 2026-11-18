@@ -11,7 +11,7 @@
 
 use super::net_harness::*;
 use super::*;
-use crate::network::chat::{ChatEntryState as S, ChatSessionState};
+use crate::network::chat::{test_hooks, ChatEntryState as S, ChatSessionState};
 use crate::network::wire::{Envelope, Payload};
 
 fn canary() -> String {
@@ -86,6 +86,20 @@ fn hsin(d: &Device, other: &Device) -> Option<Vec<u8>> {
         Err(StorageError::NotFound) => None,
         Err(e) => panic!("{e}"),
     }
+}
+
+/// How many envelopes of each kind wait in `to`'s mailbox:
+/// (handshakes, refusals).
+fn waiting(relay: &relay::server::RelayHandle, to: &Device) -> (usize, usize) {
+    let kinds: Vec<_> = relay
+        .stored(&key(to))
+        .into_iter()
+        .filter_map(|(_, e)| Envelope::decode(e.as_slice()))
+        .collect();
+    (
+        kinds.iter().filter(|e| matches!(e, Envelope::Handshake { .. })).count(),
+        kinds.iter().filter(|e| matches!(e, Envelope::Refusal { .. })).count(),
+    )
 }
 
 /// Alice and Bob, contacts of each other, with an established session that
@@ -391,6 +405,102 @@ fn both_resetting_at_once_is_a_conflict_the_greater_key_resolves() {
 /// `reset_session` works without a connection and with no session (it then
 /// only asks the next round to start one, also with no text queued),
 /// repeats harmlessly, and is refused for a stranger.
+/// Alice's restart names the one-time prekey of Bob's bundle, and Carol's
+/// first contact, ahead of it in Bob's mailbox, consumes that prekey first.
+/// Bob can no longer answer the restart: he refuses it, and Alice makes it
+/// again from his current bundle, so the session is replaced on both
+/// devices. Without the refusal both would wait for good: Alice for an
+/// answer, Bob on the old session (review of option B).
+#[test]
+fn a_restart_the_contact_can_no_longer_answer_is_refused_and_made_again() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    let carol = Device::new(&addr, 3);
+    meet(&carol, &bob);
+    say(&carol, &bob, "c1", "hello bob");
+    round(&[&carol]);
+    alice.net.reset_session(bob.pk.clone()).unwrap();
+    round(&[&alice]);
+    // Bob records the restart beside the session (handshakes are read
+    // first), then Carol's first message consumes the prekey it names, so
+    // Alice's first message no longer authenticates there.
+    round(&[&bob]);
+    assert_eq!(session(&bob, &carol), ChatSessionState::Established);
+    assert_eq!(waiting(&relay, &alice).1, 0);
+    // Alice sends both again; Bob can no longer answer the handshake.
+    rounds(&[&alice, &bob], 1);
+    assert_eq!(session(&bob, &alice), ChatSessionState::Established, "the old one");
+    assert!(waiting(&relay, &alice).1 >= 1, "the restart is refused");
+
+    rounds(&[&alice, &bob], 4);
+    assert_eq!(session(&alice, &bob), ChatSessionState::Established);
+    assert_eq!(session(&bob, &alice), ChatSessionState::Established);
+    assert!(peer_reset(&bob, &alice), "replaced on Bob's device too");
+    say(&alice, &bob, "a3", "after");
+    rounds(&[&alice, &bob, &alice], 2);
+    assert!(chat(&bob, &alice).contains(&(false, S::Received, "after".into())));
+    assert!(chat(&alice, &bob).contains(&(true, S::Delivered, "after".into())));
+    relay.stop();
+}
+
+/// Bob accepts Alice's first handshake, and a copy of it arrives again
+/// before his receipt reaches Alice (she retransmits until then). The copy
+/// can no longer be answered, but is not refused: it is the handshake
+/// Bob's session came from, and a refusal naming it would end Alice's.
+#[test]
+fn a_late_copy_of_the_handshake_the_session_came_from_is_never_refused() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = (Device::new(&addr, 1), Device::new(&addr, 2));
+    meet(&alice, &bob);
+    round(&[&bob]); // Bob's bundle on the relay.
+    say(&alice, &bob, "a1", "hello bob");
+    round(&[&alice]);
+    let copy = relay
+        .stored(&key(&bob))
+        .into_iter()
+        .map(|(_, e)| e)
+        .find(|e| matches!(Envelope::decode(e), Some(Envelope::Handshake { .. })))
+        .expect("Alice's handshake");
+    round(&[&bob]);
+    assert_eq!(session(&bob, &alice), ChatSessionState::Established);
+    inject(&addr, &bob, copy);
+    round(&[&bob]);
+    assert_eq!(waiting(&relay, &bob).0, 0, "the copy was read");
+    assert_eq!(waiting(&relay, &alice).1, 0, "and not refused");
+
+    rounds(&[&alice, &bob, &alice], 2);
+    assert_eq!(session(&alice, &bob), ChatSessionState::Established);
+    assert!(chat(&alice, &bob).contains(&(true, S::Delivered, "hello bob".into())));
+    assert!(!peer_reset(&bob, &alice));
+    relay.stop();
+}
+
+/// A text `chat_send` commits on the old session while a reset is giving
+/// it up (the app runs a send on another thread than a reset): the reset
+/// still completes, and that text is given up with the session.
+#[test]
+fn a_text_sent_while_a_reset_gives_the_session_up_is_given_up_with_it() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    let (net, to) = (alice.net.clone(), bob.pk.clone());
+    test_hooks::set_before_retire(move || {
+        net.chat_send(to, b"a2".to_vec(), "sent meanwhile".into()).unwrap();
+    });
+    alice.net.reset_session(bob.pk.clone()).unwrap();
+    assert_eq!(session(&alice, &bob), ChatSessionState::None);
+    assert_eq!(
+        chat(&alice, &bob).last().unwrap(),
+        &(true, S::NotDelivered, "sent meanwhile".into())
+    );
+    rounds(&[&alice, &bob, &alice, &bob], 3);
+    assert_eq!(session(&alice, &bob), ChatSessionState::Established);
+    assert!(peer_reset(&bob, &alice));
+    relay.stop();
+}
+
 #[test]
 fn reset_session_rules() {
     let relay = start_relay();
@@ -429,6 +539,7 @@ fn process_death_at_each_restart_step_repeats_safely() {
         "restart_after_flag",
         "restart_after_mark",
         "restart_after_abandon",
+        "restart_after_retire",
     ] {
         let relay = start_relay();
         let addr = relay.addr().to_string();

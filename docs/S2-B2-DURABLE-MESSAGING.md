@@ -41,6 +41,7 @@ here is transmitted.
 | `inbox:v1/<peer>/<id>` | `INBOX_RECORD_V1`: generation, message id, plaintext; only while undelivered | receive |
 | `seen:v1/<peer>/<id>` | `SEEN_RECORD_V1`: id of an acknowledged incoming message | acknowledge incoming |
 | `prekeys/v2` | unchanged format | responder session creation from the first authenticated message (same transaction) |
+| `hsacc:v1/<peer>` | SHA-256 (32 bytes) of the handshake the latest responder session with the peer came from (option B, section 4c) | responder session creation from the first authenticated message (same transaction, a side write); replaced by the next one; kept when the session is removed or retired; deleted when the peer is forgotten |
 
 `<peer>` is the peer's X25519 identity key in hex, `<handle>` the local `u64`
 handle in hex, `<id>` a message id in hex, `<client id>` the caller's logical
@@ -236,10 +237,15 @@ provisional record beside a session. This section changes that.
   the first message under it (Use, below), the network layer gives the
   session up (`retire_session`, section 6a), which leaves the record as the
   provisional handshake, and the message is then read as the first message
-  of a new session (section 4). The network layer never answers a handshake
-  it cannot answer beside an established session with a refusal: a late
-  copy of the handshake that session came from would otherwise end the
-  peer's session.
+  of a new session (section 4). A handshake it cannot answer beside an
+  established session is refused by the network layer (section 6), so a
+  peer whose restart names a one-time prekey that changed meanwhile makes
+  it again, except a late copy of the handshake that session came from,
+  which is dropped: a refusal naming it would end the session the peer has
+  just made. That handshake is known from `hsacc:` (section 2), which the
+  transaction storing a responder session writes. A responder session
+  stored by an earlier build has no such record, and the copy is then
+  refused (`docs/NET-MESSAGING.md` section 10, "Reset").
 - **Use.** While the session exists it is used for one thing only: when a message
   from the peer fails to decrypt under the session,
   `Messenger::first_message_authenticates` checks whether it authenticates
@@ -427,11 +433,11 @@ peer.
 
 `forget_peer(handle, peer, also_delete)` is the user's explicit decision to
 delete a contact (`delete_contact`, `docs/NET-MESSAGING.md` section 10).
-Unlike `remove_session` it does not ask whether obligations remain: it is
-the way out of a session that can no longer progress (option C of
-`docs/SESSION-RECOVERY-OPTIONS.md`). It is the one exception to "an
-established session is not removed" above and to "never replaced by a new
-session" for an unreadable record (section 4). The rules of
+Unlike `remove_session` it does not ask whether obligations remain (option C
+of `docs/SESSION-RECOVERY-OPTIONS.md`). With `retire_session` (option B,
+above) it is an exception to "an established session is not removed", and
+it is the one exception to "never replaced by a new session" for an
+unreadable record (section 4). The rules of
 `remove_session` are unchanged.
 
 - One transaction deletes, whatever state the session is in (established,
@@ -589,7 +595,8 @@ message). They are never listed, so they cost disk space, not time.
 `SESSION_CHECKPOINT_V1`, `RATCHET_STATE_V1`, `PREKEY_BUNDLE_V1`,
 `INITIATOR_HANDSHAKE_V1`, `PERSISTED_PREKEY_RECORD_V2` and the message format
 `header(40) || ciphertext` are unchanged. `PROVISIONAL_HANDSHAKE_RECORD_V1`
-(`hsin:`) is new and local. A responder session stored by an earlier build at
+(`hsin:`) and the accepted-handshake record (`hsacc:`, option B) are new and
+local. A responder session stored by an earlier build at
 generation 0, before any message authenticated, is still loaded as a session;
 it reads as `AwaitingPeer`, not `Established`, until a message from the peer
 is accepted on it. It is not migrated in place: it is retired when a new

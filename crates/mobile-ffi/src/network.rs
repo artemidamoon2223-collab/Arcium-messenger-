@@ -1182,7 +1182,7 @@ impl NetworkMessenger {
                     // and only its first message, authenticating there,
                     // replaces the session (`take_message`).
                     if self.confirmed(handle)? {
-                        return self.record_restart(&handshake, handle, report);
+                        return self.record_restart(sender, &handshake, handle, report);
                     }
                     report.dropped += 1;
                     return Ok(Fate::Delete);
@@ -1253,6 +1253,7 @@ impl NetworkMessenger {
             match self.core.beside_authenticates(handle, &sender, wire) {
                 Ok(true) => {
                     self.accept_restart(&sender, handle)?;
+                    crash_point("restart_after_retire");
                     // No session now: the message is read as the first one
                     // of the recorded handshake, which creates the new one.
                     return self.take_message(sender, handle, wire, report);
@@ -1425,16 +1426,29 @@ impl NetworkMessenger {
         }
     }
 
-    /// Records `handshake` from the pinned contact beside our established
-    /// session with it, as a possible restart of the session by the contact
-    /// (option B; `docs/S2-B2-DURABLE-MESSAGING.md` section 4c). Nothing else
-    /// changes: the record has no authority, and a later handshake replaces
-    /// it. A handshake this device cannot answer is dropped and never
-    /// refused: a refusal would end the contact's session if it named the
-    /// handshake that session came from (a late retransmission of it, whose
-    /// one-time prekey this device consumed when it accepted the session).
+    /// Records `handshake` from the pinned contact `peer` beside our
+    /// established session with it, as a possible restart of the session by
+    /// the contact (option B; `docs/S2-B2-DURABLE-MESSAGING.md` section 4c).
+    /// Nothing else changes: the record has no authority, and a later
+    /// handshake replaces it.
+    ///
+    /// A handshake this device cannot answer is refused as beside our own
+    /// session (`record_beside`), so a contact whose restart names a
+    /// one-time prekey that changed since (another contact's first message
+    /// consumed it, or a confirmation of our own session replaced it) gives
+    /// that restart up and makes it again from the current bundle. Without
+    /// the refusal it would wait for good. Never refused: a late
+    /// retransmission of the handshake our responder session came from
+    /// (`ArciumCore::accepted_handshake`), whose one-time prekey we consumed
+    /// when we accepted it. The contact retransmits it until our receipt
+    /// arrives, and a refusal naming it would end the session the contact
+    /// has just made. A responder session stored by an older build has no
+    /// such record: then the handshake is refused, which ends the contact's
+    /// session only if our receipt has not reached it yet. No error is
+    /// reported: nothing here needs this user.
     fn record_restart(
         &self,
+        peer: [u8; 32],
         handshake: &[u8],
         handle: u64,
         report: &mut SyncReport,
@@ -1448,7 +1462,13 @@ impl NetworkMessenger {
                 report.errors.push(e.to_string());
                 Ok(Fate::Keep)
             }
-            Err(_) => {
+            Err(e) => {
+                let ours = self.core.accepted_handshake(&peer)? == Some(handshake_hash(handshake));
+                if !ours {
+                    if let Some(reason) = RefusalReason::of(&e) {
+                        self.queue_refusal(peer, handshake, reason)?;
+                    }
+                }
                 report.dropped += 1;
                 Ok(Fate::Delete)
             }

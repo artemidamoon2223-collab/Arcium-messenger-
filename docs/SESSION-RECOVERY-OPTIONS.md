@@ -137,8 +137,12 @@ recently.
 reset; when both reset at once, the conflict of option A is shown and
 resolved). Specification: `docs/NET-MESSAGING.md` section 10, "Reset";
 `docs/S2-B2-DURABLE-MESSAGING.md` sections 4c and 6a. Replays of an older
-handshake are refused because every confirmation of an own session replaces
-this device's one-time prekey. What follows is the proposal as written.
+handshake cannot be answered because every confirmation of an own session
+replaces this device's one-time prekey; a store written before B keeps a
+window until that prekey next changes (`docs/NET-MESSAGING.md` section 8).
+A restart that can no longer be answered when it arrives is refused, and
+the restarting device makes it again. What follows is the proposal as
+written.
 
 **What it is**
 - A new handshake from a pinned contact is recorded provisionally even when a

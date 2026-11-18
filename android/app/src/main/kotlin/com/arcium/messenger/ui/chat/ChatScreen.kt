@@ -232,8 +232,7 @@ private fun DeleteContactDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         text = {
             Text(
                 "Deletes this contact, the conversation and every message not yet delivered — " +
-                    "on this device only. To talk again, both of you delete each other and " +
-                    "exchange cards again.",
+                    "on this device only. To talk again, add their card again.",
             )
         },
         confirmButton = {
@@ -260,9 +259,10 @@ private fun ResetSessionDialog(name: String, onConfirm: () -> Unit, onDismiss: (
         title = { Text("Reset secure session?") },
         text = {
             Text(
-                "Starts a new secure session with $name. Messages not yet delivered in the " +
-                    "current session are marked not delivered; you can send them again. " +
-                    "$name's device switches to the new session when your next message reaches it.",
+                "Starts a new secure session with $name. Messages already sent in the " +
+                    "current session but not yet delivered are marked not delivered; you can " +
+                    "send them again. Messages still waiting to be sent go out in the new " +
+                    "session. $name's device switches to it when it next connects.",
             )
         },
         confirmButton = {

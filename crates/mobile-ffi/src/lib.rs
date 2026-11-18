@@ -274,6 +274,38 @@ fn identity_from_record(read: Result<Vec<u8>, StorageError>) -> Result<Option<Ar
 // `establish_prekeys` — instead of a second parser that a downgrade could aim at.
 const PREKEYS_KEY: &str = "prekeys/v2";
 
+/// The SHA-256 of the handshake this device's responder session with the
+/// peer came from (32 bytes), written in the transaction that stores the
+/// session (`accept_first_message`) and replaced by the next one. The
+/// network layer reads it to tell the contact's late retransmission of
+/// that handshake, which it never refuses, from a restart it can no longer
+/// answer, which it does (option B; `docs/NET-MESSAGING.md` section 10,
+/// "Reset"). Not removed with the session: an older value only names a
+/// handshake whose session is gone. Removed with the contact.
+pub(crate) fn accepted_handshake_key(peer: &[u8; 32]) -> String {
+    let hex: String = peer.iter().map(|b| format!("{b:02x}")).collect();
+    format!("hsacc:v1/{hex}")
+}
+
+/// The side write recording `provisional` as the handshake of the responder
+/// session about to be stored ([`accepted_handshake_key`]). It replaces the
+/// record of an earlier session only if that is still the record read here.
+fn accepted_handshake_write(
+    store: &EncryptedStore,
+    provisional: &ProvisionalHandshake,
+) -> Result<SideWrite, CoreError> {
+    let key = accepted_handshake_key(&provisional.peer_identity_pk);
+    let value = Zeroizing::new(handshake_hash(&provisional.handshake).to_vec());
+    let write = match store.get(&key) {
+        Ok(old) => SideWrite::replace(key, Zeroizing::new(old), value),
+        Err(StorageError::NotFound) => SideWrite::insert(key, value),
+        Err(e) => return Err(e.into()),
+    };
+    write.map_err(|_| CoreError::Storage {
+        msg: "accepted-handshake key is reserved".into(),
+    })
+}
+
 // ── ARCIUM_X3DH_FORMAT_V1 ─────────────────────────────────────────────────────
 //
 // Three fixed-width structures. Fixed width is deliberate: the pre-v1 formats had
@@ -1146,13 +1178,14 @@ fn accept_first_message(
         taken.as_ref(),
         &handshake,
     )?;
-    let extra = match rotated {
+    let mut extra = match rotated {
         Some(new_record) => vec![SideWrite::replace(PREKEYS_KEY.into(), record_bytes, new_record)
             .map_err(|_| CoreError::Storage {
                 msg: "prekey record key is reserved".into(),
             })?],
         None => Vec::new(),
     };
+    extra.push(accepted_handshake_write(store, &provisional)?);
     let first = FirstContact {
         handle: session_id,
         session,
@@ -1161,8 +1194,9 @@ fn accept_first_message(
     };
     match messenger.accept_first_message(store, our_identity_pk.to_bytes(), first, wire) {
         Ok(received) => Ok(received),
-        // The prekey record changed since it was read: another first message
-        // consumed the one-time prekey first.
+        // The prekey record (or the accepted-handshake record) changed since
+        // it was read: another first message consumed the one-time prekey
+        // first.
         Err(MessagingError::ExtraConflict { .. }) => Err(CoreError::OneTimePrekeyUnavailable {
             opk_id: handshake.opk_id.unwrap_or_default(),
         }),
@@ -1191,7 +1225,9 @@ fn accept_first_message(
 ///
 /// The cost: another contact's handshake that names the replaced prekey is
 /// refused and that contact starts again, as after a first message consumed
-/// it. Nothing when no prekey record is held or it cannot be read.
+/// it; so is a contact's restart of an established session (the network
+/// layer refuses it, `record_restart`). Nothing when no prekey record is
+/// held or it cannot be read.
 fn replace_prekey_on_confirm(
     store: &EncryptedStore,
     _beside: Option<&ProvisionalHandshake>,
@@ -1282,6 +1318,20 @@ impl ArciumCore {
                 },
             )
             .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// The SHA-256 of the handshake this device's latest responder session
+    /// with `peer` came from ([`accepted_handshake_key`]); `None` if no
+    /// responder session with `peer` was stored by a build that records it.
+    pub(crate) fn accepted_handshake(&self, peer: &[u8; 32]) -> Result<Option<[u8; 32]>, CoreError> {
+        let store = self.store.lock().map_err(|_| CoreError::Storage {
+            msg: "mutex poisoned".into(),
+        })?;
+        match store.get(&accepted_handshake_key(peer)) {
+            Ok(bytes) => Ok(<[u8; 32]>::try_from(bytes.as_slice()).ok()),
+            Err(StorageError::NotFound) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Whether `wire`, a message from `peer` that did not decrypt under this

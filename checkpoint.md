@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-18 05:40 UTC, by a Claude Code cloud session
+Updated: 2026-11-18 05:50 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,10 +13,10 @@ Updated: 2026-11-18 05:40 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `7755efdb4d2b71cbc9786c884c90e54010e8b5a6` (merge of PR #209, 2026-11-18)
+- `main` = `88969c614eef5a361c37b401f9eae242f27e9188` (merge of PR #210, 2026-11-18)
 
 ## Done
-- 18 Nov (D-056): #209 R-14 far skip up to 100,000 after a 10-minute wait (`7755efd`); tracker PR #210 open (R-14, R-20 PARTIAL).
+- 18 Nov (D-056): #209 R-14 far skip up to 100,000 after a 10-minute wait (`7755efd`); #210 tracker R-14, R-20 PARTIAL (`88969c6`).
 - 18 Nov (D-055): #207 R-21 GONE notice for the current receiving chain (`6e00a7f`); #208 tracker R-21 PARTIAL (`b729891`).
 - 17 Nov (D-054): #205 R-22 `last_sent` pruned after every round (`3f0cf9f`); #206 tracker R-22 FIXED (`003af23`).
 - 17 Nov (D-053): #203 R-24 X3DH refuses low-order keys (`3767d94`); #204 tracker R-24 FIXED (`cf8d96e`).
@@ -41,7 +41,7 @@ Updated: 2026-11-18 05:40 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #210 tracker: R-14 and R-20 PARTIAL (merge only on the Owner's word).
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.

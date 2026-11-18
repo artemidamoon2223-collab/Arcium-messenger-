@@ -2432,6 +2432,7 @@ mod tests {
                 "attempt {attempt}: expected OneTimePrekeyRequired, got {err:?}"
             );
             assert_eq!(read_record(&bob), before, "the refusal must not touch the record");
+            assert!(!has_provisional(&bob, 1), "attempt {attempt}: nothing is recorded");
         }
         assert!(matches!(
             bob.encrypt_message(1, b"x".to_vec()),

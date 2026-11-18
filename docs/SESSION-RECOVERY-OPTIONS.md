@@ -150,7 +150,8 @@ on both sides.
   once (the same greater-key rule as `resolve_session_conflict` is one
   choice).
 - X-6 must be closed first, and replays of an older handshake must be refused
-  (one-time prekey consumed; signed prekey unchanged).
+  (one-time prekey consumed; signed prekey unchanged). *(Later: X-6 is
+  closed.)*
 - Wire bytes need not change. The acceptance rule does change, which is a
   protocol change under `CLAUDE.md`.
 

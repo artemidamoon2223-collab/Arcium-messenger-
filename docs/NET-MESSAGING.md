@@ -641,6 +641,16 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 - A second initiator racing for the same one-time prekey is refused and
   starts again (section 6). With k contacts racing, the k-th may wait up to
   about 10 minutes per further refusal (the per-contact limit).
+- A one-time prekey kept against a mailbox writer. While this device has
+  an unconfirmed session of its own with a contact, anyone who can write to
+  its mailbox can put there a handshake "from" that contact naming this
+  device's current prekeys (they are public), and it is recorded beside
+  the session. When the contact confirms the session, the one-time prekey
+  is replaced (section 10, "Conflict"), so another contact whose first
+  contact under it is in flight is refused and starts again, and the texts
+  it had committed read `NotDelivered` for its user to send again. At most
+  once per confirmation of an own session. Before, consuming a one-time
+  prekey took a pinned contact's identity secret.
 - Rotation of the signed prekey (tracker R-6). It is made once and kept for
   the life of the identity. Every answered handshake uses a one-time
   prekey (tracker X-6), which is replaced when a first message under it is
@@ -653,9 +663,9 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   read the next first contact under the one-time prekey held then, however
   much later it comes, without being seen; and the first messages of a
   handshake never accepted here while its one-time prekey stays published
-  (one the relay withheld, one from a contact deleted before it arrived,
-  one beside a session this device gave up whose contact never sent it
-  again). Rotating the signed prekey would bound that time; it is not
+  (one the relay withheld, one from a contact deleted before it arrived or
+  while a conflict with it was shown, one beside a session this device gave
+  up whose contact never sent it again). Rotating the signed prekey would bound that time; it is not
   done. Whoever holds the identity secret can also sign a signed prekey of
   their own, which rotation does not stop. The plaintext of messages read
   here stays in the history and inbox, which a leak of the store exposes

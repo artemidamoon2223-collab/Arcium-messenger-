@@ -120,7 +120,10 @@ pub struct ProvisionalHandshake {
 /// Called with the store as read by that receive and the handshake being
 /// deleted. An error ends the receive with nothing written; a precondition
 /// of a returned write that no longer holds at commit is a
-/// [`MessagingError::Conflict`], also with nothing written.
+/// [`MessagingError::Conflict`], also with nothing written. A write must not
+/// name a key the receive writes itself (its inbox, seen and provisional
+/// records): the batch is then refused (`SideWriteError::DuplicateKey`) on
+/// every try, and the message is never committed.
 pub type BesideDiscard = Box<
     dyn Fn(&EncryptedStore, &ProvisionalHandshake) -> Result<Vec<SideWrite>, MessagingError>
         + Send,

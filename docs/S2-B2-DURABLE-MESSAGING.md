@@ -284,7 +284,9 @@ provisional record beside a session. This section changes that.
   - A provisional record next to an established session can exist (earlier
     builds deleted it only by a promotion). It is never read there: the
     check above runs only for an unconfirmed session of this device's own.
-    The next message from the peer committed on the session deletes it.
+    The next message from the peer committed on the session deletes it,
+    with the side writes for it (the one-time prekey it names replaced if
+    the record can still answer it).
   - Nothing is rewritten in place, and no record format changes. The
     conflict flag of the network layer changes meaning
     (`docs/NET-MESSAGING.md` section 10).

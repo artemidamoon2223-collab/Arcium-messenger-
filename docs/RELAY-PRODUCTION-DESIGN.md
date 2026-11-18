@@ -77,8 +77,15 @@ bind a victim's mailbox to the attacker's own signing key.
 - After a valid `AUTH`, the connection acts for `O`:
   - `FETCH`, `FETCH_AFTER` and `DELETE` are allowed only for recipient `O`;
   - `PUT_BUNDLE` only for owner `O`.
-- `SEND` and `GET_BUNDLE` stay open to any connection. First contact needs
-  both, and the sender's key is already in the envelope.
+- `GET_BUNDLE` stays open to any connection: first contact needs it.
+- `SEND`, amended 2026-11-18 (tracker R-9): stored only after a valid
+  `AUTH`, and only for an envelope whose sender field (bytes 5..37,
+  `relay::protocol::ENVELOPE_SENDER`) is the authenticated owner `O`.
+  Otherwise `UNAUTHORIZED`, answered before the mailbox is looked at. First
+  contact is unaffected: the initiator authenticates as itself. Before,
+  `SEND` was open to any connection, so anyone could leave an envelope
+  naming any sender, and count the places that the recipient's keep-or-delete
+  answer to it left free.
 
 **Why this is sound, and what a review must confirm**
 
@@ -95,7 +102,8 @@ bind a victim's mailbox to the attacker's own signing key.
   is bound to the connection.
 
 Effect on findings:
-- R-9: a stranger can no longer read a mailbox. The relay operator still can.
+- R-9: a stranger can no longer read a mailbox, nor leave an envelope
+  naming another sender. The relay operator still can do both.
 - R-14: only the relay operator can still delete receipts, and persistence
   removes restart loss.
 

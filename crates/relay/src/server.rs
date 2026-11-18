@@ -20,7 +20,8 @@
 //! stored sequence number.
 //!
 //! A full mailbox is a denial of service anyone who can reach the relay can
-//! cause, since SEND is not authenticated. Paging with FETCH_AFTER does not
+//! cause: on V1 SEND is not authenticated, and on V2 any key may
+//! authenticate and send as itself. Paging with FETCH_AFTER does not
 //! change that: it lets a reader get past envelopes it leaves in place, not
 //! receive envelopes the relay refused to store.
 //!
@@ -38,7 +39,8 @@
 //! [`serve_v2`] speaks `RELAY_PROTOCOL_V2` (`crate::protocol`): TLS 1.3 with
 //! the relay's pinned key (`crate::tls`), and FETCH, FETCH_AFTER, DELETE and
 //! PUT_BUNDLE only for the owner who authenticated on that connection
-//! (`crate::auth`). Same state, same limits, same persistence.
+//! (`crate::auth`), and SEND only of an envelope that names that owner as
+//! its sender (tracker R-9). Same state, same limits, same persistence.
 //!
 //! # What it does not do
 //!
@@ -535,11 +537,25 @@ struct Session<'a> {
 impl Session<'_> {
     /// The answer to `req` if this connection may not have it handled: AUTH
     /// is always answered here, and so is an owner operation for any key but
-    /// the authenticated owner's. `None` lets [`handle`] answer.
+    /// the authenticated owner's, and a SEND whose envelope does not name the
+    /// authenticated owner as its sender ([`ENVELOPE_SENDER`]). `None` lets
+    /// [`handle`] answer. A refused SEND is answered before the mailbox is
+    /// looked at, so it tells nothing about it.
     fn screen(&mut self, req: &Request, config: &RelayConfig) -> Option<Response> {
         let (op, key) = match req {
             Request::Auth { owner, tag } => return Some(self.authenticate(owner, tag, config)),
-            Request::Send { .. } | Request::GetBundle { .. } => return None,
+            Request::GetBundle { .. } => return None,
+            Request::Send { recipient, envelope } => {
+                if let Auth::Owner(owner) = self.auth {
+                    if envelope.get(ENVELOPE_SENDER) == Some(owner.as_slice()) {
+                        return None;
+                    }
+                }
+                log(config, || {
+                    format!("SEND to={} refused: not from the authenticated owner", short(recipient))
+                });
+                return Some(Response::Error(ErrorCode::Unauthorized));
+            }
             Request::PutBundle { owner, .. } => ("PUT_BUNDLE", owner),
             Request::Fetch { recipient, .. } => ("FETCH", recipient),
             Request::FetchAfter { recipient, .. } => ("FETCH_AFTER", recipient),

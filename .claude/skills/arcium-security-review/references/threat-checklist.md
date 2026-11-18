@@ -197,10 +197,14 @@ Where: `crates/mobile-ffi/src/network.rs`, `network/wire.rs`,
 - **What a mailbox reader learns.** Whoever can read a mailbox on the relay
   learns whom its owner has pinned: a message from a pinned sender without a
   session is kept (`NoSession` → `Fate::Keep`), one from a stranger is
-  deleted, and refusals go only to pinned contacts (R-9, open;
+  deleted, and refusals go only to pinned contacts (R-9, open — narrowed;
   `NET-MESSAGING.md` §8). On a `RELAY_PROTOCOL_V2` relay only the owner and
-  the operator read a mailbox, but anyone can still tell kept from deleted by
-  counting its free places (SENDs accepted until FULL). Check that a change adds no further keep/delete,
+  the operator read a mailbox, and only the operator can store an envelope
+  naming another sender (SEND needs AUTH as the envelope's sender,
+  `relay::protocol::ENVELOPE_SENDER`), so counting free places (SENDs
+  accepted until FULL) tells a sender only about its own messages. Check
+  that a change keeps every app SEND on a connection authenticated as its
+  sender, and adds no further keep/delete,
   answer/no-answer or timing difference that depends on who is pinned.
 - **History numbering.** History entries are numbered without gaps and never
   deleted, so a number is missing only from a damaged store. Paging

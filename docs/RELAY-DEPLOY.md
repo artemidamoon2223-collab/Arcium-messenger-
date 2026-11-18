@@ -117,8 +117,10 @@ nc -vz relay.example.org 7700
   (`--max-connections`, `--max-connections-per-address`); 4096 envelopes per
   mailbox and 1 GiB of envelopes in all (`--max-total-bytes`). No rate limit
   on SENDs beyond those caps.
-- Anyone can still send to any mailbox (needed for first contact); a full
-  mailbox refuses new envelopes.
+- Anyone can still send to any mailbox (needed for first contact), but only
+  after AUTH and only as itself: the relay stores an envelope only if its
+  sender field is the authenticated key (tracker R-9). A full mailbox refuses
+  new envelopes.
 - The relay operator (whoever controls the server) can withhold, delete or
   reorder envelopes and sees metadata. The phones detect forgery and replay;
   they cannot detect withholding.

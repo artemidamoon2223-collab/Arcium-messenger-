@@ -22,6 +22,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **R-21 recorded as partial 2026-11-18 against `main` @ `6e00a7f`** (PR #207; see "Update 2026-11-18: R-21 partial"); no earlier row was changed.
 **R-14 and R-20 recorded as partial 2026-11-18 against `main` @ `7755efd`** (PR #209; see "Update 2026-11-18: R-14 and R-20 partial"); no earlier row was changed.
 **X-6 recorded as fixed 2026-11-18 against `main` @ `f452eb3`** (PR #211; see "Update 2026-11-18: X-6 fixed"), with a note on R-6; no earlier row was changed.
+**R-6 revisited 2026-11-18 against `main` @ `9b95493`** (PR #213; see "Update 2026-11-18: R-6 revisited"): still ACCEPTED, one case fixed; no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -1212,6 +1213,29 @@ finding; its INFO notes were fixed in the PR. A review is analysis, not proof.
 |----|---------------------|-------------------------------|-------|
 | **X-6** (residual replay on the SPK-only path) | **FIXED.** A handshake that names no one-time prekey is refused with `OneTimePrekeyRequired` whether or not this device holds one, so the path without replay protection is closed. Every path that records a handshake or derives a session from one goes through `check_answerable` first (recording a provisional handshake, promotion on the first message, the record beside an own session, `beside_authenticates`), and the network layer answers the error with an R-1 refusal, so an initiator starts again. The path was unreachable in production (no record without a one-time prekey). **Scope:** the wire format keeps the form, and an initiator still builds it from a bundle without a one-time prekey (refused by the responder); `responder_session` still takes an optional one-time prekey, so a future caller that skipped `check_answerable` would reopen the path (INFO). | `crates/mobile-ffi/src/lib.rs:1031` (`check_answerable`), `:1046` (the refusal), `:964` (doc table), `:654` (refusal reason); test `crates/mobile-ffi/src/lib.rs:2402`; `docs/S2-B2-DURABLE-MESSAGING.md:280-289` (replay) | `SV`; `RUNTIME_VERIFIED` (test; CI on `eaffc0c`) |
 | **R-6** (signed prekey never rotated) | Note only; status unchanged (**ACCEPTED**). The Owner's decision was to revisit it together with X-6; X-6 is now closed, so the revisit is due. Nothing was changed. | the R-6 row | `SV` |
+
+---
+
+## Update 2026-11-18: R-6 revisited (`main` @ `9b95493`)
+
+**Snapshot:** `main` @ `9b9549390c32f8f0f699e36f0ef828a3ae0d7122` (the merge of PR #213). The
+revisit was asked for by the Owner on 2026-11-18 ("R6"). The Owner decided to keep the signed
+prekey unrotated and record why ("Не менять, записать"). A fresh review then found a case where
+that was unsafe, and the Owner chose to replace the one-time prekey there ("Заменять одноразовый
+ключ"). PR #213 was merged on the Owner's "Ok" to the request "мёрдж #213". Each `path:line`
+below was re-read at `9b95493`.
+
+**Runtime evidence.** PR #213: 18 check runs success on head `0947d82`, the Android emulator
+jobs included. Locally `cargo test --workspace --locked` at `2abb1c5` → 625 passed, 0 failed;
+the later commits changed one test line, docs and a doc comment. Six mutations, each removing
+one guarded behaviour, each failed a test. Two fresh-context reviews (`engineering-code-review`,
+`arcium-security-review`): the first found the simultaneous-start case (MEDIUM, confirmed at
+runtime by a probe), which the PR fixes; the second found nothing above LOW. A review is
+analysis, not proof.
+
+| ID | Status at `9b95493` | Evidence (`main` @ `9b95493`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-6** (signed prekey never rotated) | **ACCEPTED (Owner decision reaffirmed 2026-11-18); one case fixed.** The signed prekey is still made once and kept for the life of the identity. Every answered handshake uses a one-time prekey (X-6); once that prekey is replaced, the identity, the signed prekey and the prekey record this device keeps no longer derive the keys of a first message under it, and the session stops using the signed prekey as its ratchet key at the first message. **Fixed:** at a simultaneous start, the contact's first message authenticates beside this device's own session with the one-time prekey only read; when the contact gave its session up and this device's session was confirmed, the prekey stayed, so a later leak of the store read the contact's given-up first messages. Now the confirming receive replaces that prekey in the same transaction that deletes the handshake beside the session, if the prekey record can still answer it. **Remains (documented, not fixed):** after a store leak, the next first contact under the one-time prekey held then can be read passively, however late it comes; so can first messages never accepted here while their one-time prekey stays published (withheld by the relay, from a contact deleted before they arrived or while a conflict was shown, beside a session this device gave up whose contact never sent them again). Rotating the signed prekey would bound that time. Whoever holds the identity secret can sign a signed prekey of their own; rotation does not stop that. **LOW (new, documented):** anyone who can write to the mailbox can put a handshake "from" a contact beside this device's own unconfirmed session; when the contact confirms it, the one-time prekey is replaced, so a third contact's first contact in flight under it is refused and its texts read `NotDelivered`; at most once per confirmation of an own session (before, consuming a prekey took a pinned contact's identity secret). **INFO:** no test covers a crash or an unknown commit outcome with the replacement installed, nor a two-process race on the prekey record (a generic stand-in hook is tested). | `crates/mobile-ffi/src/lib.rs:822-832` (reason on `establish_prekeys`), `:1189` (`replace_beside_prekey`), `:762` (installed), `:1042` (`check_answerable`); `crates/mobile-ffi/src/network.rs:741-743` (prekeys made only when absent); `crates/core-protocol/src/messaging.rs:101` (`with_beside_discard`), `:607-619` (committed with the discard); `crates/core-protocol/src/messaging/types.rs:127`; `crates/core-protocol/src/messaging/beside.rs:172`; tests `crates/mobile-ffi/src/lib.rs:2564, 2661, 2693`, `crates/core-protocol/src/messaging/tests/beside.rs:266, 328`, `crates/mobile-ffi/src/tests/chat.rs:394`; `docs/NET-MESSAGING.md:644` (mailbox writer), `:654` (rotation and what remains), `:796` (section 10); `docs/S2-B2-DURABLE-MESSAGING.md:251` | `SV`; `RUNTIME_VERIFIED` (tests, mutations; CI on `0947d82`); remains `INFERRED` |
 
 ---
 

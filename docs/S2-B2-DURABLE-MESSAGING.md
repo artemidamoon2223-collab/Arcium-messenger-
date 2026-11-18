@@ -281,11 +281,12 @@ provisional record beside a session. This section changes that.
   still authenticate if this device can still answer that handshake: its
   one-time prekey is still the published one and its signed prekey current.
   A handshake that created a session here cannot be replayed this way (its
-  one-time prekey was consumed and replaced, section 4; the form without a
-  one-time prekey has no such protection, tracker X-6, and no production
-  path produces one). One this device never accepted can, for as long as no
-  other first contact consumes that prekey. The consequence is in
-  `docs/NET-MESSAGING.md` section 8.
+  one-time prekey was consumed and replaced, section 4). A handshake this
+  device never accepted can, for as long as no other first contact consumes
+  that prekey. The consequence is in `docs/NET-MESSAGING.md` section 8. A
+  handshake in the form without a one-time prekey, which would have no such
+  protection, is never answered, also when this device holds no one-time
+  prekey (`OneTimePrekeyRequired`; tracker X-6).
 
 ## 5. Outgoing messages
 

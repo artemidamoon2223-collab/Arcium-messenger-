@@ -961,7 +961,7 @@ impl ArciumCore {
     /// | one-time prekey held | yes | matches | recorded; consumed when the first message authenticates |
     /// | one-time prekey held | yes | differs | `OneTimePrekeyUnavailable` |
     /// | one-time prekey held | no | — | `OneTimePrekeyRequired` |
-    /// | none held | no | — | recorded; answered without `dh4` |
+    /// | none held | no | — | `OneTimePrekeyRequired` |
     /// | none held | yes | any | `OneTimePrekeyUnavailable` |
     ///
     /// A one-time prekey error never falls back to the weaker no-`dh4` path: that
@@ -972,7 +972,11 @@ impl ArciumCore {
     /// Because a consumed identifier is replaced rather than remembered,
     /// replaying a handshake whose session was created names an identifier
     /// that is no longer current and is refused. That is the whole of the
-    /// replay property claimed here; the no-one-time-prekey branch has none.
+    /// replay property claimed here. A handshake without a one-time prekey
+    /// would have none (its root key re-derives identically on every replay),
+    /// so it is never answered, also when this device holds no one-time
+    /// prekey (tracker X-6); the wire format keeps the form, and an initiator
+    /// still builds it from a bundle without one, which is then refused.
     ///
     /// # Refusals
     ///
@@ -1036,8 +1040,10 @@ fn check_answerable(
         (Some(_), Some(named)) | (None, Some(named)) => {
             Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
         }
-        (Some(_), None) => Err(CoreError::OneTimePrekeyRequired),
-        (None, None) => Ok(()),
+        // Without a one-time prekey nothing stops an exact replay of the
+        // handshake and its first message (tracker X-6), so one is required
+        // whether or not this device holds one.
+        (Some(_), None) | (None, None) => Err(CoreError::OneTimePrekeyRequired),
     }
 }
 
@@ -2387,12 +2393,13 @@ mod tests {
         assert_eq!(read_record(&bob), before);
     }
 
-    /// The SPK-only branch. No normal writer produces a record without a one-time
-    /// prekey — `establish_prekeys` and the consume path both publish one — so
-    /// the record is constructed directly. Without this the branch would be
-    /// carried but never executed.
+    /// X-6. A handshake without a one-time prekey is refused also when this
+    /// device holds none: on that path nothing would stop an exact replay
+    /// (the root key re-derives identically). No normal writer produces a
+    /// record without a one-time prekey — `establish_prekeys` and the consume
+    /// path both publish one — so the record is constructed directly.
     #[test]
-    fn spk_only_branch_accepts_and_omits_dh4() {
+    fn a_handshake_without_a_one_time_prekey_is_refused_even_when_none_is_held() {
         let (bob, bob_bundle) = peer_with_prekeys(230);
         let alice = fresh_core(231);
         alice.save_identity(Identity::generate()).unwrap();
@@ -2414,15 +2421,23 @@ mod tests {
         spk_only[164..204].fill(0);
 
         let handshake = alice.establish_session_initiator(1, spk_only).unwrap();
-        bob.establish_session_responder(1, handshake).unwrap();
-
-        let msg = b"no one-time prekey here".to_vec();
-        let ct = alice.encrypt_message(1, msg.clone()).unwrap();
-        assert_eq!(
-            bob.decrypt_message(1, ct).unwrap(),
-            msg,
-            "both sides must have omitted dh4 identically"
-        );
+        assert_eq!(handshake[2] & FLAG_OTP, 0, "Alice built an SPK-only handshake");
+        let before = read_record(&bob);
+        for attempt in 0..2 {
+            let err = bob
+                .establish_session_responder(1, handshake.clone())
+                .expect_err("a handshake without a one-time prekey is never answered");
+            assert!(
+                matches!(err, CoreError::OneTimePrekeyRequired),
+                "attempt {attempt}: expected OneTimePrekeyRequired, got {err:?}"
+            );
+            assert_eq!(read_record(&bob), before, "the refusal must not touch the record");
+            assert!(!has_provisional(&bob, 1), "attempt {attempt}: nothing is recorded");
+        }
+        assert!(matches!(
+            bob.encrypt_message(1, b"x".to_vec()),
+            Err(CoreError::NoSession { session_id: 1 })
+        ));
 
         // And a handshake that names a one-time prekey Bob does not hold must be
         // refused as unavailable — never quietly accepted on the SPK-only path.

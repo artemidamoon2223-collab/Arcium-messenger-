@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-18 00:55 UTC, by a Claude Code cloud session
+Updated: 2026-11-18 01:25 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,10 +13,10 @@ Updated: 2026-11-18 00:55 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `6e00a7f680e4bcb0b47c6d28055d0aba058438e0` (merge of PR #207, 2026-11-18)
+- `main` = `b72989178beff931d21118e0ea8c80d3a587ce45` (merge of PR #208, 2026-11-18)
 
 ## Done
-- 18 Nov (D-055): #207 R-21 GONE notice for the current receiving chain (`6e00a7f`); tracker PR #208 open (R-21 PARTIAL).
+- 18 Nov (D-055): #207 R-21 GONE notice for the current receiving chain (`6e00a7f`); #208 tracker R-21 PARTIAL (`b729891`).
 - 17 Nov (D-054): #205 R-22 `last_sent` pruned after every round (`3f0cf9f`); #206 tracker R-22 FIXED (`003af23`).
 - 17 Nov (D-053): #203 R-24 X3DH refuses low-order keys (`3767d94`); #204 tracker R-24 FIXED (`cf8d96e`).
 - 17 Nov (D-052): #202 test catches a weaker copy-room threshold (`1c5b2c1`).
@@ -40,7 +40,7 @@ Updated: 2026-11-18 00:55 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #208 tracker: R-21 PARTIAL (merge only on the Owner's word).
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.

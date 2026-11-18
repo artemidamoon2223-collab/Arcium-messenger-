@@ -759,7 +759,7 @@ impl ArciumCore {
         let store = EncryptedStore::open_with_key(&storage_path, key)?;
         Ok(Arc::new(Self {
             store: Mutex::new(store),
-            messenger: Mutex::new(Messenger::new()),
+            messenger: Mutex::new(Messenger::with_beside_discard(Box::new(replace_beside_prekey))),
         }))
     }
 
@@ -821,11 +821,15 @@ impl ArciumCore {
     /// deriving a key the peer cannot match.
     ///
     /// The network layer calls it only when no record exists, so the signed
-    /// prekey is kept for the life of the identity (tracker R-6). What makes
-    /// that safe: every answered handshake used a one-time prekey (X-6), and
-    /// the first message replaces it, so what this device keeps afterwards
-    /// cannot read that first message again (test
-    /// `what_a_device_keeps_after_a_first_contact_does_not_read_it_again`).
+    /// prekey is kept for the life of the identity (tracker R-6). Every
+    /// answered handshake uses a one-time prekey (X-6). Once that prekey is
+    /// replaced, the secrets this device keeps no longer derive the keys of
+    /// a first message under it: the first message accepted under it
+    /// replaces it, and so does the receive that confirms this device's own
+    /// session when the contact's handshake beside it names it
+    /// (`replace_beside_prekey`). Until then they do, for any first contact
+    /// under the prekey held, however late it comes
+    /// (`docs/NET-MESSAGING.md` section 8).
     pub fn establish_prekeys(&self) -> Result<(), CoreError> {
         let identity = self.require_identity()?;
         let signed_prekey_sk = StaticSecret::random_from_rng(OsRng);
@@ -1163,6 +1167,47 @@ fn accept_first_message(
         }),
         Err(e) => Err(CoreError::messaging(session_id, e)),
     }
+}
+
+/// The side write replacing this device's one-time prekey when the handshake
+/// `discarded`, recorded beside this device's own session, is deleted
+/// because that session was confirmed (`Messenger::with_beside_discard`;
+/// tracker R-6). A first message under that handshake may have
+/// authenticated here (`ArciumCore::beside_authenticates`), read with the
+/// one-time prekey but never accepted, and the peer has given that session
+/// up. While the prekey stays, whoever later takes this device's store and
+/// holds a copy of those messages can read them. So it is replaced, as a
+/// first message replaces the one it consumes, whenever the record held
+/// now can answer the handshake (`check_answerable`), whether or not a
+/// message authenticated under it: a handshake is public bytes, so anyone
+/// could have made this one, at the cost of one replacement per
+/// confirmation of an own session. Another contact's handshake naming the
+/// replaced prekey is then refused and starts again, as after a first
+/// message consumed it. Nothing for a handshake that does not parse or that
+/// the record cannot answer; a prekey record that cannot be read is left
+/// as it is.
+fn replace_beside_prekey(
+    store: &EncryptedStore,
+    discarded: &ProvisionalHandshake,
+) -> Result<Vec<SideWrite>, MessagingError> {
+    let Ok(handshake) = unpack_initiator_handshake(&discarded.handshake) else {
+        return Ok(Vec::new());
+    };
+    let bytes = match store.get(PREKEYS_KEY) {
+        Ok(bytes) => Zeroizing::new(bytes),
+        Err(StorageError::NotFound | StorageError::Decryption) => return Ok(Vec::new()),
+        Err(e) => return Err(MessagingError::Store(e)),
+    };
+    let Ok(mut record) = unpack_prekeys(&bytes) else {
+        return Ok(Vec::new());
+    };
+    if check_answerable(&record, &handshake).is_err() {
+        return Ok(Vec::new());
+    }
+    record.opk = Some(new_one_time_prekey());
+    let write = SideWrite::replace(PREKEYS_KEY.into(), bytes, pack_prekeys(&record))
+        .map_err(MessagingError::SideWrite)?;
+    Ok(vec![write])
 }
 
 // Plain (non-exported) impl block: helpers here are NOT visible to UniFFI,
@@ -2477,14 +2522,44 @@ mod tests {
         ));
     }
 
+    /// Whether `wire` authenticates at `core` as the first message under
+    /// `handshake`, with the session derived from `core`'s identity, the
+    /// signed prekey of `record` and `opk`: what someone holding those
+    /// secrets could read. Read-only.
+    fn first_message_opens(
+        core: &ArciumCore,
+        record: &PrekeyRecordV2,
+        opk: Option<&StaticSecret>,
+        handshake: &[u8],
+        wire: &[u8],
+    ) -> bool {
+        let identity = core.require_identity().unwrap();
+        let our = PublicKey::from(&identity.dh_key);
+        let hs = unpack_initiator_handshake(handshake).unwrap();
+        let session = responder_session(&identity, our, &record.signed_prekey_sk, opk, &hs).unwrap();
+        let (_store, messenger) = core.lock().unwrap();
+        messenger
+            .first_message_authenticates(our.to_bytes(), session, wire)
+            .unwrap()
+    }
+
+    fn held_opk(record: &PrekeyRecordV2) -> Option<StaticSecret> {
+        record.opk.as_ref().map(|(_, sk)| sk.clone())
+    }
+
+    fn opk_id_of(record: &PrekeyRecordV2) -> Option<u64> {
+        record.opk.as_ref().map(|(id, _)| *id)
+    }
+
     /// R-6: the signed prekey is kept for the life of the identity. That
-    /// holds up only while what this device keeps after a first contact
-    /// cannot read that contact's first message again: its identity, its
-    /// signed prekey and its prekey record, with the one-time prekey that
-    /// replaced the used one or with none. The one-time prekey the
-    /// handshake used (one is required since X-6) is gone, and without it
-    /// the root key cannot be derived. The control shows that the check
-    /// below does open the message with that prekey.
+    /// holds up only while the secrets this device keeps after accepting a
+    /// first contact cannot decrypt that contact's first message again: its
+    /// identity, its signed prekey and its prekey record, with the one-time
+    /// prekey that replaced the used one or with none. The one-time prekey
+    /// the handshake used (one is required since X-6) is gone, and without
+    /// it the root key cannot be derived. The control shows that the check
+    /// does open the message with that prekey. (A first contact checked
+    /// only beside an own session: the next tests.)
     #[test]
     fn what_a_device_keeps_after_a_first_contact_does_not_read_it_again() {
         let (bob, bob_bundle) = peer_with_prekeys(233);
@@ -2503,29 +2578,18 @@ mod tests {
             before.signed_prekey_pk(),
             "the signed prekey is not rotated (R-6)"
         );
-        let id = |r: &PrekeyRecordV2| r.opk.as_ref().map(|(id, _)| *id);
-        assert!(id(&after).is_some(), "a new one-time prekey is published");
-        assert_ne!(id(&after), id(&before), "the used one-time prekey is replaced");
+        assert!(opk_id_of(&after).is_some(), "a new one-time prekey is published");
+        assert_ne!(opk_id_of(&after), opk_id_of(&before), "the used one-time prekey is replaced");
 
-        // Whether the first message authenticates under the session derived
-        // from Bob's identity, `record`'s signed prekey and `opk`.
-        let opens = |record: &PrekeyRecordV2, opk: Option<&StaticSecret>| {
-            let identity = bob.require_identity().unwrap();
-            let our = PublicKey::from(&identity.dh_key);
-            let hs = unpack_initiator_handshake(&handshake).unwrap();
-            let session = responder_session(&identity, our, &record.signed_prekey_sk, opk, &hs).unwrap();
-            let (_store, messenger) = bob.lock().unwrap();
-            messenger
-                .first_message_authenticates(our.to_bytes(), session, &first)
-                .unwrap()
+        let opens = |record: &PrekeyRecordV2, opk: Option<StaticSecret>| {
+            first_message_opens(&bob, record, opk.as_ref(), &handshake, &first)
         };
-        let opk = |r: &PrekeyRecordV2| r.opk.as_ref().map(|(_, sk)| sk.clone());
         assert!(
-            opens(&before, opk(&before).as_ref()),
+            opens(&before, held_opk(&before)),
             "control: the one-time prekey it used opens the first message"
         );
         assert!(
-            !opens(&after, opk(&after).as_ref()),
+            !opens(&after, held_opk(&after)),
             "what is kept, with the new one-time prekey, must not open it"
         );
         assert!(
@@ -2541,6 +2605,116 @@ mod tests {
             bob_bundle[68..100],
             "the session no longer uses the signed prekey"
         );
+    }
+
+    /// Alice and Bob start sessions with each other at once; each holds an
+    /// unconfirmed session of its own. Alice records Bob's handshake beside
+    /// hers, and Bob's first message authenticates there (read with Alice's
+    /// one-time prekey, never accepted). Bob gives his session up and
+    /// accepts Alice's, as the conflict resolution does.
+    struct SimultaneousStart {
+        alice: Arc<ArciumCore>,
+        bob: Arc<ArciumCore>,
+        bob_hs: Vec<u8>,
+        bob_first: Vec<u8>,
+        /// Bob's answer under Alice's session, which confirms it at Alice.
+        bob_answer: Vec<u8>,
+    }
+
+    fn simultaneous_start(seed: u8) -> SimultaneousStart {
+        let (alice, alice_bundle) = peer_with_prekeys(seed);
+        let (bob, bob_bundle) = peer_with_prekeys(seed + 1);
+        let alice_hs = alice.establish_session_initiator(1, bob_bundle.clone()).unwrap();
+        let bob_hs = bob.establish_session_initiator(1, alice_bundle).unwrap();
+
+        alice.record_handshake_beside(1, &bob_hs).unwrap();
+        let bob_first = bob.encrypt_message(1, b"under bob's session".to_vec()).unwrap();
+        let bob_pk: [u8; 32] = bob_bundle[4..36].try_into().unwrap();
+        assert!(
+            alice.beside_authenticates(1, &bob_pk, &bob_first).unwrap(),
+            "Bob's first message authenticates beside Alice's session"
+        );
+
+        for m in bob.pending_outgoing(1).unwrap() {
+            bob.abandon_outgoing(1, m.message_id).unwrap();
+        }
+        bob.remove_session(1).unwrap();
+        bob.establish_session_responder(1, alice_hs).unwrap();
+        let alice_first = alice.encrypt_message(1, b"under alice's session".to_vec()).unwrap();
+        bob.decrypt_message(1, alice_first).unwrap();
+        let bob_answer = bob.encrypt_message(1, b"answer".to_vec()).unwrap();
+        SimultaneousStart {
+            alice,
+            bob,
+            bob_hs,
+            bob_first,
+            bob_answer,
+        }
+    }
+
+    /// R-6 at a simultaneous start (above). When Bob's answer confirms
+    /// Alice's session, the handshake beside it goes, and with it, in the
+    /// same transaction, the one-time prekey it named: Alice's kept secrets
+    /// no longer read the first message Bob gave up. The control shows that
+    /// they did before.
+    #[test]
+    fn a_one_time_prekey_read_beside_a_session_that_wins_is_replaced() {
+        let s = simultaneous_start(237);
+        let (alice, _bob) = (&s.alice, &s.bob);
+        let before = unpack_prekeys(&read_record(alice)).unwrap();
+        assert!(
+            first_message_opens(alice, &before, held_opk(&before).as_ref(), &s.bob_hs, &s.bob_first),
+            "control: before the confirmation, what Alice keeps reads Bob's first message"
+        );
+
+        assert_eq!(alice.decrypt_message(1, s.bob_answer.clone()).unwrap(), b"answer");
+        assert!(!has_provisional(alice, 1), "the handshake beside the session is gone");
+        let after = unpack_prekeys(&read_record(alice)).unwrap();
+        assert_eq!(after.signed_prekey_pk(), before.signed_prekey_pk());
+        assert!(opk_id_of(&after).is_some(), "a new one-time prekey is published");
+        assert_ne!(opk_id_of(&after), opk_id_of(&before), "the one Bob's handshake named is replaced");
+        for opk in [held_opk(&after), None] {
+            assert!(
+                !first_message_opens(alice, &after, opk.as_ref(), &s.bob_hs, &s.bob_first),
+                "what Alice keeps no longer reads Bob's given-up first message"
+            );
+        }
+        // The session goes on.
+        let next = s.bob.encrypt_message(1, b"next".to_vec()).unwrap();
+        assert_eq!(alice.decrypt_message(1, next).unwrap(), b"next");
+    }
+
+    /// The replacement happens only while the prekey record can answer the
+    /// discarded handshake: here another contact's first message consumed
+    /// the one-time prekey Bob's handshake named, so confirming Alice's
+    /// session leaves the record as it is. A confirmation with nothing
+    /// beside the session leaves it as it is too.
+    #[test]
+    fn a_confirmation_replaces_no_prekey_the_handshake_beside_does_not_name() {
+        let s = simultaneous_start(239);
+        let alice = &s.alice;
+        let carol = fresh_core(241);
+        carol.save_identity(Identity::generate()).unwrap();
+        // The bundle Bob used names the same one-time prekey.
+        let bundle = alice.export_prekey_bundle().unwrap();
+        let carol_hs = carol.establish_session_initiator(2, bundle).unwrap();
+        alice.establish_session_responder(2, carol_hs).unwrap();
+        let carol_first = carol.encrypt_message(2, b"carol".to_vec()).unwrap();
+        let named = current_opk_id(alice);
+        alice.decrypt_message(2, carol_first).unwrap();
+        assert_ne!(current_opk_id(alice), named, "Carol's first message consumed it");
+
+        let before = read_record(alice);
+        assert_eq!(alice.decrypt_message(1, s.bob_answer.clone()).unwrap(), b"answer");
+        assert!(!has_provisional(alice, 1));
+        assert_eq!(read_record(alice), before, "nothing to replace");
+
+        // Nothing beside Alice's session with Carol: her reply changes no prekey.
+        let to_carol = alice.encrypt_message(2, b"to carol".to_vec()).unwrap();
+        carol.decrypt_message(2, to_carol).unwrap();
+        let carol_reply = carol.encrypt_message(2, b"reply".to_vec()).unwrap();
+        alice.decrypt_message(2, carol_reply).unwrap();
+        assert_eq!(read_record(alice), before, "a receive with nothing beside changes no prekey");
     }
 
     // ── Atomicity ────────────────────────────────────────────────────────────

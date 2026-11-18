@@ -68,7 +68,7 @@ transaction; if any precondition fails, nothing is written.
 | responder: first message authenticated | session gen 1, handle, inbox record (undelivered), rotated prekey record, provisional record deleted | session absent, handle absent, provisional record byte-identical to the one the session was derived from, inbox id absent, seen id absent, prekey record byte-identical to the one validated |
 | handshake beside own session (4c) | provisional record only | session record byte-identical (SHA-256) to the one classified as this device's own initiator session with nothing received, handle record naming the peer (read in the same transaction) |
 | send | session gen n+1, outbox record, send-id record | session is the record loaded (gen n, same SHA-256), outbox id absent, send-id absent |
-| receive | session gen n+1, inbox record (undelivered), the peer's provisional record beside the session deleted (4c) | session is the record loaded, inbox id absent, seen id absent, that provisional record exactly the one read (or still absent if none was) |
+| receive | session gen n+1, inbox record (undelivered), the peer's provisional record beside the session deleted with the side writes for it (4c; the one-time prekey it names replaced, tracker R-6) | session is the record loaded, inbox id absent, seen id absent, that provisional record exactly the one read (or still absent if none was), each record a side write for it read exactly as read |
 | acknowledge incoming | inbox record deleted, seen record written | inbox record present, else no-op (idempotent) |
 | acknowledge outgoing | outbox record deleted (send-id kept) | outbox record present, else no-op (idempotent) |
 | abandon outgoing | outbox record deleted, send-id marked abandoned | outbox record present, else no-op (idempotent) |
@@ -248,7 +248,17 @@ provisional record beside a session. This section changes that.
     record exactly as read, or still absent if none was). Another
     connection recording one between the read and the commit makes the
     receive fail with `Conflict` and nothing written; repeating it deletes
-    the record.
+    the record. A messenger made with `Messenger::with_beside_discard`
+    commits, in that same transaction, the side writes it returns for the
+    record being deleted. `mobile-ffi` replaces there the one-time prekey
+    the handshake names, if the prekey record held now can answer it
+    (tracker R-6): a first message under it may have authenticated here
+    (Use, above), read with that prekey, and the peer has given that
+    session up, so while the prekey stays, a later leak of this store
+    derives that message's keys. A record a side write was made from that
+    changes between the read and the commit makes the receive fail with
+    `Conflict`, nothing written; repeating it reads it again. A removal or
+    forgetting does not call it.
   - Removed: `remove_session` deletes it with the session, handle and stored
     handshake (section 6a). The peer retransmits its handshake while its
     own session is unconfirmed, and it is then recorded as for any first
@@ -261,7 +271,8 @@ provisional record beside a session. This section changes that.
     peer's: none of these touch it, and the check above ignores it.
 - **Crash boundaries.** Dying before the recording's `COMMIT` leaves nothing
   recorded; after it, exactly the record. Dying inside the confirming
-  receive leaves the message committed and the record gone, or neither.
+  receive leaves the message committed, the record gone and its side
+  writes made (the one-time prekey replaced), or none of these.
   The removal is one transaction as before.
 - **Stores written before this change.**
   - A provisional record next to an unconfirmed initiator session can exist:
@@ -283,7 +294,8 @@ provisional record beside a session. This section changes that.
   A handshake that created a session here cannot be replayed this way (its
   one-time prekey was consumed and replaced, section 4). A handshake this
   device never accepted can, for as long as no other first contact consumes
-  that prekey. The consequence is in `docs/NET-MESSAGING.md` section 8. A
+  that prekey and no confirmation of this device's own session beside it
+  replaces it. The consequence is in `docs/NET-MESSAGING.md` section 8. A
   handshake in the form without a one-time prekey, which would have no such
   protection, is never answered, also when this device holds no one-time
   prekey (`OneTimePrekeyRequired`; tracker X-6).

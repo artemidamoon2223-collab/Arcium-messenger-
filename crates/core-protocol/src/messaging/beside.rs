@@ -15,7 +15,8 @@
 //! the peer's identity secret.
 //!
 //! It goes when our session is confirmed (a message from the peer committed
-//! on it: [`discard_beside`] in [`Messenger::receive`]), removed
+//! on it: [`discard_beside`] in [`Messenger::receive`], with the side writes
+//! of [`Messenger::with_beside_discard`]), removed
 //! ([`Messenger::remove_session`]) or forgotten ([`Messenger::forget_peer`]).
 
 use core_crypto::ratchet::{Header, HEADER_SIZE};
@@ -166,20 +167,24 @@ impl Messenger {
 /// this peer's, and one that cannot be read cannot be compared; neither is
 /// touched or checked (the peer's next handshake replaces an unreadable
 /// one, and `forget_peer` deletes it).
+///
+/// Also returns the handshake the write deletes, if it deletes one.
 pub(super) fn discard_beside(
     store: &EncryptedStore,
     handle: u64,
     peer: &[u8; 32],
-) -> Result<Option<SideWrite>, MessagingError> {
+) -> Result<(Option<SideWrite>, Option<ProvisionalHandshake>), MessagingError> {
     let key = provisional_key(handle);
-    let write = match store.get(&key) {
+    let (write, discarded) = match store.get(&key) {
         Ok(bytes) => match decode_provisional(&bytes) {
-            Ok(p) if p.peer_identity_pk == *peer => SideWrite::remove(key, Zeroizing::new(bytes)),
-            _ => return Ok(None),
+            Ok(p) if p.peer_identity_pk == *peer => {
+                (SideWrite::remove(key, Zeroizing::new(bytes)), Some(p))
+            }
+            _ => return Ok((None, None)),
         },
-        Err(StorageError::NotFound) => SideWrite::require_absent(key),
-        Err(StorageError::Decryption) => return Ok(None),
+        Err(StorageError::NotFound) => (SideWrite::require_absent(key), None),
+        Err(StorageError::Decryption) => return Ok((None, None)),
         Err(e) => return Err(MessagingError::Store(e)),
     };
-    write.map(Some).map_err(MessagingError::SideWrite)
+    Ok((Some(write.map_err(MessagingError::SideWrite)?), discarded))
 }

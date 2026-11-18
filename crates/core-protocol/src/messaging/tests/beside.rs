@@ -335,7 +335,7 @@ fn a_record_the_discard_read_that_changes_before_the_commit_fails_the_receive() 
     let answer = p.bob_answers();
     let path = dir.path().join("a.db");
     crate::messaging::race_hook::set(move || {
-        let mut db = EncryptedStore::open(&path, KEY).unwrap();
+        let db = EncryptedStore::open(&path, KEY).unwrap();
         db.put(R6_KEY, b"theirs").unwrap();
     });
     let before = records(&p.a);

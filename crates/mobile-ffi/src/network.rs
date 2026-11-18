@@ -316,9 +316,12 @@ pub(crate) const FAR_SKIP_WAIT: Duration = Duration::from_secs(2 * 5 * 60);
 
 /// Chains per session whose far-skip wait is kept (tracker R-14). Whoever
 /// can write to the mailbox can name more keys than this "from" a contact,
-/// so a genuine chain's wait may be dropped and start again, but only if
-/// that many forged keys show between two of its own arrivals: a far skip
-/// is then held back for as long as the writer keeps doing it.
+/// so a genuine chain's wait may be dropped and start again once that many
+/// forged keys are judged between two passes in which the genuine chain is
+/// (its message being the session's first far message of the pass; a
+/// forgery placed ahead of it takes that). A far skip is then held back for
+/// as long as the writer keeps doing it, and for up to `FAR_SKIP_WAIT`
+/// after it stops.
 pub(crate) const FAR_CHAINS_PER_SESSION: usize = 4;
 
 /// The deadline of one round's relay requests, and whether it stopped any

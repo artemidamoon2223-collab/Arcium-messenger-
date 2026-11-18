@@ -437,9 +437,9 @@ fn deleting_a_contact_forgets_its_far_waits() {
 }
 
 /// When a session holds `FAR_CHAINS_PER_SESSION` waits, a new key drops
-/// the chain seen least recently. A genuine chain that keeps arriving keeps
-/// its wait against forged keys, unless four of them show between two of
-/// its arrivals.
+/// the chain seen least recently. A genuine chain that keeps being judged
+/// keeps its wait against forged keys, unless four of them are judged
+/// between two passes in which it is.
 #[test]
 fn a_genuine_chain_that_keeps_arriving_keeps_its_wait() {
     let wait = Duration::from_millis(300);
@@ -479,5 +479,37 @@ fn a_genuine_chain_that_keeps_arriving_keeps_its_wait() {
     std::thread::sleep(wait + Duration::from_millis(50));
     let r = round(genuine());
     assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "its wait was kept: {r:?}");
+    relay.stop();
+}
+
+/// The wait counts from a chain's first arrival, not its last: a chain that
+/// arrives every two thirds of the wait is tried once the wait has passed
+/// since it first came.
+#[test]
+fn the_wait_counts_from_the_first_arrival() {
+    let wait = Duration::from_millis(300);
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    alice.net.set_far_skip_wait(wait);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    let (ids, wires) = texts_in_one_chain(&alice, &bob);
+    for id in &ids[..GAP] {
+        bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+    }
+    let round = || {
+        inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+        let r = alice.sync();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        r
+    };
+    round(); // first arrival
+    std::thread::sleep(wait * 2 / 3);
+    let r = round();
+    assert_eq!((r.accepted, alice.net.far_tries()), (0, 0), "{r:?}");
+    std::thread::sleep(wait * 2 / 3);
+    let r = round(); // the wait has passed since the first arrival
+    assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "{r:?}");
     relay.stop();
 }

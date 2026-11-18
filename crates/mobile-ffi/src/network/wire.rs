@@ -25,7 +25,11 @@
 //!
 //! The sender field is not authenticated by the envelope. It only selects the
 //! session; a message decrypts only under the session whose keys (and AD,
-//! which binds both identity keys) produced it.
+//! which binds both identity keys) produced it. A V2 relay stores an envelope
+//! only from a connection authenticated as the key in that field
+//! (`relay::protocol::ENVELOPE_SENDER`, which is its position here), so
+//! there only the relay's operator can name another sender; a V1 relay
+//! checks nothing.
 
 use zeroize::Zeroizing;
 
@@ -243,6 +247,30 @@ pub mod client_id {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R-9: a V2 relay finds the sender where every kind of envelope puts
+    /// it, so it stores what the app sends on a connection authenticated as
+    /// that sender, and nothing naming another key.
+    #[test]
+    fn every_envelope_names_its_sender_where_a_v2_relay_reads_it() {
+        let sender = [7u8; 32];
+        for e in [
+            Envelope::Handshake {
+                sender,
+                handshake: vec![2; 84],
+            },
+            Envelope::Message {
+                sender,
+                wire: vec![4; 60],
+            },
+            Envelope::Refusal {
+                sender,
+                refusal: vec![6; crate::HANDSHAKE_REFUSAL_V1_LEN],
+            },
+        ] {
+            assert_eq!(&e.encode()[relay::protocol::ENVELOPE_SENDER], &sender, "{e:?}");
+        }
+    }
 
     #[test]
     fn envelopes_and_payloads_round_trip_and_reject_malformed_bytes() {

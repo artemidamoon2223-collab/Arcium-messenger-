@@ -47,25 +47,39 @@ fn unauthorized<T: std::fmt::Debug>(r: Result<T, ClientError>) -> bool {
     matches!(r, Err(ClientError::Refused(ErrorCode::Unauthorized)))
 }
 
+/// An envelope naming `sender` where a V2 relay reads it
+/// ([`ENVELOPE_SENDER`]), in the app's layout: `"ARN1"`, a kind, the key.
+fn env(sender: &Identity, body: &[u8]) -> Vec<u8> {
+    let mut e = b"ARN1\x02".to_vec();
+    e.extend_from_slice(&sender.pk);
+    e.extend_from_slice(body);
+    assert_eq!(&e[ENVELOPE_SENDER], &sender.pk);
+    e
+}
+
+/// A connection that made AUTH as `who`.
+fn authed(addr: &RelayAddress, who: &Identity) -> Connection {
+    let mut c = conn(addr);
+    c.authenticate(who.pk, dh(&who.sk)).unwrap();
+    c
+}
+
 #[test]
 fn v2_round_trip_send_auth_fetch_delete_and_bundle() {
     let keys = RelayKeys::generate().unwrap();
     let (relay, addr) = start_v2(RelayConfig::default(), &keys);
-    let bob = identity(2);
-    let mut sender = conn(&addr);
-    let s1 = sender.send(bob.pk, b"one".to_vec()).unwrap();
-    let s2 = sender.send(bob.pk, b"two".to_vec()).unwrap();
-    assert_eq!(sender.send(bob.pk, b"one".to_vec()).unwrap(), s1, "duplicate");
+    let (alice, bob) = (identity(1), identity(2));
+    let (one, two) = (env(&alice, b"one"), env(&alice, b"two"));
+    let mut sender = authed(&addr, &alice);
+    let s1 = sender.send(bob.pk, one.clone()).unwrap();
+    let s2 = sender.send(bob.pk, two.clone()).unwrap();
+    assert_eq!(sender.send(bob.pk, one.clone()).unwrap(), s1, "duplicate");
 
-    let mut b = conn(&addr);
-    b.authenticate(bob.pk, dh(&bob.sk)).unwrap();
-    assert_eq!(
-        b.fetch(bob.pk, 10).unwrap(),
-        vec![(s1, b"one".to_vec()), (s2, b"two".to_vec())]
-    );
-    assert_eq!(b.fetch_after(bob.pk, s1, 10).unwrap(), vec![(s2, b"two".to_vec())]);
+    let mut b = authed(&addr, &bob);
+    assert_eq!(b.fetch(bob.pk, 10).unwrap(), vec![(s1, one), (s2, two.clone())]);
+    assert_eq!(b.fetch_after(bob.pk, s1, 10).unwrap(), vec![(s2, two.clone())]);
     b.delete(bob.pk, vec![s1]).unwrap();
-    assert_eq!(relay.stored(&bob.pk), vec![(s2, b"two".to_vec())]);
+    assert_eq!(relay.stored(&bob.pk), vec![(s2, two)]);
     b.put_bundle(bob.pk, vec![5; 204]).unwrap();
     assert_eq!(sender.get_bundle(bob.pk).unwrap(), Some(vec![5; 204]));
     assert_eq!(sender.get_bundle([9; 32]).unwrap(), None);
@@ -97,8 +111,9 @@ fn a_wrong_pin_fails_the_handshake() {
 fn a_wrong_identity_or_auth_key_is_unauthorized_and_changes_nothing() {
     let keys = RelayKeys::generate().unwrap();
     let (relay, addr) = start_v2(RelayConfig::default(), &keys);
-    let (bob, mallory) = (identity(2), identity(3));
-    let s1 = conn(&addr).send(bob.pk, b"one".to_vec()).unwrap();
+    let (bob, mallory, carol) = (identity(2), identity(3), identity(4));
+    let one = env(&carol, b"one");
+    let s1 = authed(&addr, &carol).send(bob.pk, one.clone()).unwrap();
 
     // Bob's key, Mallory's secret.
     let mut m = conn(&addr);
@@ -116,7 +131,7 @@ fn a_wrong_identity_or_auth_key_is_unauthorized_and_changes_nothing() {
     assert!(unauthorized(w.authenticate(bob.pk, dh(&bob.sk))));
     assert!(unauthorized(w.fetch(bob.pk, 10)));
 
-    assert_eq!(relay.stored(&bob.pk), vec![(s1, b"one".to_vec())], "nothing deleted");
+    assert_eq!(relay.stored(&bob.pk), vec![(s1, one)], "nothing deleted");
     assert_eq!(conn(&addr).get_bundle(bob.pk).unwrap(), None, "no bundle published");
     relay.stop();
 }
@@ -125,10 +140,11 @@ fn a_wrong_identity_or_auth_key_is_unauthorized_and_changes_nothing() {
 fn after_auth_another_owners_mailbox_and_bundle_are_unauthorized() {
     let keys = RelayKeys::generate().unwrap();
     let (relay, addr) = start_v2(RelayConfig::default(), &keys);
-    let (alice, bob) = (identity(1), identity(2));
-    let mut sender = conn(&addr);
-    let to_alice = sender.send(alice.pk, b"for alice".to_vec()).unwrap();
-    let to_bob = sender.send(bob.pk, b"for bob".to_vec()).unwrap();
+    let (alice, bob, carol) = (identity(1), identity(2), identity(4));
+    let (for_alice, for_bob) = (env(&carol, b"for alice"), env(&carol, b"for bob"));
+    let mut sender = authed(&addr, &carol);
+    let to_alice = sender.send(alice.pk, for_alice.clone()).unwrap();
+    let to_bob = sender.send(bob.pk, for_bob.clone()).unwrap();
     let mut a = conn(&addr);
     a.authenticate(alice.pk, dh(&alice.sk)).unwrap();
     a.put_bundle(alice.pk, vec![1; 100]).unwrap();
@@ -140,29 +156,80 @@ fn after_auth_another_owners_mailbox_and_bundle_are_unauthorized() {
     assert!(unauthorized(b.delete(alice.pk, vec![to_alice])));
     assert!(unauthorized(b.put_bundle(alice.pk, vec![9; 100])));
     // Bob's own mailbox, on the same connection.
-    assert_eq!(b.fetch(bob.pk, 10).unwrap(), vec![(to_bob, b"for bob".to_vec())]);
+    assert_eq!(b.fetch(bob.pk, 10).unwrap(), vec![(to_bob, for_bob)]);
 
-    assert_eq!(relay.stored(&alice.pk), vec![(to_alice, b"for alice".to_vec())]);
+    assert_eq!(relay.stored(&alice.pk), vec![(to_alice, for_alice)]);
     assert_eq!(sender.get_bundle(alice.pk).unwrap(), Some(vec![1; 100]));
     relay.stop();
 }
 
 #[test]
-fn without_auth_only_send_and_get_bundle_are_answered() {
+fn without_auth_only_get_bundle_is_answered() {
     let keys = RelayKeys::generate().unwrap();
     let (relay, addr) = start_v2(RelayConfig::default(), &keys);
-    let bob = identity(2);
+    let (bob, carol) = (identity(2), identity(4));
+    let s = authed(&addr, &carol).send(bob.pk, env(&carol, b"x")).unwrap();
     let mut c = conn(&addr);
-    let s = c.send(bob.pk, b"x".to_vec()).unwrap();
     assert_eq!(c.get_bundle(bob.pk).unwrap(), None);
+    assert!(unauthorized(c.send(bob.pk, env(&carol, b"y"))));
     assert!(unauthorized(c.fetch(bob.pk, 10)));
     assert!(unauthorized(c.fetch_after(bob.pk, 0, 10)));
     assert!(unauthorized(c.delete(bob.pk, vec![s])));
     assert!(unauthorized(c.put_bundle(bob.pk, vec![1; 10])));
     // The refusals did not close the connection.
-    let t = c.send(bob.pk, b"y".to_vec()).unwrap();
-    assert_eq!(relay.stored(&bob.pk), vec![(s, b"x".to_vec()), (t, b"y".to_vec())]);
     assert_eq!(c.get_bundle(bob.pk).unwrap(), None);
+    assert_eq!(relay.stored(&bob.pk), vec![(s, env(&carol, b"x"))]);
+    relay.stop();
+}
+
+/// R-9: a SEND is stored only from a connection that made a valid AUTH, and
+/// only for an envelope that names that owner as its sender. Anyone else's
+/// SEND is answered UNAUTHORIZED before the mailbox is looked at: it stores
+/// nothing, and a full mailbox does not show in the answer.
+#[test]
+fn a_send_is_stored_only_for_an_envelope_naming_the_authenticated_owner() {
+    let keys = RelayKeys::generate().unwrap();
+    let config = RelayConfig {
+        max_mailbox: 2,
+        ..RelayConfig::default()
+    };
+    let (relay, addr) = start_v2(config, &keys);
+    let (alice, bob, mallory) = (identity(1), identity(2), identity(3));
+
+    // Without AUTH, whoever the envelope names.
+    let mut anonymous = conn(&addr);
+    assert!(unauthorized(anonymous.send(bob.pk, env(&alice, b"a"))));
+    assert!(unauthorized(anonymous.send(bob.pk, env(&mallory, b"m"))));
+
+    // As herself, Mallory cannot name Alice, nor send what names nobody.
+    let mut m = authed(&addr, &mallory);
+    assert!(unauthorized(m.send(bob.pk, env(&alice, b"forged"))));
+    let mut short = env(&mallory, b"");
+    short.pop();
+    assert!(unauthorized(m.send(bob.pk, short)));
+    assert!(unauthorized(m.send(bob.pk, b"ARN1".to_vec())));
+    assert!(unauthorized(m.send(bob.pk, Vec::new())));
+    assert!(relay.stored(&bob.pk).is_empty(), "nothing stored");
+
+    // After a wrong AUTH, not even the claimed owner's envelope.
+    let mut claiming = conn(&addr);
+    assert!(unauthorized(claiming.authenticate(alice.pk, dh(&mallory.sk))));
+    assert!(unauthorized(claiming.send(bob.pk, env(&alice, b"a"))));
+
+    // Her own envelopes are stored, up to the mailbox's limit.
+    let s1 = m.send(bob.pk, env(&mallory, b"1")).unwrap();
+    let s2 = m.send(bob.pk, env(&mallory, b"2")).unwrap();
+    assert!(matches!(
+        m.send(bob.pk, env(&mallory, b"3")),
+        Err(ClientError::Refused(ErrorCode::Full))
+    ));
+    // A refused SEND is answered UNAUTHORIZED, not FULL.
+    assert!(unauthorized(m.send(bob.pk, env(&alice, b"forged"))));
+    assert!(unauthorized(anonymous.send(bob.pk, env(&mallory, b"m"))));
+    assert_eq!(
+        relay.stored(&bob.pk),
+        vec![(s1, env(&mallory, b"1")), (s2, env(&mallory, b"2"))]
+    );
     relay.stop();
 }
 
@@ -197,8 +264,8 @@ fn auth_is_checked_once_per_connection() {
 fn a_tag_replayed_on_another_connection_fails() {
     let keys = RelayKeys::generate().unwrap();
     let (relay, addr) = start_v2(RelayConfig::default(), &keys);
-    let bob = identity(2);
-    conn(&addr).send(bob.pk, b"x".to_vec()).unwrap();
+    let (bob, carol) = (identity(2), identity(4));
+    authed(&addr, &carol).send(bob.pk, env(&carol, b"x")).unwrap();
     let shared = shared(&bob.sk, addr.auth_pk());
 
     let mut first = conn(&addr);
@@ -226,10 +293,11 @@ fn persistence_works_under_v2() {
     let keys = RelayKeys::generate().unwrap();
     let key_file = dir.path().join("relay.keys");
     keys.write_new(&key_file).unwrap();
-    let bob = identity(2);
+    let (bob, carol) = (identity(2), identity(4));
     let (relay, addr) = start_v2(config.clone(), &keys);
-    let s1 = conn(&addr).send(bob.pk, b"one".to_vec()).unwrap();
-    let s2 = conn(&addr).send(bob.pk, b"two".to_vec()).unwrap();
+    let mut sender = authed(&addr, &carol);
+    let s1 = sender.send(bob.pk, env(&carol, b"one")).unwrap();
+    let s2 = sender.send(bob.pk, env(&carol, b"two")).unwrap();
     let mut b = conn(&addr);
     b.authenticate(bob.pk, dh(&bob.sk)).unwrap();
     b.put_bundle(bob.pk, vec![5; 204]).unwrap();
@@ -242,7 +310,7 @@ fn persistence_works_under_v2() {
     assert_eq!(addr2.auth_pk(), addr.auth_pk());
     let mut b = conn(&addr2);
     b.authenticate(bob.pk, dh(&bob.sk)).unwrap();
-    assert_eq!(b.fetch(bob.pk, 10).unwrap(), vec![(s2, b"two".to_vec())]);
+    assert_eq!(b.fetch(bob.pk, 10).unwrap(), vec![(s2, env(&carol, b"two"))]);
     assert_eq!(b.get_bundle(bob.pk).unwrap(), Some(vec![5; 204]));
     again.stop();
 }

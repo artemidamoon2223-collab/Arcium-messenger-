@@ -135,6 +135,56 @@ fn only_a_mailboxs_owner_can_read_or_delete_it_or_publish_its_bundle() {
     relay.stop();
 }
 
+/// R-9: on a V2 relay only the relay's operator can leave an envelope that
+/// names another key as its sender. Bob has pinned Alice and has no session
+/// with her, so a message "from" her would be kept until its handshake came,
+/// and one from a stranger deleted. Mallory's message and handshake naming
+/// Alice are refused, with or without her own AUTH, and only her own
+/// envelope is stored, which Bob's round deletes: Bob's mailbox fills no
+/// differently for a contact than for a stranger. (The probe of the #181
+/// review counted the places such kept messages took.)
+#[test]
+fn a_v2_relay_refuses_an_envelope_that_names_another_sender() {
+    use crate::network::wire::Envelope;
+    let (relay, addr) = start_relay_v2();
+    let text = addr.to_string();
+    let (alice, bob, mallory) = (Device::new(&text, 1), Device::new(&text, 2), Device::new(&text, 3));
+    bob.knows(&alice);
+    let bob_key = key(&bob);
+    let forged = [
+        Envelope::Message {
+            sender: key(&alice),
+            wire: vec![0u8; 80],
+        }
+        .encode(),
+        Envelope::Handshake {
+            sender: key(&alice),
+            handshake: vec![1u8; 84],
+        }
+        .encode(),
+    ];
+    let mut anonymous = Connection::connect_v2(&addr, TIMEOUT).unwrap();
+    let mut as_herself = Connection::connect_v2(&addr, TIMEOUT).unwrap();
+    auth_as(&mut as_herself, key(&mallory), &mallory).unwrap();
+    for env in &forged {
+        assert!(unauthorized(anonymous.send(bob_key, env.clone())));
+        assert!(unauthorized(as_herself.send(bob_key, env.clone())));
+    }
+    assert!(relay.stored(&bob_key).is_empty(), "nothing naming Alice is stored");
+
+    let own = Envelope::Message {
+        sender: key(&mallory),
+        wire: vec![0u8; 80],
+    }
+    .encode();
+    as_herself.send(bob_key, own).unwrap();
+    assert_eq!(relay.stored(&bob_key).len(), 1, "her own envelope is stored");
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert!(relay.stored(&bob_key).is_empty(), "a stranger's message is deleted");
+    relay.stop();
+}
+
 /// A relay whose TLS key is not the pinned one is never talked to: the round
 /// ends with one network error, and nothing is sent, read or changed.
 #[test]

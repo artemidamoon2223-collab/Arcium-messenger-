@@ -77,8 +77,14 @@
 //!   the authenticated owner, PUT_BUNDLE only for `owner` equal to it.
 //!   Otherwise, and on a connection without a valid AUTH, they are answered
 //!   UNAUTHORIZED, and nothing is read or changed.
-//! - SEND and GET_BUNDLE need no AUTH: first contact needs both, and an
-//!   envelope names its sender anyway.
+//! - SEND is answered only on a connection with a valid AUTH, and only for
+//!   an envelope that names the authenticated owner as its sender: bytes
+//!   [`ENVELOPE_SENDER`] of the envelope must equal `owner` (tracker R-9).
+//!   Otherwise it is answered UNAUTHORIZED and nothing is stored. First
+//!   contact still works: the initiator authenticates as itself. No one but
+//!   the relay's operator can therefore leave an envelope that names another
+//!   key as its sender.
+//! - GET_BUNDLE needs no AUTH: first contact needs it.
 //!
 //! What V2 does not hide: the relay operator still sees every key, envelope,
 //! size and time, and can read or delete any mailbox. A network observer
@@ -88,6 +94,12 @@
 //! end-to-end encrypted by the endpoints.
 
 use std::io::{self, Read, Write};
+
+/// Where a V2 relay finds an envelope's sender: bytes 5..37, the sender's
+/// identity key in the layout the app uses (`"ARN1"(4) kind(1) sender(32)
+/// body`, `ENVELOPE_V1` of `mobile-ffi`). The relay reads nothing else of an
+/// envelope. V1 does not read it.
+pub const ENVELOPE_SENDER: std::ops::Range<usize> = 5..37;
 
 /// Largest frame accepted in either direction.
 pub const MAX_FRAME: usize = 1 << 20;

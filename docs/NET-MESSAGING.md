@@ -141,7 +141,10 @@ sender. It does not hide how full a mailbox is: any key may authenticate and
 SEND as itself, and the count of SENDs accepted before FULL is the number of
 free places. That tells such a sender how many envelopes wait, and whether
 the owner kept or deleted the sender's own messages, not those "from" anyone
-else (section 8, R-9). The relay's operator still sees and can delete
+else (section 8, R-9). The same shows without filling the mailbox: a SEND of
+bytes still stored is answered with their stored sequence number, so the
+sender who stored an envelope learns, by sending it again, whether it is
+still there, and so when the owner's rounds run. The relay's operator still sees and can delete
 everything, and can store an envelope naming any sender.
 
 So below, whoever can put envelopes "from" a contact in a mailbox (a
@@ -556,9 +559,11 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   can count the free places in the owner's mailbox (SENDs accepted until
   FULL), but plant only envelopes naming itself, so the count shows only
   whether the owner keeps that sender's own messages: whether it has pinned
-  that sender and has no session with it yet. Counting fills the mailbox,
-  so it is visible and stops delivery to its owner until messages are
-  fetched and deleted.
+  that sender and has no session with it yet, which a real handshake
+  shows as well. Counting fills the mailbox, so it is visible and stops
+  delivery to its owner until messages are fetched and deleted; sending one
+  stored envelope again (section 3) shows the same of that envelope, and
+  when the owner's rounds run, without filling it.
 - Protection against key-compromise impersonation of refusals. A refusal is
   authenticated by a MAC both parties can make, so whoever holds the
   initiator's identity secret can make one the initiator accepts, and so end

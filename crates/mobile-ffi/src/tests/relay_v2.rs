@@ -140,9 +140,9 @@ fn only_a_mailboxs_owner_can_read_or_delete_it_or_publish_its_bundle() {
 /// with her, so a message "from" her would be kept until its handshake came,
 /// and one from a stranger deleted. Mallory's message and handshake naming
 /// Alice are refused, with or without her own AUTH, and only her own
-/// envelope is stored, which Bob's round deletes: Bob's mailbox fills no
-/// differently for a contact than for a stranger. (The probe of the #181
-/// review counted the places such kept messages took.)
+/// envelope is stored, which Bob's round deletes: nothing she can store
+/// names Alice, so nothing kept for Alice can take a place she counts. (The
+/// probe of the #181 review counted the places such kept messages took.)
 #[test]
 fn a_v2_relay_refuses_an_envelope_that_names_another_sender() {
     use crate::network::wire::Envelope;

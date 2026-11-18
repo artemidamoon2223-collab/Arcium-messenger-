@@ -223,9 +223,13 @@ fn a_send_is_stored_only_for_an_envelope_naming_the_authenticated_owner() {
         m.send(bob.pk, env(&mallory, b"3")),
         Err(ClientError::Refused(ErrorCode::Full))
     ));
-    // A refused SEND is answered UNAUTHORIZED, not FULL.
+    // A refused SEND is answered UNAUTHORIZED, not FULL, and not with the
+    // sequence number of the same bytes stored by their own sender.
     assert!(unauthorized(m.send(bob.pk, env(&alice, b"forged"))));
     assert!(unauthorized(anonymous.send(bob.pk, env(&mallory, b"m"))));
+    assert!(unauthorized(anonymous.send(bob.pk, env(&mallory, b"1"))));
+    assert!(unauthorized(authed(&addr, &alice).send(bob.pk, env(&mallory, b"1"))));
+    assert_eq!(m.send(bob.pk, env(&mallory, b"1")).unwrap(), s1, "its own sender: a duplicate");
     assert_eq!(
         relay.stored(&bob.pk),
         vec![(s1, env(&mallory, b"1")), (s2, env(&mallory, b"2"))]

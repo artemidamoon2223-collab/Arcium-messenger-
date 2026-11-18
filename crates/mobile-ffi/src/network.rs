@@ -646,8 +646,10 @@ impl NetworkMessenger {
         })
     }
 
-    /// A connection to the relay that makes no AUTH: enough for SEND and
-    /// GET_BUNDLE.
+    /// A connection to the relay that makes no AUTH: enough for GET_BUNDLE.
+    /// A V2 relay stores a SEND only from a connection authenticated as the
+    /// envelope's sender (tracker R-9), so every SEND goes on
+    /// [`Self::connect_owner`].
     fn connect(&self) -> Result<Connection, CoreError> {
         let mut conn = match &self.relay {
             Relay::V1(addr) => Connection::connect(addr, self.timeout),
@@ -1026,7 +1028,9 @@ impl NetworkMessenger {
     }
 
     /// Asks the relay to store `envelope` for `peer`. `Ok(false)`: the relay
-    /// refused (a full mailbox). It read the request and answered, so the
+    /// refused (a full mailbox; on V2 also an envelope that does not name the
+    /// connection's authenticated owner as its sender, which this layer never
+    /// sends). It read the request and answered, so the
     /// connection is still in step and the round goes on; the recipient
     /// starts or prolongs its wait. Any other failure ends the round, as the
     /// connection's state is then unknown.

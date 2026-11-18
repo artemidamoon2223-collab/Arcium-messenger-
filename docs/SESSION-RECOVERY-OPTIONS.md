@@ -42,10 +42,10 @@ and is out of scope here.
 
 ## 2. What any option must keep
 
-- **No silent replacement by a third party.** Whoever can write to the relay
-  (anyone: SEND needs no authentication, also on a `RELAY_PROTOCOL_V2` relay,
-  which authenticates only a mailbox's owner; R-9) must at most delay a
-  session.
+- **No silent replacement by a third party.** Whoever can put envelopes
+  "from" a contact in a mailbox (on a `RELAY_PROTOCOL_V2` relay, the relay's
+  operator, since it stores a SEND only from the envelope's authenticated
+  sender; on V1, anyone; R-9) must at most delay a session.
   They must never be able to replace it, read it or make it forget messages
   already delivered.
 - **Pinned identities.** A new session with a contact is keyed from that

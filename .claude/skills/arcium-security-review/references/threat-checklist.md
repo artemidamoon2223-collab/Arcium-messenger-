@@ -197,7 +197,7 @@ Where: `crates/mobile-ffi/src/network.rs`, `network/wire.rs`,
 - **What a mailbox reader learns.** Whoever can read a mailbox on the relay
   learns whom its owner has pinned: a message from a pinned sender without a
   session is kept (`NoSession` → `Fate::Keep`), one from a stranger is
-  deleted, and refusals go only to pinned contacts (R-9;
+  deleted, and refusals go only to pinned contacts (R-9, open — narrowed;
   `NET-MESSAGING.md` §8). On a `RELAY_PROTOCOL_V2` relay only the owner and
   the operator read a mailbox, and only the operator can store an envelope
   naming another sender (SEND needs AUTH as the envelope's sender,

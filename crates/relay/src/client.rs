@@ -242,7 +242,9 @@ impl Connection {
     /// output is never returned by value and left behind as a copy.
     ///
     /// Afterwards FETCH, FETCH_AFTER, DELETE and PUT_BUNDLE are answered for
-    /// `owner` only. The relay checks one AUTH per connection: a wrong tag,
+    /// `owner` only, and SEND only for an envelope that names `owner` as its
+    /// sender ([`ENVELOPE_SENDER`](crate::protocol::ENVELOPE_SENDER)); without
+    /// AUTH a V2 relay stores no SEND. The relay checks one AUTH per connection: a wrong tag,
     /// and any AUTH after the first, is [`ClientError::Refused`] with
     /// [`ErrorCode::Unauthorized`]. [`ClientError::Auth`], with nothing sent,
     /// on a V1 connection or if `dh` leaves the buffer all zeros (as it

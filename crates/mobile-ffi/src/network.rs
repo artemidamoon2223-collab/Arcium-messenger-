@@ -1165,16 +1165,24 @@ impl NetworkMessenger {
                 // section 4b). Nothing is decided or changed here.
                 let legacy = has_session && self.core.is_legacy_unconfirmed(handle)?;
                 if has_session && !legacy {
-                    // No session is ever replaced. If ours is an unconfirmed
-                    // start of our own, the handshake is recorded beside it
-                    // and raises nothing: its bytes are public, so anyone
-                    // can make one (tracker R-13). Both sides having started
-                    // is recorded only once the contact's first message
-                    // under it authenticates (the `Message` branch). (A
-                    // handshake only recorded here is not a session and does
-                    // not reach this branch: it may be replaced.)
+                    // No session is replaced by a handshake. If ours is an
+                    // unconfirmed start of our own, the handshake is recorded
+                    // beside it and raises nothing: its bytes are public, so
+                    // a mailbox writer can make one (tracker R-13). Both
+                    // sides having started is recorded only once the
+                    // contact's first message under it authenticates (the
+                    // `Message` branch). (A handshake only recorded here is
+                    // not a session and does not reach this branch: it may
+                    // be replaced.)
                     if self.own_unconfirmed(handle)? {
                         return self.record_beside(sender, &handshake, handle, report);
+                    }
+                    // Beside an established session it may be the
+                    // contact's restart (option B): recorded the same way,
+                    // and only its first message, authenticating there,
+                    // replaces the session (`take_message`).
+                    if self.confirmed(handle)? {
+                        return self.record_restart(&handshake, handle, report);
                     }
                     report.dropped += 1;
                     return Ok(Fate::Delete);
@@ -1215,123 +1223,155 @@ impl NetworkMessenger {
                 self.take_refusal(&sender, &card, &refusal, report)?;
                 Ok(Fate::Delete)
             }
-            Envelope::Message { wire, .. } => {
-                // Without a session, the message is either the first one of a
-                // recorded handshake — which creates the session if it
-                // authenticates — or waits for its handshake (`NoSession`).
-                let first = !self.core.has_session(handle)?;
-                let received = self.core.receive_committed(handle, &wire);
-                if !first
-                    && matches!(received, Err(CoreError::Crypto { .. }))
-                    && self.far_candidate(handle, &wire, report)
-                {
-                    // Tried once the message pass is over (`far_pass`).
-                    return Ok(Fate::Delete);
+            Envelope::Message { wire, .. } => self.take_message(sender, handle, &wire, report),
+        }
+    }
+
+    /// A message envelope from the pinned contact `sender` (`process`).
+    fn take_message(
+        &self,
+        sender: [u8; 32],
+        handle: u64,
+        wire: &[u8],
+        report: &mut SyncReport,
+    ) -> Result<Fate, CoreError> {
+        // Without a session, the message is either the first one of a
+        // recorded handshake — which creates the session if it
+        // authenticates — or waits for its handshake (`NoSession`).
+        let first = !self.core.has_session(handle)?;
+        let received = self.core.receive_committed(handle, wire);
+        // Not a message of our established session: it may be the contact's
+        // first message under a handshake recorded beside it, that is, the
+        // contact restarted the session (option B). That it authenticates
+        // there needs the contact's identity secret, and the handshake must
+        // name this device's current one-time prekey, which a replay of a
+        // handshake older than our session does not (`ArciumCore::new`
+        // replaces it when an own session is confirmed). Checked before a far
+        // skip, which would otherwise take the message. A failed check is
+        // reported and must not abort the round.
+        if !first && matches!(received, Err(CoreError::Crypto { .. })) && self.confirmed(handle)? {
+            match self.core.beside_authenticates(handle, &sender, wire) {
+                Ok(true) => {
+                    self.accept_restart(&sender, handle)?;
+                    // No session now: the message is read as the first one
+                    // of the recorded handshake, which creates the new one.
+                    return self.take_message(sender, handle, wire, report);
                 }
-                match received {
-                    Ok(Received::Accepted(message)) => {
-                        self.far_progress(handle);
-                        report.accepted += 1;
-                        if first {
-                            report.sessions_accepted += 1;
+                Ok(false) => {}
+                Err(e) => report
+                    .errors
+                    .push(format!("checking a restart beside our session: {e}")),
+            }
+        }
+        if !first
+            && matches!(received, Err(CoreError::Crypto { .. }))
+            && self.far_candidate(handle, wire, report)
+        {
+            // Tried once the message pass is over (`far_pass`).
+            return Ok(Fate::Delete);
+        }
+        match received {
+            Ok(Received::Accepted(message)) => {
+                self.far_progress(handle);
+                report.accepted += 1;
+                if first {
+                    report.sessions_accepted += 1;
+                }
+                crash_point("after_accept");
+                self.settle(handle, &message.message_id, &message.plaintext, report)?;
+                crash_point("after_settle");
+                Ok(Fate::Delete)
+            }
+            Ok(Received::Duplicate { message_id, .. }) => {
+                report.duplicates += 1;
+                self.receipt_again(handle, &sender, &message_id)?;
+                Ok(Fate::Delete)
+            }
+            Err(CoreError::NoSession { .. }) => Ok(Fate::Keep),
+            Err(CoreError::Crypto { .. }) => {
+                // Not a message of our session. If ours is an
+                // unconfirmed start of our own, this may be the
+                // contact's first message under a handshake
+                // recorded beside it. If it authenticates there —
+                // which needs the contact's identity secret — both
+                // devices started a session with each other: the
+                // conflict is recorded so the application can show
+                // it (section 10). Nothing else is stored.
+                //
+                // The message is deleted, like any message that
+                // does not decrypt here. That loses nothing: the
+                // contact keeps it in its outbox and retransmits it,
+                // with its handshake, until our receipt (which no
+                // session here can give) or until it gives up that
+                // session itself. It can only be accepted after
+                // `resolve_session_conflict` removed our session, and
+                // until then the contact's session stays unconfirmed,
+                // so the retransmission is still running then.
+                //
+                // A beside record that cannot be read or decoded
+                // counts as none, as `record_handshake_beside` and
+                // `remove_session` treat it: the check is reported
+                // and the message is deleted. It must not abort the
+                // round, or anyone who stores a message "from" the
+                // contact would stall every round here.
+                if !first && self.own_unconfirmed(handle)? {
+                    match self.core.beside_authenticates(handle, &sender, wire) {
+                        Ok(true) => {
+                            chat::set_flag(self, &sender, chat::CONFLICT)?;
+                            crash_point("conflict_after_flag");
                         }
-                        crash_point("after_accept");
-                        self.settle(handle, &message.message_id, &message.plaintext, report)?;
-                        crash_point("after_settle");
-                        Ok(Fate::Delete)
-                    }
-                    Ok(Received::Duplicate { message_id, .. }) => {
-                        report.duplicates += 1;
-                        self.receipt_again(handle, &sender, &message_id)?;
-                        Ok(Fate::Delete)
-                    }
-                    Err(CoreError::NoSession { .. }) => Ok(Fate::Keep),
-                    Err(CoreError::Crypto { .. }) => {
-                        // Not a message of our session. If ours is an
-                        // unconfirmed start of our own, this may be the
-                        // contact's first message under a handshake
-                        // recorded beside it. If it authenticates there —
-                        // which needs the contact's identity secret — both
-                        // devices started a session with each other: the
-                        // conflict is recorded so the application can show
-                        // it (section 10). Nothing else is stored.
-                        //
-                        // The message is deleted, like any message that
-                        // does not decrypt here. That loses nothing: the
-                        // contact keeps it in its outbox and retransmits it,
-                        // with its handshake, until our receipt (which no
-                        // session here can give) or until it gives up that
-                        // session itself. It can only be accepted after
-                        // `resolve_session_conflict` removed our session, and
-                        // until then the contact's session stays unconfirmed,
-                        // so the retransmission is still running then.
-                        //
-                        // A beside record that cannot be read or decoded
-                        // counts as none, as `record_handshake_beside` and
-                        // `remove_session` treat it: the check is reported
-                        // and the message is deleted. It must not abort the
-                        // round, or anyone who stores a message "from" the
-                        // contact would stall every round here.
-                        if !first && self.own_unconfirmed(handle)? {
-                            match self.core.beside_authenticates(handle, &sender, &wire) {
-                                Ok(true) => {
-                                    chat::set_flag(self, &sender, chat::CONFLICT)?;
-                                    crash_point("conflict_after_flag");
-                                }
-                                Ok(false) => {}
-                                Err(e) => report
-                                    .errors
-                                    .push(format!("checking a first message beside our session: {e}")),
-                            }
-                        }
-                        // A message of our session whose key is gone (it
-                        // arrived after the key was evicted) can never be
-                        // read: name it to the contact, who then stops
-                        // sending it (R-21). Only the contact can read the
-                        // GONE message, and it changes nothing for an id the
-                        // contact has not pending, so a forged message that
-                        // only looks late gains nothing, and draws at most
-                        // one GONE per session per round. A failed check is
-                        // reported and must not abort the round.
-                        if !first {
-                            match self.core.beyond_recall(handle, &wire) {
-                                Ok(true) => self
-                                    .gone
-                                    .lock()
-                                    .expect("gone")
-                                    .entry(handle)
-                                    .or_default()
-                                    .push(message_id(&wire)),
-                                Ok(false) => {}
-                                Err(e) => report
-                                    .errors
-                                    .push(format!("checking whether a message is beyond recall: {e}")),
-                            }
-                        }
-                        report.dropped += 1;
-                        Ok(Fate::Delete)
-                    }
-                    // The recorded handshake can no longer be answered: the
-                    // prekeys it names rotated or were consumed since.
-                    Err(
-                        e @ (CoreError::StaleSignedPrekey
-                        | CoreError::OneTimePrekeyUnavailable { .. }
-                        | CoreError::OneTimePrekeyRequired),
-                    ) => {
-                        chat::set_flag(self, &sender, chat::HANDSHAKE_REFUSED)?;
-                        report.dropped += 1;
-                        report.errors.push(format!("handshake refused: {e}"));
-                        Ok(Fate::Delete)
-                    }
-                    Err(CoreError::SessionUnresolved { .. }) => {
-                        self.core.recover_session(handle)?;
-                        Ok(Fate::Keep)
-                    }
-                    Err(e) => {
-                        report.errors.push(e.to_string());
-                        Ok(Fate::Keep)
+                        Ok(false) => {}
+                        Err(e) => report
+                            .errors
+                            .push(format!("checking a first message beside our session: {e}")),
                     }
                 }
+                // A message of our session whose key is gone (it
+                // arrived after the key was evicted) can never be
+                // read: name it to the contact, who then stops
+                // sending it (R-21). Only the contact can read the
+                // GONE message, and it changes nothing for an id the
+                // contact has not pending, so a forged message that
+                // only looks late gains nothing, and draws at most
+                // one GONE per session per round. A failed check is
+                // reported and must not abort the round.
+                if !first {
+                    match self.core.beyond_recall(handle, wire) {
+                        Ok(true) => self
+                            .gone
+                            .lock()
+                            .expect("gone")
+                            .entry(handle)
+                            .or_default()
+                            .push(message_id(wire)),
+                        Ok(false) => {}
+                        Err(e) => report
+                            .errors
+                            .push(format!("checking whether a message is beyond recall: {e}")),
+                    }
+                }
+                report.dropped += 1;
+                Ok(Fate::Delete)
+            }
+            // The recorded handshake can no longer be answered: the
+            // prekeys it names rotated or were consumed since.
+            Err(
+                e @ (CoreError::StaleSignedPrekey
+                | CoreError::OneTimePrekeyUnavailable { .. }
+                | CoreError::OneTimePrekeyRequired),
+            ) => {
+                chat::set_flag(self, &sender, chat::HANDSHAKE_REFUSED)?;
+                report.dropped += 1;
+                report.errors.push(format!("handshake refused: {e}"));
+                Ok(Fate::Delete)
+            }
+            Err(CoreError::SessionUnresolved { .. }) => {
+                self.core.recover_session(handle)?;
+                Ok(Fate::Keep)
+            }
+            Err(e) => {
+                report.errors.push(e.to_string());
+                Ok(Fate::Keep)
             }
         }
     }
@@ -1380,6 +1420,36 @@ impl NetworkMessenger {
                 }
                 report.dropped += 1;
                 report.errors.push(format!("handshake refused: {e}"));
+                Ok(Fate::Delete)
+            }
+        }
+    }
+
+    /// Records `handshake` from the pinned contact beside our established
+    /// session with it, as a possible restart of the session by the contact
+    /// (option B; `docs/S2-B2-DURABLE-MESSAGING.md` section 4c). Nothing else
+    /// changes: the record has no authority, and a later handshake replaces
+    /// it. A handshake this device cannot answer is dropped and never
+    /// refused: a refusal would end the contact's session if it named the
+    /// handshake that session came from (a late retransmission of it, whose
+    /// one-time prekey this device consumed when it accepted the session).
+    fn record_restart(
+        &self,
+        handshake: &[u8],
+        handle: u64,
+        report: &mut SyncReport,
+    ) -> Result<Fate, CoreError> {
+        match self.core.record_handshake_beside(handle, handshake) {
+            Ok(()) => {
+                crash_point("restart_after_record");
+                Ok(Fate::Delete)
+            }
+            Err(e) if transient(&e) => {
+                report.errors.push(e.to_string());
+                Ok(Fate::Keep)
+            }
+            Err(_) => {
+                report.dropped += 1;
                 Ok(Fate::Delete)
             }
         }

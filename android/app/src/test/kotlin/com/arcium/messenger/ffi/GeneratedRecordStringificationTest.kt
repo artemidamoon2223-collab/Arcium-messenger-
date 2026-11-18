@@ -48,7 +48,7 @@ class GeneratedRecordStringificationTest {
             assertTrue(rendered, rendered.contains("seq=7") && rendered.contains("state=RECEIVED"))
         }
         val conversation = Conversation(
-            ByteArray(32) { 1 }, "Bob", "fp", ChatSessionState.Established, false, false, "", 1u, entry,
+            ByteArray(32) { 1 }, "Bob", "fp", ChatSessionState.Established, false, false, false, "", 1u, entry,
         )
         assertHidden(conversation.toString())
         assertTrue(conversation.toString().contains("name=Bob"))

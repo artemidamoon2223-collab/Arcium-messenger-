@@ -59,6 +59,15 @@ const FLAG_IDENTITY_MISMATCH: u8 = 2;
 const FLAG_ACCEPT_ONLY: u8 = 4;
 /// A handshake from the peer was refused.
 const FLAG_HANDSHAKE_REFUSED: u8 = 8;
+/// The contact restarted the session (option B): its first message under a
+/// new handshake replaced the session this device held, and the texts
+/// committed to that session were marked `NotDelivered`. Shown to the user
+/// until they send the contact a text or reset the session themselves.
+const FLAG_PEER_RESET: u8 = 32;
+/// Start a session with the contact at the next round even with no text
+/// queued: the user reset the session (`reset_session`). Cleared once a
+/// session exists.
+const FLAG_RESTART: u8 = 64;
 
 /// Where a history entry stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -181,6 +190,10 @@ pub struct Conversation {
     pub identity_mismatch: bool,
     /// A handshake from this contact could not be accepted.
     pub handshake_refused: bool,
+    /// The contact restarted the secure session (option B): texts this
+    /// device had committed to the old one read `NotDelivered`. Cleared when
+    /// the user sends the contact a text or resets the session.
+    pub peer_reset: bool,
     /// Why queued texts are waiting, if known; empty otherwise.
     pub note: String,
     pub unread: u32,
@@ -443,6 +456,15 @@ impl Meta {
     }
 }
 
+/// Which session `retire_session_texts` may remove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Retire {
+    /// Only our own unconfirmed one (a refusal, a conflict resolution).
+    Unconfirmed,
+    /// Any, on a restart (option B): the user's or the contact's.
+    Any,
+}
+
 /// Where a store read of an optional key lands.
 fn get_opt(result: Result<Vec<u8>, StorageError>) -> Result<Option<Vec<u8>>, CoreError> {
     match result {
@@ -611,6 +633,7 @@ impl NetworkMessenger {
             session: self.session_state(&key, &meta)?,
             identity_mismatch: meta.flags & FLAG_IDENTITY_MISMATCH != 0,
             handshake_refused: meta.flags & FLAG_HANDSHAKE_REFUSED != 0,
+            peer_reset: meta.flags & FLAG_PEER_RESET != 0,
             note: meta.note.clone(),
             unread,
             last,
@@ -706,6 +729,9 @@ impl NetworkMessenger {
                         None => Meta::default(),
                     };
                     meta.last_seq += 1;
+                    // The user writes again: the notice of a restart by the
+                    // contact has been seen.
+                    meta.flags &= !FLAG_PEER_RESET;
                     let seq = meta.last_seq;
                     let entry = Entry {
                         seq,
@@ -880,6 +906,37 @@ impl NetworkMessenger {
     /// round in flight can still act on the durable layer for the contact
     /// (for example start a session) after it; so do not run the two
     /// concurrently. The Android app runs both on its one sync thread.
+    /// Starts the secure session with `peer` again, on the user's request
+    /// (option B; `docs/NET-MESSAGING.md` section 10, "Reset"). The session
+    /// this device holds with the contact, in any state but a conflict
+    /// (`resolve_session_conflict` is for that), is given up: texts committed
+    /// to it are marked `NotDelivered` and abandoned, and it is removed; a
+    /// handshake the contact sent beside it is kept. The next round
+    /// (`sync_conversations`) starts a new session from the contact's current
+    /// bundle, also with no text queued. The contact replaces its own copy of
+    /// the old session once this device's first message under the new one
+    /// authenticates there. Until then texts queued here wait for it, and
+    /// what the contact sends under the old session cannot be read here: the
+    /// contact's texts read `NotDelivered` there once it replaces the session.
+    /// Texts marked `NotDelivered` are not sent again (the user can send them
+    /// again). Every step repeats safely after a crash; calling it again
+    /// completes it. Works without a connection.
+    pub fn reset_session(&self, peer: Vec<u8>) -> Result<(), CoreError> {
+        let key = peer_key(&peer)?;
+        self.require_contact(&key)?;
+        if self.meta(&key)?.flags & FLAG_CONFLICT != 0 {
+            return Err(invalid("resolve the session conflict instead"));
+        }
+        if self.core.has_session(handle_of(&key))? {
+            self.retire_session_texts(&key, "reset", Retire::Any)?;
+        }
+        crash_point("reset_after_retire");
+        self.update_known_meta(&key, |m| {
+            m.flags = (m.flags | FLAG_RESTART) & !(FLAG_ACCEPT_ONLY | FLAG_PEER_RESET | FLAG_HANDSHAKE_REFUSED);
+            m.note.clear();
+        })
+    }
+
     pub fn delete_contact(&self, peer: Vec<u8>) -> Result<(), CoreError> {
         let key = peer_key(&peer)?;
         let handle = handle_of(&key);
@@ -987,7 +1044,7 @@ impl NetworkMessenger {
                 // not: `resolve_session_conflict` may be removing it.
                 let peers_session = self.confirmed(handle)?;
                 self.update_meta(peer, |m| {
-                    m.flags &= !(FLAG_IDENTITY_MISMATCH | FLAG_HANDSHAKE_REFUSED);
+                    m.flags &= !(FLAG_IDENTITY_MISMATCH | FLAG_HANDSHAKE_REFUSED | FLAG_RESTART);
                     if peers_session {
                         m.flags &= !(FLAG_CONFLICT | FLAG_ACCEPT_ONLY);
                     }
@@ -995,14 +1052,15 @@ impl NetworkMessenger {
                 })?;
                 continue;
             }
-            if refresh.waiting == 0 || self.meta(peer)?.flags & FLAG_ACCEPT_ONLY != 0 {
+            let flags = self.meta(peer)?.flags;
+            if (refresh.waiting == 0 && flags & FLAG_RESTART == 0) || flags & FLAG_ACCEPT_ONLY != 0 {
                 continue;
             }
             match self.start_session(peer.to_vec()) {
                 Ok(()) => {
                     started = true;
                     self.update_meta(peer, |m| {
-                        m.flags &= !FLAG_IDENTITY_MISMATCH;
+                        m.flags &= !(FLAG_IDENTITY_MISMATCH | FLAG_RESTART);
                         m.note.clear();
                     })?;
                 }
@@ -1042,6 +1100,31 @@ impl NetworkMessenger {
     /// crash. `stage` names its crash points (`{stage}_after_mark`,
     /// `{stage}_after_abandon`).
     fn retire_unconfirmed_session(&self, peer: &[u8; 32], stage: &str) -> Result<(), CoreError> {
+        self.retire_session_texts(peer, stage, Retire::Unconfirmed)
+    }
+
+    /// The contact restarted the session (option B): its first message under
+    /// the handshake recorded beside our established session authenticated
+    /// there (`NetworkMessenger::take_message`). Records that for the user,
+    /// then gives our session up as `reset_session` does: texts committed to
+    /// it `NotDelivered`, abandoned, the session removed, the recorded
+    /// handshake kept. The caller then reads the message again, as the first
+    /// one of that handshake, which creates the new session. Every step
+    /// repeats safely after a crash: the message stays on the relay until it
+    /// is accepted, and the contact retransmits it until our receipt.
+    pub(super) fn accept_restart(&self, peer: &[u8; 32], handle: u64) -> Result<(), CoreError> {
+        debug_assert_eq!(handle, handle_of(peer));
+        self.update_meta(peer, |m| m.flags = (m.flags | FLAG_PEER_RESET) & !FLAG_RESTART)?;
+        crash_point("restart_after_flag");
+        self.retire_session_texts(peer, "restart", Retire::Any)
+    }
+
+    /// Gives up our session with `peer` (`retire_unconfirmed_session`,
+    /// `reset_session`, `accept_restart`): marks the texts committed to it
+    /// `NotDelivered`, abandons them and removes the session, only an
+    /// unconfirmed one with [`Retire::Unconfirmed`] (S2-B2 section 6a), any
+    /// with [`Retire::Any`], which keeps a handshake recorded beside it.
+    fn retire_session_texts(&self, peer: &[u8; 32], stage: &str, retire: Retire) -> Result<(), CoreError> {
         let handle = handle_of(peer);
         for e in self.open_entries(peer)? {
             if e.outgoing
@@ -1060,7 +1143,10 @@ impl NetworkMessenger {
             self.core.abandon_outgoing(handle, m.message_id)?;
         }
         crash_point(&format!("{stage}_after_abandon"));
-        self.core.remove_session(handle)?;
+        match retire {
+            Retire::Unconfirmed => self.core.remove_session(handle)?,
+            Retire::Any => self.core.retire_session(handle)?,
+        }
         // The next session with this contact has the same handle.
         self.forget_far_waits(handle);
         Ok(())

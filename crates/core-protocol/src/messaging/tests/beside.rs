@@ -92,14 +92,6 @@ fn recording_beside_is_refused_for_any_other_session_and_writes_nothing() {
     ));
     assert_eq!(records(&p.b), before);
 
-    // Alice's session once a message from Bob authenticated on it.
-    let mut p = memory_peers();
-    let answer = p.bob_answers();
-    accepted(p.alice_receives(&answer.wire).unwrap());
-    let before = records(&p.a);
-    assert!(matches!(p.beside(b"hs"), Err(MessagingError::AlreadyExists { .. })));
-    assert_eq!(records(&p.a), before);
-
     // Another peer under Alice's handle, and no session at all.
     let mut p = memory_peers();
     let carol = pair().alice_pk;
@@ -236,10 +228,75 @@ fn removing_or_forgetting_the_session_takes_the_handshake_beside_it() {
     assert_eq!(p.a.get(&provisional_key(ALICE_HANDLE)).unwrap(), *foreign);
 }
 
-/// A messenger whose `on_beside_discard` (tracker R-6) counts its calls and
-/// writes `value` at `R6_KEY`, replacing the record read there if any.
+/// Option B: a handshake from the peer is recorded beside a session that has
+/// received from it (established), and a receive on that session keeps it:
+/// a message the peer sent before restarting says nothing about the
+/// restart. `retire_session` then removes the session and keeps the record,
+/// which is the provisional handshake a new session may come from;
+/// `remove_session` refuses an established session and takes the record.
+#[test]
+fn a_handshake_beside_an_established_session_is_kept_until_the_session_is_retired() {
+    let mut p = memory_peers();
+    let answer = p.bob_answers();
+    accepted(p.alice_receives(&answer.wire).unwrap());
+    let before = records(&p.a);
+    p.beside(b"restart").unwrap();
+    let mut want = before.clone();
+    want.push((
+        provisional_key(ALICE_HANDLE),
+        encode_provisional(&hs(&p.bob_pk, b"restart")).unwrap().to_vec(),
+    ));
+    want.sort();
+    let mut after = records(&p.a);
+    after.sort();
+    assert_eq!(after, want, "the record and nothing else");
+
+    let more = p.bob_sends(b"sent before the restart");
+    accepted(p.alice_receives(&more.wire).unwrap());
+    assert_eq!(p.beside_record(), Some(hs(&p.bob_pk, b"restart")), "kept by the receive");
+    let mine = p.alice_sends(b"mine");
+    accepted(p.bob_receives(&mine.wire).unwrap());
+
+    assert!(matches!(
+        p.am.remove_session(&mut p.a, p.alice_pk, ALICE_HANDLE),
+        Err(MessagingError::SessionEstablished)
+    ));
+    // "first" (from `bob_answers`) and "mine" are not acknowledged.
+    assert!(matches!(
+        p.am.retire_session(&mut p.a, p.alice_pk, ALICE_HANDLE),
+        Err(MessagingError::PendingOutgoing { count: 2 })
+    ));
+    for m in p.am.pending_outgoing(&p.a, ALICE_HANDLE).unwrap() {
+        assert!(p.am.abandon_outgoing(&mut p.a, ALICE_HANDLE, &m.message_id).unwrap());
+    }
+    p.am.retire_session(&mut p.a, p.alice_pk, ALICE_HANDLE).unwrap();
+    assert!(p.am.peer_of(&p.a, ALICE_HANDLE).unwrap().is_none(), "no session");
+    assert!(p.a.list_keys_with_prefix("session:").unwrap().is_empty());
+    assert!(p.a.list_keys_with_prefix("handle:").unwrap().is_empty());
+    assert_eq!(
+        p.beside_record(),
+        Some(hs(&p.bob_pk, b"restart")),
+        "the record stays: the provisional handshake of a new session"
+    );
+    assert!(matches!(
+        p.am.retire_session(&mut p.a, p.alice_pk, ALICE_HANDLE),
+        Err(MessagingError::NoSession { .. })
+    ));
+
+    // An unconfirmed session can be retired too; a record of another peer
+    // under the handle is not touched.
+    let mut p = memory_peers();
+    let carol = pair().alice_pk;
+    let foreign = encode_provisional(&hs(&carol, b"other")).unwrap();
+    p.a.put(&provisional_key(ALICE_HANDLE), &foreign).unwrap();
+    p.am.retire_session(&mut p.a, p.alice_pk, ALICE_HANDLE).unwrap();
+    assert_eq!(p.a.get(&provisional_key(ALICE_HANDLE)).unwrap(), *foreign);
+}
+
+/// A messenger whose confirm hook (tracker R-6, option B) counts its calls
+/// and writes `value` at `R6_KEY`, replacing the record read there if any.
 fn counting_messenger(calls: Arc<std::sync::atomic::AtomicUsize>, value: &'static [u8]) -> Messenger {
-    Messenger::with_beside_discard(Box::new(move |store, _discarded| {
+    Messenger::with_confirm_hook(Box::new(move |store, _discarded| {
         calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let value = Zeroizing::new(value.to_vec());
         let write = match store.get(R6_KEY) {
@@ -257,21 +314,21 @@ fn calls(c: &std::sync::atomic::AtomicUsize) -> usize {
     c.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// The side writes of `with_beside_discard` are committed by the receive
-/// that confirms the session and deletes the handshake beside it, which
-/// they are made for, and only there: not for a later receive, a receive
-/// with nothing beside, a record of another peer, or a removed or
+/// The confirm hook's side writes are committed by the receive that
+/// confirms this device's own initiator session, with the handshake beside
+/// it that the same commit deletes, or with none, and only there: not for a
+/// later receive, a receive on a responder session, or a removed or
 /// forgotten session.
 #[test]
-fn the_confirming_receive_commits_the_side_writes_made_for_the_discarded_handshake() {
+fn the_receive_confirming_an_own_session_commits_the_confirm_hooks_writes() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut p = memory_peers();
     let (c, want) = (count.clone(), hs(&p.bob_pk, b"hs1"));
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let s2 = seen.clone();
-    p.am = Messenger::with_beside_discard(Box::new(move |_store, discarded| {
+    p.am = Messenger::with_confirm_hook(Box::new(move |_store, discarded| {
         c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        s2.lock().unwrap().push(discarded.clone());
+        s2.lock().unwrap().push(discarded.cloned());
         Ok(vec![SideWrite::insert(R6_KEY.into(), Zeroizing::new(b"done".to_vec()))
             .map_err(MessagingError::SideWrite)?])
     }));
@@ -280,23 +337,24 @@ fn the_confirming_receive_commits_the_side_writes_made_for_the_discarded_handsha
     assert_eq!(calls(&count), 0, "recording and sending call nothing");
     accepted(p.alice_receives(&answer.wire).unwrap());
     assert_eq!(calls(&count), 1);
-    assert_eq!(*seen.lock().unwrap(), vec![want], "called with the handshake deleted");
+    assert_eq!(*seen.lock().unwrap(), vec![Some(want)], "called with the handshake deleted");
     assert_eq!(p.beside_record(), None);
     assert_eq!(p.a.get(R6_KEY).unwrap(), b"done", "committed with it");
     let more = p.bob_sends(b"more");
     accepted(p.alice_receives(&more.wire).unwrap());
-    assert_eq!(calls(&count), 1, "nothing beside any more");
+    assert_eq!(calls(&count), 1, "not again on an established session");
 
-    // Nothing recorded beside the session.
+    // Nothing recorded beside the session: called all the same.
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut p = memory_peers();
     p.am = counting_messenger(count.clone(), b"x");
     let answer = p.bob_answers();
     accepted(p.alice_receives(&answer.wire).unwrap());
-    assert_eq!(calls(&count), 0);
-    assert!(matches!(p.a.get(R6_KEY), Err(StorageError::NotFound)));
+    assert_eq!(calls(&count), 1);
+    assert_eq!(p.a.get(R6_KEY).unwrap(), b"x");
 
-    // A record of another peer under the handle.
+    // A record of another peer under the handle stays.
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut p = memory_peers();
     p.am = counting_messenger(count.clone(), b"x");
     let carol = pair().alice_pk;
@@ -304,9 +362,19 @@ fn the_confirming_receive_commits_the_side_writes_made_for_the_discarded_handsha
     p.a.put(&provisional_key(ALICE_HANDLE), &foreign).unwrap();
     let answer = p.bob_answers();
     accepted(p.alice_receives(&answer.wire).unwrap());
+    assert_eq!(calls(&count), 1);
+    assert_eq!(p.a.get(&provisional_key(ALICE_HANDLE)).unwrap(), *foreign);
+
+    // A responder session's receives never call it.
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut p = memory_peers();
+    p.bm = counting_messenger(count.clone(), b"x");
+    let m = p.alice_sends(b"to bob");
+    accepted(p.bob_receives(&m.wire).unwrap());
     assert_eq!(calls(&count), 0);
 
     // Removed or forgotten with the session.
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut p = memory_peers();
     p.am = counting_messenger(count.clone(), b"x");
     p.beside(b"hs1").unwrap();
@@ -319,8 +387,8 @@ fn the_confirming_receive_commits_the_side_writes_made_for_the_discarded_handsha
     assert_eq!(calls(&count), 0);
 }
 
-/// A record the side write of `with_beside_discard` was made from changes
-/// between the read and the commit (another connection writes it): the
+/// A record the confirm hook's side write was made from changes between the
+/// read and the commit (another connection writes it): the
 /// receive fails with `Conflict` and writes nothing, the handshake stays
 /// beside the session; repeating the receive reads the record again and
 /// commits.

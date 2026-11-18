@@ -12,6 +12,16 @@ use super::{MessageId, MessagingError, Messenger, MESSAGE_ID_LEN};
 use crate::checkpoint::session_storage_key;
 use crate::durable::Conflict;
 
+/// Which sessions [`Messenger::remove`] may delete, and whether a handshake
+/// recorded beside one goes with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Removal {
+    /// Only one that has received nothing; the handshake beside it goes.
+    Unconfirmed,
+    /// Any, on the user's decision to restart; the handshake beside it stays.
+    Retire,
+}
+
 impl Messenger {
     /// Gives up on the pending outgoing message `id` without claiming it was
     /// delivered: it leaves the outbox, and its logical id is recorded as
@@ -73,9 +83,42 @@ impl Messenger {
         our_identity_pk: [u8; 32],
         handle: u64,
     ) -> Result<(), MessagingError> {
+        self.remove(store, our_identity_pk, handle, Removal::Unconfirmed)
+    }
+
+    /// Deletes the session under `handle` on the user's decision to start a
+    /// new one with the peer (option B, `docs/S2-B2-DURABLE-MESSAGING.md`
+    /// section 6a): as [`remove_session`](Self::remove_session), also when
+    /// the session has committed a message from the peer, and keeping the
+    /// peer's handshake recorded beside it, which is then the provisional
+    /// handshake a new session with the peer may be created from. Refused,
+    /// with nothing changed, as `remove_session` is, except for
+    /// `SessionEstablished`; the caller gives up the pending outgoing
+    /// messages first ([`abandon_outgoing`](Self::abandon_outgoing)).
+    ///
+    /// The peer keeps its own copy of the session until it accepts a new one,
+    /// so whatever it sends on the old session cannot be read here any more.
+    /// After [`MessagingError::RepeatableOutcomeUnknown`], calling this again
+    /// reports [`MessagingError::NoSession`] if the removal took effect.
+    pub fn retire_session(
+        &mut self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+    ) -> Result<(), MessagingError> {
+        self.remove(store, our_identity_pk, handle, Removal::Retire)
+    }
+
+    fn remove(
+        &mut self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+        removal: Removal,
+    ) -> Result<(), MessagingError> {
         self.require_resolved(handle)?;
         let (session, peer) = self.load(store, our_identity_pk, handle)?;
-        if session.has_received() {
+        if session.has_received() && removal == Removal::Unconfirmed {
             return Err(MessagingError::SessionEstablished);
         }
         let pending = keys_under(store, OUTBOX_NAMESPACE, &outbox_prefix(&peer))?.len();
@@ -102,12 +145,15 @@ impl Messenger {
         // retransmits its handshake while its own session is unconfirmed,
         // and it is then recorded as for any first contact. Another peer's
         // handshake under a colliding handle is not this peer's to delete.
-        match tx.get(&provisional_key(handle)) {
-            Ok(bytes) if decode_provisional(&bytes).is_ok_and(|p| p.peer_identity_pk != peer) => {}
-            Ok(_) | Err(StorageError::NotFound | StorageError::Decryption) => {
-                delete.push(provisional_key(handle))
+        // A retired session leaves it: it may be the peer's restart.
+        if removal == Removal::Unconfirmed {
+            match tx.get(&provisional_key(handle)) {
+                Ok(bytes) if decode_provisional(&bytes).is_ok_and(|p| p.peer_identity_pk != peer) => {}
+                Ok(_) | Err(StorageError::NotFound | StorageError::Decryption) => {
+                    delete.push(provisional_key(handle))
+                }
+                Err(e) => return Err(MessagingError::Store(e)),
             }
-            Err(e) => return Err(MessagingError::Store(e)),
         }
         for key in delete {
             tx.delete(&key).map_err(MessagingError::NotCommitted)?;

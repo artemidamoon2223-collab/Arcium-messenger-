@@ -2,7 +2,9 @@
 
 **Status:** proposal only, written 2026-11-14 against `main` @ `de328a1`.
 Nothing here is implemented or decided. *(Later: C is implemented, PR #165;
-A is implemented, PR #174, merged as `efd4c0e`; B is still open. Situation 2
+A is implemented, PR #174, merged as `efd4c0e`; B is implemented, with the
+user as the only trigger and a simultaneous reset shown as the existing
+conflict (Owner decisions of 2026-11-18). Situation 2
 now needs more than 100,000 lost messages instead of 1,000: a far skip,
 tracker R-14.)*
 
@@ -130,6 +132,13 @@ resolved as today.
 recently.
 
 ### B. Peer-authenticated session replacement (protocol change)
+
+**Implemented** (Owner decisions of 2026-11-18: only the user starts a
+reset; when both reset at once, the conflict of option A is shown and
+resolved). Specification: `docs/NET-MESSAGING.md` section 10, "Reset";
+`docs/S2-B2-DURABLE-MESSAGING.md` sections 4c and 6a. Replays of an older
+handshake are refused because every confirmation of an own session replaces
+this device's one-time prekey. What follows is the proposal as written.
 
 **What it is**
 - A new handshake from a pinned contact is recorded provisionally even when a

@@ -450,6 +450,20 @@ impl ArciumCore {
             .map_err(|e| CoreError::messaging(session_id, e))
     }
 
+    /// Removes the session `session_id` on the user's decision to start a new
+    /// one with the peer (option B; `Messenger::retire_session`): also when a
+    /// message from the peer was accepted on it, and keeping a handshake of
+    /// the peer recorded beside it. Refused as [`Self::remove_session`] is,
+    /// except for `SessionEstablished`. Not exported: the network layer gives
+    /// up the session's pending texts first.
+    pub(crate) fn retire_session(&self, session_id: u64) -> Result<(), CoreError> {
+        let our = self.our_identity_pk()?;
+        let (mut store, mut messenger) = self.lock()?;
+        messenger
+            .retire_session(&mut store, our, session_id)
+            .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
     /// Every committed, unacknowledged outgoing message for `session_id`, in
     /// send order, with the exact bytes to (re)send.
     pub fn pending_outgoing(&self, session_id: u64) -> Result<Vec<OutgoingMessage>, CoreError> {

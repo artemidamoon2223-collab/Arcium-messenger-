@@ -26,8 +26,11 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
   one-time prekey consumed at most once (F-13)? The signed prekey is not
   rotated (R-6), so the one-time prekey is what a later leak of the store
   lacks: is it still replaced by the first message accepted under it, and
-  by the receive that confirms an own session beside a handshake naming it
-  (the cases left are in `docs/NET-MESSAGING.md` section 8)? Read the
+  by every receive that confirms an own initiator session
+  (`replace_prekey_on_confirm`; the cases left are in
+  `docs/NET-MESSAGING.md` section 8)? That replacement is also what keeps a
+  replayed handshake older than a session from restarting it (option B).
+  Read the
   tracker entries for
   F-2 and F-13 against the code before citing them: the tracker is a dated
   snapshot and its status has lagged the code before. A
@@ -140,8 +143,16 @@ the Android contact-card and add-contact code. Specification:
 - **Handshake authentication.** An incoming handshake is checked against the
   pinned keys before any session is created.
 - **Session replacement and reset.** Who can cause a session to be removed or
-  replaced? A remote party must not be able to reset one by sending a new
-  handshake; local removal follows the S2-B2 §6a rules.
+  replaced? A handshake alone never does. Since option B an established
+  session is replaced only when the contact's first message under a
+  handshake recorded beside it authenticates there (the contact's identity
+  secret), and only while that handshake names this device's current
+  one-time prekey; or by the user (`reset_session`, `resolve_session_conflict`,
+  `delete_contact`). Check that no new path reaches `retire_session` or
+  `accept_restart` on anything weaker, that an unanswerable handshake beside
+  an established session draws no refusal, and that the old session's
+  texts are given up (`NotDelivered`), never shown `Delivered` without a
+  receipt. Local removal follows the S2-B2 §6a rules.
 - **Forged or replayed refusals and handshakes.** A refusal restarts first
   contact (`take_refusal` → `restart_after_refusal`) only if its tag checks for
   the sender's pinned key and ours and it names the handshake of our own

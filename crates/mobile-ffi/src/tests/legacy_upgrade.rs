@@ -333,8 +333,10 @@ fn t1_the_old_handshakes_own_first_message_still_completes_the_old_session() {
 }
 
 /// T2: an old session that authenticated the peer is never replaced or
-/// downgraded by a later handshake, and the conversation — the pending
-/// text and the acknowledged history included — continues.
+/// downgraded by a later handshake alone (option B records it beside the
+/// session as a possible restart; only a first message authenticating under
+/// it would replace the session), and the conversation — the pending text
+/// and the acknowledged history included — continues.
 #[test]
 fn t2_an_old_authenticated_responder_session_is_kept_and_continues() {
     let relay = start_relay();
@@ -390,8 +392,13 @@ fn t2_an_old_authenticated_responder_session_is_kept_and_continues() {
     );
     let r = bob.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert_eq!((r.fetched, r.dropped, r.sessions_accepted), (1, 1, 0));
-    assert_eq!(kept(&bob.core), before);
+    assert_eq!((r.fetched, r.dropped, r.sessions_accepted), (1, 0, 0));
+    let but_hsin = |m: BTreeMap<String, Vec<u8>>| -> BTreeMap<String, Vec<u8>> {
+        m.into_iter().filter(|(k, _)| !k.starts_with("hsin:")).collect()
+    };
+    let now = kept(&bob.core);
+    assert!(now.keys().any(|k| k.starts_with("hsin:")), "recorded beside the session");
+    assert_eq!(but_hsin(now), but_hsin(before.clone()), "and nothing else changed");
 
     // The conversation continues in both directions.
     alice.send(&bob, "t2", "after the upgrade");

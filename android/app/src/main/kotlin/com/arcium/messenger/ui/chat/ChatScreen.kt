@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -62,6 +63,7 @@ fun ChatScreen(
     val state by viewModel.state.collectAsState()
     val list = rememberLazyListState()
     var confirmDelete by remember { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
     var cancelTarget by remember { mutableStateOf<ChatEntry?>(null) }
     // To the newest entry when one arrives, not when older ones are loaded.
     val hasOlder = (state.entries.firstOrNull()?.seq ?: 1uL) > 1uL
@@ -87,6 +89,12 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { confirmReset = true },
+                        modifier = Modifier.testTag("resetSession"),
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "Reset secure session")
+                    }
                     IconButton(
                         onClick = { confirmDelete = true },
                         modifier = Modifier.testTag("deleteContact"),
@@ -149,6 +157,17 @@ fun ChatScreen(
                 }
             }
         }
+    }
+
+    if (confirmReset) {
+        ResetSessionDialog(
+            name = state.conversation?.name ?: "",
+            onConfirm = {
+                confirmReset = false
+                viewModel.resetSession()
+            },
+            onDismiss = { confirmReset = false },
+        )
     }
 
     if (confirmDelete) {
@@ -228,6 +247,35 @@ private fun DeleteContactDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     )
 }
 
+/**
+ * Asks before starting the secure session again (Rust `reset_session`):
+ * texts not yet delivered in the current session are given up, and the
+ * contact switches when the next message reaches them.
+ */
+@Composable
+private fun ResetSessionDialog(name: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("confirmResetSession"),
+        title = { Text("Reset secure session?") },
+        text = {
+            Text(
+                "Starts a new secure session with $name. Messages not yet delivered in the " +
+                    "current session are marked not delivered; you can send them again. " +
+                    "$name's device switches to the new session when your next message reaches it.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, modifier = Modifier.testTag("resetSessionConfirm")) {
+                Text("Reset")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
 /** The session and anything that stops texts from going out, in words. */
 @Composable
 private fun SessionBanner(c: Conversation, onResolve: () -> Unit) {
@@ -241,6 +289,12 @@ private fun SessionBanner(c: Conversation, onResolve: () -> Unit) {
         }
         if (c.handshakeRefused) {
             add("A secure session request from ${c.name} could not be accepted.")
+        }
+        if (c.peerReset) {
+            add(
+                "${c.name} started a new secure session. Messages you had not yet delivered " +
+                    "are marked not delivered; you can send them again.",
+            )
         }
         when (val s = c.session) {
             is ChatSessionState.Conflict -> add(

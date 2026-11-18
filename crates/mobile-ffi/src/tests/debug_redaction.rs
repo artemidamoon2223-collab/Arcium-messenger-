@@ -122,6 +122,7 @@ fn chat_entry_and_conversation_hide_the_text_and_keep_the_metadata() {
         session: ChatSessionState::Established,
         identity_mismatch: false,
         handshake_refused: false,
+        peer_reset: false,
         note: String::new(),
         unread: 1,
         last: Some(e),

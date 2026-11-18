@@ -759,7 +759,7 @@ impl ArciumCore {
         let store = EncryptedStore::open_with_key(&storage_path, key)?;
         Ok(Arc::new(Self {
             store: Mutex::new(store),
-            messenger: Mutex::new(Messenger::with_beside_discard(Box::new(replace_beside_prekey))),
+            messenger: Mutex::new(Messenger::with_confirm_hook(Box::new(replace_prekey_on_confirm))),
         }))
     }
 
@@ -826,9 +826,8 @@ impl ArciumCore {
     /// replaced, the secrets this device keeps no longer derive the keys of
     /// a first message under it: the first message accepted under it
     /// replaces it, and so does the receive that confirms this device's own
-    /// session when the contact's handshake beside it names it
-    /// (`replace_beside_prekey`). Until then they do, for any first contact
-    /// under the prekey held, however late it comes
+    /// initiator session (`replace_prekey_on_confirm`). Until then they do,
+    /// for any first contact under the prekey held, however late it comes
     /// (`docs/NET-MESSAGING.md` section 8).
     pub fn establish_prekeys(&self) -> Result<(), CoreError> {
         let identity = self.require_identity()?;
@@ -994,7 +993,9 @@ impl ArciumCore {
     /// Once a session exists — authenticated, or started here as initiator —
     /// a handshake never replaces it: `SessionAlreadyExists` for this peer,
     /// `SessionIdCollision` if the handle belongs to another peer. Nothing is
-    /// written and nothing is consumed.
+    /// written and nothing is consumed. (A restart by the peer, option B, is
+    /// recorded beside the session instead, and the network layer replaces
+    /// the session only once its first message authenticates there.)
     ///
     /// # Sessions stored by older builds
     ///
@@ -1169,30 +1170,32 @@ fn accept_first_message(
     }
 }
 
-/// The side write replacing this device's one-time prekey when the handshake
-/// `discarded`, recorded beside this device's own session, is deleted
-/// because that session was confirmed (`Messenger::with_beside_discard`;
-/// tracker R-6). A first message under that handshake may have
-/// authenticated here (`ArciumCore::beside_authenticates`), read with the
-/// one-time prekey but never accepted, and the peer has given that session
-/// up. While the prekey stays, whoever later takes this device's store and
-/// holds a copy of those messages can read them. So it is replaced, as a
-/// first message replaces the one it consumes, whenever the record held
-/// now can answer the handshake (`check_answerable`), whether or not a
-/// message authenticated under it: a handshake is public bytes, so anyone
-/// could have made this one, at the cost of one replacement per
-/// confirmation of an own session. Another contact's handshake naming the
-/// replaced prekey is then refused and starts again, as after a first
-/// message consumed it. Nothing for a handshake that does not parse or that
-/// the record cannot answer; a prekey record that cannot be read is left
-/// as it is.
-fn replace_beside_prekey(
+/// The side write replacing this device's one-time prekey when its own
+/// initiator session is confirmed: the first message from the peer
+/// committed on it (`Messenger::with_confirm_hook`). The prekey record held
+/// now is compared at commit, as when a first message consumes a prekey.
+///
+/// Why: the signed prekey is never rotated (tracker R-6), so a handshake
+/// stays answerable for as long as the one-time prekey it names is the
+/// published one. Replacing it here makes every handshake built from a
+/// bundle this device published before its session with the peer was
+/// established unanswerable:
+/// - a handshake of the peer recorded beside this session, whose first
+///   message may have authenticated here, read with the prekey but never
+///   accepted (a simultaneous start this device's session won), so that a
+///   later leak of the store does not read those messages;
+/// - a handshake of the peer this device never saw (withheld, or given up
+///   by the peer), so that it and its first message, replayed later, cannot
+///   replace the established session (option B): only a restart the peer
+///   makes from a bundle published after this point can.
+///
+/// The cost: another contact's handshake that names the replaced prekey is
+/// refused and that contact starts again, as after a first message consumed
+/// it. Nothing when no prekey record is held or it cannot be read.
+fn replace_prekey_on_confirm(
     store: &EncryptedStore,
-    discarded: &ProvisionalHandshake,
+    _beside: Option<&ProvisionalHandshake>,
 ) -> Result<Vec<SideWrite>, MessagingError> {
-    let Ok(handshake) = unpack_initiator_handshake(&discarded.handshake) else {
-        return Ok(Vec::new());
-    };
     let bytes = match store.get(PREKEYS_KEY) {
         Ok(bytes) => Zeroizing::new(bytes),
         Err(StorageError::NotFound | StorageError::Decryption) => return Ok(Vec::new()),
@@ -1201,7 +1204,7 @@ fn replace_beside_prekey(
     let Ok(mut record) = unpack_prekeys(&bytes) else {
         return Ok(Vec::new());
     };
-    if check_answerable(&record, &handshake).is_err() {
+    if record.opk.is_none() {
         return Ok(Vec::new());
     }
     record.opk = Some(new_one_time_prekey());
@@ -2684,13 +2687,13 @@ mod tests {
         assert_eq!(alice.decrypt_message(1, next).unwrap(), b"next");
     }
 
-    /// The replacement happens only while the prekey record can answer the
-    /// discarded handshake: here another contact's first message consumed
-    /// the one-time prekey Bob's handshake named, so confirming Alice's
-    /// session leaves the record as it is. A confirmation with nothing
-    /// beside the session leaves it as it is too.
+    /// The one-time prekey is replaced by every confirmation of an own
+    /// initiator session (option B), also when the handshake beside it names
+    /// a prekey another contact's first message already consumed, and by
+    /// nothing else: not by a receive on a responder session, nor by a later
+    /// receive on the confirmed session.
     #[test]
-    fn a_confirmation_replaces_no_prekey_the_handshake_beside_does_not_name() {
+    fn a_confirmation_of_an_own_session_replaces_the_prekey_and_nothing_else_does() {
         let s = simultaneous_start(239);
         let alice = &s.alice;
         let carol = fresh_core(241);
@@ -2702,19 +2705,25 @@ mod tests {
         let carol_first = carol.encrypt_message(2, b"carol".to_vec()).unwrap();
         let named = current_opk_id(alice);
         alice.decrypt_message(2, carol_first).unwrap();
-        assert_ne!(current_opk_id(alice), named, "Carol's first message consumed it");
+        let after_carol = current_opk_id(alice);
+        assert_ne!(after_carol, named, "Carol's first message consumed it");
 
-        let before = read_record(alice);
         assert_eq!(alice.decrypt_message(1, s.bob_answer.clone()).unwrap(), b"answer");
         assert!(!has_provisional(alice, 1));
-        assert_eq!(read_record(alice), before, "nothing to replace");
+        let confirmed = current_opk_id(alice);
+        assert!(confirmed.is_some());
+        assert_ne!(confirmed, after_carol, "the confirmation replaced it all the same");
 
-        // Nothing beside Alice's session with Carol: her reply changes no prekey.
+        let before = read_record(alice);
+        // Alice's session with Carol is a responder session.
         let to_carol = alice.encrypt_message(2, b"to carol".to_vec()).unwrap();
         carol.decrypt_message(2, to_carol).unwrap();
         let carol_reply = carol.encrypt_message(2, b"reply".to_vec()).unwrap();
         alice.decrypt_message(2, carol_reply).unwrap();
-        assert_eq!(read_record(alice), before, "a receive with nothing beside changes no prekey");
+        // And Bob's next message on the confirmed session.
+        let next = s.bob.encrypt_message(1, b"next".to_vec()).unwrap();
+        alice.decrypt_message(1, next).unwrap();
+        assert_eq!(read_record(alice), before, "no other receive replaces it");
     }
 
     // ── Atomicity ────────────────────────────────────────────────────────────
@@ -2845,6 +2854,7 @@ mod tests {
     mod identity;
     mod unresolved;
     mod false_conflict;
+    mod restart;
     mod relay_v2;
     mod beyond_recall;
     mod far_skip;

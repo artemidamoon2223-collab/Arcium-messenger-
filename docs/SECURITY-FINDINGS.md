@@ -19,6 +19,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **R-25 added as fixed and H-6 narrowed 2026-11-17 against `main` @ `e4e2313`** (PRs #199, #200; see "Update 2026-11-17: R-25 fixed, H-6 narrowed"), with a note on R-21; no earlier row was changed.
 **R-24 recorded as fixed 2026-11-17 against `main` @ `3767d94`** (PR #203; see "Update 2026-11-17: R-24 fixed"); no earlier row was changed.
 **R-22 recorded as fixed 2026-11-17 against `main` @ `3f0cf9f`** (PR #205; see "Update 2026-11-17: R-22 fixed"); no earlier row was changed.
+**R-21 recorded as partial 2026-11-18 against `main` @ `6e00a7f`** (PR #207; see "Update 2026-11-18: R-21 partial"); no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -1145,6 +1146,27 @@ A review is analysis, not proof.
 | ID | Status at `3f0cf9f` | Evidence (`main` @ `3f0cf9f`) | Label |
 |----|---------------------|-------------------------------|-------|
 | **R-22** (`last_sent` only grows for the life of the process) | **FIXED.** After every sync round, also one that failed part way, `prune_sent` keeps an entry only while its key is the id of a pending outgoing message or the hash of a session's initiator handshake, or it was written after the pass began. Its two readers (`due`, `was_sent`) ask about nothing else. Delivered and abandoned messages, receipts and everything of a deleted contact are dropped, so the map is bounded by the pending messages plus one handshake hash per session. **Remaining (LOW, cost):** each `sync()` now reads and decrypts every session's outbox once more, also when the relay is unreachable; the review measured about 0.65 s per `sync()` with 500 pending 4 KB texts in a debug build (release and phone not measured; usual outboxes are small). **INFO:** the same store error can be reported twice; a corrupt stored handshake of a confirmed session would make the prune fail each round (it then drops nothing); the guard for parallel rounds has no test (the app runs rounds on one thread). | `crates/mobile-ffi/src/network.rs:144` (field), `:517` (call after every round), `:886` (`prune_sent`), `:851` (`was_sent`), `:861` (`due`), `:906` (`mark_sent`); tests `crates/mobile-ffi/src/tests/net_limits.rs:249, 286, 311` | `SV`; `RUNTIME_VERIFIED` (tests, mutations; CI on `5977f8b`); memory and time on a phone `NV` |
+
+---
+
+## Update 2026-11-18: R-21 partial (`main` @ `6e00a7f`)
+
+**Snapshot:** `main` @ `6e00a7f680e4bcb0b47c6d28055d0aba058438e0` (the merge of PR #207). The fix was
+asked for by the Owner on 2026-11-17 ("Делай R-21"), who chose the notification option
+("Уведомление"), and merged on the Owner's "Ok" to "мёрдж #207". Each `path:line` below was
+re-read at `6e00a7f`.
+
+**Runtime evidence.** PR #207: 20 check runs success on head `de11751`, the Android
+emulator jobs included. Locally `cargo test --workspace --locked` → 600 passed, 0 failed.
+Six new tests (one in `core-crypto`, five in `mobile-ffi`) and extended wire tests; seven
+mutations, each removing one guarded behaviour, each failed the test that guards it. Two
+fresh-context reviews (`engineering-code-review`, `arcium-security-review`): the first found
+one MEDIUM (a GONE lost on the relay was never sent again), fixed in the PR; the second
+found nothing above LOW. A review is analysis, not proof.
+
+| ID | Status at `6e00a7f` | Evidence (`main` @ `6e00a7f`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-21** (a late message whose skipped key was evicted is lost, and its sender keeps resending it) | **PARTIAL.** **Fixed for the current receiving chain:** a message of an existing session that does not decrypt, whose header names a position of the current receiving chain behind the next expected one with no skipped key stored for it, is named back to its sender in a new in-session payload, GONE (`PAYLOAD_V1` type 4, 1–256 message ids). The sender abandons each named id that is a text still pending: it is not sent again and its history entry reads `NotDelivered`. Any other id changes nothing. A GONE leaves the outbox once the relay accepted it; when the sender repeats a named message, a later GONE is committed at once, then at most once a minute. At most one GONE per session per round (the first 256 ids in id order); the in-memory collection is emptied after every round. The message itself stays lost: its key is gone. **Remains:** a late message of an older receiving chain (after a DH ratchet step) is only deleted, as before, and its sender keeps resending it until the user cancels it: the receiver does not keep old peer ratchet keys, and covering that chain was left out by the Owner's choice. **Residual (LOW, as R-12 for receipts):** a sender that does not act on a GONE (a build before GONE, or a pending message that is not a text) draws a later GONE at most once a minute for as long as it repeats, each leaving a send-id record (growth read from source, not measured). **INFO:** whoever saw a header of the current chain and can write to the mailbox (the relay operator; anyone on V1) can make altered copies that draw at most one GONE per session per round, naming ids the peer never sent (they change nothing there), or crowd the 256 places so that a genuine late message is never named; a relay can withhold the GONE anyway. A GONE's length shows how many ids it names. `sync_conversations` may run `sync()` twice, so up to two GONE per session per app round. | `crates/core-crypto/src/ratchet.rs:301` (`is_beyond_recall`), test `:1558`; `crates/core-protocol/src/durable.rs:669`; `crates/core-protocol/src/messaging.rs:414` (`beyond_recall`); `crates/mobile-ffi/src/messaging_api.rs:248`; `crates/mobile-ffi/src/network/wire.rs:40` (`TYPE_GONE`), `:229` (`client_id::gone`); `crates/mobile-ffi/src/network.rs:164` (collection), `:536` (emptied after every round), `:1040` (acknowledged once sent), `:1202` (check in the `Crypto` branch), `:1502` (sender abandons pending texts), `:1540` (`commit_gone`), `:1552` (`name_gone`), `:1595` (`this_minute`); tests `crates/mobile-ffi/src/tests/beyond_recall.rs:21, 140, 215, 233`; `docs/NET-MESSAGING.md:260` (section 4), `:531-547` (section 8) | `SV`; `RUNTIME_VERIFIED` (tests, mutations; CI on `de11751`); an older build receiving GONE and phones `NV` |
 
 ---
 

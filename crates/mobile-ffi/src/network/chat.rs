@@ -909,6 +909,8 @@ impl NetworkMessenger {
         // id: its entries for this contact are never consulted again, and
         // the next round drops them (`prune_sent`).
         self.refused.lock().expect("refused").remove(&key);
+        // A new session with this contact has the same handle.
+        self.far_seen.lock().expect("far_seen").remove(&handle);
         let mut refusals = self.refusals.lock().expect("refusals");
         refusals.queued.retain(|(to, _, _)| *to != key);
         refusals.last_to.remove(&key);

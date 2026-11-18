@@ -1,8 +1,12 @@
 //! R-14: more than `MAX_SKIP` (1,000) of a contact's messages in a row that
 //! never arrive used to stop that direction for good: every later message of
 //! the chain lay too far ahead to decrypt. Such a message is now read with a
-//! far skip (up to `MAX_FAR_SKIP` positions): one try per session, at most
-//! four per round.
+//! far skip (up to `MAX_FAR_SKIP` positions), once the session has seen far
+//! messages for `FAR_SKIP_WAIT` without accepting one, at the end of a
+//! message pass in which it accepted none: one try per session, at most four
+//! per round. Most tests here set the wait to zero.
+
+use std::time::Duration;
 
 use super::net_harness::*;
 use crate::network::wire::{client_id, Envelope};
@@ -24,6 +28,11 @@ fn texts_in_one_chain(alice: &Device, bob: &Device) -> (Vec<Vec<u8>>, Vec<Vec<u8
     (ids, wires)
 }
 
+/// `d` tries a far skip as soon as a far message arrives.
+fn far_at_once(d: &Device) {
+    d.net.set_far_skip_wait(Duration::ZERO);
+}
+
 fn message_from(bob: &Device, wire: Vec<u8>) -> Vec<u8> {
     Envelope::Message {
         sender: bob.core.our_identity_pk().unwrap(),
@@ -43,6 +52,7 @@ fn a_gap_of_more_than_max_skip_in_one_chain_is_crossed() {
     let addr = relay.addr().to_string();
     let (alice, bob) = connected(&addr);
     settle(&[&alice, &bob]);
+    far_at_once(&alice);
     let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
     let (ids, _) = texts_in_one_chain(&alice, &bob);
     for id in &ids[..GAP] {
@@ -73,6 +83,7 @@ fn far_messages_get_one_try_per_session_per_round() {
     let addr = relay.addr().to_string();
     let (alice, bob) = connected(&addr);
     settle(&[&alice, &bob]);
+    far_at_once(&alice);
     let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
     let (ids, wires) = texts_in_one_chain(&alice, &bob);
     for id in &ids[..GAP] {
@@ -114,6 +125,7 @@ fn at_most_four_far_skips_are_tried_per_round() {
     let relay = start_relay();
     let addr = relay.addr().to_string();
     let alice = Device::new(&addr, 40);
+    far_at_once(&alice);
     let peers: Vec<Device> = (41..47).map(|b| Device::new(&addr, b)).collect();
     for p in &peers {
         alice.knows(p);
@@ -151,6 +163,7 @@ fn a_text_lost_before_the_kept_keys_is_named_back() {
     let addr = relay.addr().to_string();
     let (alice, bob) = connected(&addr);
     settle(&[&alice, &bob]);
+    far_at_once(&alice);
     let (_, wires) = texts_in_one_chain(&alice, &bob);
     let r = bob.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
@@ -187,5 +200,166 @@ fn a_text_lost_before_the_kept_keys_is_named_back() {
         matches!(record, Ok(Some(SendResult::Abandoned { .. }))),
         "text 0 is given up: {record:?}"
     );
+    relay.stop();
+}
+
+/// Counts, for each of Bob's texts `f0`..`f{n-1}`, the outcome Bob reads
+/// from its send record: (delivered, given up).
+fn outcomes(alice: &Device, bob: &Device, n: usize) -> (usize, usize) {
+    let alice_pk = alice.core.our_identity_pk().unwrap();
+    let (mut delivered, mut abandoned) = (0, 0);
+    for i in 0..n {
+        match bob.core.prior_send(&alice_pk, &client_id::text(format!("f{i}").as_bytes())) {
+            Ok(Some(SendResult::AlreadyAcknowledged { .. })) => delivered += 1,
+            Ok(Some(SendResult::Abandoned { .. })) => abandoned += 1,
+            other => panic!("f{i}: {other:?}"),
+        }
+    }
+    (delivered, abandoned)
+}
+
+/// The relay lost (or expired) the first 1,200 of 1,501 texts, and Bob's
+/// retransmission stored them again behind the later ones, which Alice now
+/// reads first, more than `MAX_SKIP` ahead. With the wait, the far ones are
+/// not skipped to: the older ones are read in the same round, and the later
+/// ones when they come again. Every text is delivered, as before far skips;
+/// skipping at once gave up 200 of them (review of PR #209).
+#[test]
+fn a_rotated_mailbox_delivers_every_text() {
+    const N: usize = 1501;
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    for i in 0..N {
+        bob.send(&alice, &format!("f{i}"), &format!("t{i}"));
+    }
+    assert!(bob.sync().errors.is_empty());
+    let key: [u8; 32] = alice.pk.as_slice().try_into().unwrap();
+    let lost: Vec<u64> = relay.stored(&key).iter().take(1200).map(|(s, _)| *s).collect();
+    relay::client::Connection::connect(&addr, Duration::from_secs(2))
+        .unwrap()
+        .delete(key, lost)
+        .unwrap();
+    assert!(bob.sync().errors.is_empty(), "stores the lost ones again");
+    assert_eq!(relay.stored(&key).len(), N);
+    for _ in 0..8 {
+        assert!(alice.sync().errors.is_empty());
+        assert!(bob.sync().errors.is_empty());
+        if bob.undelivered(&alice) == 0 {
+            break;
+        }
+    }
+    assert_eq!(alice.net.far_tries(), 0);
+    assert_eq!(outcomes(&alice, &bob, N), (N, 0));
+    relay.stop();
+}
+
+/// The relay lost the first 1,200 of 1,501 texts; Alice reads the rest
+/// before Bob sends the lost ones again. As above, every text is delivered.
+#[test]
+fn a_lost_start_sent_again_later_delivers_every_text() {
+    const N: usize = 1501;
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    for i in 0..N {
+        bob.send(&alice, &format!("f{i}"), &format!("t{i}"));
+    }
+    assert!(bob.sync().errors.is_empty());
+    let key: [u8; 32] = alice.pk.as_slice().try_into().unwrap();
+    let lost: Vec<u64> = relay.stored(&key).iter().take(1200).map(|(s, _)| *s).collect();
+    relay::client::Connection::connect(&addr, Duration::from_secs(2))
+        .unwrap()
+        .delete(key, lost)
+        .unwrap();
+    for _ in 0..8 {
+        assert!(alice.sync().errors.is_empty());
+        assert!(bob.sync().errors.is_empty());
+        if bob.undelivered(&alice) == 0 {
+            break;
+        }
+    }
+    assert_eq!(alice.net.far_tries(), 0);
+    assert_eq!(outcomes(&alice, &bob, N), (N, 0));
+    relay.stop();
+}
+
+/// A far skip is tried only once the session has seen far messages for the
+/// wait without accepting one.
+#[test]
+fn a_far_skip_waits_for_the_gap_to_stay_open() {
+    let wait = Duration::from_millis(300);
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    alice.net.set_far_skip_wait(wait);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    let (ids, wires) = texts_in_one_chain(&alice, &bob);
+    for id in &ids[..GAP] {
+        bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+    }
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, r.dropped, alice.net.far_tries()), (0, 1, 0), "{r:?}");
+
+    std::thread::sleep(wait + Duration::from_millis(50));
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "{r:?}");
+    relay.stop();
+}
+
+/// A message the session accepts starts the wait again, and a far message
+/// seen in the same round, even before it, is not skipped to: the gap may be
+/// filling.
+#[test]
+fn accepting_a_message_starts_the_wait_again() {
+    let wait = Duration::from_millis(300);
+    let pause = wait + Duration::from_millis(50);
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    alice.net.set_far_skip_wait(wait);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    // One text Alice can read, a gap of GAP given up, one far text.
+    let near = bob.send(&alice, "near", "near");
+    let (ids, wires) = texts_in_one_chain(&alice, &bob);
+    for id in &ids[..GAP] {
+        bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+    }
+    let near_wire = bob
+        .core
+        .pending_outgoing(to_alice)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.message_id == near)
+        .unwrap()
+        .wire;
+    let far = || message_from(&bob, wires[GAP].clone());
+
+    inject(&addr, &alice, far()); // first seen
+    assert!(alice.sync().errors.is_empty());
+    std::thread::sleep(pause);
+    inject(&addr, &alice, far()); // the wait is over, but...
+    inject(&addr, &alice, message_from(&bob, near_wire)); // ...this is accepted
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (1, 0), "not skipped to: {r:?}");
+
+    inject(&addr, &alice, far()); // the wait starts again
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (0, 0), "{r:?}");
+    std::thread::sleep(pause);
+    inject(&addr, &alice, far());
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "{r:?}");
     relay.stop();
 }

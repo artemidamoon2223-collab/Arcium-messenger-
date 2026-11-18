@@ -162,10 +162,14 @@ pub struct NetworkMessenger {
     /// every round: a message not named (a crash, a round that failed) is
     /// sent again by the peer and found again.
     gone: Mutex<HashMap<u64, Vec<[u8; 32]>>>,
-    /// Sessions that tried a far skip this round (tracker R-14): one try
-    /// per session and at most [`FAR_TRIES_PER_ROUND`] per round. Emptied
-    /// after every round.
-    far_tried: Mutex<HashSet<u64>>,
+    /// Per session, when a message far ahead in its chain was first seen
+    /// since the session last accepted a message (tracker R-14): a far skip
+    /// is tried only once that is `Limits::far_skip_wait` ago. In memory
+    /// only; a restart starts the wait again.
+    far_seen: Mutex<HashMap<u64, Instant>>,
+    /// This round's far skips to try once the message pass is over, and the
+    /// sessions that accepted a message in it. Emptied after every round.
+    far_round: Mutex<FarRound>,
     /// Test aid: the minute [`Self::this_minute`] reads instead of the clock.
     #[cfg(test)]
     minute: Mutex<Option<u64>>,
@@ -237,6 +241,9 @@ struct Limits {
     round_budget: Duration,
     /// Longest wait between two retransmissions of one message.
     retransmit_cap: Duration,
+    /// How long a session sees messages far ahead in its chain, accepting
+    /// nothing, before a far skip is tried (tracker R-14).
+    far_skip_wait: Duration,
 }
 
 impl Default for Limits {
@@ -245,8 +252,19 @@ impl Default for Limits {
             request_deadline: relay::client::REQUEST_DEADLINE,
             round_budget: ROUND_BUDGET,
             retransmit_cap: RETRANSMIT_CAP,
+            far_skip_wait: FAR_SKIP_WAIT,
         }
     }
+}
+
+/// One round's far skips (tracker R-14): the messages to try once the
+/// message pass is over, one per session and at most
+/// [`FAR_TRIES_PER_ROUND`], and the sessions that accepted a message in the
+/// pass, which try none.
+#[derive(Default)]
+struct FarRound {
+    candidates: Vec<(u64, Vec<u8>)>,
+    progressed: HashSet<u64>,
 }
 
 /// Least time between two refusals to one contact.
@@ -267,6 +285,14 @@ pub(crate) const RETRANSMIT_CAP: Duration = Duration::from_secs(5 * 60);
 /// may derive up to `MAX_FAR_SKIP` chain keys per chain before its message
 /// authenticates; a session gets at most one of them.
 pub(crate) const FAR_TRIES_PER_ROUND: usize = 4;
+
+/// How long a session must see messages far ahead in its chain without
+/// accepting one before a far skip is tried (tracker R-14): two of the
+/// longest waits between retransmissions. A gap that the sender's
+/// retransmissions fill, as after a relay lost or expired the start of a
+/// long run of texts, is then filled first, and its texts are delivered
+/// rather than skipped. Only a gap nothing fills is skipped.
+pub(crate) const FAR_SKIP_WAIT: Duration = Duration::from_secs(2 * 5 * 60);
 
 /// The deadline of one round's relay requests, and whether it stopped any
 /// work in this round.
@@ -404,7 +430,8 @@ impl NetworkMessenger {
             refused: Mutex::new(HashMap::new()),
             refusals: Mutex::new(Refusals::default()),
             gone: Mutex::new(HashMap::new()),
-            far_tried: Mutex::new(HashSet::new()),
+            far_seen: Mutex::new(HashMap::new()),
+            far_round: Mutex::new(FarRound::default()),
             #[cfg(test)]
             minute: Mutex::new(None),
             #[cfg(test)]
@@ -549,7 +576,7 @@ impl NetworkMessenger {
         // Nor the messages found beyond recall in a round that failed before
         // naming them: the contact sends them again, and they are found again.
         self.gone.lock().expect("gone").clear();
-        self.far_tried.lock().expect("far_tried").clear();
+        *self.far_round.lock().expect("far_round") = FarRound::default();
         report.errors.extend(relay_refusals.line());
         report
     }
@@ -649,11 +676,19 @@ impl NetworkMessenger {
     /// Test aid: the bounds of `docs/NET-MESSAGING.md` section 7, scaled.
     #[cfg(test)]
     pub(crate) fn set_limits(&self, request_deadline: Duration, round_budget: Duration, retransmit_cap: Duration) {
-        *self.limits.lock().expect("limits") = Limits {
+        let mut limits = self.limits.lock().expect("limits");
+        *limits = Limits {
             request_deadline,
             round_budget,
             retransmit_cap,
+            ..*limits
         };
+    }
+
+    /// Test aid: the wait before a far skip ([`FAR_SKIP_WAIT`]).
+    #[cfg(test)]
+    pub(crate) fn set_far_skip_wait(&self, wait: Duration) {
+        self.limits.lock().expect("limits").far_skip_wait = wait;
     }
 
     fn require_contact(&self, peer: &[u8; 32]) -> Result<Card, CoreError> {
@@ -751,6 +786,7 @@ impl NetworkMessenger {
                 messages: messages.reached,
             };
         }
+        self.far_pass(report)?;
         self.send_refusals(&mut conn, &budget, relay_refusals, report)?;
         self.commit_gone(report);
         // Receipts and GONE messages produced above, and the first messages
@@ -1150,14 +1186,17 @@ impl NetworkMessenger {
                 // recorded handshake — which creates the session if it
                 // authenticates — or waits for its handshake (`NoSession`).
                 let first = !self.core.has_session(handle)?;
-                let mut received = self.core.receive_committed(handle, &wire);
-                if !first && matches!(received, Err(CoreError::Crypto { .. })) {
-                    if let Some(far) = self.far_receive(handle, &wire, report) {
-                        received = far;
-                    }
+                let received = self.core.receive_committed(handle, &wire);
+                if !first
+                    && matches!(received, Err(CoreError::Crypto { .. }))
+                    && self.far_candidate(handle, &wire, report)
+                {
+                    // Tried once the message pass is over (`far_pass`).
+                    return Ok(Fate::Delete);
                 }
                 match received {
                     Ok(Received::Accepted(message)) => {
+                        self.far_progress(handle);
                         report.accepted += 1;
                         if first {
                             report.sessions_accepted += 1;
@@ -1554,44 +1593,93 @@ impl NetworkMessenger {
         }
     }
 
-    /// Receives `wire`, which did not decrypt under the session `handle`,
-    /// with a far skip if it needs one (it lies more than `MAX_SKIP`
-    /// positions ahead in its chain: more than a thousand of the contact's
-    /// messages in a row were lost; tracker R-14) and a try is left: one per
-    /// session and at most [`FAR_TRIES_PER_ROUND`] per round, since a far
-    /// skip may derive up to `MAX_FAR_SKIP` keys per chain before the
-    /// message authenticates. `None` if no far skip was tried: the message
-    /// is then deleted like any message that does not decrypt, so whoever
-    /// writes forged far messages to the mailbox learns nothing from what is
-    /// kept (R-9). A text is sent again, and a lost receipt or GONE message
-    /// is sent again when the text it answers is. A failed check is
-    /// reported.
-    fn far_receive(
-        &self,
-        handle: u64,
-        wire: &[u8],
-        report: &mut SyncReport,
-    ) -> Option<Result<Received, CoreError>> {
+    /// Whether `wire`, which did not decrypt under the session `handle`, is
+    /// kept for a far skip at the end of the message pass (`far_pass`;
+    /// tracker R-14). It must need one: lie more than `MAX_SKIP` positions
+    /// ahead in its chain, so more than a thousand of the contact's messages
+    /// in a row are missing. A far skip drops the keys of all but the last
+    /// thousand positions it skips, so their texts can no longer be read; it
+    /// is kept for a gap nothing fills. So the session must have seen far
+    /// messages for [`FAR_SKIP_WAIT`] without accepting a message: by then
+    /// the sender has sent again whatever it still holds. A far skip may
+    /// also derive up to `MAX_FAR_SKIP` keys per chain before the message
+    /// authenticates, so a session keeps one and a round at most
+    /// [`FAR_TRIES_PER_ROUND`]. A message not kept is deleted like any
+    /// message that does not decrypt, so whoever writes forged far messages
+    /// to the mailbox learns nothing from what stays there (R-9). A text is
+    /// sent again, and a receipt or GONE message when the text it answers
+    /// is. A failed check is reported.
+    fn far_candidate(&self, handle: u64, wire: &[u8], report: &mut SyncReport) -> bool {
         match self.core.needs_far_skip(handle, wire) {
             Ok(true) => {}
-            Ok(false) => return None,
+            Ok(false) => return false,
             Err(e) => {
                 report
                     .errors
                     .push(format!("checking how far ahead a message lies: {e}"));
-                return None;
+                return false;
             }
         }
+        let now = Instant::now();
+        let since = *self.far_seen.lock().expect("far_seen").entry(handle).or_insert(now);
+        if now.duration_since(since) < self.limits().far_skip_wait {
+            return false;
+        }
+        let mut round = self.far_round.lock().expect("far_round");
+        if round.candidates.len() >= FAR_TRIES_PER_ROUND
+            || round.candidates.iter().any(|(h, _)| *h == handle)
         {
-            let mut tried = self.far_tried.lock().expect("far_tried");
-            if tried.len() >= FAR_TRIES_PER_ROUND || !tried.insert(handle) {
-                return None;
+            return false;
+        }
+        round.candidates.push((handle, wire.to_vec()));
+        true
+    }
+
+    /// The session `handle` accepted a message: the wait before a far skip
+    /// starts again, and it tries none this round (R-14).
+    fn far_progress(&self, handle: u64) {
+        self.far_seen.lock().expect("far_seen").remove(&handle);
+        self.far_round
+            .lock()
+            .expect("far_round")
+            .progressed
+            .insert(handle);
+    }
+
+    /// Tries the far skips the message pass kept (R-14), each for a session
+    /// that accepted no message in the pass: one that did may be filling
+    /// its gap, and the message comes again. The messages were deleted from
+    /// the relay in the pass.
+    fn far_pass(&self, report: &mut SyncReport) -> Result<(), CoreError> {
+        let (candidates, progressed) = {
+            let mut round = self.far_round.lock().expect("far_round");
+            (std::mem::take(&mut round.candidates), round.progressed.clone())
+        };
+        for (handle, wire) in candidates {
+            if progressed.contains(&handle) {
+                report.dropped += 1;
+                continue;
+            }
+            #[cfg(test)]
+            self.far_tries
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match self.core.receive_committed_far(handle, &wire) {
+                Ok(Received::Accepted(message)) => {
+                    report.accepted += 1;
+                    self.far_progress(handle);
+                    crash_point("after_accept");
+                    self.settle(handle, &message.message_id, &message.plaintext, report)?;
+                    crash_point("after_settle");
+                }
+                // Not reached: a duplicate is found before any decryption.
+                Ok(Received::Duplicate { .. }) => report.duplicates += 1,
+                Err(CoreError::Crypto { .. }) => report.dropped += 1,
+                Err(e) => report
+                    .errors
+                    .push(format!("reading a message far ahead in its chain: {e}")),
             }
         }
-        #[cfg(test)]
-        self.far_tries
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Some(self.core.receive_committed_far(handle, wire))
+        Ok(())
     }
 
     /// Commits at most one GONE message per session for the messages this

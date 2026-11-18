@@ -2,9 +2,9 @@
 //! never arrive used to stop that direction for good: every later message of
 //! the chain lay too far ahead to decrypt. Such a message is now read with a
 //! far skip (up to `MAX_FAR_SKIP` positions), once the session has seen far
-//! messages for `FAR_SKIP_WAIT` without accepting one, at the end of a
-//! message pass in which it accepted none: one try per session, at most four
-//! per round. Most tests here set the wait to zero.
+//! messages of that chain for `FAR_SKIP_WAIT` without accepting one, at the
+//! end of a message pass in which it accepted none: one try per session, at
+//! most four per round. Most tests here set the wait to zero.
 
 use std::time::Duration;
 
@@ -144,11 +144,19 @@ fn at_most_four_far_skips_are_tried_per_round() {
     for p in &peers {
         inject(&addr, &alice, message_from(p, wire.clone()));
     }
+    // Two more far messages "from" the last contact, with keys of their own:
+    // a session is judged once per pass, also when the round is full.
+    for k in [10u8, 11] {
+        let other = Header { dh: [k; 32], ..far };
+        inject(&addr, &alice, message_from(&peers[5], [&other.to_bytes()[..], &[0u8; 40][..]].concat()));
+    }
     let r = alice.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert_eq!(r.dropped, 6, "{r:?}");
+    assert_eq!(r.dropped, 8, "{r:?}");
     assert_eq!(alice.net.far_tries(), crate::network::FAR_TRIES_PER_ROUND as u32);
     assert_eq!(crate::network::FAR_TRIES_PER_ROUND, 4);
+    let last = crate::local_session_handle(peers[5].pk.clone()).unwrap();
+    assert_eq!(alice.net.far_waits(last), 1, "judged once in the pass");
     relay.stop();
 }
 
@@ -425,5 +433,51 @@ fn deleting_a_contact_forgets_its_far_waits() {
     assert_eq!(alice.net.far_waits(to_bob), 1);
     alice.net.delete_contact(bob.pk.clone()).unwrap();
     assert_eq!(alice.net.far_waits(to_bob), 0);
+    relay.stop();
+}
+
+/// When a session holds `FAR_CHAINS_PER_SESSION` waits, a new key drops
+/// the chain seen least recently. A genuine chain that keeps arriving keeps
+/// its wait against forged keys, unless four of them show between two of
+/// its arrivals.
+#[test]
+fn a_genuine_chain_that_keeps_arriving_keeps_its_wait() {
+    let wait = Duration::from_millis(300);
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    alice.net.set_far_skip_wait(wait);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let (ids, wires) = texts_in_one_chain(&alice, &bob);
+    for id in &ids[..GAP] {
+        bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+    }
+    let genuine = || message_from(&bob, wires[GAP].clone());
+    let forged = |k: u8| {
+        let h = Header {
+            dh: [k; 32],
+            pn: 0,
+            n: MAX_SKIP + 10,
+        };
+        message_from(&bob, [&h.to_bytes()[..], &[0u8; 40][..]].concat())
+    };
+    let round = |env: Vec<u8>| {
+        inject(&addr, &alice, env);
+        let r = alice.sync();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        r
+    };
+    round(genuine()); // its wait starts
+    round(forged(1));
+    round(genuine()); // seen again
+    round(forged(2));
+    round(forged(3));
+    round(forged(4)); // four chains held: the one seen least recently (1) goes
+    assert_eq!(alice.net.far_waits(to_bob), 4);
+    std::thread::sleep(wait + Duration::from_millis(50));
+    let r = round(genuine());
+    assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "its wait was kept: {r:?}");
     relay.stop();
 }

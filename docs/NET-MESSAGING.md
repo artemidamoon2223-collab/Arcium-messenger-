@@ -603,7 +603,12 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   The wait is kept per chain, so such a forgery starts no genuine chain's
   wait; one naming the genuine chain's key (its header is visible to the
   relay's operator, and to anyone on V1) does, and the genuine chain may
-  then be skipped to without waiting. And a far try takes tens of
+  then be skipped to without waiting. Forgeries can also hold a far skip
+  back: one ahead of each genuine far message takes the session's single
+  judgement in that pass, and four keys of their own between two arrivals
+  of the genuine chain drop its wait, which then starts again
+  (`FAR_CHAINS_PER_SESSION`). For as long as the writer keeps doing it,
+  the far skip does not happen. And a far try takes tens of
   milliseconds where a message that does not decrypt takes microseconds,
   so whoever can time the round may tell a contact with a session from a
   stranger (next to tracker R-9).
@@ -611,9 +616,9 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   A relay that withholds the start of a run of more than 1,000 texts (on
   each retransmission) while passing the later ones makes this device
   skip to them after the wait: the withheld texts can no longer be read.
-  Those of the current chain are named back and read `NotDelivered`, so
-  their sender can send them again; those of a chain the skip left stay
-  pending until the user cancels them. The relay cannot tell this device
+  Those of the current chain are named back and read `NotDelivered` once
+  they arrive, so their sender can send them again; those of a chain the
+  skip left stay pending until the user cancels them. The relay cannot tell this device
   apart from one whose gap nothing fills; before far skips, it could stop
   that direction for good instead.
 - A far-skip wait that survives a restart. The wait is in memory, so a

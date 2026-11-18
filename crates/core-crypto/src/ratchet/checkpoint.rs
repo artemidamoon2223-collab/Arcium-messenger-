@@ -757,14 +757,16 @@ mod tests {
     }
 
     /// R-14. A far skip never ends past `MAX_RESUMABLE_NR`, so the increment
-    /// after it cannot overflow `nr`: below the limit, a header beyond it
-    /// fails the skip limit before any key is derived (no panic in a debug
-    /// build), in a resumed state and in one no checkpoint could hold.
+    /// after it cannot overflow `nr`: from a resumed state within
+    /// `MAX_FAR_SKIP` of the limit, a header beyond the limit fails the skip
+    /// limit before any key is derived (no panic in a debug build). A state
+    /// already past the limit is never resumed; there `decrypt_far` allows
+    /// no more than `decrypt` (`limit` in `skip_message_keys`).
     #[test]
     fn a_far_skip_never_moves_nr_past_the_resumable_limit() {
-        for at in [MAX_RESUMABLE_NR - 50_000, u32::MAX - 60_000] {
+        for at in [MAX_RESUMABLE_NR - 50_000, MAX_RESUMABLE_NR - 2_000] {
             let (alice, bob) = in_step_at(at);
-            let mut bob = if at <= MAX_RESUMABLE_NR { restore(&bob) } else { bob };
+            let mut bob = restore(&bob);
             for n in [MAX_RESUMABLE_NR + 1, u32::MAX] {
                 let forged = Header {
                     dh: alice.our_dh_public().to_bytes(),

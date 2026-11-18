@@ -163,11 +163,15 @@ pub struct NetworkMessenger {
     /// sent again by the peer and found again.
     gone: Mutex<HashMap<u64, Vec<[u8; 32]>>>,
     /// Sessions that tried a far skip this round (tracker R-14): one try
-    /// per session per round. Emptied after every round.
+    /// per session and at most [`FAR_TRIES_PER_ROUND`] per round. Emptied
+    /// after every round.
     far_tried: Mutex<HashSet<u64>>,
     /// Test aid: the minute [`Self::this_minute`] reads instead of the clock.
     #[cfg(test)]
     minute: Mutex<Option<u64>>,
+    /// Test aid: how many far skips this instance tried.
+    #[cfg(test)]
+    far_tries: std::sync::atomic::AtomicU32,
 }
 
 /// Refusals this process owes or sent (docs/NET-MESSAGING.md, section 6).
@@ -258,6 +262,11 @@ pub(crate) const ROUND_BUDGET: Duration = Duration::from_secs(120);
 /// Longest wait between two retransmissions of one message or handshake
 /// (L3). The wait starts at `retransmit_after` and doubles with every send.
 pub(crate) const RETRANSMIT_CAP: Duration = Duration::from_secs(5 * 60);
+
+/// Far skips tried per sync round, over all sessions (tracker R-14). Each
+/// may derive up to `MAX_FAR_SKIP` chain keys per chain before its message
+/// authenticates; a session gets at most one of them.
+pub(crate) const FAR_TRIES_PER_ROUND: usize = 4;
 
 /// The deadline of one round's relay requests, and whether it stopped any
 /// work in this round.
@@ -398,6 +407,8 @@ impl NetworkMessenger {
             far_tried: Mutex::new(HashSet::new()),
             #[cfg(test)]
             minute: Mutex::new(None),
+            #[cfg(test)]
+            far_tries: std::sync::atomic::AtomicU32::new(0),
             limits: Mutex::new(Limits::default()),
             resume: Mutex::new(Resume::default()),
         })
@@ -1139,32 +1150,12 @@ impl NetworkMessenger {
                 // recorded handshake — which creates the session if it
                 // authenticates — or waits for its handshake (`NoSession`).
                 let first = !self.core.has_session(handle)?;
-                // A message more than `MAX_SKIP` positions ahead in its
-                // chain (more than a thousand of the contact's messages in a
-                // row were lost) needs a far skip, which may derive up to
-                // `MAX_FAR_SKIP` keys before it authenticates. One try per
-                // session per round bounds what forged far messages cost;
-                // another far message waits on the relay for the next
-                // round (tracker R-14). A failed check is reported, and the
-                // message is then received as before.
-                let far = !first
-                    && match self.core.needs_far_skip(handle, &wire) {
-                        Ok(far) => far,
-                        Err(e) => {
-                            report
-                                .errors
-                                .push(format!("checking how far ahead a message lies: {e}"));
-                            false
-                        }
-                    };
-                if far && !self.far_tried.lock().expect("far_tried").insert(handle) {
-                    return Ok(Fate::Keep);
+                let mut received = self.core.receive_committed(handle, &wire);
+                if !first && matches!(received, Err(CoreError::Crypto { .. })) {
+                    if let Some(far) = self.far_receive(handle, &wire, report) {
+                        received = far;
+                    }
                 }
-                let received = if far {
-                    self.core.receive_committed_far(handle, &wire)
-                } else {
-                    self.core.receive_committed(handle, &wire)
-                };
                 match received {
                     Ok(Received::Accepted(message)) => {
                         report.accepted += 1;
@@ -1325,6 +1316,12 @@ impl NetworkMessenger {
     #[cfg(test)]
     pub(crate) fn set_minute(&self, minute: Option<u64>) {
         *self.minute.lock().expect("minute") = minute;
+    }
+
+    /// Test aid: how many far skips this instance tried (R-14).
+    #[cfg(test)]
+    pub(crate) fn far_tries(&self) -> u32 {
+        self.far_tries.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Test aid: how many messages found beyond recall wait to be named.
@@ -1555,6 +1552,46 @@ impl NetworkMessenger {
                     .map(|_| ())
             }
         }
+    }
+
+    /// Receives `wire`, which did not decrypt under the session `handle`,
+    /// with a far skip if it needs one (it lies more than `MAX_SKIP`
+    /// positions ahead in its chain: more than a thousand of the contact's
+    /// messages in a row were lost; tracker R-14) and a try is left: one per
+    /// session and at most [`FAR_TRIES_PER_ROUND`] per round, since a far
+    /// skip may derive up to `MAX_FAR_SKIP` keys per chain before the
+    /// message authenticates. `None` if no far skip was tried: the message
+    /// is then deleted like any message that does not decrypt, so whoever
+    /// writes forged far messages to the mailbox learns nothing from what is
+    /// kept (R-9). A text is sent again, and a lost receipt or GONE message
+    /// is sent again when the text it answers is. A failed check is
+    /// reported.
+    fn far_receive(
+        &self,
+        handle: u64,
+        wire: &[u8],
+        report: &mut SyncReport,
+    ) -> Option<Result<Received, CoreError>> {
+        match self.core.needs_far_skip(handle, wire) {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(e) => {
+                report
+                    .errors
+                    .push(format!("checking how far ahead a message lies: {e}"));
+                return None;
+            }
+        }
+        {
+            let mut tried = self.far_tried.lock().expect("far_tried");
+            if tried.len() >= FAR_TRIES_PER_ROUND || !tried.insert(handle) {
+                return None;
+            }
+        }
+        #[cfg(test)]
+        self.far_tries
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(self.core.receive_committed_far(handle, wire))
     }
 
     /// Commits at most one GONE message per session for the messages this

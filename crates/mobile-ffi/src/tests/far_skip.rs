@@ -1,7 +1,8 @@
 //! R-14: more than `MAX_SKIP` (1,000) of a contact's messages in a row that
 //! never arrive used to stop that direction for good: every later message of
 //! the chain lay too far ahead to decrypt. Such a message is now read with a
-//! far skip (up to `MAX_FAR_SKIP` positions), one try per session per round.
+//! far skip (up to `MAX_FAR_SKIP` positions): one try per session, at most
+//! four per round.
 
 use super::net_harness::*;
 use crate::network::wire::{client_id, Envelope};
@@ -60,11 +61,12 @@ fn a_gap_of_more_than_max_skip_in_one_chain_is_crossed() {
     relay.stop();
 }
 
-/// A far skip may cost up to `MAX_FAR_SKIP` key derivations before the
-/// message authenticates, so each session gets one try per round. Three
-/// forged far messages ahead of the genuine one cost one try each, one per
-/// round; the others wait on the relay, and the genuine one is read in the
-/// fourth round.
+/// A far skip may derive up to `MAX_FAR_SKIP` keys per chain before the
+/// message authenticates, so a session gets one try per round. A forged far
+/// message ahead of the genuine one takes it; the genuine one is then
+/// deleted like any message that does not decrypt (nothing is kept on the
+/// relay for whoever wrote the forgery to count, R-9), and is read when it
+/// is sent again.
 #[test]
 fn far_messages_get_one_try_per_session_per_round() {
     let relay = start_relay();
@@ -78,26 +80,63 @@ fn far_messages_get_one_try_per_session_per_round() {
     }
     let genuine = &wires[GAP];
     let header = Header::from_bytes(&genuine[..HEADER_SIZE]).unwrap();
-    for k in 1..=3u32 {
-        let forged = Header {
-            n: header.n + MAX_SKIP + k,
-            ..header
-        };
-        let wire = [&forged.to_bytes()[..], &genuine[HEADER_SIZE..]].concat();
-        inject(&addr, &alice, message_from(&bob, wire));
-    }
-    let r = bob.sync(); // Sends the genuine text, behind the forged ones.
+    let forged = Header {
+        n: header.n + MAX_SKIP,
+        ..header
+    };
+    let wire = [&forged.to_bytes()[..], &genuine[HEADER_SIZE..]].concat();
+    inject(&addr, &alice, message_from(&bob, wire));
+    let r = bob.sync(); // Sends the genuine text, behind the forged one.
     assert!(r.errors.is_empty(), "{:?}", r.errors);
 
-    for (round, deferred) in [3, 2, 1].into_iter().enumerate() {
-        let r = alice.sync();
-        assert!(r.errors.is_empty(), "round {round}: {:?}", r.errors);
-        assert_eq!((r.dropped, r.deferred, r.accepted), (1, deferred, 0), "round {round}: {r:?}");
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.deferred, r.accepted), (2, 0, 0), "{r:?}");
+    assert_eq!(alice.net.far_tries(), 1, "one try");
+    assert!(stored_messages(&relay, &alice).is_empty(), "nothing kept");
+
+    // Bob sends it again.
+    inject(&addr, &alice, message_from(&bob, genuine.clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(r.accepted, 1, "{r:?}");
+    assert_eq!(alice.net.far_tries(), 2);
+    assert_eq!(alice.texts(&bob).last().map(String::as_str), Some(format!("t{GAP}").as_str()));
+    relay.stop();
+}
+
+/// Over all sessions, at most `FAR_TRIES_PER_ROUND` far skips are tried in
+/// one round: a forged far message "from" each of six contacts costs four
+/// tries. A far header needs no knowledge of the session: a key the session
+/// never saw and a position past `MAX_SKIP` are enough.
+#[test]
+fn at_most_four_far_skips_are_tried_per_round() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let alice = Device::new(&addr, 40);
+    let peers: Vec<Device> = (41..47).map(|b| Device::new(&addr, b)).collect();
+    for p in &peers {
+        alice.knows(p);
+        p.knows(&alice);
+        p.net.publish_prekeys().unwrap();
+        alice.net.start_session(p.pk.clone()).unwrap();
+    }
+    let all: Vec<&Device> = std::iter::once(&alice).chain(peers.iter()).collect();
+    settle(&all);
+    let far = Header {
+        dh: [9; 32],
+        pn: 0,
+        n: MAX_SKIP + 10,
+    };
+    let wire = [&far.to_bytes()[..], &[0u8; 40][..]].concat();
+    for p in &peers {
+        inject(&addr, &alice, message_from(p, wire.clone()));
     }
     let r = alice.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert_eq!((r.dropped, r.deferred, r.accepted), (0, 0, 1), "{r:?}");
-    assert_eq!(alice.texts(&bob).last().map(String::as_str), Some(format!("t{GAP}").as_str()));
+    assert_eq!(r.dropped, 6, "{r:?}");
+    assert_eq!(alice.net.far_tries(), crate::network::FAR_TRIES_PER_ROUND as u32);
+    assert_eq!(crate::network::FAR_TRIES_PER_ROUND, 4);
     relay.stop();
 }
 

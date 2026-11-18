@@ -87,7 +87,7 @@ type RootKey = Zeroizing<[u8; 32]>;
 pub enum RatchetError {
     #[error("AEAD decryption failed")]
     Decryption,
-    #[error("skip limit ({MAX_SKIP}) exceeded in receive chain")]
+    #[error("skip limit exceeded in receive chain")]
     SkipLimit,
     #[error("malformed header")]
     InvalidHeader,
@@ -257,9 +257,10 @@ impl DoubleRatchet {
     /// (tracker R-14). Only the keys of the last `MAX_SKIP` positions it
     /// skips are kept. Such a skip derives up to `MAX_FAR_SKIP` chain keys
     /// per chain before the message is authenticated, so a caller bounds how
-    /// often it allows one. A skip beyond `MAX_SKIP` never moves the receive
-    /// counter past [`MAX_RESUMABLE_NR`], so the counter cannot overflow.
-    /// State is kept only when authentication succeeds, as for `decrypt`.
+    /// often it allows one. A skip beyond `MAX_SKIP` never ends past
+    /// [`MAX_RESUMABLE_NR`], so the increment after it cannot overflow the
+    /// receive counter. State is kept only when authentication succeeds, as
+    /// for `decrypt`.
     pub fn decrypt_far(
         &mut self,
         header: &Header,
@@ -1739,6 +1740,46 @@ mod tests {
         assert_eq!((bob.nr, bob.skipped.len()), (nr0, stored0));
         let (h, c) = alice.encrypt(b"genuine", ad).unwrap();
         assert_eq!(*bob.decrypt(&h, &c, ad).unwrap(), b"genuine");
+    }
+
+    /// R-14. A far skip may cross both chains of one message: the rest of
+    /// the chain being left (to `pn`) and the new chain (to `n`), each more
+    /// than `MAX_SKIP` positions.
+    #[test]
+    fn a_far_skip_crosses_both_chains_of_one_message() {
+        let (mut alice, mut bob) = bob_reading_alice();
+        let ad = b"assoc";
+        for _ in 0..MAX_SKIP + 500 {
+            alice.encrypt(b"lost on the old chain", ad).unwrap();
+        }
+        let (h, c) = bob.encrypt(b"reply", ad).unwrap();
+        alice.decrypt(&h, &c, ad).unwrap();
+        for _ in 0..MAX_SKIP + 500 {
+            alice.encrypt(b"lost on the new chain", ad).unwrap();
+        }
+        let (h, c) = alice.encrypt(b"far on both", ad).unwrap();
+        assert!(h.pn > bob.nr + MAX_SKIP && h.n > MAX_SKIP, "{h:?}");
+        assert!(bob.needs_far_skip(&h));
+        assert!(matches!(bob.decrypt(&h, &c, ad), Err(RatchetError::SkipLimit)));
+        assert_eq!(*bob.decrypt_far(&h, &c, ad).unwrap(), b"far on both");
+        assert_eq!(bob.skipped.len(), MAX_SKIPPED_KEYS, "both chains' last keys, within the cap");
+    }
+
+    /// After a far skip, read or refused, the only live key containers are
+    /// the ones the ratchet state holds.
+    #[test]
+    fn no_temporary_key_outlives_a_far_skip() {
+        let (mut alice, mut bob) = bob_reading_alice();
+        let ad = b"assoc";
+        let m: Vec<_> = (0..MAX_SKIP + 200).map(|_| alice.encrypt(b"m", ad).unwrap()).collect();
+        let (h, c) = m.last().unwrap();
+        let forged = Header { n: h.n + 1, ..*h };
+        no_leftover(&mut bob, "a forged far message", |r| {
+            assert!(r.decrypt_far(&forged, c, ad).is_err());
+        });
+        no_leftover(&mut bob, "a far message", |r| {
+            assert_eq!(*r.decrypt_far(h, c, ad).unwrap(), b"m");
+        });
     }
 
     /// A header whose key is stored needs no skip, however far it lies.

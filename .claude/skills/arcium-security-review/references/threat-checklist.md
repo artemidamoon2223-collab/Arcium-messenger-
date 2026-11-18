@@ -52,7 +52,9 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
   `nr` past `MAX_RESUMABLE_NR`; its cost before authentication is bounded
   only by the network layer: one try per session and at most
   `FAR_TRIES_PER_ROUND` per sync round, and only after `FAR_SKIP_WAIT`
-  without progress, so that a gap retransmissions fill is not skipped.
+  per chain without progress, so that with an honest relay a gap
+  retransmissions fill is not skipped (a relay withholding longer can make
+  it skipped; `docs/NET-MESSAGING.md` section 8).
 - **Counter exhaustion.** `ns`, `nr`, `pn` are `u32`. Two different things
   bound them, and a claim about one is not a claim about the other:
   - the raw `DoubleRatchet` increments with an unchecked `+= 1`; without

@@ -350,7 +350,11 @@ fn accepting_a_message_starts_the_wait_again() {
     inject(&addr, &alice, message_from(&bob, near_wire)); // ...this is accepted
     let r = alice.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert_eq!((r.accepted, alice.net.far_tries()), (1, 0), "not skipped to: {r:?}");
+    assert_eq!(
+        (r.accepted, r.dropped, alice.net.far_tries()),
+        (1, 1, 0),
+        "not skipped to, and counted dropped: {r:?}"
+    );
 
     inject(&addr, &alice, far()); // the wait starts again
     let r = alice.sync();
@@ -361,5 +365,65 @@ fn accepting_a_message_starts_the_wait_again() {
     let r = alice.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
     assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "{r:?}");
+    relay.stop();
+}
+
+/// The wait is kept per chain: a forged far message naming a key of its own
+/// (anyone who can write to the mailbox can make one) does not start the
+/// wait of the genuine chain, which waits in full when it first shows.
+#[test]
+fn a_forged_far_message_does_not_start_a_genuine_chains_wait() {
+    let wait = Duration::from_millis(300);
+    let pause = wait + Duration::from_millis(50);
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    alice.net.set_far_skip_wait(wait);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    let (ids, wires) = texts_in_one_chain(&alice, &bob);
+    for id in &ids[..GAP] {
+        bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+    }
+    let forged = Header {
+        dh: [9; 32],
+        pn: 0,
+        n: MAX_SKIP + 10,
+    };
+    inject(&addr, &alice, message_from(&bob, [&forged.to_bytes()[..], &[0u8; 40][..]].concat()));
+    assert!(alice.sync().errors.is_empty());
+    std::thread::sleep(pause);
+
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (0, 0), "its own wait: {r:?}");
+    std::thread::sleep(pause);
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "{r:?}");
+    relay.stop();
+}
+
+/// Deleting a contact forgets its far-skip waits: a new session with it has
+/// the same handle.
+#[test]
+fn deleting_a_contact_forgets_its_far_waits() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let far = Header {
+        dh: [9; 32],
+        pn: 0,
+        n: MAX_SKIP + 10,
+    };
+    inject(&addr, &alice, message_from(&bob, [&far.to_bytes()[..], &[0u8; 40][..]].concat()));
+    assert!(alice.sync().errors.is_empty());
+    assert_eq!(alice.net.far_waits(to_bob), 1);
+    alice.net.delete_contact(bob.pk.clone()).unwrap();
+    assert_eq!(alice.net.far_waits(to_bob), 0);
     relay.stop();
 }

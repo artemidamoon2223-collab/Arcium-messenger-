@@ -23,7 +23,7 @@
 //! |     49 |   32 | peer X25519 identity public key                |
 //! |     81 |   64 | associated data                                |
 //! |    145 |    4 | ratchet record length                          |
-//! |    149 |    … | `RATCHET_STATE_V1` record (core-crypto)        |
+//! |    149 |    … | ratchet record (core-crypto): `RATCHET_STATE_V2`, or `RATCHET_STATE_V1` as stored before |
 //!
 //! The associated data must be exactly what X3DH produces for the stored role
 //! and identities: initiator key then responder key

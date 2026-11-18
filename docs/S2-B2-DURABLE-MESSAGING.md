@@ -562,9 +562,15 @@ message). They are never listed, so they cost disk space, not time.
 
 ## 9. Compatibility
 
-`SESSION_CHECKPOINT_V1`, `RATCHET_STATE_V1`, `PREKEY_BUNDLE_V1`,
-`INITIATOR_HANDSHAKE_V1`, `PERSISTED_PREKEY_RECORD_V2` and the message format
-`header(40) || ciphertext` are unchanged. `PROVISIONAL_HANDSHAKE_RECORD_V1`
+`SESSION_CHECKPOINT_V1`, `PREKEY_BUNDLE_V1`, `INITIATOR_HANDSHAKE_V1`,
+`PERSISTED_PREKEY_RECORD_V2` and the message format `header(40) ||
+ciphertext` are unchanged. The ratchet record inside a session checkpoint
+is written as `RATCHET_STATE_V2` since tracker R-21 (the V1 layout plus the
+last four receiving chains left, public keys and end positions only); a
+`RATCHET_STATE_V1` record is still read, as a state that remembers no
+earlier chain (`core_crypto::ratchet::checkpoint`). A build before that
+change refuses a V2 record (`UnsupportedVersion`), so a store is not read
+by an older build once a session was written by a newer one. `PROVISIONAL_HANDSHAKE_RECORD_V1`
 (`hsin:`) is new and local. A responder session stored by an earlier build at
 generation 0, before any message authenticated, is still loaded as a session;
 it reads as `AwaitingPeer`, not `Established`, until a message from the peer

@@ -35,11 +35,20 @@ mod golden;
 #[cfg(test)]
 mod probe;
 pub use checkpoint::{
-    CheckpointError, MAX_SKIPPED_KEYS, RATCHET_CHECKPOINT_MAX_LEN, RATCHET_CHECKPOINT_VERSION,
+    CheckpointError, MAX_RESUMABLE_NR, MAX_SKIPPED_KEYS, RATCHET_CHECKPOINT_MAX_LEN,
+    RATCHET_CHECKPOINT_VERSION,
 };
 
-/// Max number of message keys that may be skipped within a single receiving chain.
+/// Max number of message keys that may be skipped within a single receiving
+/// chain by [`DoubleRatchet::decrypt`], and the most keys one skip stores.
 pub const MAX_SKIP: u32 = 1000;
+/// Max number of positions [`DoubleRatchet::decrypt_far`] may skip within a
+/// single receiving chain (tracker R-14). Only the keys of the last
+/// [`MAX_SKIP`] skipped positions are stored; the earlier ones are derived
+/// and dropped, so their messages can no longer be decrypted. Bounds the work
+/// one message can cost before it is authenticated: one far skip derives at
+/// most this many chain keys per chain it crosses.
+pub const MAX_FAR_SKIP: u32 = 100_000;
 /// Header is: DH public key (32) || PN (4) || N (4).
 pub const HEADER_SIZE: usize = 32 + 4 + 4;
 /// XChaCha20Poly1305 nonce size.
@@ -78,7 +87,7 @@ type RootKey = Zeroizing<[u8; 32]>;
 pub enum RatchetError {
     #[error("AEAD decryption failed")]
     Decryption,
-    #[error("skip limit ({MAX_SKIP}) exceeded in receive chain")]
+    #[error("skip limit exceeded in receive chain")]
     SkipLimit,
     #[error("malformed header")]
     InvalidHeader,
@@ -240,8 +249,52 @@ impl DoubleRatchet {
         ciphertext: &[u8],
         ad: &[u8],
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, RatchetError> {
+        self.decrypt_reaching(header, ciphertext, ad, MAX_SKIP)
+    }
+
+    /// [`decrypt`](Self::decrypt), but a message may lie up to
+    /// [`MAX_FAR_SKIP`] positions ahead in its chain instead of [`MAX_SKIP`]
+    /// (tracker R-14). Only the keys of the last `MAX_SKIP` positions it
+    /// skips are kept. Such a skip derives up to `MAX_FAR_SKIP` chain keys
+    /// per chain before the message is authenticated, so a caller bounds how
+    /// often it allows one. A skip beyond `MAX_SKIP` never ends past
+    /// [`MAX_RESUMABLE_NR`], so the increment after it cannot overflow the
+    /// receive counter. State is kept only when authentication succeeds, as
+    /// for `decrypt`.
+    pub fn decrypt_far(
+        &mut self,
+        header: &Header,
+        ciphertext: &[u8],
+        ad: &[u8],
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, RatchetError> {
+        self.decrypt_reaching(header, ciphertext, ad, MAX_FAR_SKIP)
+    }
+
+    /// Whether decrypting a message with `header` needs a skip of more than
+    /// [`MAX_SKIP`] positions in a chain, which [`decrypt`](Self::decrypt)
+    /// refuses and [`decrypt_far`](Self::decrypt_far) may allow. Reads state
+    /// only; changes nothing.
+    pub fn needs_far_skip(&self, header: &Header) -> bool {
+        if self.skipped.contains_key(&(header.dh, header.n)) {
+            return false;
+        }
+        let near = |nr: u32, until: u32| nr.saturating_add(MAX_SKIP) >= until;
+        match self.dhr {
+            Some(dhr) if *dhr.as_bytes() == header.dh => !near(self.nr, header.n),
+            // A new chain: the old one is skipped to `pn`, the new one from 0.
+            _ => !near(self.nr, header.pn) || !near(0, header.n),
+        }
+    }
+
+    fn decrypt_reaching(
+        &mut self,
+        header: &Header,
+        ciphertext: &[u8],
+        ad: &[u8],
+        reach: u32,
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, RatchetError> {
         let snapshot = self.snapshot();
-        match self.decrypt_inner(header, ciphertext, ad) {
+        match self.decrypt_inner(header, ciphertext, ad, reach) {
             // `snapshot` falls out of scope here; the key fields of the unused
             // rollback copy wipe themselves as it is dropped — on this return
             // and on panic/unwind alike.
@@ -258,6 +311,7 @@ impl DoubleRatchet {
         header: &Header,
         ciphertext: &[u8],
         ad: &[u8],
+        reach: u32,
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, RatchetError> {
         let full_ad = concat_ad(ad, &header.to_bytes());
 
@@ -275,12 +329,12 @@ impl DoubleRatchet {
         };
         if need_dh {
             // Save remaining keys from the old chain (so late messages from old chain still decrypt).
-            self.skip_message_keys(header.pn)?;
+            self.skip_message_keys(header.pn, reach)?;
             self.dh_ratchet_step(PublicKey::from(header.dh))?;
         }
 
         // 3. Skip ahead in the current chain to header.n.
-        self.skip_message_keys(header.n)?;
+        self.skip_message_keys(header.n, reach)?;
 
         // 4. Derive the message key.
         let ckr = self.ckr.as_ref().ok_or(RatchetError::NotInitialized)?;
@@ -333,24 +387,39 @@ impl DoubleRatchet {
         self.skipped = snap.skipped;
     }
 
-    fn skip_message_keys(&mut self, until: u32) -> Result<(), RatchetError> {
-        if self.nr.saturating_add(MAX_SKIP) < until {
+    /// Skips the receiving chain forward to `until`, storing the keys of
+    /// the skipped positions, at most `reach` of them ahead of `nr`. Only
+    /// the keys of the last [`MAX_SKIP`] positions are stored; with
+    /// `reach > MAX_SKIP` the earlier ones are derived and dropped, and the
+    /// skip may not end past [`MAX_RESUMABLE_NR`] (the bound that keeps the
+    /// increment after it from overflowing `nr`, see `checkpoint`). With
+    /// `reach == MAX_SKIP` this is exactly the skip `decrypt` always made.
+    fn skip_message_keys(&mut self, until: u32, reach: u32) -> Result<(), RatchetError> {
+        let near = self.nr.saturating_add(MAX_SKIP);
+        let limit = if reach > MAX_SKIP {
+            near.max(self.nr.saturating_add(reach).min(MAX_RESUMABLE_NR))
+        } else {
+            near
+        };
+        if limit < until {
             return Err(RatchetError::SkipLimit);
         }
         if self.ckr.is_none() {
             return Ok(());
         }
         let dhr_bytes = *self.dhr.expect("dhr set when ckr is").as_bytes();
-        let overwritten_then_evicted = self.make_room(dhr_bytes, self.nr..until);
+        let keep_from = until.saturating_sub(MAX_SKIP).max(self.nr);
+        let overwritten_then_evicted = self.make_room(dhr_bytes, keep_from..until);
         let ckr = self.ckr.as_mut().expect("checked above");
         while self.nr < until {
             let (new_ckr, mk) = kdf_ck(ckr);
             // Each assignment wipes the chain key it replaces; the message
             // key moves into `skipped`, where it stays until it is consumed
-            // or evicted, or is dropped (wiped) here if the old code would
-            // have stored it and evicted it at once.
+            // or evicted, or is dropped (wiped) here: when it is older than
+            // the last `MAX_SKIP` positions of a far skip, or when the old
+            // code would have stored it and evicted it at once.
             *ckr = new_ckr;
-            if overwritten_then_evicted.binary_search(&self.nr).is_err() {
+            if self.nr >= keep_from && overwritten_then_evicted.binary_search(&self.nr).is_err() {
                 self.skipped.insert((dhr_bytes, self.nr), mk);
             }
             self.nr += 1;
@@ -1469,7 +1538,7 @@ mod tests {
         // Chain `a_dh` again, skipped up to n = 3: (a, 0) and (a, 1) are
         // stored, (a, 2) is new. One key must go, the oldest: (a, 0).
         bob.dh_ratchet_step(PublicKey::from(a_dh)).unwrap();
-        bob.skip_message_keys(3).unwrap();
+        bob.skip_message_keys(3, MAX_SKIP).unwrap();
 
         assert_eq!(
             keys(&bob),
@@ -1511,7 +1580,7 @@ mod tests {
         let cap = restored.skipped.capacity();
         assert!(cap >= MAX_SKIPPED_KEYS, "restored store");
         let until = restored.nr + 1000;
-        restored.skip_message_keys(until).unwrap();
+        restored.skip_message_keys(until, MAX_SKIP).unwrap();
         assert_eq!(restored.skipped.len(), MAX_SKIPPED_KEYS);
         assert_eq!(restored.skipped.capacity(), cap, "the buffer did not grow");
     }
@@ -1570,6 +1639,161 @@ mod tests {
         assert!(bob.decrypt(&m[0].0, &m[0].1, ad).is_err(), "and indeed cannot be read");
         let other = Header { dh: [7; 32], pn: 0, n: 0 };
         assert!(!bob.is_beyond_recall(&other), "another chain");
+    }
+
+    /// Alice and Bob after one message from Alice: Bob reads her current
+    /// chain from position 1.
+    fn bob_reading_alice() -> (DoubleRatchet, DoubleRatchet) {
+        let (mut alice, mut bob) = established_pair();
+        let (h, c) = alice.encrypt(b"sync", b"assoc").unwrap();
+        bob.decrypt(&h, &c, b"assoc").unwrap();
+        (alice, bob)
+    }
+
+    /// R-14. A message more than `MAX_SKIP` positions ahead is refused by
+    /// `decrypt`, which leaves the state as it was, and read by
+    /// `decrypt_far`. That keeps the keys of the last `MAX_SKIP` positions it
+    /// skipped; the earlier ones are dropped and can never be read.
+    #[test]
+    fn a_far_skip_crosses_a_gap_and_keeps_only_the_last_keys() {
+        let (mut alice, mut bob) = bob_reading_alice();
+        let ad = b"assoc";
+        let gap = MAX_SKIP + 500;
+        let m: Vec<_> = (0..=gap).map(|i| alice.encrypt(&i.to_be_bytes(), ad).unwrap()).collect();
+        let (h, c) = &m[gap as usize];
+        let (nr0, stored0) = (bob.nr, bob.skipped.len());
+        assert!(bob.needs_far_skip(h));
+        assert!(!bob.needs_far_skip(&m[MAX_SKIP as usize].0), "MAX_SKIP ahead is near");
+        assert!(matches!(bob.decrypt(h, c, ad), Err(RatchetError::SkipLimit)));
+        assert_eq!((bob.nr, bob.skipped.len()), (nr0, stored0), "state untouched");
+
+        assert_eq!(*bob.decrypt_far(h, c, ad).unwrap(), gap.to_be_bytes());
+        assert_eq!(bob.nr, h.n + 1);
+        assert_eq!(bob.skipped.len() - stored0, MAX_SKIP as usize, "the last MAX_SKIP keys");
+        let kept = (gap - MAX_SKIP) as usize;
+        assert!(!bob.needs_far_skip(&m[kept].0));
+        assert_eq!(*bob.decrypt(&m[kept].0, &m[kept].1, ad).unwrap(), (kept as u32).to_be_bytes());
+        for dropped in [0, kept - 1] {
+            assert!(bob.is_beyond_recall(&m[dropped].0), "{dropped}");
+            assert!(bob.decrypt(&m[dropped].0, &m[dropped].1, ad).is_err(), "{dropped}");
+        }
+        // The chain goes on as usual.
+        let (h, c) = alice.encrypt(b"next", ad).unwrap();
+        assert_eq!(*bob.decrypt(&h, &c, ad).unwrap(), b"next");
+    }
+
+    /// R-14. The skip to `pn` through the rest of a chain being left is far
+    /// too: Bob read one message of Alice's chain and never got the next
+    /// `MAX_SKIP + 500`; Alice then read Bob's reply and moved on.
+    #[test]
+    fn a_far_skip_crosses_the_rest_of_a_chain_being_left() {
+        let (mut alice, mut bob) = bob_reading_alice();
+        let ad = b"assoc";
+        let lost: Vec<_> = (0..MAX_SKIP + 500).map(|_| alice.encrypt(b"lost", ad).unwrap()).collect();
+        let (h, c) = bob.encrypt(b"reply", ad).unwrap();
+        alice.decrypt(&h, &c, ad).unwrap();
+        let (h, c) = alice.encrypt(b"new chain", ad).unwrap();
+        assert!(h.pn > bob.nr + MAX_SKIP && h.n == 0, "{h:?}");
+        assert!(bob.needs_far_skip(&h));
+        assert!(matches!(bob.decrypt(&h, &c, ad), Err(RatchetError::SkipLimit)));
+        assert_eq!(*bob.decrypt_far(&h, &c, ad).unwrap(), b"new chain");
+        let last = lost.last().unwrap();
+        assert_eq!(*bob.decrypt(&last.0, &last.1, ad).unwrap(), b"lost", "kept");
+        assert!(bob.decrypt(&lost[0].0, &lost[0].1, ad).is_err(), "dropped");
+    }
+
+    /// R-14. A far skip reaches `MAX_FAR_SKIP` positions and no further: one
+    /// more is refused before any key is derived, and changes nothing.
+    #[test]
+    fn a_far_skip_reaches_max_far_skip_and_no_further() {
+        let (mut alice, mut bob) = bob_reading_alice();
+        let ad = b"assoc";
+        let nr0 = bob.nr;
+        // Alice's chain is walked forward without encrypting each message.
+        while alice.ns < nr0 + MAX_FAR_SKIP {
+            let (ck, _) = kdf_ck(alice.cks.as_ref().unwrap());
+            alice.cks = Some(ck);
+            alice.ns += 1;
+        }
+        let (h, c) = alice.encrypt(b"far", ad).unwrap();
+        assert_eq!(h.n, nr0 + MAX_FAR_SKIP);
+        let too_far = Header { n: h.n + 1, ..h };
+        assert!(matches!(bob.decrypt_far(&too_far, &c, ad), Err(RatchetError::SkipLimit)));
+        assert_eq!(bob.nr, nr0, "state untouched");
+        assert_eq!(*bob.decrypt_far(&h, &c, ad).unwrap(), b"far");
+        assert_eq!(bob.nr, h.n + 1);
+    }
+
+    /// R-14. A forged far message changes nothing: the keys it derived are
+    /// rolled back with the rest of the state.
+    #[test]
+    fn a_forged_far_message_changes_nothing() {
+        let (mut alice, mut bob) = bob_reading_alice();
+        let ad = b"assoc";
+        let (h, _) = alice.encrypt(b"x", ad).unwrap();
+        let forged = Header { n: h.n + MAX_SKIP + 10, ..h };
+        let (nr0, stored0) = (bob.nr, bob.skipped.len());
+        assert!(matches!(
+            bob.decrypt_far(&forged, &[0u8; 40], ad),
+            Err(RatchetError::Decryption)
+        ));
+        assert_eq!((bob.nr, bob.skipped.len()), (nr0, stored0));
+        let (h, c) = alice.encrypt(b"genuine", ad).unwrap();
+        assert_eq!(*bob.decrypt(&h, &c, ad).unwrap(), b"genuine");
+    }
+
+    /// R-14. A far skip may cross both chains of one message: the rest of
+    /// the chain being left (to `pn`) and the new chain (to `n`), each more
+    /// than `MAX_SKIP` positions.
+    #[test]
+    fn a_far_skip_crosses_both_chains_of_one_message() {
+        let (mut alice, mut bob) = bob_reading_alice();
+        let ad = b"assoc";
+        for _ in 0..MAX_SKIP + 500 {
+            alice.encrypt(b"lost on the old chain", ad).unwrap();
+        }
+        let (h, c) = bob.encrypt(b"reply", ad).unwrap();
+        alice.decrypt(&h, &c, ad).unwrap();
+        for _ in 0..MAX_SKIP + 500 {
+            alice.encrypt(b"lost on the new chain", ad).unwrap();
+        }
+        let (h, c) = alice.encrypt(b"far on both", ad).unwrap();
+        assert!(h.pn > bob.nr + MAX_SKIP && h.n > MAX_SKIP, "{h:?}");
+        assert!(bob.needs_far_skip(&h));
+        assert!(matches!(bob.decrypt(&h, &c, ad), Err(RatchetError::SkipLimit)));
+        assert_eq!(*bob.decrypt_far(&h, &c, ad).unwrap(), b"far on both");
+        assert_eq!(bob.skipped.len(), MAX_SKIPPED_KEYS, "both chains' last keys, within the cap");
+    }
+
+    /// After a far skip, read or refused, the only live key containers are
+    /// the ones the ratchet state holds.
+    #[test]
+    fn no_temporary_key_outlives_a_far_skip() {
+        let (mut alice, mut bob) = bob_reading_alice();
+        let ad = b"assoc";
+        let m: Vec<_> = (0..MAX_SKIP + 200).map(|_| alice.encrypt(b"m", ad).unwrap()).collect();
+        let (h, c) = m.last().unwrap();
+        let forged = Header { n: h.n + 1, ..*h };
+        no_leftover(&mut bob, "a forged far message", |r| {
+            assert!(r.decrypt_far(&forged, c, ad).is_err());
+        });
+        no_leftover(&mut bob, "a far message", |r| {
+            assert_eq!(*r.decrypt_far(h, c, ad).unwrap(), b"m");
+        });
+    }
+
+    /// A header whose key is stored needs no skip, however far it lies.
+    #[test]
+    fn a_stored_key_needs_no_far_skip() {
+        let (mut alice, mut bob) = bob_reading_alice();
+        let ad = b"assoc";
+        let m: Vec<_> = (0..3).map(|_| alice.encrypt(b"m", ad).unwrap()).collect();
+        bob.decrypt(&m[2].0, &m[2].1, ad).unwrap();
+        assert!(!bob.needs_far_skip(&m[0].0));
+        let other = Header { dh: [9; 32], pn: 0, n: MAX_SKIP + 1 };
+        assert!(bob.needs_far_skip(&other), "a new chain far from its start");
+        let other = Header { dh: [9; 32], pn: bob.nr + MAX_SKIP + 1, n: 0 };
+        assert!(bob.needs_far_skip(&other), "the chain being left far from its end");
     }
 
     /// The 64-byte block the root KDF expands into (new root key || new chain

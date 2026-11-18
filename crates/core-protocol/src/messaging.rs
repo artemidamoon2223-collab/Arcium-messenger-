@@ -430,6 +430,29 @@ impl Messenger {
             .is_beyond_recall(&header))
     }
 
+    /// Whether receiving `wire` under the session `handle` needs a far skip:
+    /// it lies more than `MAX_SKIP` positions ahead in its chain, which only
+    /// [`receive_far`](Self::receive_far) accepts (tracker R-14). `false`
+    /// for bytes too short or malformed to have a header. Reads state only.
+    pub fn needs_far_skip(
+        &self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+        wire: &[u8],
+    ) -> Result<bool, MessagingError> {
+        let Some(header_bytes) = wire.get(..HEADER_SIZE) else {
+            return Ok(false);
+        };
+        let Ok(header) = Header::from_bytes(header_bytes) else {
+            return Ok(false);
+        };
+        Ok(self
+            .load(store, our_identity_pk, handle)?
+            .0
+            .needs_far_skip(&header))
+    }
+
     /// The initial outbound bytes stored with the session, if any.
     pub fn initial_outbound(
         &self,
@@ -516,6 +539,32 @@ impl Messenger {
         handle: u64,
         wire: &[u8],
     ) -> Result<Received, MessagingError> {
+        self.receive_reaching(store, our_identity_pk, handle, wire, false)
+    }
+
+    /// [`receive`](Self::receive), allowing `wire` to lie up to
+    /// `MAX_FAR_SKIP` positions ahead in its chain (`DoubleRatchet::decrypt_far`;
+    /// tracker R-14). Such a receive may derive that many chain keys before
+    /// the message is authenticated, so the caller bounds how often it asks
+    /// for one.
+    pub fn receive_far(
+        &mut self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+        wire: &[u8],
+    ) -> Result<Received, MessagingError> {
+        self.receive_reaching(store, our_identity_pk, handle, wire, true)
+    }
+
+    fn receive_reaching(
+        &mut self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+        wire: &[u8],
+        far: bool,
+    ) -> Result<Received, MessagingError> {
         self.require_resolved(handle)?;
         if wire.len() < HEADER_SIZE {
             return Err(MessagingError::MalformedMessage);
@@ -529,9 +578,12 @@ impl Messenger {
         if let Some(duplicate) = read_duplicate(store, &key, &seen, id)? {
             return Ok(duplicate);
         }
-        let staged = session
-            .stage_decrypt(&header, ciphertext)
-            .map_err(stage_error)?;
+        let staged = if far {
+            session.stage_decrypt_far(&header, ciphertext)
+        } else {
+            session.stage_decrypt(&header, ciphertext)
+        }
+        .map_err(stage_error)?;
         let generation = staged.generation();
         let record = encode_inbox(generation, &id, staged.output());
         let staged_on_legacy = session.is_legacy_unconfirmed().then_some(peer);

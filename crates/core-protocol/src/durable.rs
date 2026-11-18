@@ -670,6 +670,13 @@ impl DurableSession {
         self.session.ratchet.is_beyond_recall(header)
     }
 
+    /// Whether decrypting a message with `header` under this session needs
+    /// a far skip (`DoubleRatchet::needs_far_skip`; tracker R-14). Reads
+    /// state only.
+    pub fn needs_far_skip(&self, header: &Header) -> bool {
+        self.session.ratchet.needs_far_skip(header)
+    }
+
     /// Whether this session has committed a message from the peer, i.e. the
     /// peer is known to hold it.
     pub fn has_received(&self) -> bool {
@@ -738,6 +745,16 @@ impl DurableSession {
         ciphertext: &[u8],
     ) -> Result<StagedTransition<Zeroizing<Vec<u8>>>, StageError> {
         self.stage(|r, ad| r.decrypt(header, ciphertext, ad))
+    }
+
+    /// [`stage_decrypt`](Self::stage_decrypt), allowing the message to lie
+    /// far ahead in its chain (`DoubleRatchet::decrypt_far`; tracker R-14).
+    pub fn stage_decrypt_far(
+        &self,
+        header: &Header,
+        ciphertext: &[u8],
+    ) -> Result<StagedTransition<Zeroizing<Vec<u8>>>, StageError> {
+        self.stage(|r, ad| r.decrypt_far(header, ciphertext, ad))
     }
 
     fn stage<T>(

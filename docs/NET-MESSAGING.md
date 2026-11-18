@@ -212,12 +212,30 @@ stored twice.
 **Delivery does not depend on retention.** The sender keeps every text until
 the recipient's receipt arrives, and sends it again after
 `retransmit_after_ms`, then after twice as long each time, up to 5 minutes
-(section 7). A relay that loses, withholds or restarts only delays
-delivery, with one exception: if more than `MAX_SKIP` (1000) consecutive
-messages of one sending chain are lost (receipts included, which are never
-sent again once the relay has stored them), the recipient refuses every
-later message of that chain and that direction stops for good (tracker
-R-14).
+(section 7). A relay that loses or restarts only delays delivery of
+texts, and so does one that withholds them for less than `FAR_SKIP_WAIT`
+(below; withholding longer, section 8). Receipts and GONE messages are
+never sent again once
+the relay has stored them, so losing them leaves gaps in the sender's
+chain that nothing fills. A message more than `MAX_SKIP` (1000) positions
+ahead of what the recipient read cannot be decrypted as usual; it is
+deleted like any message that does not decrypt, and read when it comes
+again (a text is sent again; a receipt or GONE message when the text it
+answers is). Only for a gap nothing fills is it decrypted with a far
+skip, up to `MAX_FAR_SKIP` (100,000) positions per chain (tracker R-14).
+A far skip keeps the keys of only the last 1,000 positions it skips, so
+it is tried only once the session has seen far messages of that chain for
+`FAR_SKIP_WAIT` (10 minutes, twice the longest wait between
+retransmissions) without accepting a message, and at the end of a message
+pass in which it accepted none: by then a sender that keeps syncing has
+sent again every text it still holds, and those that fill the gap are
+read first. The wait is kept in memory: a restart of this device starts
+it again. A session tries at most one far skip per sync round, and a
+round at most four. A lost message from before the kept keys can never be read: one of
+the current receiving chain is named back in a GONE message when it
+arrives (section 4); one of a chain the far skip left is not recognised
+(section 8). More than 100,000 consecutive lost messages of one sending
+chain still stop that direction for good.
 
 `ENVELOPE_V1` (what the relay stores):
 `"ARN1" || kind(1) || sender_x25519_pk(32) || body`, kind 1 = the unchanged
@@ -353,7 +371,10 @@ the envelopes behind it (section 3, reading a mailbox). A message
 that does not decrypt, is malformed or comes from an unknown sender is
 deleted from the relay and changes nothing; one of the session's current
 receiving chain whose key is gone is also named to the peer in a GONE
-message (section 4).
+message (section 4). A message far ahead in its chain is deleted from
+the relay too; once the wait of section 3 is over, the first one of its
+session in the pass is also held in memory and tried with a far skip at
+the end of the pass.
 
 Handshake: retransmitted by the initiator until the session has received a
 message from the peer (its receipt of OPEN). The responder records it as
@@ -494,6 +515,7 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 | crash after a text is committed | the stored bytes are sent after restart |
 | crash after acceptance / receipt commit / delete | the inbox holds the message once; its receipt is committed or re-derived from the inbox |
 | crash after a receipt is accepted | applied from the inbox at the next sync |
+| crash or failure between deleting a far message and its far try (section 3) | that copy is lost: a text is sent again, a receipt or GONE message when the text it answers is; a far message read but not settled is settled from the inbox at the next sync |
 | commit outcome unknown | S2-B2 recovery (`recover_session`), which this layer runs itself: at the start of the next round, before it commits a queued text, and when a message for that session is fetched; the envelope stays on the relay |
 
 ## 8. Not provided
@@ -561,6 +583,61 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   store lock. It is bounded by what the sender can store in the mailbox; it
   was not measured. A beside record that cannot be read counts as none: the
   check is reported and the message deleted, and the round goes on.
+- Free far skips. A message of an existing session more than `MAX_SKIP`
+  (1000) positions ahead in its chain is decrypted with a far skip, which
+  derives up to `MAX_FAR_SKIP` (100,000) chain keys for each chain it
+  crosses before the message authenticates, under the store lock: about
+  47 ms for one chain and 88 ms for two in a release build on one 2.1 GHz
+  Xeon core (phones not measured). A session tries one only after
+  `FAR_SKIP_WAIT` without accepting a message (section 3), one per sync
+  round, and a round at most four (`FAR_TRIES_PER_ROUND`;
+  `sync_conversations` may run two rounds). A far message without a try is
+  deleted, as one that does not decrypt is, so nothing is kept for a
+  reader of the mailbox to count (tracker R-9). Anyone who can write to
+  the mailbox can make forged far messages: no header of the session is
+  needed, a key it never saw and a position past 1,000 are enough. One
+  costs a try once its own chain's wait is over, and one ahead of a
+  genuine far message takes that session's try; four "from" four contacts
+  take the round's. For as long as the writer keeps doing it, a genuine
+  far message is not read: a denial of service, as filling the mailbox is.
+  The wait is kept per chain, so such a forgery starts no genuine chain's
+  wait; one naming the genuine chain's key (its header is visible to the
+  relay's operator, and to anyone on V1) does, and the genuine chain may
+  then be skipped to without waiting. Forgeries can also hold a far skip
+  back: one ahead of each genuine far message takes the session's single
+  judgement in that pass, and four keys of their own judged between two
+  passes in which the genuine chain is judged drop its wait, which then
+  starts again (`FAR_CHAINS_PER_SESSION`). For as long as the writer keeps
+  doing it, and for up to `FAR_SKIP_WAIT` after it stops, the far skip
+  does not happen. And a far try takes tens of
+  milliseconds where a message that does not decrypt takes microseconds,
+  so whoever can time the round may tell a contact with a session from a
+  stranger (next to tracker R-9).
+- Delivery against a relay that withholds for longer than `FAR_SKIP_WAIT`.
+  A relay that withholds the start of a run of more than 1,000 texts (on
+  each retransmission) while passing the later ones makes this device
+  skip to them after the wait: the withheld texts can no longer be read.
+  Those of the current chain are named back and read `NotDelivered` once
+  they arrive, so their sender can send them again; those of a chain the
+  skip left stay pending until the user cancels them. The relay cannot tell this device
+  apart from one whose gap nothing fills; before far skips, it could stop
+  that direction for good instead.
+- A far-skip wait that survives a restart. The wait is in memory, so a
+  gap nothing fills is skipped only after this device has run for
+  `FAR_SKIP_WAIT` between two arrivals of far messages; a device whose
+  process never lives that long keeps waiting.
+- Naming a message lost before a far skip's kept keys on a chain the skip
+  left (tracker R-14, as R-21 for older chains): the skip to `pn` drops up
+  to about 99,000 positions of the chain being left, and a lost text from
+  there is not recognised. When it is sent again it is deleted, or, when
+  it lies more than 1,000 positions into its chain, it may cost a far try,
+  which fails; its sender keeps sending it until the user cancels it.
+- A far skip for a sender that is not sending. The wait assumes the sender
+  syncs while far messages arrive, so that it sends again what fills a
+  gap. A text the sender holds but has not sent again within
+  `FAR_SKIP_WAIT` of the first far message, while this device accepted
+  nothing from it, is lost to a far skip; it is named back and reads
+  `NotDelivered` if it arrives later on the current chain.
 - A second initiator racing for the same one-time prekey is refused and
   starts again (section 6). With k contacts racing, the k-th may wait up to
   about 10 minutes per further refusal (the per-contact limit).
@@ -778,6 +855,7 @@ entry per logical message, never written by the ratchet.
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
 | request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt, a replayed receipt not answered | `tests::network` V6 tests | runtime |
+| a gap of more than `MAX_SKIP` in one chain (texts given up after they were encrypted, or lost on the relay) is crossed with a far skip and both directions go on; a far skip only after the wait without accepting a message and not in a pass that accepted one; a rotated mailbox and a lost start sent again later deliver every text; one far try per session per round, a far message without a try deleted and read when sent again, nothing kept on the relay; at most four tries per round over six sessions; the wait kept per chain (a forged key starts no genuine wait), counted from the chain's first arrival, the chain seen least recently dropped first, a session judged once per pass also when the round is full, and the waits forgotten when the contact is deleted; a lost text from before the kept keys of the current chain named back in a GONE message; in the ratchet, the gap in the current chain, in the chain being left and in both at once, the last `MAX_SKIP` keys kept, `MAX_FAR_SKIP` and no further, a forged far message changing nothing, no key left behind, no far skip past `MAX_RESUMABLE_NR` | `tests::far_skip`; `core_crypto::ratchet` (`a_far_skip_*`, `a_forged_far_message_changes_nothing`, `a_stored_key_needs_no_far_skip`, `no_temporary_key_outlives_a_far_skip`), `ratchet::checkpoint` (`a_far_skip_never_moves_nr_past_the_resumable_limit`) | runtime, local relay over TCP; unit |
 | a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history); a GONE lost on the relay is sent again when the text is repeated, not again within the minute, and once more a minute later (the minute set by a test aid); ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`) | runtime, local relay over TCP |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |

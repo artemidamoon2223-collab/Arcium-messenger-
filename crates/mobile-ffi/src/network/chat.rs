@@ -909,6 +909,8 @@ impl NetworkMessenger {
         // id: its entries for this contact are never consulted again, and
         // the next round drops them (`prune_sent`).
         self.refused.lock().expect("refused").remove(&key);
+        // A new session with this contact has the same handle.
+        self.forget_far_waits(handle);
         let mut refusals = self.refusals.lock().expect("refusals");
         refusals.queued.retain(|(to, _, _)| *to != key);
         refusals.last_to.remove(&key);
@@ -1058,7 +1060,10 @@ impl NetworkMessenger {
             self.core.abandon_outgoing(handle, m.message_id)?;
         }
         crash_point(&format!("{stage}_after_abandon"));
-        self.core.remove_session(handle)
+        self.core.remove_session(handle)?;
+        // The next session with this contact has the same handle.
+        self.forget_far_waits(handle);
+        Ok(())
     }
 
     fn meta(&self, peer: &[u8; 32]) -> Result<Meta, CoreError> {

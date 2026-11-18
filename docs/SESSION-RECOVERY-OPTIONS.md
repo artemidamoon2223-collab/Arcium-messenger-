@@ -2,7 +2,9 @@
 
 **Status:** proposal only, written 2026-11-14 against `main` @ `de328a1`.
 Nothing here is implemented or decided. *(Later: C is implemented, PR #165;
-A is implemented, PR #174, merged as `efd4c0e`; B is still open.)*
+A is implemented, PR #174, merged as `efd4c0e`; B is still open. Situation 2
+now needs more than 100,000 lost messages instead of 1,000: a far skip,
+tracker R-14.)*
 
 Each option changes durable-state rules, the protocol, or both. So each one
 needs:
@@ -169,7 +171,9 @@ It needs a cryptographic review, together with the refusal MAC of R-1
 - **R-14 could be made less likely without a reset.** Raising `MAX_SKIP` only
   moves the threshold, and costs stored skipped keys
   (`MAX_SKIPPED_KEYS`, `crates/core-crypto/src/ratchet/checkpoint.rs`). It is
-  not recommended on its own.
+  not recommended on its own. *(Later: a far skip moves the threshold to
+  `MAX_FAR_SKIP` (100,000) without storing more keys: only the last
+  `MAX_SKIP` are kept; tracker R-14.)*
 
 ## 5. Suggested order
 

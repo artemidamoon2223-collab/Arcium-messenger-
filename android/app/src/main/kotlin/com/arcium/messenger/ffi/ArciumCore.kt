@@ -151,7 +151,8 @@ class ArciumCoreWrapper {
      * message (`AlreadyPending`), `AlreadyAcknowledged` or `Abandoned` — so
      * after a crash or CoreException.CommitOutcomeUnknown, call again with
      * the same id. Ids the network layer reserves (starting with `t`, `r` or
-     * `g`, or `o` alone) fail with CoreException.InvalidClientMessageId.
+     * `g`, or `o` alone or followed by 8 bytes) fail with
+     * CoreException.InvalidClientMessageId.
      */
     fun sendMessage(
         sessionId: ULong,

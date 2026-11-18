@@ -2,16 +2,10 @@
 //! never be read. The recipient names it in a GONE message; the sender stops
 //! sending it, and the text reads as abandoned (NotDelivered in a history).
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use super::net_harness::*;
 use crate::network::chat::ChatEntryState;
 use crate::network::wire::{client_id, Envelope, Payload};
 use crate::SendResult;
-
-fn minute() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() / 60
-}
 
 /// Deletes everything the relay holds for `of`, as a relay that loses it.
 fn lose_mailbox(addr: &str, of: &Device) -> usize {
@@ -83,7 +77,8 @@ fn a_message_whose_key_is_gone_is_named_back_and_abandoned() {
     assert_eq!(lose_mailbox(&addr, &alice), 1);
 
     // Alice sends text 0 again: Bob names it again, in a new GONE message.
-    let at = minute();
+    // Bob's clock reads minute 1,000 from here on.
+    bob.net.set_minute(Some(1_000));
     let again = || {
         inject(
             &addr,
@@ -119,9 +114,22 @@ fn a_message_whose_key_is_gone_is_named_back_and_abandoned() {
     let r = bob.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
     assert!(r.dropped >= 1, "{r:?}");
-    if minute() == at {
-        assert_eq!(r.published, 0, "no third GONE message within a minute: {r:?}");
-    }
+    assert_eq!(r.published, 0, "no third GONE message within a minute: {r:?}");
+
+    // A minute later, another copy is named once more; Alice, who no longer
+    // has text 0 pending, ignores it.
+    bob.net.set_minute(Some(1_001));
+    again();
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(r.published, 1, "named again a minute later: {r:?}");
+    again();
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(r.published, 0, "and not again within that minute: {r:?}");
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(alice.undelivered(&bob), 0);
     relay.stop();
 }
 

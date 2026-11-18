@@ -266,8 +266,9 @@ not recognised and is only deleted, as before. The messages found in one
 round are named at its end: at most one GONE per session per round, naming
 the first 256 of them in id order (the others are found again when the peer
 sends them again). A GONE leaves the outbox once the relay accepted it, like
-a receipt (section 5); when the peer sends a named message again, a later
-GONE for the same ids is committed, at most one per minute. The
+a receipt (section 5); when the peer sends a named message again after
+that, a later GONE for the same ids is committed at once, and after that at
+most one a minute. The
 peer abandons each named id that is a text still pending in its outbox: it
 is not sent again and its history entry shows `NotDelivered`, so the user
 can send it again. Any other id changes nothing. A message that only looks
@@ -279,8 +280,8 @@ Client message ids in the outbox: `t || app_id` (texts, app id 1–63 bytes),
 `r || message_id [|| round]` (receipts), `o || sha256(handshake)[0..8]`
 (OPEN: one per session, so a session that replaces an abandoned one commits
 its own; builds before this one used `o` alone), `g || sha256(ids) [|| round]`
-(GONE: the same ids give the same client id, so naming them again within a
-minute commits nothing new). `send_message` refuses all of these.
+(GONE: the round is the minute of a GONE sent again, so the same ids are
+named at most once more per minute). `send_message` refuses all of these.
 
 ## 5. Acknowledgements
 
@@ -324,7 +325,8 @@ minute commits nothing new). `send_message` refuses all of these.
   `resolve_session_conflict` runs (after its NotDelivered pass) still ends
   `NotDelivered`.
 - The exported raw `send_message` refuses the client ids this layer sends
-  under (starting with `t`, `r` or `g`, or `o` alone). `send_text` and
+  under (starting with `t`, `r` or `g`, or `o` alone or followed by 8
+  bytes). `send_text` and
   `chat_send` share the text id space (`t` + app id) and exclude each other
   per app id and peer: `send_text` records a claim (`chat-r:`), `chat_send`
   an entry (`chat-o:`), each in an IMMEDIATE transaction that checks for the
@@ -531,7 +533,18 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   named in a GONE message (section 4). One of an older chain is deleted,
   and its sender keeps sending it until the user cancels it. A GONE lost
   after the relay accepted it is named again only when the sender sends
-  the message again, at most once a minute.
+  the message again.
+- A bound on GONE messages sent again. A sender that does not act on a GONE
+  (a build before GONE, or a pending message that is not a text) keeps
+  sending the message, and each repeat draws a later GONE, at most one a
+  minute per set of ids, each leaving a send-id record: as a repeated text
+  draws a receipt (section 5, tracker R-12).
+- Naming against a mailbox writer. Whoever saw a header of the current
+  chain and can put envelopes in the mailbox (the relay's operator; anyone
+  on V1) can fill the 256 places of each round's GONE with ids of messages
+  of its own, so that a genuine late message is never named; a relay can as
+  well withhold the GONE. Its length shows a reader of the mailbox how many
+  ids it names, so how many late messages were found.
 - One provisional handshake per contact. Whoever can put envelopes in the
   mailbox (SEND needs no authentication, on V1 or V2) can keep replacing a
   contact's recorded handshake before its first message arrives; the genuine
@@ -715,8 +728,9 @@ entry per logical message, never written by the ratchet.
   races can leave such an entry `Cancelled`. A final
   text is returned as it stands, and repeating a cancel is harmless. The
   user can send the text again, as a new message with a new id. The
-  peer is told nothing. No automatic give-up exists: a text the user does
-  not cancel is still retransmitted for as long as the app runs.
+  peer is told nothing. This device never gives up by itself: a text the
+  user does not cancel is retransmitted for as long as the app runs, unless
+  the peer names it in a GONE message (section 4).
 - **Reading in pages.** Entries are numbered 1, 2, … per contact: each takes
   the next number in the transaction that writes it, and none is deleted.
   `chat_entries_page(peer, before_seq, limit)` returns the `limit` entries
@@ -764,7 +778,7 @@ entry per logical message, never written by the ratchet.
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
 | request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt, a replayed receipt not answered | `tests::network` V6 tests | runtime |
-| a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history); a GONE lost on the relay is sent again when the text is repeated, and not again within the minute; ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`) | runtime, local relay over TCP |
+| a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history); a GONE lost on the relay is sent again when the text is repeated, not again within the minute, and once more a minute later (the minute set by a test aid); ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`) | runtime, local relay over TCP |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |

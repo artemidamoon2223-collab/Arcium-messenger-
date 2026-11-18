@@ -370,7 +370,8 @@ impl ArciumCore {
     ///
     /// Ids the network layer uses for its own messages are refused with
     /// `InvalidClientMessageId`: one starting with `t` (texts), `r`
-    /// (receipts) or `g` (GONE notices), and `o` alone (the session opener). Otherwise a caller
+    /// (receipts) or `g` (GONE notices), and `o` alone or followed by 8
+    /// bytes (the session opener). Otherwise a caller
     /// could commit its own message under a chat text's id, and the peer's
     /// receipt for that message would show the text as delivered. (This
     /// closes that only for this call: `NetworkMessenger::send_text` shares

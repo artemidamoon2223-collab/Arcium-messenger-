@@ -7,12 +7,14 @@
 //! can repeat a transmission but never produce a second ciphertext for a
 //! logical message or a second acceptance of one.
 //!
-//! Delivery is decided end to end. A text leaves the outbox only when the
-//! recipient's receipt arrives inside the ratchet, naming its exact message id;
-//! the relay accepting it proves nothing. Receipts themselves are not
-//! acknowledged: they leave the outbox once the relay has accepted them, and
-//! if one is lost the sender retransmits the text, which is received as a
-//! duplicate and answered with a new receipt.
+//! Delivery is decided end to end. A text leaves the outbox as delivered only
+//! when the recipient's receipt arrives inside the ratchet, naming its exact
+//! message id; the relay accepting it proves nothing. (The recipient can also
+//! name it in a GONE message, when it can never read it: the text is then
+//! abandoned.) Receipts and GONE messages themselves are not acknowledged:
+//! they leave the outbox once the relay has accepted them, and if one is lost
+//! the sender retransmits the text, which is received again and answered
+//! again.
 //!
 //! The relay is either `RELAY_PROTOCOL_V2` (TLS 1.3 to its pinned key, and
 //! mailbox authentication with this device's identity key, which stays in
@@ -160,6 +162,9 @@ pub struct NetworkMessenger {
     /// every round: a message not named (a crash, a round that failed) is
     /// sent again by the peer and found again.
     gone: Mutex<HashMap<u64, Vec<[u8; 32]>>>,
+    /// Test aid: the minute [`Self::this_minute`] reads instead of the clock.
+    #[cfg(test)]
+    minute: Mutex<Option<u64>>,
 }
 
 /// Refusals this process owes or sent (docs/NET-MESSAGING.md, section 6).
@@ -387,6 +392,8 @@ impl NetworkMessenger {
             refused: Mutex::new(HashMap::new()),
             refusals: Mutex::new(Refusals::default()),
             gone: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            minute: Mutex::new(None),
             limits: Mutex::new(Limits::default()),
             resume: Mutex::new(Resume::default()),
         })
@@ -1283,6 +1290,12 @@ impl NetworkMessenger {
         }
     }
 
+    /// Test aid: the minute [`Self::this_minute`] reads (`None`: the clock).
+    #[cfg(test)]
+    pub(crate) fn set_minute(&self, minute: Option<u64>) {
+        *self.minute.lock().expect("minute") = minute;
+    }
+
     /// Test aid: how many messages found beyond recall wait to be named.
     #[cfg(test)]
     pub(crate) fn gone_len(&self) -> usize {
@@ -1542,7 +1555,7 @@ impl NetworkMessenger {
             self.core.send_committed(handle, &client_id::gone(ids, 0), &payload)?
         {
             self.core
-                .send_committed(handle, &client_id::gone(ids, this_minute() + 1), &payload)?;
+                .send_committed(handle, &client_id::gone(ids, self.this_minute() + 1), &payload)?;
         }
         Ok(())
     }
@@ -1572,19 +1585,23 @@ impl NetworkMessenger {
             return Ok(());
         }
         if let SendResult::AlreadyAcknowledged { .. } = self.receipt(handle, &id32, 0)? {
-            self.receipt(handle, &id32, this_minute() + 1)?;
+            self.receipt(handle, &id32, self.this_minute() + 1)?;
         }
         Ok(())
     }
-}
 
-/// Minutes since the Unix epoch: the round of a receipt or GONE sent again,
-/// so each is sent again at most once a minute.
-fn this_minute() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() / 60)
-        .unwrap_or(0)
+    /// Minutes since the Unix epoch: the round of a receipt or GONE sent
+    /// again, so each is sent again at most once a minute.
+    fn this_minute(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(minute) = *self.minute.lock().expect("minute") {
+            return minute;
+        }
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() / 60)
+            .unwrap_or(0)
+    }
 }
 
 /// Test aid: aborts the process (no unwinding, no destructors) when

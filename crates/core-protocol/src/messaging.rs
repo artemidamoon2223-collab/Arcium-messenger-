@@ -79,15 +79,30 @@ struct Unresolved {
 }
 
 /// Durable messaging over an S1 [`EncryptedStore`]. Holds no session state;
-/// only the set of sessions whose last commit had an unknown outcome.
+/// only the set of sessions whose last commit had an unknown outcome, and
+/// what to commit when a handshake beside a session is discarded.
 #[derive(Default)]
 pub struct Messenger {
     unresolved: HashMap<u64, Unresolved>,
+    on_beside_discard: Option<BesideDiscard>,
 }
 
 impl Messenger {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A messenger whose confirming receive commits `on_discard`'s side
+    /// writes in the same transaction that deletes a handshake recorded
+    /// beside the session (`docs/S2-B2-DURABLE-MESSAGING.md`, section 4c).
+    /// `mobile-ffi` uses it to replace the one-time prekey that handshake
+    /// names (tracker R-6). It is not called when the record goes with a
+    /// removed or forgotten session, nor for a record of another peer.
+    pub fn with_beside_discard(on_discard: BesideDiscard) -> Self {
+        Self {
+            on_beside_discard: Some(on_discard),
+            ..Self::default()
+        }
     }
 
     /// Stores a new session under `new.handle`, together with the handle
@@ -532,6 +547,8 @@ impl Messenger {
     /// A handshake from the peer recorded beside this session
     /// ([`record_handshake_beside`](Self::record_handshake_beside)) is
     /// deleted in the same transaction: the peer holds this session now.
+    /// The side writes of [`with_beside_discard`](Self::with_beside_discard)
+    /// for that handshake are committed with it.
     pub fn receive(
         &mut self,
         store: &mut EncryptedStore,
@@ -587,7 +604,11 @@ impl Messenger {
         let generation = staged.generation();
         let record = encode_inbox(generation, &id, staged.output());
         let staged_on_legacy = session.is_legacy_unconfirmed().then_some(peer);
-        let beside = beside::discard_beside(store, handle, &peer)?;
+        let (beside, discarded) = beside::discard_beside(store, handle, &peer)?;
+        let on_discard = match (&self.on_beside_discard, &discarded) {
+            (Some(f), Some(handshake)) => f(store, handshake)?,
+            _ => Vec::new(),
+        };
         #[cfg(test)]
         race_hook::run();
         let mut side = vec![
@@ -595,6 +616,7 @@ impl Messenger {
             SideWrite::require_absent(seen.clone()).map_err(MessagingError::SideWrite)?,
         ];
         side.extend(beside);
+        side.extend(on_discard);
         match session.commit_with(&mut S1CheckpointStore::new(store), staged, &side) {
             Ok(plaintext) => Ok(Received::Accepted(IncomingMessage {
                 message_id: id,
@@ -604,8 +626,9 @@ impl Messenger {
             // Accepted (and possibly acknowledged) by another instance
             // between the check above and this commit: its inbox (0) or
             // seen (1) record exists. A handshake recorded beside the session
-            // meanwhile (2) is a plain conflict; repeating the receive
-            // deletes it.
+            // meanwhile (2), or a record a side write of `on_beside_discard`
+            // read that changed meanwhile (3 and after), is a plain
+            // conflict; repeating the receive reads them again.
             Err(CommitError::SideConflict {
                 index: 0 | 1,
                 conflict: Conflict::RecordExists,

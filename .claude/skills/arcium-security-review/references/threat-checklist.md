@@ -23,7 +23,12 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
   domain-separated signed-prekey object, which is what binds the X25519
   identity key to the Ed25519 signing key (the F-2 binding)? Is the associated
   data still initiator identity key then responder identity key? Is each
-  one-time prekey consumed at most once (F-13)? Read the tracker entries for
+  one-time prekey consumed at most once (F-13)? The signed prekey is not
+  rotated (R-6), so the one-time prekey is what a later leak of the store
+  lacks: is it still replaced by the first message accepted under it, and
+  by the receive that confirms an own session beside a handshake naming it
+  (the cases left are in `docs/NET-MESSAGING.md` section 8)? Read the
+  tracker entries for
   F-2 and F-13 against the code before citing them: the tracker is a dated
   snapshot and its status has lagged the code before. A
   change to the AD, a KDF `info` string, a version or cipher-suite byte, or the

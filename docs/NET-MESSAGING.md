@@ -641,6 +641,35 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 - A second initiator racing for the same one-time prekey is refused and
   starts again (section 6). With k contacts racing, the k-th may wait up to
   about 10 minutes per further refusal (the per-contact limit).
+- A one-time prekey kept against a mailbox writer. While this device has
+  an unconfirmed session of its own with a contact, anyone who can write to
+  its mailbox can put there a handshake "from" that contact naming this
+  device's current prekeys (they are public), and it is recorded beside
+  the session. When the contact confirms the session, the one-time prekey
+  is replaced (section 10, "Conflict"), so another contact whose first
+  contact under it is in flight is refused and starts again, and the texts
+  it had committed read `NotDelivered` for its user to send again. At most
+  once per confirmation of an own session. Before, consuming a one-time
+  prekey took a pinned contact's identity secret.
+- Rotation of the signed prekey (tracker R-6). It is made once and kept for
+  the life of the identity. Every answered handshake uses a one-time
+  prekey (tracker X-6), which is replaced when a first message under it is
+  accepted, or when this device's own session wins a simultaneous start
+  and the contact's handshake beside it is discarded (section 10,
+  "Conflict"). After that, the identity, the signed prekey and the prekey
+  record this device keeps do not derive the keys of a first message under
+  it. Before it, they do: whoever later takes this device's store, and
+  holds a copy of the messages (the relay's operator can keep one), can
+  read the next first contact under the one-time prekey held then, however
+  much later it comes, without being seen; and the first messages of a
+  handshake never accepted here while its one-time prekey stays published
+  (one the relay withheld, one from a contact deleted before it arrived or
+  while a conflict with it was shown, one beside a session this device gave
+  up whose contact never sent it again). Rotating the signed prekey would bound that time; it is not
+  done. Whoever holds the identity secret can also sign a signed prekey of
+  their own, which rotation does not stop. The plaintext of messages read
+  here stays in the history and inbox, which a leak of the store exposes
+  anyway.
 - Simultaneous initiation: if both users start a session with each other
   before either handshake arrives, each device holds an unconfirmed initiator
   session and records the other's handshake beside it, so neither proceeds
@@ -764,6 +793,15 @@ entry per logical message, never written by the ratchet.
   tracker R-13; options in `docs/SESSION-RECOVERY-OPTIONS.md`). On the
   device with the smaller key, a false conflict clears by itself once the
   contact confirms the session.
+  When a message from the contact confirms this device's own session, the
+  handshake recorded beside it is discarded, and in the same transaction
+  the one-time prekey it names is replaced, if the prekey record can still
+  answer it (tracker R-6): a first message of the contact under it may
+  have authenticated here, read with that prekey, and the contact gave
+  that session up. A handshake anyone could have made does the same, at
+  most once per confirmation; another contact's handshake that names the
+  replaced prekey is refused and starts again, as when a first message
+  consumed it (section 6).
 - **Deleting a contact.** `delete_contact(peer)`, on the user's request,
   removes in one store transaction the pinned card, the name and flags, the
   whole history, and the session in any state (established, unconfirmed, in
@@ -855,6 +893,7 @@ entry per logical message, never written by the ratchet.
 | process death at each boundary | `tests::network_crash` (child `abort()`) | process crash |
 | request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt, a replayed receipt not answered | `tests::network` V6 tests | runtime |
+| what a device keeps after it accepts a first contact (identity, signed prekey, prekey record) does not decrypt its first message again, and the session no longer uses the signed prekey; when this device's session wins a simultaneous start, the one-time prekey the contact's handshake named is replaced in the confirming transaction, only while the record can answer that handshake, and nothing is written if a record the replacement read changed before the commit (tracker R-6) | `what_a_device_keeps_after_a_first_contact_does_not_read_it_again`, `a_one_time_prekey_read_beside_a_session_that_wins_is_replaced`, `a_confirmation_replaces_no_prekey_the_handshake_beside_does_not_name`; `core_protocol` `messaging::tests::beside`; the conflict test of `tests::chat` | runtime, in process; local relay over TCP |
 | a gap of more than `MAX_SKIP` in one chain (texts given up after they were encrypted, or lost on the relay) is crossed with a far skip and both directions go on; a far skip only after the wait without accepting a message and not in a pass that accepted one; a rotated mailbox and a lost start sent again later deliver every text; one far try per session per round, a far message without a try deleted and read when sent again, nothing kept on the relay; at most four tries per round over six sessions; the wait kept per chain (a forged key starts no genuine wait), counted from the chain's first arrival, the chain seen least recently dropped first, a session judged once per pass also when the round is full, and the waits forgotten when the contact is deleted; a lost text from before the kept keys of the current chain named back in a GONE message; in the ratchet, the gap in the current chain, in the chain being left and in both at once, the last `MAX_SKIP` keys kept, `MAX_FAR_SKIP` and no further, a forged far message changing nothing, no key left behind, no far skip past `MAX_RESUMABLE_NR` | `tests::far_skip`; `core_crypto::ratchet` (`a_far_skip_*`, `a_forged_far_message_changes_nothing`, `a_stored_key_needs_no_far_skip`, `no_temporary_key_outlives_a_far_skip`), `ratchet::checkpoint` (`a_far_skip_never_moves_nr_past_the_resumable_limit`) | runtime, local relay over TCP; unit |
 | a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history); a GONE lost on the relay is sent again when the text is repeated, not again within the minute, and once more a minute later (the minute set by a test aid); ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`) | runtime, local relay over TCP |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |

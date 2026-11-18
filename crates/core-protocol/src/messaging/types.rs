@@ -1,7 +1,7 @@
 //! Public types of [`super`].
 
 use core_crypto::ratchet::RatchetError;
-use core_storage::StorageError;
+use core_storage::{EncryptedStore, StorageError};
 use zeroize::Zeroizing;
 
 use super::MessageId;
@@ -113,6 +113,21 @@ pub struct ProvisionalHandshake {
     pub peer_identity_pk: [u8; 32],
     pub handshake: Vec<u8>,
 }
+
+/// Side writes committed together with the deletion of a handshake recorded
+/// beside a session, when a message from the peer confirms that session
+/// ([`Messenger::with_beside_discard`](super::Messenger::with_beside_discard)).
+/// Called with the store as read by that receive and the handshake being
+/// deleted. An error ends the receive with nothing written; a precondition
+/// of a returned write that no longer holds at commit is a
+/// [`MessagingError::Conflict`], also with nothing written. A write must not
+/// name a key the receive writes itself (its inbox, seen and provisional
+/// records): the batch is then refused (`SideWriteError::DuplicateKey`) on
+/// every try, and the message is never committed.
+pub type BesideDiscard = Box<
+    dyn Fn(&EncryptedStore, &ProvisionalHandshake) -> Result<Vec<SideWrite>, MessagingError>
+        + Send,
+>;
 
 /// A record a handshake was validated against (the prekey record), required
 /// to be exactly `value` still when recording that handshake retires a

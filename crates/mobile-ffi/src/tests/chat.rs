@@ -371,6 +371,10 @@ fn a_session_conflict_is_shown_and_resolved_on_one_device_without_losing_texts()
         s.net.resolve_session_conflict(g.pk.clone()),
         Err(CoreError::InvalidArgument { .. })
     ));
+    // The one-time prekey s holds now is the one g's handshake named: g's
+    // first message authenticated with it beside s's session.
+    let opk_id = |d: &Device| d.core.export_prekey_bundle().unwrap()[164..172].to_vec();
+    let s_opk = opk_id(s);
 
     g.net.resolve_session_conflict(s.pk.clone()).unwrap();
     g.net.resolve_session_conflict(s.pk.clone()).unwrap_err(); // Already resolved.
@@ -384,6 +388,11 @@ fn a_session_conflict_is_shown_and_resolved_on_one_device_without_losing_texts()
     rounds(&[g, s, g, s], 2);
     assert_eq!(session(g, s), ChatSessionState::Established);
     assert_eq!(session(s, g), ChatSessionState::Established);
+    assert_ne!(
+        opk_id(s),
+        s_opk,
+        "s's session won: the one-time prekey g's given-up handshake named is replaced (R-6)"
+    );
     let g_text = chat(g, s)[0].2.clone();
     let s_text = chat(s, g)[0].2.clone();
     assert!(chat(g, s).contains(&(false, S::Received, s_text.clone())));

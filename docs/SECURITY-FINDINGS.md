@@ -25,6 +25,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **R-6 revisited 2026-11-18 against `main` @ `9b95493`** (PR #213; see "Update 2026-11-18: R-6 revisited"): still ACCEPTED, one case fixed; no earlier row was changed.
 **R-9 narrowed further 2026-11-18 against `main` @ `c2acfb6`** (PR #215; see "Update 2026-11-18: R-9 narrowed further"): still OPEN; no earlier row was changed.
 **Option B, R-21, H-6, R-24 and R-22 recorded 2026-11-19 against `main` @ `8bac3f3`** (PRs #217–#220; see "Update 2026-11-19: option B, R-21, H-6, R-24, R-22"): R-13 PARTIAL with a way out by a reset on the waiting device, R-6 reopened, R-21 narrowed further, R-22's remaining cost and R-24's remainder (a) fixed, H-6 narrowed further; no earlier row was changed.
+**R-6 recorded as partial 2026-11-19 against `main` @ `553c3ba`** (PR #222; see "Update 2026-11-19: R-6 signed prekey rotated"): the signed prekey is rotated, the key-compromise route bounded; no earlier row was changed.
 
 ## What this file is — and is not
 
@@ -1296,6 +1297,33 @@ review is analysis, not proof.
 **Also merged with #217:** `ArciumCore::retire_session` had been inside a `uniffi::export` block, which
 exported it to Kotlin although documented as internal; it was moved before the merge, and the source
 check of exported outbox removals now covers it (`crates/mobile-ffi/src/tests/ack_probe.rs:223`).
+
+---
+
+## Update 2026-11-19: R-6 signed prekey rotated (`main` @ `553c3ba`)
+
+**Snapshot:** `main` @ `553c3ba59434ae9ecd9c4c8fb0495bc0b9a88f8d` (the merge of PR #222, head `b6c96cb`).
+The Owner reopened R-6 as a separate task on 2026-11-19 ("Да, отдельной задачей"), approved the
+design as written ("Одобряю как есть"), chose the period ("7 дней") and accepted the device-clock
+risk, to be documented and reconsidered at the security audit ("Принять и описать"); the merge was
+on the Owner's answer "Мёрдж #222". Normal merge commit pinned with `expectedHeadSha`. Each
+`path:line` below was re-read at `553c3ba`.
+
+**Runtime evidence.** Locally, on `a38f1ce` (the head's last commit `b6c96cb` changes only comments and
+documentation): `cargo test --workspace --locked` → `core-crypto`: `test result: ok. 135 passed; 0 failed`;
+`core-protocol`: `test result: ok. 149 passed; 0 failed`; `mobile-ffi`: `test result: ok. 284 passed; 0 failed; 1 ignored`;
+`cargo clippy --workspace --locked -- -D warnings` passes (also with `-p mobile-ffi --all-targets` on
+`b6c96cb`). CI on `b6c96cb`: 18 check runs, all success, including the emulator jobs. 18 mutations, each
+caught by a test. Three fresh-context review rounds (crypto/protocol, durable state, network,
+engineering; findings adversarially verified): nothing above LOW; every LOW fixed before the merge. A
+review is analysis, not proof.
+
+| ID | Status at `553c3ba` | Evidence (`main` @ `553c3ba`) | Label |
+|----|-------------------|-----------------------------|-------|
+| **R-6** (signed prekey never rotated) | **PARTIAL — rotated; the key-compromise route bounded.** **Fixed:** the signed prekey is rotated at the start of every round, before the bundle is published and before the mailbox is read: (E) at the first round after the one-time prekey changed, with no previous key kept; (T) 7 days after the relay first accepted it, by this device's clock in either direction, with the old one kept as the previous key for one more period. A key the relay never accepted does not age. The previous key answers a handshake only together with the one-time prekey it was published with, and every write that replaces the one-time prekey drops it. So a copy of the store replaces an established session (option B), or makes a first contact "from" a pinned contact, only while the copied signed prekey is still held: until the first round after a one-time-prekey change, at the latest about two periods (14 days) of rounds that publish the bundle; and at most once (the accepted forgery consumes the one-time prekey and the previous key, and the next round rotates before a new one-time prekey is published). Passive reading of later first messages from a copy is bounded the same way. A V2 record (138 bytes) is read in place and rotated at the first round; the record is written as V3 (186 bytes) under the same key. **Remains:** the identity secret is in the same store, and its holder can sign signed prekeys of its own, impersonate this device to its contacts and restart its sessions there, for as long as the identity is used (rotation does not stop that); malware with lasting access gets every new key; a rollback of the store (D-009) brings old keys back until they are due; a relay that refuses or cuts the bundle's publication delays the rotation for as long as it does so, while every round of the device fails before the mailbox; the device clock (**ACCEPTED**, Owner 2026-11-19: a frozen or attacker-held clock stops rotation by time; a jump of a period rotates early and drops the older previous key early); on disk, whether `secure_delete` overwrites the old cell on an update and what the rollback journal leaves are not shown, and moves of secrets can leave stack copies (H-7, H-8). **INFO:** the bundle now changes about once a week while the device is online, and `GET_BUNDLE` needs no authentication, so whoever knows the device's key can learn roughly when it ran its first round after each 7-day mark. **INFO:** with two instances on one database, a promotion that commits between one instance's maintenance read and its export makes the published bundle pair the current signed prekey with the new one-time prekey (a handshake from it is refused once and made again); production runs one sync loop, and no test uses two processes. **Cost (documented):** an initiator delayed by more than about one period between fetching the bundle and this device reading its handshake, or a conflict left unresolved that long, is refused and starts again, and its texts read `NotDelivered`. Going back to an earlier build is not supported (it fails closed at the bundle export). | the record and the rule: `PREKEY_RECORD_V3_LEN` (`crates/mobile-ffi/src/lib.rs:429`), `SIGNED_PREKEY_PERIOD_SECS` (`:444`), `renew_one_time_prekey` (`:546`), `unpack_prekeys` (`:593`), `plan_rotation` (`:695`), `rotate_signed_prekey` (`:713`), `check_answerable` (`:1339`), `accept_first_message` (`:1415`), `replace_prekey_on_confirm` (`:1521`), `maintain_prekeys` (`:1672`), `note_prekeys_published` (`:1716`); the round: `put_bundle` (`crates/mobile-ffi/src/network.rs:748`), called before the mailbox at `:806`, the clock `this_second` (`:1971`); tests `crates/mobile-ffi/src/tests/prekey_record.rs` (17), `crates/mobile-ffi/src/tests/spk_rotation.rs` (10; the regression `a_copied_store_cannot_replace_a_session_once_its_signed_prekey_is_gone` `:402`, `a_copied_store_replaces_at_most_one_session` `:465`, the round guard `:361`, `:513`), `tests::legacy_upgrade::a_v2_prekey_record_is_rotated_on_the_first_round`, `tests::network_crash::a_device_killed_around_a_rotation_rotates_once_and_answers_the_served_bundle`; `docs/NET-MESSAGING.md:437` (section 6), `:738` (the bounded route), `:794` (rotation and what remains), `:836` (clocks), `:857` (the weekly bundle change) | `SV`; `RUNTIME_VERIFIED` (tests, mutations, CI); the bounds `INFERRED` from the code and the regression test; two processes, device clocks and on-disk remnants `NOT_VERIFIED` |
+
+The review checklist (`.claude/skills/arcium-security-review/references/threat-checklist.md`) no longer
+says the signed prekey is not rotated; its X3DH and option-B items now ask for the rotation rules.
 
 ---
 

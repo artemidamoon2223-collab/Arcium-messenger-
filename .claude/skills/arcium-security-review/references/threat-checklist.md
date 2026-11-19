@@ -23,13 +23,20 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
   domain-separated signed-prekey object, which is what binds the X25519
   identity key to the Ed25519 signing key (the F-2 binding)? Is the associated
   data still initiator identity key then responder identity key? Is each
-  one-time prekey consumed at most once (F-13)? The signed prekey is not
-  rotated (R-6), so the one-time prekey is what a later leak of the store
-  lacks: is it still replaced by the first message accepted under it, and
-  by every receive that confirms an own initiator session
+  one-time prekey consumed at most once (F-13)? Is the one-time prekey
+  still replaced by the first message accepted under it, and by every
+  receive that confirms an own initiator session
   (`replace_prekey_on_confirm`; the cases left are in
   `docs/NET-MESSAGING.md` section 8)? That replacement is also what keeps a
   replayed handshake older than a session from restarting it (option B).
+  The signed prekey is rotated (R-6, `plan_rotation`): does every round
+  still rotate it before the bundle is exported and before the mailbox is
+  read, with no scan in a round whose PUT or publication note failed? Does
+  every writer that replaces the one-time prekey drop the previous signed
+  prekey in the same write, and does the previous key still answer only
+  with the one-time prekey it was published with (`check_answerable`)?
+  Is the bundle still exported only in `put_bundle`, right after
+  maintenance (rotation (E) relies on it)?
   Read the
   tracker entries for
   F-2 and F-13 against the code before citing them: the tracker is a dated
@@ -149,10 +156,11 @@ the Android contact-card and add-contact code. Specification:
   handshake names this device's current one-time prekey; or by the user
   (`reset_session`, `resolve_session_conflict`, `delete_contact`). X3DH
   authenticates that first message with either the contact's identity
-  secret or this device's signed-prekey secret (key-compromise
-  impersonation; the signed prekey is not rotated, tracker R-6), so a copy
-  of this device's store lets its holder, if it can also write the mailbox
-  (`docs/NET-MESSAGING.md` §3), replace sessions later (§8). Check that no new path reaches
+  secret or a signed-prekey secret this device still holds (key-compromise
+  impersonation; the signed prekey is rotated, tracker R-6), so a copy of
+  this device's store lets its holder, if it can also write the mailbox
+  (`docs/NET-MESSAGING.md` §3), replace a session while the copied signed
+  prekey is held, and at most once (§8). Check that no new path reaches
   `retire_session` or `accept_restart` on anything weaker; that an
   unanswerable handshake beside an established session is refused except a
   late copy of the handshake that session came from (`hsacc:`, compared by

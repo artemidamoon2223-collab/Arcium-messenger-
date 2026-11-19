@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-19 14:23 UTC, by a Claude Code cloud session
+Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -45,12 +45,12 @@ Updated: 2026-11-19 14:23 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- None.
+- #222 R-6 signed-prekey rotation (`fix/r6-spk-rotation`, head `b6c96cb`): CI running; merge only on the Owner's instruction naming it; tracker PR after the merge.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
-- R-6 signed-prekey rotation: design approved, P = 7 days, clock risk documented (D-062); in progress. Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
+- R-6 signed-prekey rotation: design approved, P = 7 days, clock risk documented (D-062); implemented in PR #222, waiting for CI and the Owner's merge instruction. Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 
 ## Next work (D-036 order; supersedes the D-014 line)

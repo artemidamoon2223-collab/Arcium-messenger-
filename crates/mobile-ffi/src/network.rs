@@ -1439,7 +1439,8 @@ impl NetworkMessenger {
     /// that restart up and makes it again from the current bundle. Without
     /// the refusal it would wait for good. Never refused: a late
     /// retransmission of the handshake our responder session came from
-    /// (`ArciumCore::accepted_handshake`), whose one-time prekey we consumed
+    /// (`ArciumCore::is_accepted_handshake`, which also knows it in another
+    /// encoding a relay put in its place), whose one-time prekey we consumed
     /// when we accepted it. The contact retransmits it until our receipt
     /// arrives, and a refusal naming it would end the session the contact
     /// has just made. A responder session stored by an older build has no
@@ -1463,8 +1464,7 @@ impl NetworkMessenger {
                 Ok(Fate::Keep)
             }
             Err(e) => {
-                let ours = self.core.accepted_handshake(&peer)? == Some(handshake_hash(handshake));
-                if !ours {
+                if !self.core.is_accepted_handshake(&peer, handshake)? {
                     if let Some(reason) = RefusalReason::of(&e) {
                         self.queue_refusal(peer, handshake, reason)?;
                     }

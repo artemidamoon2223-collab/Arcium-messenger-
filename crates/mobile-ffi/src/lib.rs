@@ -274,34 +274,68 @@ fn identity_from_record(read: Result<Vec<u8>, StorageError>) -> Result<Option<Ar
 // `establish_prekeys` — instead of a second parser that a downgrade could aim at.
 const PREKEYS_KEY: &str = "prekeys/v2";
 
-/// The SHA-256 of the handshake this device's responder session with the
-/// peer came from (32 bytes), written in the transaction that stores the
-/// session (`accept_first_message`) and replaced by the next one. The
-/// network layer reads it to tell the contact's late retransmission of
-/// that handshake, which it never refuses, from a restart it can no longer
-/// answer, which it does (option B; `docs/NET-MESSAGING.md` section 10,
-/// "Reset"). Not removed with the session: an older value only names a
-/// handshake whose session is gone. Removed with the contact.
+/// The [`handshake_identity`] of the handshake this device's responder
+/// session with the peer came from (32 bytes), written in the transaction
+/// that stores the session (`accept_first_message`) and replaced by the
+/// next one. The network layer reads it to tell the contact's late
+/// retransmission of that handshake, which it never refuses, from a restart
+/// it can no longer answer, which it does (option B; `docs/NET-MESSAGING.md`
+/// section 10, "Reset"). Not removed with the session: an older value only
+/// names a handshake whose session is gone. Removed with the contact.
 pub(crate) fn accepted_handshake_key(peer: &[u8; 32]) -> String {
     let hex: String = peer.iter().map(|b| format!("{b:02x}")).collect();
     format!("hsacc:v1/{hex}")
 }
 
-/// The side write recording `provisional` as the handshake of the responder
-/// session about to be stored ([`accepted_handshake_key`]). It replaces the
-/// record of an earlier session only if that is still the record read here.
+/// What makes two initiator handshakes the same for [`accepted_handshake_key`]:
+/// they derive the same keys here. Not the bytes: the ephemeral key has
+/// encodings that X25519 reads as the same point (the ignored top bit), and
+/// points that differ from it by a low-order point, which every clamped
+/// scalar, so every DH this device makes with it, cancels. A relay can put
+/// any of them in place of the initiator's, and the session made from it is
+/// the initiator's session (review of option B). So the ephemeral key
+/// enters as its X25519 with a fixed public scalar, which is equal for
+/// exactly those keys; the other fields enter as they are, since the
+/// parser and the pinned card fix their bytes. A fresh handshake has a
+/// fresh ephemeral key, so it never matches.
+fn handshake_identity(handshake: &InitiatorHandshakeV1) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let ephemeral = StaticSecret::from([1u8; 32]).diffie_hellman(&handshake.ephemeral_pk);
+    let opk = handshake.opk_id.map_or([0u8; 9], |id| {
+        let mut b = [1u8; 9];
+        b[1..].copy_from_slice(&id.to_be_bytes());
+        b
+    });
+    Sha256::new()
+        .chain_update(b"ARCIUM-ACCEPTED-HANDSHAKE-V1")
+        .chain_update(handshake.identity_pk.as_bytes())
+        .chain_update(ephemeral.as_bytes())
+        .chain_update(handshake.spk_id)
+        .chain_update(opk)
+        .finalize()
+        .into()
+}
+
+/// The side write recording `handshake` as the one the responder session
+/// with `peer` about to be stored came from ([`accepted_handshake_key`]). It
+/// replaces the record of an earlier session only if that is still the
+/// record read here. `None` if that record cannot be read (damaged or
+/// tampered with): the session is then stored without it, and late copies
+/// of its handshake are refused as for a session an older build stored.
 fn accepted_handshake_write(
     store: &EncryptedStore,
-    provisional: &ProvisionalHandshake,
-) -> Result<SideWrite, CoreError> {
-    let key = accepted_handshake_key(&provisional.peer_identity_pk);
-    let value = Zeroizing::new(handshake_hash(&provisional.handshake).to_vec());
+    peer: &[u8; 32],
+    handshake: &InitiatorHandshakeV1,
+) -> Result<Option<SideWrite>, CoreError> {
+    let key = accepted_handshake_key(peer);
+    let value = Zeroizing::new(handshake_identity(handshake).to_vec());
     let write = match store.get(&key) {
         Ok(old) => SideWrite::replace(key, Zeroizing::new(old), value),
         Err(StorageError::NotFound) => SideWrite::insert(key, value),
+        Err(StorageError::Decryption) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    write.map_err(|_| CoreError::Storage {
+    write.map(Some).map_err(|_| CoreError::Storage {
         msg: "accepted-handshake key is reserved".into(),
     })
 }
@@ -1185,7 +1219,7 @@ fn accept_first_message(
             })?],
         None => Vec::new(),
     };
-    extra.push(accepted_handshake_write(store, &provisional)?);
+    extra.extend(accepted_handshake_write(store, &provisional.peer_identity_pk, &handshake)?);
     let first = FirstContact {
         handle: session_id,
         session,
@@ -1320,16 +1354,22 @@ impl ArciumCore {
             .map_err(|e| CoreError::messaging(session_id, e))
     }
 
-    /// The SHA-256 of the handshake this device's latest responder session
-    /// with `peer` came from ([`accepted_handshake_key`]); `None` if no
-    /// responder session with `peer` was stored by a build that records it.
-    pub(crate) fn accepted_handshake(&self, peer: &[u8; 32]) -> Result<Option<[u8; 32]>, CoreError> {
+    /// Whether `handshake` from `peer` is the handshake this device's latest
+    /// responder session with `peer` came from, in any encoding that derives
+    /// the same keys ([`handshake_identity`], [`accepted_handshake_key`]).
+    /// `false` if it does not parse, and if no such session was recorded:
+    /// none exists, an older build stored it, or the record cannot be read
+    /// (which must not stop a round).
+    pub(crate) fn is_accepted_handshake(&self, peer: &[u8; 32], handshake: &[u8]) -> Result<bool, CoreError> {
+        let Ok(parsed) = unpack_initiator_handshake(handshake) else {
+            return Ok(false);
+        };
         let store = self.store.lock().map_err(|_| CoreError::Storage {
             msg: "mutex poisoned".into(),
         })?;
         match store.get(&accepted_handshake_key(peer)) {
-            Ok(bytes) => Ok(<[u8; 32]>::try_from(bytes.as_slice()).ok()),
-            Err(StorageError::NotFound) => Ok(None),
+            Ok(bytes) => Ok(bytes.as_slice() == handshake_identity(&parsed)),
+            Err(StorageError::NotFound | StorageError::Decryption) => Ok(false),
             Err(e) => Err(e.into()),
         }
     }
@@ -2299,6 +2339,46 @@ mod tests {
                 matches!(&err, CoreError::InvalidHandshake { msg } if msg.contains("low order")),
                 "expected InvalidHandshake (low order), got {err:?}"
             );
+        }
+    }
+
+    /// `hsacc:` knows a handshake by the keys it derives (option B): every
+    /// ephemeral key a relay can put in place of the initiator's and still
+    /// derive the same keys gives the same identity, checked here with a
+    /// real Diffie-Hellman; a fresh ephemeral key, another prekey id or no
+    /// one-time prekey give another.
+    #[test]
+    fn a_handshake_is_known_in_every_encoding_of_its_keys() {
+        use super::tests::net_harness::same_keys_other_encodings;
+        let identity_pk = PublicKey::from(&StaticSecret::random_from_rng(rand_core::OsRng));
+        let ephemeral = PublicKey::from(&StaticSecret::random_from_rng(rand_core::OsRng)).to_bytes();
+        let handshake = |e: [u8; 32]| InitiatorHandshakeV1 {
+            identity_pk,
+            ephemeral_pk: PublicKey::from(e),
+            spk_id: [7; SPK_ID_LEN],
+            opk_id: Some(9),
+        };
+        let id = handshake_identity(&handshake(ephemeral));
+        for other in same_keys_other_encodings(ephemeral) {
+            assert_ne!(other, ephemeral);
+            let any = StaticSecret::random_from_rng(rand_core::OsRng);
+            assert_eq!(
+                any.diffie_hellman(&PublicKey::from(other)).as_bytes(),
+                any.diffie_hellman(&PublicKey::from(ephemeral)).as_bytes(),
+                "the same keys"
+            );
+            assert_eq!(handshake_identity(&handshake(other)), id);
+        }
+        let fresh = PublicKey::from(&StaticSecret::random_from_rng(rand_core::OsRng)).to_bytes();
+        assert_ne!(handshake_identity(&handshake(fresh)), id);
+        for change in [
+            |h: &mut InitiatorHandshakeV1| h.opk_id = Some(10),
+            |h: &mut InitiatorHandshakeV1| h.opk_id = None,
+            |h: &mut InitiatorHandshakeV1| h.spk_id = [8; SPK_ID_LEN],
+        ] {
+            let mut h = handshake(ephemeral);
+            change(&mut h);
+            assert_ne!(handshake_identity(&h), id);
         }
     }
 

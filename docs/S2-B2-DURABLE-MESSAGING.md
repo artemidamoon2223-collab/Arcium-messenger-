@@ -41,7 +41,7 @@ here is transmitted.
 | `inbox:v1/<peer>/<id>` | `INBOX_RECORD_V1`: generation, message id, plaintext; only while undelivered | receive |
 | `seen:v1/<peer>/<id>` | `SEEN_RECORD_V1`: id of an acknowledged incoming message | acknowledge incoming |
 | `prekeys/v2` | unchanged format | responder session creation from the first authenticated message (same transaction) |
-| `hsacc:v1/<peer>` | SHA-256 (32 bytes) of the handshake the latest responder session with the peer came from (option B, section 4c) | responder session creation from the first authenticated message (same transaction, a side write); replaced by the next one; kept when the session is removed or retired; deleted when the peer is forgotten |
+| `hsacc:v1/<peer>` | 32 bytes identifying the handshake the latest responder session with the peer came from by the keys it derives (option B, section 4c): SHA-256 over a label, the initiator identity key, the ephemeral key's X25519 with a fixed public scalar, the signed-prekey id and the one-time-prekey id | responder session creation from the first authenticated message (same transaction, a side write); replaced by the next one; kept when the session is removed or retired; deleted when the peer is forgotten |
 
 `<peer>` is the peer's X25519 identity key in hex, `<handle>` the local `u64`
 handle in hex, `<id>` a message id in hex, `<client id>` the caller's logical
@@ -243,9 +243,15 @@ provisional record beside a session. This section changes that.
   it again, except a late copy of the handshake that session came from,
   which is dropped: a refusal naming it would end the session the peer has
   just made. That handshake is known from `hsacc:` (section 2), which the
-  transaction storing a responder session writes. A responder session
-  stored by an earlier build has no such record, and the copy is then
-  refused (`docs/NET-MESSAGING.md` section 10, "Reset").
+  transaction storing a responder session writes. It is compared by the
+  keys it derives, not by its bytes: a relay can put another ephemeral key
+  in place of the initiator's that derives the same keys (the top bit
+  X25519 ignores, or the point plus a low-order point, which every clamped
+  scalar cancels), and the session made from it is still the initiator's.
+  A responder session stored by an earlier build has no such record, and
+  neither has one whose earlier record no longer decrypts (it is then not
+  replaced); the copy is then refused (`docs/NET-MESSAGING.md` section 10,
+  "Reset").
 - **Use.** While the session exists it is used for one thing only: when a message
   from the peer fails to decrypt under the session,
   `Messenger::first_message_authenticates` checks whether it authenticates

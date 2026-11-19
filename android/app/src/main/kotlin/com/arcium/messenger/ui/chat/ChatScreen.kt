@@ -248,8 +248,9 @@ private fun DeleteContactDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
 
 /**
  * Asks before starting the secure session again (Rust `reset_session`):
- * texts not yet delivered in the current session are given up, and the
- * contact switches when the next message reaches them.
+ * texts committed to the current session and not yet delivered are given
+ * up, and the contact switches when the new session's first message
+ * reaches them.
  */
 @Composable
 private fun ResetSessionDialog(name: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
@@ -259,10 +260,10 @@ private fun ResetSessionDialog(name: String, onConfirm: () -> Unit, onDismiss: (
         title = { Text("Reset secure session?") },
         text = {
             Text(
-                "Starts a new secure session with $name. Messages already sent in the " +
-                    "current session but not yet delivered are marked not delivered; you can " +
-                    "send them again. Messages still waiting to be sent go out in the new " +
-                    "session. $name's device switches to it when it next connects.",
+                "Starts a new secure session with $name. Messages not yet delivered, also " +
+                    "ones not sent yet, are marked not delivered; you can send them again. " +
+                    "Messages you write after this go in the new session. $name's device " +
+                    "switches to it when the new session's first message reaches it.",
             )
         },
         confirmButton = {

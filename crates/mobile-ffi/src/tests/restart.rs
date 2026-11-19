@@ -402,9 +402,6 @@ fn both_resetting_at_once_is_a_conflict_the_greater_key_resolves() {
     relay.stop();
 }
 
-/// `reset_session` works without a connection and with no session (it then
-/// only asks the next round to start one, also with no text queued),
-/// repeats harmlessly, and is refused for a stranger.
 /// Alice's restart names the one-time prekey of Bob's bundle, and Carol's
 /// first contact, ahead of it in Bob's mailbox, consumes that prekey first.
 /// Bob can no longer answer the restart: he refuses it, and Alice makes it
@@ -448,32 +445,165 @@ fn a_restart_the_contact_can_no_longer_answer_is_refused_and_made_again() {
 /// before his receipt reaches Alice (she retransmits until then). The copy
 /// can no longer be answered, but is not refused: it is the handshake
 /// Bob's session came from, and a refusal naming it would end Alice's.
+/// Also when the relay put another encoding of Alice's ephemeral key in
+/// place of hers before Bob read it, one that derives the same keys, so
+/// the session Bob made is Alice's though the bytes Bob recorded differ
+/// from the copy's (second review of option B).
 #[test]
 fn a_late_copy_of_the_handshake_the_session_came_from_is_never_refused() {
+    for substitute in [None, Some(0), Some(1)] {
+        let relay = start_relay();
+        let addr = relay.addr().to_string();
+        let (alice, bob) = (Device::new(&addr, 1), Device::new(&addr, 2));
+        meet(&alice, &bob);
+        round(&[&bob]); // Bob's bundle on the relay.
+        say(&alice, &bob, "a1", "hello bob");
+        round(&[&alice]);
+        let (seq, copy, handshake) = relay
+            .stored(&key(&bob))
+            .into_iter()
+            .find_map(|(seq, e)| match Envelope::decode(&e) {
+                Some(Envelope::Handshake { handshake, .. }) => Some((seq, e, handshake)),
+                _ => None,
+            })
+            .expect("Alice's handshake");
+        if let Some(which) = substitute {
+            let ephemeral: [u8; 32] = handshake[36..68].try_into().unwrap();
+            let mut changed = handshake.clone();
+            changed[36..68].copy_from_slice(&same_keys_other_encodings(ephemeral)[which]);
+            relay::client::Connection::connect(&addr, std::time::Duration::from_secs(2))
+                .unwrap()
+                .delete(key(&bob), vec![seq])
+                .unwrap();
+            let env = Envelope::Handshake {
+                sender: key(&alice),
+                handshake: changed,
+            };
+            inject(&addr, &bob, env.encode());
+        }
+        round(&[&bob]);
+        assert_eq!(session(&bob, &alice), ChatSessionState::Established, "{substitute:?}");
+        assert!(
+            chat(&bob, &alice).contains(&(false, S::Received, "hello bob".into())),
+            "Alice's first message authenticated: {substitute:?}"
+        );
+        inject(&addr, &bob, copy);
+        round(&[&bob]);
+        assert_eq!(waiting(&relay, &bob).0, 0, "the copy was read: {substitute:?}");
+        assert_eq!(waiting(&relay, &alice).1, 0, "and not refused: {substitute:?}");
+
+        rounds(&[&alice, &bob, &alice], 2);
+        assert_eq!(session(&alice, &bob), ChatSessionState::Established, "{substitute:?}");
+        assert!(
+            chat(&alice, &bob).contains(&(true, S::Delivered, "hello bob".into())),
+            "{substitute:?}"
+        );
+        assert!(!peer_reset(&bob, &alice), "{substitute:?}");
+        relay.stop();
+    }
+}
+
+/// As when another first contact consumes the prekey, but here Bob's own
+/// session with Carol is confirmed after Alice fetched his bundle, which
+/// replaces his one-time prekey (`replace_prekey_on_confirm`): Bob refuses
+/// Alice's restart, and she makes it again from his current bundle.
+#[test]
+fn a_restart_whose_prekey_a_confirmation_replaced_is_refused_and_made_again() {
     let relay = start_relay();
     let addr = relay.addr().to_string();
-    let (alice, bob) = (Device::new(&addr, 1), Device::new(&addr, 2));
-    meet(&alice, &bob);
-    round(&[&bob]); // Bob's bundle on the relay.
-    say(&alice, &bob, "a1", "hello bob");
+    let (alice, bob) = talking(&addr);
+    let carol = Device::new(&addr, 3);
+    meet(&carol, &bob);
+    round(&[&carol]); // Carol's bundle on the relay.
+    say(&bob, &carol, "b1", "hello carol");
+    round(&[&bob]); // Bob starts his own session with Carol.
+    round(&[&carol]); // Carol accepts it; her receipt waits for Bob.
+    alice.net.reset_session(bob.pk.clone()).unwrap();
     round(&[&alice]);
-    let copy = relay
-        .stored(&key(&bob))
-        .into_iter()
-        .map(|(_, e)| e)
-        .find(|e| matches!(Envelope::decode(e), Some(Envelope::Handshake { .. })))
-        .expect("Alice's handshake");
+    // Bob records the restart, then Carol's receipt confirms his session
+    // and replaces the prekey the restart names.
     round(&[&bob]);
-    assert_eq!(session(&bob, &alice), ChatSessionState::Established);
-    inject(&addr, &bob, copy);
-    round(&[&bob]);
-    assert_eq!(waiting(&relay, &bob).0, 0, "the copy was read");
-    assert_eq!(waiting(&relay, &alice).1, 0, "and not refused");
+    assert_eq!(session(&bob, &carol), ChatSessionState::Established);
+    assert_eq!(session(&bob, &alice), ChatSessionState::Established, "the old one");
+    rounds(&[&alice, &bob], 1);
+    assert!(waiting(&relay, &alice).1 >= 1, "the restart is refused");
 
-    rounds(&[&alice, &bob, &alice], 2);
+    rounds(&[&alice, &bob], 4);
     assert_eq!(session(&alice, &bob), ChatSessionState::Established);
-    assert!(chat(&alice, &bob).contains(&(true, S::Delivered, "hello bob".into())));
-    assert!(!peer_reset(&bob, &alice));
+    assert_eq!(session(&bob, &alice), ChatSessionState::Established);
+    assert!(peer_reset(&bob, &alice));
+    say(&alice, &bob, "a3", "after");
+    rounds(&[&alice, &bob, &alice], 2);
+    assert!(chat(&alice, &bob).contains(&(true, S::Delivered, "after".into())));
+    relay.stop();
+}
+
+/// Flips one ciphertext byte of `d`'s `hsacc:` record for `peer`, so it no
+/// longer decrypts. The row is found as the only one whose value changes
+/// when that record is written twice.
+fn corrupt_accepted_handshake(d: &Device, peer: &Device) {
+    let rows = || -> Vec<(Vec<u8>, Vec<u8>)> {
+        let conn = rusqlite::Connection::open(&d.path).unwrap();
+        let mut stmt = conn.prepare("SELECT k, v FROM kv ORDER BY k").unwrap();
+        let all = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        all
+    };
+    let record = crate::accepted_handshake_key(&key(peer));
+    d.core.store.lock().unwrap().put(&record, &[1; 32]).unwrap();
+    let before = rows();
+    d.core.store.lock().unwrap().put(&record, &[2; 32]).unwrap();
+    let after = rows();
+    let changed: Vec<_> = before
+        .iter()
+        .zip(&after)
+        .filter(|(b, a)| b != a)
+        .map(|(_, a)| a.clone())
+        .collect();
+    assert_eq!(changed.len(), 1, "exactly the record's row");
+    let (k, mut v) = changed.into_iter().next().unwrap();
+    v[30] ^= 0x01; // past the 24-byte nonce
+    let conn = rusqlite::Connection::open(&d.path).unwrap();
+    assert_eq!(conn.execute("UPDATE kv SET v = ?1 WHERE k = ?2", (v, k)).unwrap(), 1);
+    assert!(matches!(
+        d.core.store.lock().unwrap().get(&record),
+        Err(StorageError::Decryption)
+    ));
+}
+
+/// An `hsacc:` record that no longer decrypts (damage, or tampering with
+/// the store) stops no round: a late copy of the handshake is then refused,
+/// as for a session an older build stored, and the next restart still
+/// replaces the session (stored without the record).
+#[test]
+fn an_unreadable_accepted_handshake_record_stops_nothing() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    let original = alice.core.initiator_handshake(handle(&bob)).unwrap().unwrap();
+    corrupt_accepted_handshake(&bob, &alice);
+
+    let env = Envelope::Handshake {
+        sender: key(&alice),
+        handshake: original,
+    };
+    inject(&addr, &bob, env.encode());
+    say(&alice, &bob, "a2", "still here");
+    rounds(&[&alice, &bob], 1);
+    assert!(chat(&bob, &alice).contains(&(false, S::Received, "still here".into())));
+    assert_eq!(waiting(&relay, &alice).1, 1, "the copy is refused");
+    rounds(&[&alice, &bob], 2);
+    assert_eq!(session(&alice, &bob), ChatSessionState::Established, "confirmed: ignored");
+    assert!(chat(&alice, &bob).contains(&(true, S::Delivered, "still here".into())));
+
+    alice.net.reset_session(bob.pk.clone()).unwrap();
+    rounds(&[&alice, &bob, &alice, &bob], 3);
+    assert_eq!(session(&alice, &bob), ChatSessionState::Established);
+    assert_eq!(session(&bob, &alice), ChatSessionState::Established);
+    assert!(peer_reset(&bob, &alice));
     relay.stop();
 }
 
@@ -501,6 +631,9 @@ fn a_text_sent_while_a_reset_gives_the_session_up_is_given_up_with_it() {
     relay.stop();
 }
 
+/// `reset_session` works without a connection and with no session (it then
+/// only asks the next round to start one, also with no text queued),
+/// repeats harmlessly, and is refused for a stranger.
 #[test]
 fn reset_session_rules() {
     let relay = start_relay();

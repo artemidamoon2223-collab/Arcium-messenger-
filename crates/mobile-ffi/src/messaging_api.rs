@@ -193,6 +193,16 @@ fn send_result(outcome: SendOutcome) -> SendResult {
 /// the messenger's own types, so a plaintext stays in its wiping owner instead
 /// of being copied into, or out of, an ordinary `Vec<u8>`.
 impl ArciumCore {
+    /// The ids of every pending outgoing message, to every peer, from the
+    /// store's key names alone (`Messenger::pending_outgoing_ids`). Read by
+    /// the network layer's prune of `last_sent` (tracker R-22).
+    pub(crate) fn pending_outgoing_ids(&self) -> Result<Vec<[u8; 32]>, CoreError> {
+        let (store, messenger) = self.lock()?;
+        messenger
+            .pending_outgoing_ids(&store)
+            .map_err(|e| CoreError::messaging(0, e))
+    }
+
     /// Removes the session `session_id` on the user's decision to start a new
     /// one with the peer (option B; `Messenger::retire_session`): also when a
     /// message from the peer was accepted on it, and keeping a handshake of

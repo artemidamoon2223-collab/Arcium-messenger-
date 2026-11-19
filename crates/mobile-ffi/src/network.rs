@@ -991,15 +991,12 @@ impl NetworkMessenger {
     /// send (possibly on a session created meanwhile) it may not have seen.
     fn prune_sent(&self) -> Result<(), CoreError> {
         let since = Instant::now();
-        let mut live = HashSet::new();
+        // One listing of the outbox's key names, for every contact: no
+        // outbox record is read or decrypted (tracker R-22).
+        let mut live: HashSet<[u8; 32]> = self.core.pending_outgoing_ids()?.into_iter().collect();
         for (_, handle) in self.sessions()? {
             if let Some(hs) = self.core.initiator_handshake(handle)? {
                 live.insert(<[u8; 32]>::from(Sha256::digest(&hs)));
-            }
-            for m in self.core.pending_outgoing(handle)? {
-                if let Ok(id) = <[u8; 32]>::try_from(m.message_id.as_slice()) {
-                    live.insert(id);
-                }
             }
         }
         self.last_sent

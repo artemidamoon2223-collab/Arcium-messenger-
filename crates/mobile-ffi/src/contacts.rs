@@ -99,9 +99,18 @@ impl ArciumCore {
     ///
     /// Adding the same card again is harmless. A different card for an
     /// identity already pinned is refused with `ContactIdentityChanged` and
-    /// changes nothing: a peer identity is never replaced silently.
+    /// changes nothing: a peer identity is never replaced silently. A card
+    /// whose identity key has low order is refused with `InvalidContactCard`.
     pub fn add_contact(&self, card: Vec<u8>) -> Result<Vec<u8>, CoreError> {
         let parsed = Card::decode(&card)?;
+        // R-24: X3DH refuses a low-order identity key, so every session with
+        // such a card would fail; refusing it here pins nothing. Checked only
+        // on adding: a card an older build pinned still decodes.
+        if crate::has_low_order(&PublicKey::from(parsed.dh_pk)) {
+            return Err(CoreError::InvalidContactCard {
+                msg: "the identity key has low order".into(),
+            });
+        }
         if parsed.dh_pk == self.our_identity_pk()? {
             return Err(CoreError::InvalidContactCard {
                 msg: "this is our own card".into(),

@@ -200,6 +200,61 @@ fn pending_outgoing_is_in_send_order() {
     assert_eq!(p.am.pending_outgoing(&p.a, ALICE_HANDLE).unwrap(), sent);
 }
 
+/// Tracker R-22: the ids of pending messages to every peer come from the
+/// outbox's key names alone. They match `pending_outgoing` of each session,
+/// and still come back when a record no longer decodes, which
+/// `pending_outgoing` must read.
+#[test]
+fn pending_outgoing_ids_are_read_from_key_names_alone() {
+    let mut p = memory_peers();
+    // Alice's session with a third peer, Carol (bound to Alice's key).
+    let carol = pair();
+    let mut with_carol = carol.alice;
+    with_carol.ad = [p.alice_pk, carol.bob_pk].concat();
+    const CAROL_HANDLE: u64 = 0xCA201;
+    p.am.create_session(
+        &mut p.a,
+        p.alice_pk,
+        new_session(CAROL_HANDLE, with_carol, SessionRole::Initiator),
+    )
+    .unwrap();
+    assert!(p.am.pending_outgoing_ids(&p.a).unwrap().is_empty());
+    let to_bob: Vec<_> = (0u8..3).map(|i| p.alice_sends(&[i])).collect();
+    let to_carol = p
+        .am
+        .send(&mut p.a, p.alice_pk, CAROL_HANDLE, &cid(), b"carol")
+        .map(new_message)
+        .unwrap();
+    assert!(p
+        .am
+        .acknowledge_outgoing(&mut p.a, ALICE_HANDLE, &to_bob[0].message_id)
+        .unwrap());
+
+    let sorted = |mut ids: Vec<MessageId>| {
+        ids.sort();
+        ids
+    };
+    let mut expected: Vec<MessageId> = p
+        .am
+        .pending_outgoing(&p.a, ALICE_HANDLE)
+        .unwrap()
+        .into_iter()
+        .chain(p.am.pending_outgoing(&p.a, CAROL_HANDLE).unwrap())
+        .map(|m| m.message_id)
+        .collect();
+    expected = sorted(expected);
+    assert_eq!(
+        expected,
+        sorted(vec![to_bob[1].message_id, to_bob[2].message_id, to_carol.message_id])
+    );
+    assert_eq!(sorted(p.am.pending_outgoing_ids(&p.a).unwrap()), expected);
+
+    p.a.put(&outbox_key(&p.bob_pk, &to_bob[1].message_id), b"not a record")
+        .unwrap();
+    assert!(p.am.pending_outgoing(&p.a, ALICE_HANDLE).is_err());
+    assert_eq!(sorted(p.am.pending_outgoing_ids(&p.a).unwrap()), expected);
+}
+
 #[test]
 fn a_repeated_message_is_a_duplicate_and_advances_nothing() {
     let mut p = memory_peers();

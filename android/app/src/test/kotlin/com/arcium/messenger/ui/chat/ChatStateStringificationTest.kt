@@ -82,7 +82,7 @@ class ChatStateStringificationTest {
             7uL, false, ChatEntryState.RECEIVED, 1_700_000_000_000uL, byteArrayOf(0x61), PlaintextText(text),
         )
         val conversation = Conversation(
-            ByteArray(32) { 1 }, "Bob", "fp", ChatSessionState.Established, false, false, "", 1u, entry,
+            ByteArray(32) { 1 }, "Bob", "fp", ChatSessionState.Established, false, false, false, "", 1u, entry,
         )
         val state = ChatState(conversation = conversation, entries = listOf(entry), input = draft)
         for (rendered in listOf(state.toString(), "$state")) {

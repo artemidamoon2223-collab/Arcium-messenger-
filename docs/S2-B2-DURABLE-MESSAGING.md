@@ -35,12 +35,14 @@ here is transmitted.
 | `session:v1/<peer>` | `SESSION_CHECKPOINT_V1` (unchanged, S2-B1) | every transition |
 | `handle:v1/<handle>` | `HANDLE_RECORD_V1`: peer identity key the local handle belongs to | session creation |
 | `hsout:v1/<peer>` | initiator handshake bytes (public) | initiator session creation |
-| `hsin:v1/<handle>` | `PROVISIONAL_HANDSHAKE_RECORD_V1`: peer identity key and the handshake a responder received (public), not yet authenticated | responder: handshake receipt; deleted by the first authenticated message. Also beside this device's own unconfirmed initiator session (section 4c); deleted when that session is confirmed, removed or forgotten |
+| `hsin:v1/<handle>` | `PROVISIONAL_HANDSHAKE_RECORD_V1`: peer identity key and the handshake a responder received (public), not yet authenticated | responder: handshake receipt; deleted by the first authenticated message. Also beside this device's own unconfirmed initiator session (section 4c), deleted when that session is confirmed, removed or forgotten; and beside an established session as a possible restart (option B, section 4c), deleted when that session is removed or forgotten, kept when it is retired |
 | `outbox:v1/<peer>/<id>` | `OUTBOX_RECORD_V1`: generation, message id, client message id, exact wire bytes; only while unacknowledged | send |
 | `sendid:v1/<peer>/<client id>` | `SENDID_RECORD_V1`: the message id a logical message produced, sent or abandoned | send, abandon outgoing |
 | `inbox:v1/<peer>/<id>` | `INBOX_RECORD_V1`: generation, message id, plaintext; only while undelivered | receive |
 | `seen:v1/<peer>/<id>` | `SEEN_RECORD_V1`: id of an acknowledged incoming message | acknowledge incoming |
 | `prekeys/v2` | unchanged format | responder session creation from the first authenticated message (same transaction) |
+| `prekeys/renewed-b0` | one byte: the one-time prekey was replaced once for option B (`ArciumCore::replace_prekey_once`) | the first round of a build with option B, in the transaction that replaces the prekey |
+| `hsacc:v1/<peer>` | 32 bytes identifying the handshake the latest responder session with the peer came from by the keys it derives (option B, section 4c): SHA-256 over a label, the initiator identity key, the ephemeral key's X25519 with a fixed public scalar, the signed-prekey id and the one-time-prekey id | responder session creation from the first authenticated message (same transaction, a side write); replaced by the next one; kept when the session is removed or retired; deleted when the peer is forgotten |
 
 `<peer>` is the peer's X25519 identity key in hex, `<handle>` the local `u64`
 handle in hex, `<id>` a message id in hex, `<client id>` the caller's logical
@@ -65,14 +67,15 @@ transaction; if any precondition fails, nothing is written.
 |---|---|---|
 | initiator establishment | session gen 0, handle, handshake | session absent, handle absent |
 | responder: handshake received | provisional handshake record only | handle absent, session absent (read in the same transaction) |
-| responder: first message authenticated | session gen 1, handle, inbox record (undelivered), rotated prekey record, provisional record deleted | session absent, handle absent, provisional record byte-identical to the one the session was derived from, inbox id absent, seen id absent, prekey record byte-identical to the one validated |
-| handshake beside own session (4c) | provisional record only | session record byte-identical (SHA-256) to the one classified as this device's own initiator session with nothing received, handle record naming the peer (read in the same transaction) |
+| responder: first message authenticated | session gen 1, handle, inbox record (undelivered), rotated prekey record, provisional record deleted, `hsacc:` record written (option B) | session absent, handle absent, provisional record byte-identical to the one the session was derived from, inbox id absent, seen id absent, prekey record byte-identical to the one validated, `hsacc:` record byte-identical to the one read (or absent; one that could not be read is deleted first) |
+| handshake beside own session or an established one (4c) | provisional record only | session record byte-identical (SHA-256) to the one classified as this device's own initiator session with nothing received, or as one that has received from the peer, handle record naming the peer (read in the same transaction) |
 | send | session gen n+1, outbox record, send-id record | session is the record loaded (gen n, same SHA-256), outbox id absent, send-id absent |
-| receive | session gen n+1, inbox record (undelivered), the peer's provisional record beside the session deleted with the side writes for it (4c; the one-time prekey it names replaced, tracker R-6) | session is the record loaded, inbox id absent, seen id absent, that provisional record exactly the one read (or still absent if none was), each record a side write for it read exactly as read |
+| receive | session gen n+1, inbox record (undelivered); on the first message from the peer committed on the session, the peer's provisional record beside it deleted, and for this device's own initiator session the confirm hook's side writes (4c; the one-time prekey replaced, tracker R-6, option B) | session is the record loaded, inbox id absent, seen id absent; on that first message, that provisional record exactly the one read (or still absent if none was) and each record a side write was made from exactly as read |
 | acknowledge incoming | inbox record deleted, seen record written | inbox record present, else no-op (idempotent) |
 | acknowledge outgoing | outbox record deleted (send-id kept) | outbox record present, else no-op (idempotent) |
 | abandon outgoing | outbox record deleted, send-id marked abandoned | outbox record present, else no-op (idempotent) |
 | remove session | session, handle, handshake, the peer's provisional record beside it (4c) deleted | see 6a; session record unchanged since checked |
+| retire session (option B) | session, handle, handshake deleted; the peer's provisional record beside it kept; the caller's records (`retire_session_with`: the chat meta with the reset request or the restart notice) written | see 6a; session record unchanged since checked |
 
 A transition's precondition names the exact record it was staged from, not
 only its generation. A session that is removed and created again with the same
@@ -115,7 +118,9 @@ No output of a transition leaves Rust before its `COMMIT` returned `Ok`.
   against the prekeys held now (checked again), and the message is decrypted
   on that result held in memory (`durable::ProvisionalSession`, which cannot
   encrypt and is never stored). Only if the AEAD verifies — which requires the
-  keys X3DH derived, and so the initiator's identity secret — does one
+  keys X3DH derived, and so the initiator's identity secret (or this
+  device's signed-prekey secret: key-compromise impersonation,
+  `docs/NET-MESSAGING.md` section 8) — does one
   transaction store the advanced session at generation 1 (it already has its
   receiving chain), its handle, the message as an undelivered inbox record,
   the prekey record rotated past the one-time prekey, and delete the
@@ -225,6 +230,31 @@ provisional record beside a session. This section changes that.
   it. Nothing is consumed, the session record is not touched, and nothing
   else is derived from the record: it has no more authority than any
   provisional record.
+- **Beside an established session (option B).** The same recording is
+  allowed beside a session that has received a message from the peer, under
+  the same checks: there the handshake may be the peer's restart of the
+  session (`docs/NET-MESSAGING.md` section 10, "Reset"). It has no more
+  authority there. A receive on that session keeps it (a message the peer
+  sent before restarting says nothing about the restart). When a message
+  from the peer that does not decrypt under the session authenticates as
+  the first message under it (Use, below), the network layer gives the
+  session up (`retire_session`, section 6a), which leaves the record as the
+  provisional handshake, and the message is then read as the first message
+  of a new session (section 4). A handshake it cannot answer beside an
+  established session is refused by the network layer (section 6), so a
+  peer whose restart names a one-time prekey that changed meanwhile makes
+  it again, except a late copy of the handshake that session came from,
+  which is dropped: a refusal naming it would end the session the peer has
+  just made. That handshake is known from `hsacc:` (section 2), which the
+  transaction storing a responder session writes. It is compared by the
+  keys it derives, not by its bytes: a relay can put another ephemeral key
+  in place of the initiator's that derives the same keys (the top bit
+  X25519 ignores, or the point plus a low-order point, which every clamped
+  scalar cancels), and the session made from it is still the initiator's.
+  A responder session stored by an earlier build has no such record, and
+  neither has one whose earlier record no longer decrypts (it is then not
+  replaced); the copy is then refused (`docs/NET-MESSAGING.md` section 10,
+  "Reset").
 - **Use.** While the session exists it is used for one thing only: when a message
   from the peer fails to decrypt under the session,
   `Messenger::first_message_authenticates` checks whether it authenticates
@@ -248,17 +278,23 @@ provisional record beside a session. This section changes that.
     record exactly as read, or still absent if none was). Another
     connection recording one between the read and the commit makes the
     receive fail with `Conflict` and nothing written; repeating it deletes
-    the record. A messenger made with `Messenger::with_beside_discard`
-    commits, in that same transaction, the side writes it returns for the
-    record being deleted. `mobile-ffi` replaces there the one-time prekey
-    the handshake names, if the prekey record held now can answer it
-    (tracker R-6): a first message under it may have authenticated here
-    (Use, above), read with that prekey, and the peer has given that
-    session up, so while the prekey stays, a later leak of this store
-    derives that message's keys. A record a side write was made from that
+    the record. Only this first message does: later receives keep a record
+    beside the now established session (above). A messenger made with
+    `Messenger::with_confirm_hook` commits, in the transaction of the
+    receive that confirms this device's own initiator session, the side
+    writes the hook returns. `mobile-ffi` replaces there this device's
+    one-time prekey (tracker R-6, option B): every handshake built from a
+    bundle published before the confirmation is then unanswerable, so a
+    first message of the peer that authenticated beside this session
+    (read with that prekey, never accepted) cannot be derived again from a
+    later leak of the store, and a handshake of the peer this device never
+    saw, with its first message, cannot later replace the established
+    session. Another contact's handshake that names the replaced prekey is
+    refused and starts again. A record a side write was made from that
     changes between the read and the commit makes the receive fail with
     `Conflict`, nothing written; repeating it reads it again. A removal or
     forgetting does not call it.
+  - Retired: `retire_session` (option B, section 6a) keeps it.
   - Removed: `remove_session` deletes it with the session, handle and stored
     handshake (section 6a). The peer retransmits its handshake while its
     own session is unconfirmed, and it is then recorded as for any first
@@ -282,11 +318,14 @@ provisional record beside a session. This section changes that.
     beside the session, as recorded now. That is what it is: the peer's
     handshake, checked against the prekeys when it was recorded.
   - A provisional record next to an established session can exist (earlier
-    builds deleted it only by a promotion). It is never read there: the
-    check above runs only for an unconfirmed session of this device's own.
-    The next message from the peer committed on the session deletes it,
-    with the side writes for it (the one-time prekey it names replaced if
-    the record can still answer it).
+    builds deleted it only by a promotion). Since option B it is kept there
+    as a possible restart, like any record beside an established session:
+    only a first message authenticating under it would replace the session,
+    which needs the peer's identity secret (or this device's signed-prekey
+    secret, `docs/NET-MESSAGING.md` section 8) and the one-time prekey it
+    names still published (a store written before option B did not replace
+    that prekey when its session was confirmed; the first round of a build
+    with option B replaces it once, `ArciumCore::replace_prekey_once`).
   - Nothing is rewritten in place, and no record format changes. The
     conflict flag of the network layer changes meaning
     (`docs/NET-MESSAGING.md` section 10).
@@ -296,8 +335,9 @@ provisional record beside a session. This section changes that.
   A handshake that created a session here cannot be replayed this way (its
   one-time prekey was consumed and replaced, section 4). A handshake this
   device never accepted can, for as long as no other first contact consumes
-  that prekey and no confirmation of this device's own session beside it
-  replaces it. The consequence is in `docs/NET-MESSAGING.md` section 8. A
+  that prekey and no confirmation of an own session replaces it (since
+  option B every confirmation does, and a store written before it replaces
+  the prekey once). The consequence is in `docs/NET-MESSAGING.md` section 8. A
   handshake in the form without a one-time prekey, which would have no such
   protection, is never answered, also when this device holds no one-time
   prekey (`OneTimePrekeyRequired`; tracker X-6).
@@ -376,7 +416,7 @@ leave the peer with a history this side no longer has.
 |---|---|---|
 | commit with unknown outcome on this handle | refused, `Unresolved` | an ambiguous commit is not a rollback; `recover_session` first |
 | session record unreadable or missing | refused, `InvalidSession` / `MissingSession` | whether it holds obligations cannot be decided |
-| a message from the peer committed (established) | refused, `SessionEstablished` | the peer holds the session; resetting it needs a peer-authenticated protocol, which does not exist here |
+| a message from the peer committed (established) | `remove_session`: refused, `SessionEstablished`; `retire_session`: removed as below, the peer's handshake beside it kept | the peer holds the session; only the user's reset (`reset_session`) or the peer's authenticated restart (option B, section 4c) gives it up, and the peer then switches when the first message of the new session authenticates there |
 | outgoing messages neither acknowledged nor abandoned | refused, `PendingOutgoing{count}` | each may have been published; the caller settles them one by one |
 | no message received, nothing pending (handshake refused or its delivery unknown) | session, handle, stored handshake and the peer's handshake recorded beside it (section 4c) deleted in one transaction | nothing received, nothing owed |
 | a send or receive commits between the checks and the transaction | refused, `Conflict(RecordChanged)`, nothing deleted | only those add obligations, and they change the record |
@@ -393,9 +433,11 @@ created its session from it (a message of that session authenticated there)
 keeps that session and refuses the new handshake (`AlreadyExists`), and
 messages of either session fail to decrypt under the other and write nothing.
 A peer that had only recorded it takes the new handshake in its place: a
-provisional record has no authority to keep. What that costs is liveness: those two peers stay unable to talk until
-the peer's session can be reset, which needs a peer-authenticated reset
-protocol that is out of scope. Local removal proves nothing about the peer.
+provisional record has no authority to keep. What that costs is liveness:
+those two peers stay unable to talk until one of them resets the session
+(option B: `retire_session` here, the peer's replacement on the first
+message of the new session there). Local removal proves nothing about the
+peer.
 
 - A forged or undecryptable message stages nothing and writes nothing.
 
@@ -403,11 +445,11 @@ protocol that is out of scope. Local removal proves nothing about the peer.
 
 `forget_peer(handle, peer, also_delete)` is the user's explicit decision to
 delete a contact (`delete_contact`, `docs/NET-MESSAGING.md` section 10).
-Unlike `remove_session` it does not ask whether obligations remain: it is
-the way out of a session that can no longer progress (option C of
-`docs/SESSION-RECOVERY-OPTIONS.md`). It is the one exception to "an
-established session is not removed" above and to "never replaced by a new
-session" for an unreadable record (section 4). The rules of
+Unlike `remove_session` it does not ask whether obligations remain (option C
+of `docs/SESSION-RECOVERY-OPTIONS.md`). With `retire_session` (option B,
+above) it is an exception to "an established session is not removed", and
+it is the one exception to "never replaced by a new session" for an
+unreadable record (section 4). The rules of
 `remove_session` are unchanged.
 
 - One transaction deletes, whatever state the session is in (established,
@@ -565,7 +607,8 @@ message). They are never listed, so they cost disk space, not time.
 `SESSION_CHECKPOINT_V1`, `RATCHET_STATE_V1`, `PREKEY_BUNDLE_V1`,
 `INITIATOR_HANDSHAKE_V1`, `PERSISTED_PREKEY_RECORD_V2` and the message format
 `header(40) || ciphertext` are unchanged. `PROVISIONAL_HANDSHAKE_RECORD_V1`
-(`hsin:`) is new and local. A responder session stored by an earlier build at
+(`hsin:`) and the accepted-handshake record (`hsacc:`, option B) are new and
+local. A responder session stored by an earlier build at
 generation 0, before any message authenticated, is still loaded as a session;
 it reads as `AwaitingPeer`, not `Established`, until a message from the peer
 is accepted on it. It is not migrated in place: it is retired when a new

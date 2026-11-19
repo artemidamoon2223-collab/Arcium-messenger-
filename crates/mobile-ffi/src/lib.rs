@@ -1893,8 +1893,10 @@ impl ArciumCore {
 }
 
 /// Test aids for the prekey maintenance of a round (tracker R-6), per
-/// thread: a closure run inside the maintenance transaction just before it
-/// writes, and a one-shot failure of the publication note.
+/// thread, each one-shot: a closure run after maintenance's read without a
+/// transaction, before its transaction begins; a closure run inside the
+/// maintenance transaction just before it writes; and a failure of the
+/// publication note.
 #[cfg(test)]
 pub(crate) mod prekey_hooks {
     use std::cell::{Cell, RefCell};

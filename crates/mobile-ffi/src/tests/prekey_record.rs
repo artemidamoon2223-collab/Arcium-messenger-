@@ -640,9 +640,9 @@ fn beside_an_own_session_and_beside_an_established_session_a_first_message_under
 /// Two instances on one database (an in-process stand-in for two
 /// processes): the record is created once and a due rotation happens once.
 /// The second instance runs its maintenance while the first holds its
-/// transaction, just before it writes: it reads the old record, finds work
-/// due, waits for the write lock, and must then find the first one's record
-/// and write nothing. (If it planned from the read outside its transaction,
+/// transaction, just before it writes: it reads the old record and finds
+/// work due, and its transaction, which begins only after the first one
+/// committed, must find the first one's record and write nothing. (If it planned from the read outside its transaction,
 /// it would write a second record over the first.)
 #[test]
 fn two_instances_create_prekeys_once_and_rotate_once() {
@@ -662,8 +662,8 @@ fn two_instances_create_prekeys_once_and_rotate_once() {
                 other.maintain_prekeys(now).unwrap()
             });
             // The other instance has read the record as it was before this
-            // transaction writes, found work due, and now waits for the
-            // write lock this transaction holds.
+            // transaction writes and found work due; its own transaction
+            // begins once this one has committed.
             has_read
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .expect("the other instance read the record first");

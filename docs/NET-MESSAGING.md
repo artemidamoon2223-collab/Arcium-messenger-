@@ -585,8 +585,8 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 | the bundle's publication fails (the rotation check, the PUT, or the record of the relay's acceptance) | the round ends before anything is read from the mailbox; the next round publishes again. A rotation committed before the failure stays: its key does not age until the relay has accepted it, and the previous key, which the bundle the relay still serves names, still answers (tracker R-6) |
 | crash after a rotation committed, or after the relay accepted the rotated bundle and before that was recorded | the next round publishes the same key and records it; there is no second rotation |
 | prekey record unreadable | every round fails at its rotation check, as an export would |
-| device clock wrong | a rotation happens when the clock reads 7 days or more from the key's publication, in either direction (section 8, "Clocks"): a steady offset changes nothing; a step forward brings the next rotation forward by the step; a step back delays it by the step, unless the clock then reads 7 days or more before the publication; every early rotation drops the older previous key early (a handshake naming it is refused once and made again); a key made under a wrong clock is aged from that clock's reading, so setting the clock right rotates again if the clock then reads 7 days or more from it, and otherwise delays the next rotation; a frozen clock stops rotation by time |
-| two instances on one database (two processes) | maintenance and the publication record read the prekey record again inside their transaction, so it is created once and rotated once. A first message promoted in one instance while the other rotates or records a publication fails its byte-identical precondition on the prekey record: it is deleted, the handshake is flagged as refused, and its retransmission is answered (under the previous key after a rotation). Maintenance reads the record without a transaction first, so while another instance's promotion is uncommitted it can find nothing due, and the bundle exported after that promotion commits pairs the current signed prekey with the new one-time prekey: a handshake built from it is refused once (the next round rotates) and made again. Production runs one sync loop; the tests use two instances in one process, not two processes |
+| device clock wrong | a key's age is the difference between two readings of this device's clock: the one when the relay accepted its bundle, and the one of the current round; it rotates when that is 7 days or more, in either direction (section 8, "Clocks"). A steady offset changes nothing; a step of the clock between the two readings moves the next rotation earlier (forward) or later (back), or makes it due at once when the difference reaches 7 days either way; every early rotation drops the older previous key early (a handshake naming it is refused once and made again); a frozen clock stops rotation by time |
+| two instances on one database (two processes) | maintenance and the publication record read the prekey record again inside their transaction, so it is created once and rotated once. A first message promoted in one instance while the other rotates or records a publication fails its byte-identical precondition on the prekey record: it is deleted, the handshake is flagged as refused, and its retransmission is answered (under the previous key after a rotation). A promotion in the other instance that commits between this instance's maintenance read and its export (maintenance first reads without a transaction, and the export is a separate read) makes the published bundle pair the current signed prekey with the new one-time prekey: a handshake built from it is refused once (the next round rotates) and made again. Production runs one sync loop; the tests use two instances in one process, not two processes |
 | going back to a build before signed-prekey rotation | not supported: that build cannot read the prekey record (186 bytes), so every round fails at the bundle export; the record is not overwritten |
 
 ## 8. Not provided
@@ -835,22 +835,19 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   texts read `NotDelivered`.
 - Clocks (tracker R-6). The age of a signed prekey is read from this
   device's clock, which is accepted and documented (Owner, 2026-11-19; to
-  be reconsidered at the security audit). A rotation happens when the
-  clock reads 7 days or more from the time the relay accepted the key, in
-  either direction (`plan_rotation`). So:
+  be reconsidered at the security audit). The age is the difference
+  between two readings of that clock: the one of the round in which the
+  relay accepted the key's bundle, and the one of the current round. The
+  key rotates when the difference is 7 days or more, in either direction
+  (`plan_rotation`). So:
   - a steady offset has no effect;
-  - a step forward brings the next rotation forward by the step, and
-    rotates at the next round if the key is then 7 days old or more by
-    the clock;
-  - a step back delays the next rotation by the step, unless the clock
-    then reads 7 days or more before the publication, which rotates;
+  - a step of the clock between the two readings moves the next rotation:
+    earlier for a step forward, later for a step back; and it is due at
+    once when the difference reaches 7 days either way (a clock that was
+    behind when the key was published and is then set right counts as a
+    step forward);
   - every early rotation, forward or back, drops the older previous key
     early, so a handshake naming it is refused once and made again;
-  - a key made under a wrong clock is aged from that clock's reading, so
-    setting the clock right rotates again if the clock then reads 7 days or
-    more from it (always after a backward jump that rotated; after a
-    forward jump only while the correction comes within the jump less 7
-    days), and otherwise delays the next rotation;
   - a frozen clock, or one an attacker holds, stops rotation by time,
     which is no worse than before rotation existed, while a change of the
     one-time prekey still rotates an active device;

@@ -985,6 +985,7 @@ impl NetworkMessenger {
                 meta_key(&key),
                 open_key(&key),
                 accepted_handshake_key(&key),
+                crate::network::far_wait_key(handle),
             ];
             also.extend(store.list_keys_with_prefix(&entry_namespace(&key))?);
             // Each index key with an empty last part is this contact's prefix
@@ -1006,8 +1007,9 @@ impl NetworkMessenger {
         // id: its entries for this contact are never consulted again, and
         // the next round drops them (`prune_sent`).
         self.refused.lock().expect("refused").remove(&key);
-        // A new session with this contact has the same handle.
-        self.forget_far_waits(handle);
+        // A new session with this contact has the same handle; its stored
+        // waits went with the rest.
+        self.far_waits_deleted(handle);
         let mut refusals = self.refusals.lock().expect("refusals");
         refusals.queued.retain(|(to, _, _)| *to != key);
         refusals.last_to.remove(&key);

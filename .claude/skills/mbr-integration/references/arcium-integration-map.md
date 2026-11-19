@@ -1,8 +1,9 @@
 # Arcium state per MBR mechanism, and the proposed staging
 
-Two parts, deliberately separated: **verified facts** about this repository, and
-a **proposal** whose status is stated stage by stage. Do not quote a stage of
-part 2 in the present tense unless part 1 shows it in the code.
+Two parts, deliberately separated: **where to read** the facts about this
+repository (part 1), and a **proposal** whose status is stated stage by stage
+(part 2). Do not quote a stage of part 2 in the present tense unless the code,
+read where part 1 points, shows it.
 
 Repository layout is not repeated here — see
 `engineering-code-review/references/repo-map.md`. This file covers only what
@@ -10,9 +11,12 @@ bears on durable state.
 
 ## Part 1 — where Arcium's current state is read (category 1)
 
-This file keeps no copy of that state. The table it kept was checked at
-`de328a1`; by 2026-11-19, 85 commits had changed the code and specifications
-it described, and its rows had drifted (the ACK row named two of the ways a
+This file keeps no per-mechanism copy of that state. The table it kept was
+checked at `de328a1`; at `d578295`, `git log --oneline de328a1..d578295 --
+crates/core-storage crates/core-protocol crates/core-crypto/src/ratchet.rs
+crates/mobile-ffi docs/S2-B2-DURABLE-MESSAGING.md docs/NET-MESSAGING.md`
+listed 85 commits (77 without merges) that had changed what it described, and
+its rows had drifted (the ACK row named two of the ways a
 text leaves the outbox; reset, cancel, delete and GONE notices came later).
 Read the state from the code and
 the specifications at your target SHA. `docs/S2-B2-DURABLE-MESSAGING.md`
@@ -32,9 +36,13 @@ wins.
 | ACK bound to an artifact | NET §5, §6 |
 | explicit states, recovery handles | `ChatEntryState`, `ChatSessionState` (`network/chat.rs`); S2-B2 §7 (`recover_session`, `RecoveryReport`) |
 | durability settings | `EncryptedStore::init`, pinned by the test `durability_configuration_is_pinned`; S2-B2 §8 |
+| persisted records | S2-B2 §2; identity and prekey records (`mobile-ffi/src/lib.rs`), contact cards (`mobile-ffi/src/contacts.rs`), history (`network/chat.rs`) |
 
-These are absent by an owner decision or by design, and they are the easiest
-to overstate. Re-check each before relying on it:
+These are absent, or only assumed, by an owner decision or by design, and
+they are the easiest to overstate. Re-check each before relying on it:
+
+- **power-loss durability:** assumed, not demonstrated; it depends on the
+  device honouring `fsync` on files and directories (S2-B2 §8);
 
 - **rollback detection:** not provided; owner decision D-009 (S2-B2 §8,
   "Rollback decision");
@@ -63,6 +71,11 @@ grep -n "const [A-Z_]*KEY: &str" crates/mobile-ffi/src/lib.rs  # identity and pr
 grep -n "MAX_SKIP\|max_skipped\|fn trim_skipped\|MAX_PREV_CHAINS" crates/core-crypto/src/ratchet.rs
 grep -rni "CommitAnchor\|NullAnchor\|skip_age" crates           # empty = S6 and S7 not started
 ```
+
+The `:v1/` grep misses keys built from a constant or a helper: `outbox:` and
+`inbox:` (`OUTBOX_NAMESPACE`, `INBOX_NAMESPACE` in
+`core-protocol/src/messaging/records.rs`) and history entries
+(`entry_namespace`, `network/chat.rs`).
 
 ## Part 2 — proposed staging (category 3)
 

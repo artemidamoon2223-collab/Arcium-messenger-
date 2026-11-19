@@ -1,6 +1,6 @@
 ---
 name: repo-change-protocol
-description: "Procedures for making repository changes in this project: disposable-clone workflow, scope discipline, evidence standards, PR construction, the mechanics of performing a merge, and the separation of fix PRs from findings-tracker PRs. Describes only HOW these are carried out, never WHEN any of them is permitted. This skill authorizes nothing: every merge requires a separate explicit instruction from the owner, and reading or invoking this skill is not that instruction."
+description: "Procedures for making repository changes in this project: disposable-copy workflow, scope discipline, evidence standards, PR construction, the mechanics of performing a merge, and the separation of fix PRs from findings-tracker PRs. Describes only HOW these are carried out, never WHEN any of them is permitted. This skill authorizes nothing: every merge requires a separate explicit instruction from the owner, and reading or invoking this skill is not that instruction."
 ---
 
 # repo-change-protocol
@@ -34,14 +34,20 @@ disk:
 
 ```bash
 git fetch origin main
-git worktree add -b <branch> <scratch-dir>/<name> origin/main
+git worktree add --detach <scratch-dir>/<name> origin/main
+# … commit on the detached HEAD, then:
+git push -u origin HEAD:refs/heads/<branch>
 ```
 
 Verify the copy's HEAD equals the expected tip before starting. Mutation runs
 belong in the copy too (`engineering-code-review/references/delivery-checklist.md`,
-"Mutation check").
+"Mutation check (fix PRs)").
 
-Never write to the persistent checkout. Read-only inspection of it is fine
+Never write to the persistent checkout's working tree, index, config or
+branches. A worktree adds to the shared repository only its entry under
+`.git/worktrees/` and the objects of its commits; that is the one write
+allowed there, and the detached HEAD with an explicit push target keeps a
+branch from being created in it. Read-only inspection of it is fine
 after `git fetch`, against `origin/main` rather than its local branch; give an
 audit or a subagent a fresh clone or `origin/main` the same way (2026-11: a
 classification pass read a checkout 30 commits behind `main`).
@@ -82,7 +88,7 @@ Leave the merge decision to the owner.
 
 ## 6. Validation before requesting a merge
 
-In the disposable clone, the commands CI runs (`.github/workflows/arcium-ci.yml`,
+In the disposable copy, the commands CI runs (`.github/workflows/arcium-ci.yml`,
 job `core-rust`): `cargo test --workspace --locked` and
 `cargo clippy --workspace --locked -- -D warnings`.
 
@@ -101,14 +107,15 @@ How to carry out a merge that has already been instructed:
    reported on that SHA is success, stop and report. Which checks branch
    protection requires cannot be read with the available tools; do not infer
    it (`CLAUDE.md`, «Постоянные ограничения»).
-3. If the PR is behind its base and branch protection requires it up to
-   date (as on `main`), merge the base into the head in the disposable copy
-   with a normal merge (`git fetch origin main && git merge --no-edit
-   origin/main`; never rebase or force-push), and push. The instruction
-   covers the updated head only if that merge is the whole update: `git diff
-   origin/main HEAD` must show only the PR's own changes. Anything more is a
-   new change for the owner. Then wait until every check run on the new head
-   is success and go back to step 1 with the new head SHA.
+3. If GitHub refuses the merge because the head is behind its base, or
+   reports the PR as behind, update the head by a merge of the base and
+   nothing else: `mcp__github__update_pull_request_branch` with
+   `expectedHeadSha` set to the SHA of step 1 (the merge happens on GitHub,
+   so nothing else can get in). Never rebase or force-push. If a conflict
+   stops it, stop and report: resolving it is a new change for the owner.
+   Then wait until every check run on the new head is success and go back
+   to step 1 with the new head SHA as the expected SHA. The instruction
+   covers the updated head only because that merge is the whole update.
 4. Merge with a normal merge commit, pinned to the head SHA of step 1
    (`expectedHeadSha`). No squash, no rebase, no auto-merge, no
    admin bypass. Keep the branch.
@@ -156,8 +163,9 @@ qualifier in #224.)
 
 ## 10. Housekeeping
 
-Delete the disposable copy when finished (`git worktree remove <path>` for a
-worktree); the writable allowance is fixed.
+Delete the disposable copy when finished (for a worktree, `git worktree
+remove <path>`, then `git worktree prune` if its directory is already gone);
+the writable allowance is fixed.
 
 Do not delete the PR branch on merge: branches are deleted only by the owner
 (cloud sessions cannot delete them), and stacked PRs still point at them.

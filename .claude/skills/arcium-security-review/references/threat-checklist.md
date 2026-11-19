@@ -174,13 +174,15 @@ the Android contact-card and add-contact code. Specification:
   session with that sender, on which nothing was received yet; anything else
   is dropped (`docs/NET-MESSAGING.md` §6). A handshake is not authenticated
   where the network layer reads it: one naming a pinned contact while our
-  session with that contact is an unconfirmed start of our own is only
-  recorded beside that session (S2-B2 §4c). The conflict flag is set only
-  when a message from the contact that does not decrypt under our session
-  authenticates as the first message under that recorded handshake
-  (`beside_authenticates`, in the `Message` arm of
-  `NetworkMessenger::process` in `network.rs`), which needs the contact's
-  identity secret or a signed-prekey secret this device still holds. So a
+  session with that contact is an unconfirmed start of our own is recorded
+  beside that session and raises nothing (S2-B2 §4c; one this device cannot
+  answer is refused instead, `record_beside`). The conflict flag is set
+  only when, while our session is still that unconfirmed start, a message
+  from the contact that does not decrypt under it authenticates as the
+  first message under the recorded handshake (`beside_authenticates` in
+  `NetworkMessenger::take_message`, reached from the `Message` arm of
+  `process`, `network.rs`), which needs the contact's identity secret or a
+  signed-prekey secret this device still holds. So a
   forged handshake alone raises nothing; a genuine handshake and first
   message replayed while the prekeys they name can still be answered can
   (tracker R-13, PARTIAL; `docs/NET-MESSAGING.md` §8, "Protection against a
@@ -192,7 +194,9 @@ the Android contact-card and add-contact code. Specification:
   waiting device (`reset_session`, option B) or deleting the contact on
   both devices (tracker R-13). A change must not let a forged or replayed
   object reach a restart or a session removal without a verified refusal,
-  an authenticated first message, or the user's own resolve or reset.
+  the contact's first message authenticating under a handshake recorded
+  beside the session that still names this device's current one-time
+  prekey (option B), or the user's own resolve or reset.
 
 ## 4. Network
 

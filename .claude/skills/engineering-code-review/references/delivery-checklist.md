@@ -26,7 +26,7 @@ Running them locally is the cheapest way to know what CI will say.
 Knowing this prevents both false confidence and pointless waiting. This is the
 one copy of the path filters in the skills; other skills point here. It is
 derived from the `on:` block of every file in `.github/workflows/` at
-`de328a1`, and re-checked unchanged at `d578295`. Those blocks are the source: re-derive at your target SHA with
+`de328a1`. Those blocks are the source: re-derive at your target SHA with
 
 ```bash
 grep -nE "^  (push|pull_request|schedule|workflow_dispatch):|^      - '" .github/workflows/*.yml
@@ -83,11 +83,13 @@ grep -nE "^  (push|pull_request|schedule|workflow_dispatch):|^      - '" .github
 
 - **Rust:** next to the tests of the same code; follow the neighbours. Small
   unit tests sit in a `#[cfg(test)] mod tests` block at the end of the file
-  they cover. Larger crates keep test files in a test directory declared from
-  that block: `crates/mobile-ffi/src/tests/*.rs` (from `mod tests` in
-  `crates/mobile-ffi/src/lib.rs`) and `crates/core-protocol/src/messaging/tests/`.
-  Cargo integration tests are in `crates/<crate>/tests/` where one exists
-  (`crates/core-crypto/tests/`). Re-derive with
+  they cover. Larger crates keep test files apart:
+  `crates/mobile-ffi/src/tests/*.rs` (declared in the `mod tests` block of
+  `crates/mobile-ffi/src/lib.rs`), `crates/core-protocol/src/messaging/tests/*.rs`
+  (declared in `messaging/tests.rs`, the `#[cfg(test)] mod tests;` of
+  `messaging.rs`), and `crates/relay/src/v2_tests.rs`, a sibling file
+  (`mod v2_tests;` in `relay/src/lib.rs`). Cargo integration tests are in
+  `crates/<crate>/tests/` where one exists (`crates/core-crypto/tests/`). Re-derive with
   `find crates -path '*tests*' -name '*.rs' | sort`.
 - **TypeScript:** `arcium-psi/tests/src/*.test.ts`, run with
   `npx mocha --require ts-node/register 'src/<name>.test.ts'` from

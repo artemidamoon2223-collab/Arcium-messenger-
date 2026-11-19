@@ -317,6 +317,17 @@ fn retire_session_with_writes_the_callers_records_with_the_removal() {
     assert!(p.am.peer_of(&p.a, ALICE_HANDLE).unwrap().is_some(), "nothing removed");
     assert_eq!(p.a.get("note:x").unwrap(), b"old", "nothing written");
 
+    let twice = [
+        SideWrite::replace("note:x".into(), bytes(b"old"), bytes(b"mid")).unwrap(),
+        SideWrite::replace("note:x".into(), bytes(b"mid"), bytes(b"new")).unwrap(),
+    ];
+    assert!(matches!(
+        p.am.retire_session_with(&mut p.a, p.alice_pk, ALICE_HANDLE, &twice),
+        Err(MessagingError::SideWrite(SideWriteError::DuplicateKey))
+    ));
+    assert!(p.am.peer_of(&p.a, ALICE_HANDLE).unwrap().is_some(), "nothing removed");
+    assert_eq!(p.a.get("note:x").unwrap(), b"old", "nothing written");
+
     let note = SideWrite::replace("note:x".into(), bytes(b"old"), bytes(b"new")).unwrap();
     p.am.retire_session_with(&mut p.a, p.alice_pk, ALICE_HANDLE, &[note]).unwrap();
     assert!(p.am.peer_of(&p.a, ALICE_HANDLE).unwrap().is_none(), "removed");

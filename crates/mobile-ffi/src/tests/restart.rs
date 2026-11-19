@@ -540,9 +540,15 @@ fn a_restart_whose_prekey_a_confirmation_replaced_is_refused_and_made_again() {
 }
 
 /// Flips one ciphertext byte of `d`'s `hsacc:` record for `peer`, so it no
-/// longer decrypts. The row is found as the only one whose value changes
-/// when that record is written twice.
+/// longer decrypts.
 fn corrupt_accepted_handshake(d: &Device, peer: &Device) {
+    corrupt_record(d, &crate::accepted_handshake_key(&key(peer)));
+}
+
+/// Flips one ciphertext byte of `d`'s record at `record`, so it no longer
+/// decrypts. The row is found as the only one whose value changes when
+/// that record is written twice.
+fn corrupt_record(d: &Device, record: &str) {
     let rows = || -> Vec<(Vec<u8>, Vec<u8>)> {
         let conn = rusqlite::Connection::open(&d.path).unwrap();
         let mut stmt = conn.prepare("SELECT k, v FROM kv ORDER BY k").unwrap();
@@ -553,10 +559,9 @@ fn corrupt_accepted_handshake(d: &Device, peer: &Device) {
             .unwrap();
         all
     };
-    let record = crate::accepted_handshake_key(&key(peer));
-    d.core.store.lock().unwrap().put(&record, &[1; 32]).unwrap();
+    d.core.store.lock().unwrap().put(record, &[1; 32]).unwrap();
     let before = rows();
-    d.core.store.lock().unwrap().put(&record, &[2; 32]).unwrap();
+    d.core.store.lock().unwrap().put(record, &[2; 32]).unwrap();
     let after = rows();
     let changed: Vec<_> = before
         .iter()
@@ -570,7 +575,7 @@ fn corrupt_accepted_handshake(d: &Device, peer: &Device) {
     let conn = rusqlite::Connection::open(&d.path).unwrap();
     assert_eq!(conn.execute("UPDATE kv SET v = ?1 WHERE k = ?2", (v, k)).unwrap(), 1);
     assert!(matches!(
-        d.core.store.lock().unwrap().get(&record),
+        d.core.store.lock().unwrap().get(record),
         Err(StorageError::Decryption)
     ));
 }
@@ -706,6 +711,22 @@ fn a_reset_of_an_unreadable_session_changes_nothing() {
     assert_eq!((last.0, last.2.as_str()), (true, "pending"));
     assert_ne!(last.1, S::NotDelivered, "nothing was given up");
     assert!(alice.core.has_session(handle(&bob)).unwrap());
+    relay.stop();
+}
+
+/// A mark of the one-time replacement that no longer decrypts counts as
+/// written: rounds go on and the prekey is not replaced again.
+#[test]
+fn an_unreadable_prekey_renewal_mark_stops_no_round() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    let bundle = bob.core.export_prekey_bundle().unwrap();
+    corrupt_record(&bob, "prekeys/renewed-b0");
+    say(&alice, &bob, "a2", "still here");
+    rounds(&[&alice, &bob, &alice], 2);
+    assert!(chat(&bob, &alice).contains(&(false, S::Received, "still here".into())));
+    assert_eq!(bob.core.export_prekey_bundle().unwrap(), bundle, "not replaced again");
     relay.stop();
 }
 

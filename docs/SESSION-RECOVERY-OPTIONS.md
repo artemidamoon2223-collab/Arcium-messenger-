@@ -116,7 +116,9 @@ section 10 ("Conflict"). Beyond the sketch below:
   session does not raise a conflict by itself. It is recorded provisionally,
   as a responder records one today.
 - A conflict is raised only when the contact's first message (OPEN) under
-  that handshake authenticates, which needs the contact's identity secret.
+  that handshake authenticates, which needs the contact's identity secret
+  (or, as X3DH allows, this device's signed-prekey secret: key-compromise
+  impersonation, `docs/NET-MESSAGING.md` section 8).
 - Until then, the handshake replaces nothing and changes no flag.
 
 **What it solves:** situation 1. A forged or replayed handshake can no longer

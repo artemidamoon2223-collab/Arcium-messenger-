@@ -99,7 +99,8 @@ fn hsin(d: &Device, other: &Device) -> Option<Vec<u8>> {
 /// identity key, a fresh ephemeral key, and the prekey ids of `to`'s bundle
 /// as the relay serves it to anyone. It passes `to`'s prekey rules, but no
 /// one can make a message that authenticates under it without `from`'s
-/// identity secret.
+/// identity secret (or `to`'s signed-prekey secret, which this test does
+/// not use: `docs/NET-MESSAGING.md` section 8).
 fn forged_handshake(addr: &str, from: &Device, to: &Device) -> Vec<u8> {
     let bundle = relay::client::Connection::connect(addr, std::time::Duration::from_secs(2))
         .unwrap()

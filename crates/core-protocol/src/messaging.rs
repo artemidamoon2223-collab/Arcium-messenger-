@@ -80,11 +80,11 @@ struct Unresolved {
 
 /// Durable messaging over an S1 [`EncryptedStore`]. Holds no session state;
 /// only the set of sessions whose last commit had an unknown outcome, and
-/// what to commit when a handshake beside a session is discarded.
+/// what to commit when this device's own session is confirmed.
 #[derive(Default)]
 pub struct Messenger {
     unresolved: HashMap<u64, Unresolved>,
-    on_beside_discard: Option<BesideDiscard>,
+    on_confirm: Option<ConfirmHook>,
 }
 
 impl Messenger {
@@ -92,15 +92,17 @@ impl Messenger {
         Self::default()
     }
 
-    /// A messenger whose confirming receive commits `on_discard`'s side
-    /// writes in the same transaction that deletes a handshake recorded
-    /// beside the session (`docs/S2-B2-DURABLE-MESSAGING.md`, section 4c).
-    /// `mobile-ffi` uses it to replace the one-time prekey that handshake
-    /// names (tracker R-6). It is not called when the record goes with a
-    /// removed or forgotten session, nor for a record of another peer.
-    pub fn with_beside_discard(on_discard: BesideDiscard) -> Self {
+    /// A messenger whose receive that confirms this device's own initiator
+    /// session (the first message from the peer committed on it) also
+    /// commits `on_confirm`'s side writes, in the same transaction that
+    /// deletes a handshake recorded beside the session
+    /// (`docs/S2-B2-DURABLE-MESSAGING.md`, section 4c). `mobile-ffi` uses it
+    /// to replace the one-time prekey (tracker R-6, option B). It is not
+    /// called on any other receive, nor when a session is removed or
+    /// forgotten.
+    pub fn with_confirm_hook(on_confirm: ConfirmHook) -> Self {
         Self {
-            on_beside_discard: Some(on_discard),
+            on_confirm: Some(on_confirm),
             ..Self::default()
         }
     }
@@ -422,8 +424,10 @@ impl Messenger {
     }
 
     /// Whether `wire`, a message that did not decrypt under the session
-    /// `handle`, names a position of that session's current receiving chain
-    /// whose key is gone, so it can never be decrypted here (tracker R-21).
+    /// `handle`, names a position of that session's current receiving chain,
+    /// or of one of the last chains it left, whose key is gone, so it can
+    /// never be decrypted here (tracker R-21;
+    /// `DoubleRatchet::is_beyond_recall`).
     /// `false` for bytes too short or malformed to have a header. Reads
     /// state only; changes nothing.
     pub fn beyond_recall(
@@ -544,11 +548,15 @@ impl Messenger {
     /// accepted before is reported as a duplicate without touching the
     /// ratchet.
     ///
-    /// A handshake from the peer recorded beside this session
-    /// ([`record_handshake_beside`](Self::record_handshake_beside)) is
-    /// deleted in the same transaction: the peer holds this session now.
-    /// The side writes of [`with_beside_discard`](Self::with_beside_discard)
-    /// for that handshake are committed with it.
+    /// The first message from the peer committed on the session deletes a
+    /// handshake from the peer recorded beside it
+    /// ([`record_handshake_beside`](Self::record_handshake_beside)) in the
+    /// same transaction, as the peer holds this session now; when the
+    /// session is this device's own initiator session, the side writes of
+    /// [`with_confirm_hook`](Self::with_confirm_hook) are committed with it.
+    /// A handshake beside a session that had received before is kept: it may
+    /// be the peer's restart of the session (option B), and a message of the
+    /// session sent before the restart says nothing about it.
     pub fn receive(
         &mut self,
         store: &mut EncryptedStore,
@@ -604,9 +612,19 @@ impl Messenger {
         let generation = staged.generation();
         let record = encode_inbox(generation, &id, staged.output());
         let staged_on_legacy = session.is_legacy_unconfirmed().then_some(peer);
-        let (beside, discarded) = beside::discard_beside(store, handle, &peer)?;
-        let on_discard = match (&self.on_beside_discard, &discarded) {
-            (Some(f), Some(handshake)) => f(store, handshake)?,
+        // The first message from the peer committed on this session. Only
+        // then does a handshake beside it go (S2-B2 section 4c), and only for
+        // our own initiator session is the confirm hook called.
+        let confirming = !session.has_received();
+        let (beside, discarded) = if confirming {
+            beside::discard_beside(store, handle, &peer)?
+        } else {
+            (None, None)
+        };
+        let on_confirm = match &self.on_confirm {
+            Some(f) if confirming && session.role() == SessionRole::Initiator => {
+                f(store, discarded.as_ref())?
+            }
             _ => Vec::new(),
         };
         #[cfg(test)]
@@ -616,7 +634,7 @@ impl Messenger {
             SideWrite::require_absent(seen.clone()).map_err(MessagingError::SideWrite)?,
         ];
         side.extend(beside);
-        side.extend(on_discard);
+        side.extend(on_confirm);
         match session.commit_with(&mut S1CheckpointStore::new(store), staged, &side) {
             Ok(plaintext) => Ok(Received::Accepted(IncomingMessage {
                 message_id: id,
@@ -626,8 +644,8 @@ impl Messenger {
             // Accepted (and possibly acknowledged) by another instance
             // between the check above and this commit: its inbox (0) or
             // seen (1) record exists. A handshake recorded beside the session
-            // meanwhile (2), or a record a side write of `on_beside_discard`
-            // read that changed meanwhile (3 and after), is a plain
+            // meanwhile (2), or a record a side write of `on_confirm` read
+            // that changed meanwhile (2 or 3 and after), is a plain
             // conflict; repeating the receive reads them again.
             Err(CommitError::SideConflict {
                 index: 0 | 1,

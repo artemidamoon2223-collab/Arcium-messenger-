@@ -1,5 +1,6 @@
 //! R-13, option A of `docs/SESSION-RECOVERY-OPTIONS.md`: a session conflict
-//! is raised only by evidence that needs the contact's identity secret.
+//! is raised only by evidence that needs the contact's identity secret (or
+//! this device's signed-prekey secret: `docs/NET-MESSAGING.md` section 8).
 //!
 //! A handshake "from" a pinned contact that arrives while this device holds
 //! an unconfirmed session of its own is public bytes: anyone who reaches the
@@ -98,7 +99,8 @@ fn hsin(d: &Device, other: &Device) -> Option<Vec<u8>> {
 /// identity key, a fresh ephemeral key, and the prekey ids of `to`'s bundle
 /// as the relay serves it to anyone. It passes `to`'s prekey rules, but no
 /// one can make a message that authenticates under it without `from`'s
-/// identity secret.
+/// identity secret (or `to`'s signed-prekey secret, which this test does
+/// not use: `docs/NET-MESSAGING.md` section 8).
 fn forged_handshake(addr: &str, from: &Device, to: &Device) -> Vec<u8> {
     let bundle = relay::client::Connection::connect(addr, std::time::Duration::from_secs(2))
         .unwrap()
@@ -453,13 +455,15 @@ fn a_conflict_flag_an_earlier_build_raised_on_a_handshake_alone_is_not_read() {
     relay.stop();
 }
 
-/// Migration: a build before this change never deleted a provisional
-/// record when its own session was confirmed, so a store it wrote may hold
-/// one beside an established session. It is never read there (a message
-/// that does not decrypt raises nothing), the next message from the peer
-/// deletes it, and nothing else changes.
+/// Migration: a build before option A never deleted a provisional record
+/// when its own session was confirmed, so a store it wrote may hold one
+/// beside an established session. Since option B such a record is kept
+/// there as a possible restart by the contact: a message that does not
+/// authenticate under it changes nothing, and the contact's messages on the
+/// session go on as before. (Only a first message authenticating under it
+/// would replace the session: `tests::restart`.)
 #[test]
-fn a_stale_record_beside_an_established_session_is_ignored_and_then_deleted() {
+fn a_stale_record_beside_an_established_session_changes_nothing() {
     let relay = start_relay();
     let addr = relay.addr().to_string();
     let (v, c) = own_session(&addr, true);
@@ -476,11 +480,11 @@ fn a_stale_record_beside_an_established_session_is_ignored_and_then_deleted() {
     inject(&addr, &v, forged_message(&c));
     round(&[&v]);
     assert_eq!(session(&v, &c), ChatSessionState::Established);
-    assert_eq!(hsin(&v, &c), Some(stale), "a message that does not decrypt changes nothing");
+    assert_eq!(hsin(&v, &c), Some(stale.clone()), "a message that does not decrypt changes nothing");
 
     say(&c, &v, "c1", "after the upgrade");
     rounds(&[&c, &v, &c], 1);
-    assert_eq!(hsin(&v, &c), None, "the next message from the peer deleted it");
+    assert_eq!(hsin(&v, &c), Some(stale), "kept: messages of the session say nothing about a restart");
     assert_eq!(chat(&c, &v)[1], (true, S::Delivered, "after the upgrade".into()));
     assert_eq!(session(&v, &c), ChatSessionState::Established);
     relay.stop();

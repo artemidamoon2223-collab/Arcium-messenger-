@@ -2,7 +2,9 @@
 
 **Status:** proposal only, written 2026-11-14 against `main` @ `de328a1`.
 Nothing here is implemented or decided. *(Later: C is implemented, PR #165;
-A is implemented, PR #174, merged as `efd4c0e`; B is still open. Situation 2
+A is implemented, PR #174, merged as `efd4c0e`; B is implemented, with the
+user as the only trigger and a simultaneous reset shown as the existing
+conflict (Owner decisions of 2026-11-18). Situation 2
 now needs more than 100,000 lost messages instead of 1,000: a far skip,
 tracker R-14.)*
 
@@ -114,7 +116,9 @@ section 10 ("Conflict"). Beyond the sketch below:
   session does not raise a conflict by itself. It is recorded provisionally,
   as a responder records one today.
 - A conflict is raised only when the contact's first message (OPEN) under
-  that handshake authenticates, which needs the contact's identity secret.
+  that handshake authenticates, which needs the contact's identity secret
+  (or, as X3DH allows, this device's signed-prekey secret: key-compromise
+  impersonation, `docs/NET-MESSAGING.md` section 8).
 - Until then, the handshake replaces nothing and changes no flag.
 
 **What it solves:** situation 1. A forged or replayed handshake can no longer
@@ -130,6 +134,22 @@ resolved as today.
 recently.
 
 ### B. Peer-authenticated session replacement (protocol change)
+
+**Implemented** (Owner decisions of 2026-11-18: only the user starts a
+reset; when both reset at once, the conflict of option A is shown and
+resolved). Specification: `docs/NET-MESSAGING.md` section 10, "Reset";
+`docs/S2-B2-DURABLE-MESSAGING.md` sections 4c and 6a. Replays of an older
+handshake cannot be answered because every confirmation of an own session
+replaces this device's one-time prekey, and a store written before B
+replaces it once. A restart that can no longer be answered when it arrives
+is refused, and the restarting device makes it again. Two limits found in
+review: a session record that cannot be read (situation 3) is refused by
+a reset, so it still needs option C; and a restart is authenticated by
+X3DH alone, so this device's never-rotated signed-prekey secret, as well
+as the contact's identity secret, lets its holder replace any established
+session at any later time (`docs/NET-MESSAGING.md` section 8; rotating
+the signed prekey, tracker R-6, would bound it). What follows is the
+proposal as written.
 
 **What it is**
 - A new handshake from a pinned contact is recorded provisionally even when a

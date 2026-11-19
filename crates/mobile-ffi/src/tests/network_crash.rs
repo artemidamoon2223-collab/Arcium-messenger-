@@ -53,6 +53,10 @@ fn net_crash_child() {
             let peer = std::fs::read(dir.join("peer")).unwrap();
             device.net.resolve_session_conflict(peer).unwrap();
         }
+        "reset" => {
+            let peer = std::fs::read(dir.join("peer")).unwrap();
+            device.net.reset_session(peer).unwrap();
+        }
         other => panic!("unknown scenario {other}"),
     }
     std::process::abort();

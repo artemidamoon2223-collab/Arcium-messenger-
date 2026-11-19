@@ -49,6 +49,13 @@ pub const MAX_SKIP: u32 = 1000;
 /// one message can cost before it is authenticated: one far skip derives at
 /// most this many chain keys per chain it crosses.
 pub const MAX_FAR_SKIP: u32 = 100_000;
+
+/// Earlier receiving chains a ratchet remembers, newest last: the peer's
+/// ratchet key of each and the position it ended at (the `pn` of the header
+/// that started the next chain). Only used to tell that a late message of
+/// such a chain can never be read here ([`DoubleRatchet::is_beyond_recall`];
+/// tracker R-21). Public keys and counters only, no secret.
+pub const MAX_PREV_CHAINS: usize = 4;
 /// Header is: DH public key (32) || PN (4) || N (4).
 pub const HEADER_SIZE: usize = 32 + 4 + 4;
 /// XChaCha20Poly1305 nonce size.
@@ -162,6 +169,9 @@ pub struct DoubleRatchet {
     pn: u32,                     // messages sent in previous sending chain (sent in header so peer can skip)
     skipped: IndexMap<([u8; 32], u32), MessageKey>,
     max_skipped: usize,
+    /// Earlier receiving chains, oldest first, at most [`MAX_PREV_CHAINS`]:
+    /// (peer ratchet key, end position).
+    prev_chains: Vec<([u8; 32], u32)>,
 }
 
 impl DoubleRatchet {
@@ -184,6 +194,7 @@ impl DoubleRatchet {
             // stored keys and frees the old one unwiped (H-6).
             skipped: IndexMap::with_capacity(MAX_SKIPPED_KEYS),
             max_skipped: 2000,
+            prev_chains: Vec::new(),
         }
     }
 
@@ -203,6 +214,7 @@ impl DoubleRatchet {
             // stored keys and frees the old one unwiped (H-6).
             skipped: IndexMap::with_capacity(MAX_SKIPPED_KEYS),
             max_skipped: 2000,
+            prev_chains: Vec::new(),
         }
     }
 
@@ -296,9 +308,14 @@ impl DoubleRatchet {
     /// Whether decrypting a message with `header` needs a skip of more than
     /// [`MAX_SKIP`] positions in a chain, which [`decrypt`](Self::decrypt)
     /// refuses and [`decrypt_far`](Self::decrypt_far) may allow. Reads state
-    /// only; changes nothing.
+    /// only; changes nothing. Never for a header of one of the remembered
+    /// earlier chains: no skip can read it (its stored keys are all there
+    /// is), so it is left to [`is_beyond_recall`](Self::is_beyond_recall)
+    /// (R-21).
     pub fn needs_far_skip(&self, header: &Header) -> bool {
-        if self.skipped.contains_key(&(header.dh, header.n)) {
+        if self.skipped.contains_key(&(header.dh, header.n))
+            || self.prev_chains.iter().any(|(dh, _)| *dh == header.dh)
+        {
             return false;
         }
         let near = |nr: u32, until: u32| nr.saturating_add(MAX_SKIP) >= until;
@@ -354,6 +371,7 @@ impl DoubleRatchet {
         if need_dh {
             // Save remaining keys from the old chain (so late messages from old chain still decrypt).
             self.skip_message_keys(header.pn, reach)?;
+            self.leave_chain(&header.dh, header.pn);
             self.dh_ratchet_step(PublicKey::from(header.dh))?;
         }
 
@@ -370,16 +388,39 @@ impl DoubleRatchet {
     }
 
     /// Whether a message with `header` can never be decrypted by this
-    /// ratchet because its key is gone: the header names a position of the
-    /// current receiving chain behind the next expected one, and that
-    /// position's key is not among the skipped keys (it was used, or evicted
-    /// when the store was full). Reads state only; changes nothing. A header
-    /// of an older chain is not recognised (`false`): its peer key is not
-    /// kept once the chain is left (tracker R-21).
+    /// ratchet because its key is gone: the header names a position behind
+    /// the next expected one of the current receiving chain, or behind the
+    /// end of one of the last [`MAX_PREV_CHAINS`] chains left, and that
+    /// position's key is not among the skipped keys (it was used, evicted
+    /// when the store was full, or dropped by a far skip). Reads state only;
+    /// changes nothing. A position at or past a left chain's end is `false`:
+    /// the peer sent nothing there. A header of an older chain is not
+    /// recognised (`false`) (tracker R-21).
     pub fn is_beyond_recall(&self, header: &Header) -> bool {
-        self.dhr.is_some_and(|dhr| *dhr.as_bytes() == header.dh)
-            && header.n < self.nr
-            && !self.skipped.contains_key(&(header.dh, header.n))
+        let behind = if self.dhr.is_some_and(|dhr| *dhr.as_bytes() == header.dh) {
+            header.n < self.nr
+        } else {
+            self.prev_chains
+                .iter()
+                .any(|(dh, end)| *dh == header.dh && header.n < *end)
+        };
+        behind && !self.skipped.contains_key(&(header.dh, header.n))
+    }
+
+    /// At a DH step into the chain of `entering`: remembers the receiving
+    /// chain being left, which ended at `pn` (R-21), if there is one, and
+    /// forgets any earlier record of `entering`. A peer that repeats a
+    /// ratchet key would otherwise leave that key both current and
+    /// remembered, which no checkpoint holds (`DuplicateChain`); so the
+    /// remembered keys stay distinct and never equal the current one.
+    fn leave_chain(&mut self, entering: &[u8; 32], pn: u32) {
+        self.prev_chains.retain(|(dh, _)| dh != entering);
+        if let (Some(old), Some(_)) = (self.dhr, &self.ckr) {
+            if self.prev_chains.len() == MAX_PREV_CHAINS {
+                self.prev_chains.remove(0);
+            }
+            self.prev_chains.push((*old.as_bytes(), pn));
+        }
     }
 
     /// Capture all mutable state so a failed `decrypt_inner` can be rolled back.
@@ -394,6 +435,7 @@ impl DoubleRatchet {
             nr: self.nr,
             pn: self.pn,
             skipped: copy_skipped(&self.skipped),
+            prev_chains: self.prev_chains.clone(),
         }
     }
 
@@ -409,6 +451,7 @@ impl DoubleRatchet {
         self.nr = snap.nr;
         self.pn = snap.pn;
         self.skipped = snap.skipped;
+        self.prev_chains = snap.prev_chains;
     }
 
     /// Skips the receiving chain forward to `until`, storing the keys of
@@ -546,6 +589,7 @@ struct RatchetSnapshot {
     nr: u32,
     pn: u32,
     skipped: IndexMap<([u8; 32], u32), MessageKey>,
+    prev_chains: Vec<([u8; 32], u32)>,
 }
 
 /// Root KDF: `HKDF-SHA256(salt = rk, ikm = dh_out, info = "DoubleRatchet/RootKDF/v1")`
@@ -1082,14 +1126,21 @@ mod tests {
         }
     }
 
-    /// The previous implementation's Alice state (a checkpoint it wrote) is
-    /// accepted, and re-encoding it yields the same bytes.
+    /// The previous implementation's states (`RATCHET_STATE_V1` checkpoints
+    /// it wrote) are accepted as states that remember no earlier chain, and
+    /// re-encoding one yields the same bytes as `RATCHET_STATE_V2`: version 2
+    /// and an empty chain list appended (tracker R-21).
     #[test]
     fn a_checkpoint_written_by_the_previous_implementation_round_trips_byte_for_byte() {
         for record in [ALICE_CHECKPOINT, BOB_CHECKPOINT] {
             let bytes = unhex(record);
+            assert_eq!(bytes[0], 1);
             let ratchet = DoubleRatchet::from_checkpoint(&bytes).unwrap();
-            assert_eq!(*ratchet.to_checkpoint().unwrap(), bytes);
+            assert!(ratchet.prev_chains.is_empty());
+            let mut want = bytes.clone();
+            want[0] = 2;
+            want.push(0);
+            assert_eq!(*ratchet.to_checkpoint().unwrap(), want);
         }
     }
 
@@ -1711,6 +1762,81 @@ mod tests {
         assert!(bob.decrypt(&m[0].0, &m[0].1, ad).is_err(), "and indeed cannot be read");
         let other = Header { dh: [7; 32], pn: 0, n: 0 };
         assert!(!bob.is_beyond_recall(&other), "another chain");
+    }
+
+    /// A header of a remembered earlier chain never needs a far skip, at
+    /// any position: no skip can read it, so the network layer names it
+    /// back instead of spending a far try on it (R-21).
+    #[test]
+    fn a_header_of_a_remembered_chain_never_needs_a_far_skip() {
+        let (_, mut bob) = established_pair();
+        let left = [0x31; 32];
+        bob.prev_chains = vec![(left, 5)];
+        for n in [0, 4, 5, MAX_SKIP + 7] {
+            let header = Header { dh: left, pn: 3 * MAX_SKIP, n };
+            assert!(!bob.needs_far_skip(&header), "n = {n}");
+        }
+        let fresh = Header { dh: [0x32; 32], pn: 0, n: MAX_SKIP + 7 };
+        assert!(bob.needs_far_skip(&fresh), "an unknown chain still does");
+    }
+
+    /// A far skip that fails leaves the remembered chains as they were, as
+    /// a near one does (one snapshot covers both).
+    #[test]
+    fn a_failed_far_skip_leaves_the_remembered_chains_alone() {
+        let (mut alice, mut bob) = established_pair();
+        let ad = b"assoc";
+        let (h, c) = alice.encrypt(b"x", ad).unwrap();
+        bob.decrypt(&h, &c, ad).unwrap();
+        bob.prev_chains = vec![([0x41; 32], 9)];
+        let before = bob.prev_chains.clone();
+        let forged = Header { dh: PublicKey::from(&StaticSecret::random_from_rng(OsRng)).to_bytes(), pn: 1, n: MAX_SKIP + 3 };
+        assert!(bob.decrypt_far(&forged, &c, ad).is_err());
+        assert_eq!(bob.prev_chains, before);
+    }
+
+    /// R-21: a late message of a chain Bob has left is beyond recall when
+    /// its position lies before that chain's end and its key is gone, for
+    /// the last `MAX_PREV_CHAINS` chains; a stored key, a position at or past
+    /// the end, and an older chain are not. A forged header that would start
+    /// a chain leaves the history as it was.
+    #[test]
+    fn a_late_message_of_an_earlier_chain_whose_key_is_gone_is_beyond_recall() {
+        let (mut alice, mut bob) = established_pair();
+        bob.max_skipped = 2;
+        let ad = b"assoc";
+        let m: Vec<_> = (0..6u8).map(|i| alice.encrypt(&[i], ad).unwrap()).collect();
+        // m5 first: keys 0..4 are skipped, the cap of 2 keeps 3 and 4.
+        bob.decrypt(&m[5].0, &m[5].1, ad).unwrap();
+        // A turn of the ratchet: Bob answers, Alice replies on a new chain.
+        let (h, c) = bob.encrypt(b"answer", ad).unwrap();
+        alice.decrypt(&h, &c, ad).unwrap();
+        let (h, c) = alice.encrypt(b"new chain", ad).unwrap();
+        bob.decrypt(&h, &c, ad).unwrap();
+        assert_eq!(bob.prev_chains, vec![(m[0].0.dh, 6)]);
+
+        assert!(bob.is_beyond_recall(&m[0].0), "evicted, on the chain left");
+        assert!(bob.is_beyond_recall(&m[2].0), "evicted, on the chain left");
+        assert!(bob.is_beyond_recall(&m[5].0), "used, on the chain left");
+        assert!(!bob.is_beyond_recall(&m[3].0), "stored");
+        assert!(bob.decrypt(&m[0].0, &m[0].1, ad).is_err(), "and indeed cannot be read");
+        let past_end = Header { dh: m[0].0.dh, pn: 0, n: 6 };
+        assert!(!bob.is_beyond_recall(&past_end), "Alice sent nothing there");
+
+        // A forged header with a new key: the attempted step is rolled back.
+        let forged = Header { dh: [7; 32], pn: 0, n: 0 };
+        assert!(bob.decrypt(&forged, &[0u8; 40], ad).is_err());
+        assert_eq!(bob.prev_chains, vec![(m[0].0.dh, 6)]);
+
+        // Four more turns: the first chain left is forgotten.
+        for _ in 0..MAX_PREV_CHAINS {
+            let (h, c) = bob.encrypt(b"turn", ad).unwrap();
+            alice.decrypt(&h, &c, ad).unwrap();
+            let (h, c) = alice.encrypt(b"turn", ad).unwrap();
+            bob.decrypt(&h, &c, ad).unwrap();
+        }
+        assert_eq!(bob.prev_chains.len(), MAX_PREV_CHAINS);
+        assert!(!bob.is_beyond_recall(&m[0].0), "no longer remembered");
     }
 
     /// Alice and Bob after one message from Alice: Bob reads her current

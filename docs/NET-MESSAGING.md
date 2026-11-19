@@ -69,9 +69,10 @@ Ed25519 (signs its prekeys; the signed object binds the X25519 key, F-2).
   contact: the handshake is recorded as provisional and creates no session.
   The session is created when the initiator's first message (OPEN)
   authenticates under the keys the handshake derives — which requires the
-  secret of the pinned identity key, or this device's own signed-prekey
-  secret (key-compromise impersonation, section 8) (S2-B2 section 4). The
-  relay and Kotlin never decide that.
+  secret of the pinned identity key, or a signed-prekey secret this device
+  still holds (key-compromise impersonation, section 8; the signed prekey
+  is rotated, tracker R-6) (S2-B2 section 4). The relay and Kotlin never
+  decide that.
 
 There is no trust on first use in the application. (The CI peer in
 `tests/net_peer.rs` pins on first use; it is a test harness.)
@@ -418,8 +419,8 @@ which is dropped. No session is replaced automatically: not on
 timeouts, not when a peer is offline, not on a handshake alone. A session
 is replaced only when the peer's first message under a handshake recorded
 beside it authenticates there (option B), which needs the peer's identity
-secret or this device's signed-prekey secret (section 8, "Protection of an
-established session"), or by the user (`reset_session`, `resolve_session_conflict`,
+secret or a signed-prekey secret this device still holds (section 8,
+"Protection of an established session"), or by the user (`reset_session`, `resolve_session_conflict`,
 `delete_contact`). The one
 exception is a responder session an earlier build stored on receipt of a
 handshake and nothing has happened to since (S2-B2 section 4b): the network
@@ -432,6 +433,25 @@ recorded handshake), is deleted (it does not), or waits on the relay (no
 handshake recorded). If the prekeys the recorded handshake names rotated or
 were consumed by another contact's first message since, the message is
 deleted and the handshake flagged as refused.
+
+**Signed prekey (tracker R-6).** At the start of every round, before the
+bundle is published and before anything is read from the mailbox, the
+device rotates its signed prekey when that is due
+(`ArciumCore::maintain_prekeys`):
+- 7 days (`SIGNED_PREKEY_PERIOD_SECS`) or more after the relay first
+  accepted it, by this device's clock and in either direction: the old one
+  stays as the previous key for one more period, so a handshake built from
+  a bundle fetched before the rotation is still answered;
+- after the one-time prekey changed since it was made: no previous key is
+  kept, since every bundle naming it named a one-time prekey that is gone.
+
+A key the relay never accepted does not age: the round records the relay's
+acceptance after its PUT (`note_prekeys_published`), and a round whose PUT
+or record fails ends before the mailbox. A handshake is answered under the
+current signed prekey, or under the previous one only together with the
+one-time prekey it was published with; every write that replaces the
+one-time prekey drops the previous key in the same write. A handshake that
+names neither is refused as stale (reason 3).
 
 **Refusals.** When a handshake can never be answered (the prekeys it names
 were consumed or rotated, and no session holds it), the responder says so.
@@ -500,10 +520,12 @@ only the first can be accepted.
   gone it no longer matches.
 - A genuine refusal is final: the responder sends it only where the
   handshake cannot become answerable later (a consumed one-time prekey is
-  never reissued, a rotated signed prekey never returns). The responder's
-  bundle is published at the start of every round, before handshakes are
-  processed, so the bundle the initiator fetches after a refusal usually
-  names the current prekeys. Not always: refusals are sent after the
+  never reissued; a handshake is refused as stale only when it names
+  neither signed prekey held, a previous key never becomes current again,
+  and new keys are random). The responder's bundle is published at the
+  start of every round, after the round's rotation and before handshakes
+  are processed, so the bundle the initiator fetches after a refusal
+  usually names the current prekeys. Not always: refusals are sent after the
   round's messages, and one of them (another first message, or a
   confirmation of an own session) can change the one-time prekey again;
   the initiator is then refused again, no sooner than the refusal interval
@@ -560,6 +582,11 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 | crash after a receipt is accepted | applied from the inbox at the next sync |
 | crash or failure between deleting a far message and its far try (section 3) | that copy is lost: a text is sent again, a receipt or GONE message when the text it answers is; a far message read but not settled is settled from the inbox at the next sync |
 | commit outcome unknown | S2-B2 recovery (`recover_session`), which this layer runs itself: at the start of the next round, before it commits a queued text, and when a message for that session is fetched; the envelope stays on the relay |
+| the bundle's publication fails (the rotation check, the PUT, or the record of the relay's acceptance) | the round ends before anything is read from the mailbox; the next round publishes again. A rotation committed before the failure stays: its key does not age until the relay has accepted it, and the previous key, which the bundle the relay still serves names, still answers (tracker R-6) |
+| crash after a rotation committed, or after the relay accepted the rotated bundle and before that was recorded | the next round publishes the same key and records it; there is no second rotation |
+| prekey record unreadable | every round fails at its rotation check, as an export would |
+| device clock wrong | a steady offset changes nothing; a jump of 7 days or more either way rotates early (one backward also drops the older previous key early: a handshake naming it is refused once and made again); a smaller step back delays the next rotation by that step; a frozen clock stops rotation by time (section 8, "Clocks") |
+| going back to a build before signed-prekey rotation | not supported: that build cannot read the prekey record (186 bytes), so every round fails at the bundle export; the record is not overwritten |
 
 ## 8. Not provided
 
@@ -701,36 +728,55 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   about 10 minutes per further refusal (the per-contact limit).
 - A one-time prekey kept across a confirmation. Every confirmation of this
   device's own session replaces its one-time prekey (section 10,
-  "Conflict"), so another contact whose first contact under it is in flight
+  "Conflict"), and the previous signed prekey with it (the next round then
+  rotates the signed prekey, tracker R-6), so another contact whose first
+  contact under it is in flight
   is refused and starts again, and the texts it had committed read
   `NotDelivered` for its user to send again; so is a contact's restart in
   flight ("Reset"). At most once per confirmation of an own session.
 - Protection of an established session after a key compromise (option B).
   A restart is authenticated by X3DH alone, so two secrets each suffice to
   replace an established session and then read and write it as the
-  contact, at any later time: the contact's identity secret, and this
-  device's own signed-prekey secret (key-compromise impersonation, which
-  also makes a first contact or a conflict "from" any pinned contact; with it,
-  X3DH's first DH, `DH(signed prekey, contact's identity key)`, needs no
-  secret of the contact). The signed-prekey secret is in this device's
-  store and is never rotated (tracker R-6), so one copy of the store lets
-  its holder, who can also put envelopes in the mailbox as the contact (on
-  V2 the relay's operator; on V1 anyone who reaches the relay; with the
-  contact's secret, anyone), take over
-  any session of this device whenever it chooses. Before option B such a
-  compromise could not replace an existing session, and the Double
-  Ratchet's fresh DH steps ended the reach of a stolen session state; now
-  that healing no longer bounds it. The only sign is `peer_reset` ("the
-  contact restarted the secure session"), the same notice as a genuine
-  restart. Signal-style protocols accept new sessions the same way and
-  bound the device-side route by rotating the signed prekey; doing so here
-  is the open decision of tracker R-6. Confirmed at runtime by the third
-  review (a probe, not committed).
+  contact: the contact's identity secret, and a signed-prekey secret this
+  device still holds (key-compromise impersonation, which also makes a
+  first contact or a conflict "from" any pinned contact; with it, X3DH's
+  first DH, `DH(signed prekey, contact's identity key)`, needs no secret of
+  the contact). Its holder must also put envelopes in the mailbox as the
+  contact (on V2 the relay's operator; on V1 anyone who reaches the relay;
+  with the contact's secret, anyone). The signed prekey is rotated (tracker
+  R-6, "Rotation of the signed prekey" below), so a copy of this device's
+  store works this way only until the key it holds is gone:
+  - at the first round after the one-time prekey changed (a first contact
+    accepted, a confirmation of an own session, the replacement of option B,
+    or the holder's own accepted forgery);
+  - at the latest about two periods (14 days by this device's clock) after
+    the relay accepted that key, with regular rounds.
+
+  Within that time a copy allows at most one session replacement or first
+  contact: the one accepted consumes the one-time prekey and the previous
+  key in the same write, and the next round rotates before a new one-time
+  prekey is published. A conflict beside an own unconfirmed session can
+  still be raised meanwhile (that check only reads). Not bounded:
+  - the identity secret is in the same store, and its holder can sign
+    signed prekeys of its own, impersonate this device to its contacts and
+    restart its sessions there, for as long as the identity is used;
+  - malware with lasting access gets every new key;
+  - a rollback of the store (S2-B2 section 8, D-009) brings old keys back
+    until they are due.
+
+  Before option B such a compromise could not replace an existing session,
+  and the Double Ratchet's fresh DH steps ended the reach of a stolen
+  session state; within that window healing no longer bounds it. The only
+  sign is `peer_reset` ("the contact restarted the secure session"), the
+  same notice as a genuine restart. Confirmed at runtime:
+  `tests::spk_rotation::a_copied_store_cannot_replace_a_session_once_its_signed_prekey_is_gone`,
+  `a_copied_store_replaces_at_most_one_session`.
 - Restarts and the relay. A relay that withholds the first message of a
   restart keeps the contact's device on the old session, which the
   restarting device can no longer read; texts wait until the relay passes
   it, as when it withholds anything else (once the one-time prekey it names
-  has changed, the restart is refused and made again). A store written
+  has changed, or the signed prekey it names is no longer held, the
+  restart is refused and made again). A store written
   before option B did not replace its one-time prekey when its own session
   was confirmed, so a genuine handshake of the contact built from it, which
   this device never saw (the operator withheld it during a simultaneous
@@ -740,24 +786,59 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   (`ArciumCore::replace_prekey_once`), which closes that; another contact's
   first contact in flight under the old prekey is refused once and starts
   again.
-- Rotation of the signed prekey (tracker R-6). It is made once and kept for
-  the life of the identity. Every answered handshake uses a one-time
-  prekey (tracker X-6), which is replaced when a first message under it is
-  accepted, and whenever this device's own session is confirmed (section
-  10, "Conflict"). After that, the identity, the signed prekey and the prekey
+- Rotation of the signed prekey (tracker R-6). At the start of every round
+  (section 6, "Signed prekey"): 7 days after the relay first accepted it,
+  with the old one kept as the previous key for one more period; and at the
+  first round after the one-time prekey changed, without a previous key.
+  The previous key answers only together with the one-time prekey it was
+  published with. Every answered handshake uses a one-time prekey (tracker
+  X-6), which is replaced when a first message under it is accepted, and
+  whenever this device's own session is confirmed (section 10,
+  "Conflict"). After that, the identity, the signed prekeys and the prekey
   record this device keeps do not derive the keys of a first message under
-  it. Before it, they do: whoever later takes this device's store, and
-  holds a copy of the messages (the relay's operator can keep one), can
-  read the next first contact under the one-time prekey held then, however
-  much later it comes, without being seen; and the first messages of a
+  it. Before it, they do, but only while the signed prekey it names is
+  still held, at most about two periods: whoever later takes this device's
+  store, and holds a copy of the messages (the relay's operator can keep
+  one), can read the first messages of handshakes built from bundles that
+  name keys in the copy, without being seen. Those are the next first
+  contact under the one-time prekey held then, and the first messages of a
   handshake never accepted here while its one-time prekey stays published
   (one the relay withheld, one from a contact deleted before it arrived or
-  while a conflict with it was shown, one beside a session this device gave
-  up whose contact never sent it again). Rotating the signed prekey would bound that time; it is not
-  done. Whoever holds the identity secret can also sign a signed prekey of
-  their own, which rotation does not stop. The plaintext of messages read
-  here stays in the history and inbox, which a leak of the store exposes
-  anyway.
+  while a conflict with it was shown, one beside a session this device
+  gave up whose contact never sent it again). Later bundles name a signed
+  prekey the copy lacks. What remains:
+  - whoever holds the identity secret can sign a signed prekey of their
+    own, which rotation does not stop;
+  - the plaintext of messages read here stays in the history and inbox,
+    which a leak of the store exposes anyway;
+  - a replaced secret is dropped and wiped in memory (x25519-dalek wipes a
+    `StaticSecret` on drop: read from its source, not observed on a device,
+    H-8), and moves of secrets can leave stack copies (H-7);
+  - on disk the record is rewritten in place with SQLite's `secure_delete`
+    on; whether that overwrites the old cell on an update is not shown
+    (the F-10 test covers a delete), and the rollback journal is unlinked,
+    not overwritten, so old encrypted pages may stay on flash;
+  - a responder session an older build stored at generation 0 (S2-B2
+    section 4b) keeps a copy of the signed prekey of its time in its
+    ratchet until its first message; it no longer answers a handshake,
+    since the prekey record decides that.
+
+  The cost: an initiator delayed by more than about one period between
+  fetching the bundle and this device reading its handshake, or a conflict
+  left unresolved that long, is refused and starts again, and its committed
+  texts read `NotDelivered`.
+- Clocks (tracker R-6). The age of a signed prekey is read from this
+  device's clock, which is accepted and documented (Owner, 2026-11-19; to
+  be reconsidered at the security audit). A steady offset has no effect. A
+  jump of a period or more in either direction rotates early; one backward
+  also drops the older previous key early, so a handshake naming it is
+  refused once and made again. A smaller step back delays the next rotation
+  by that step. A frozen clock, or one an attacker holds, stops rotation by
+  time, which is no worse than before rotation existed, while a change of
+  the one-time prekey still rotates an active device. A clock that jumps by
+  a period every round rotates every round, so first contacts keep being
+  refused; that needs control of the clock, and an attacker in the network
+  path can block the relay anyway.
 - Simultaneous initiation: if both users start a session with each other
   before either handshake arrives, each device holds an unconfirmed initiator
   session and records the other's handshake beside it, so neither proceeds
@@ -769,7 +850,8 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   forged handshake or first message raises no conflict any more. A genuine
   handshake and first message replayed later still do, if this device never
   accepted that handshake and can still answer it: the one-time prekey it
-  names is still the published one (S2-B2 section 4c). Whoever reads this
+  names is still the published one, and the signed prekey it names still
+  held, at most about two periods (tracker R-6; S2-B2 section 4c). Whoever reads this
   device's mailbox on the relay can capture them: on V2 the relay's
   operator, on V1 anyone who reaches the relay. A dead end needs more than
   the replay: the contact must have given that session up without this device (for
@@ -844,14 +926,15 @@ entry per logical message, never written by the ratchet.
   (S2-B2 section 4c), replacing one recorded before. The conflict is
   recorded when a message from the contact that does not decrypt under our
   session authenticates as the contact's first message under that
-  handshake, which needs the contact's identity secret or this device's signed-prekey secret (section 8, "Protection of an established session"). Nothing is stored
+  handshake, which needs the contact's identity secret or a signed-prekey secret this device still holds (section 8, "Protection of an established session"). Nothing is stored
   for that message, and it is deleted from the relay like any message that
   does not decrypt here: the contact keeps it in its outbox and
   retransmits it, with its handshake, until our receipt (which no session
   here can give) or until it gives that session up itself. So it is still
   being sent when it can be accepted, which is only after our session was
   removed. A handshake that cannot be answered here (its one-time prekey
-  was consumed, or its signed prekey is not the current one) raises nothing
+  was consumed, or its signed prekey is neither the current nor the
+  previous one) raises nothing
   either; it is refused as section 6 describes, so a genuine contact gives
   that session up and starts again, and a refusal elicited by a forged one
   names no handshake the contact holds and is dropped there. Builds before
@@ -1047,6 +1130,7 @@ entry per logical message, never written by the ratchet.
 | request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt, a replayed receipt not answered | `tests::network` V6 tests | runtime |
 | what a device keeps after it accepts a first contact (identity, signed prekey, prekey record) does not decrypt its first message again, and the session no longer uses the signed prekey; every confirmation of an own session replaces the one-time prekey in the confirming transaction, and nothing else does, and nothing is written if a record the replacement read changed before the commit (tracker R-6) | `what_a_device_keeps_after_a_first_contact_does_not_read_it_again`, `a_one_time_prekey_read_beside_a_session_that_wins_is_replaced`, `a_confirmation_of_an_own_session_replaces_the_prekey_and_nothing_else_does`; `core_protocol` `messaging::tests::beside`; the conflict test of `tests::chat` | runtime, in process; local relay over TCP |
+| signed-prekey rotation (tracker R-6): rotation at the start of a round, before the mailbox is read, and none in a round whose publication failed; a handshake built before one rotation answered under the previous key, one two rotations later refused (reason 3) and made again, its text `NotDelivered`; a restart under the previous key replacing the session and one past its grace refused and made again; a rotation whose publication failed still answering the bundle the relay kept serving after any absence; a late copy of the accepted handshake not refused after rotation; a copied store replacing a session only while its signed prekey is held, and at most once; a store from an older build rotated at its first round, with and without the mark of option B; process deaths after the rotation and after the PUT rotating once; the rule ((E), (T) in both clock directions, an unpublished key never aging), the record (V3, V2 read, strict parsing), every one-time-prekey writer dropping the previous key, the previous key answering only with its one-time prekey (also beside a session) | `tests::spk_rotation`, `tests::prekey_record`, `tests::legacy_upgrade::a_v2_prekey_record_is_rotated_on_the_first_round`, `tests::network_crash::a_device_killed_around_a_rotation_rotates_once_and_answers_the_served_bundle` | runtime, local relay over TCP; real process deaths; unit; two instances on one database stand in for two processes; device clocks not tested |
 | a reset replaces the session on both devices (texts committed to the old one `NotDelivered` on each, the contact told), also when an old-session text arrives in the same round, and ends the dead end of a false conflict; a restart whose one-time prekey another first contact consumed, or a confirmation replaced, is refused and made again; a late copy of the handshake a session came from is not refused, also when the relay replaced its ephemeral key with another encoding of the same keys; an unreadable `hsacc:` record stops no round and is written again; a receipt read in the round of a restart still delivers; a reset of an unreadable session changes nothing; a store from before option B replaces its one-time prekey once; a text sent while a reset gives the session up is given up with it; a forged restart and a replay of a handshake older than the session replace nothing; both users resetting at once is the conflict, resolved by the greater key; reset rules; process death at each new step on both devices (option B) | `tests::restart`; `tests::a_handshake_is_known_in_every_encoding_of_its_keys`; `core_protocol` `messaging::tests::beside::a_handshake_beside_an_established_session_is_kept_until_the_session_is_retired` | runtime, local relay over TCP; process crash |
 | a gap of more than `MAX_SKIP` in one chain (texts given up after they were encrypted, or lost on the relay) is crossed with a far skip and both directions go on; a far skip only after the wait without accepting a message and not in a pass that accepted one; a rotated mailbox and a lost start sent again later deliver every text; one far try per session per round, a far message without a try deleted and read when sent again, nothing kept on the relay; at most four tries per round over six sessions; the wait kept per chain (a forged key starts no genuine wait), counted from the chain's first arrival, the chain seen least recently dropped first, a session judged once per pass also when the round is full, and the waits forgotten when the contact is deleted; a lost text from before the kept keys of the current chain named back in a GONE message; in the ratchet, the gap in the current chain, in the chain being left and in both at once, the last `MAX_SKIP` keys kept, `MAX_FAR_SKIP` and no further, a forged far message changing nothing, no key left behind, no far skip past `MAX_RESUMABLE_NR` | `tests::far_skip`; `core_crypto::ratchet` (`a_far_skip_*`, `a_forged_far_message_changes_nothing`, `a_stored_key_needs_no_far_skip`, `no_temporary_key_outlives_a_far_skip`), `ratchet::checkpoint` (`a_far_skip_never_moves_nr_past_the_resumable_limit`) | runtime, local relay over TCP; unit |
 | a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history), also when it arrives after the ratchet turned, on a chain the recipient left (the last four are remembered, from `RATCHET_STATE_V2`; a V1 record reads as none); a GONE lost on the relay is sent again when the text is repeated, not again within the minute, and once more a minute later (the minute set by a test aid); ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`, `a_late_message_of_an_earlier_chain_whose_key_is_gone_is_beyond_recall`, `a_checkpoint_written_by_the_previous_implementation_round_trips_byte_for_byte`), `ratchet::checkpoint` (`earlier_chains_round_trip_and_their_rules_are_enforced`) | runtime, local relay over TCP; unit |

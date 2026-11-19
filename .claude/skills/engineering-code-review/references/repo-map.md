@@ -99,4 +99,5 @@ here.
   `--keys`) on a rented Linux server, and configuring the app for it. Not yet
   run on a real server.
 - `docs/SESSION-RECOVERY-OPTIONS.md` — the options for recovering a session
-  (C and A implemented, B open), with what any option must keep.
+  (C, A and B implemented: delete a contact, the conflict rules, reset and
+  restart), with what any option must keep.

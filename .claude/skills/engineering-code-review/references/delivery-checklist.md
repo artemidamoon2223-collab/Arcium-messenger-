@@ -26,7 +26,7 @@ Running them locally is the cheapest way to know what CI will say.
 Knowing this prevents both false confidence and pointless waiting. This is the
 one copy of the path filters in the skills; other skills point here. It is
 derived from the `on:` block of every file in `.github/workflows/` at
-`de328a1`. Those blocks are the source: re-derive at your target SHA with
+`de328a1`, and re-checked unchanged at `d578295`. Those blocks are the source: re-derive at your target SHA with
 
 ```bash
 grep -nE "^  (push|pull_request|schedule|workflow_dispatch):|^      - '" .github/workflows/*.yml
@@ -81,14 +81,40 @@ grep -nE "^  (push|pull_request|schedule|workflow_dispatch):|^      - '" .github
 
 ## Where a new test goes
 
-- **Rust:** a `#[cfg(test)] mod tests { ... }` block at the end of the crate
-  file it covers.
+- **Rust:** next to the tests of the same code; follow the neighbours. Small
+  unit tests sit in a `#[cfg(test)] mod tests` block at the end of the file
+  they cover. Larger crates keep test files in a test directory declared from
+  that block: `crates/mobile-ffi/src/tests/*.rs` (from `mod tests` in
+  `crates/mobile-ffi/src/lib.rs`) and `crates/core-protocol/src/messaging/tests/`.
+  Cargo integration tests are in `crates/<crate>/tests/` where one exists
+  (`crates/core-crypto/tests/`). Re-derive with
+  `find crates -path '*tests*' -name '*.rs' | sort`.
 - **TypeScript:** `arcium-psi/tests/src/*.test.ts`, run with
   `npx mocha --require ts-node/register 'src/<name>.test.ts'` from
   `arcium-psi/tests`.
 
 Do not add a test-count total to `CLAUDE.md` or to any always-loaded document —
 counts drift, and that is finding F-17.
+
+## Mutation check (fix PRs)
+
+A fix PR names the mutations it was checked against: each a small source
+change that brings the defect back or breaks one rule of the fix, and each
+must make a named test fail. The PR lists every mutation with the test that
+caught it; one that nothing catches is a missing test, not a pass.
+
+- Run mutations in the disposable copy (`repo-change-protocol` §2), never in
+  the persistent checkout: a mutation edits a source file while it runs, and
+  an interrupted run leaves it there.
+- One at a time: apply it as an exact text replacement that must match once,
+  run the tests that should catch it, then restore the file byte for byte
+  from a saved copy and confirm `git status` is clean before the next one.
+- Caught means: it compiled, the run failed, and the failure is a test that
+  should catch it, read from the `test … FAILED` or `panicked at` lines. A
+  compile error, a timeout or a failure somewhere else is not a catch.
+- Output of tests running in parallel can interleave, so a script that
+  parses test names can miss one. On a failed run with no name found, run
+  that mutation alone again and read the output.
 
 ## If a step cannot be run
 

@@ -10,9 +10,9 @@ description: "What the MBR durable-history research established, what it only as
 Knowledge and judgment aid. Everything here is either a **verified fact** with a
 citation, an **experimental finding** with its provenance, or a **proposal that
 is not implemented**. The three are labelled separately throughout and must not
-be collapsed. Arcium-side facts were last checked at commit `de328a1`;
-re-derive before relying on any of them — `references/arcium-integration-map.md`
-carries the commands.
+be collapsed. This skill keeps no copy of Arcium's current state:
+`references/arcium-integration-map.md` says where to read it and carries the
+commands to re-derive it.
 
 ## This skill authorizes nothing
 

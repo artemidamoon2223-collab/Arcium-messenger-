@@ -27,9 +27,19 @@ governs and that wording is a defect. Report it.
 
 ## 2. Where work happens
 
-Every write goes in a fresh disposable clone of freshly fetched `main` (or of
-the base the task names) under `/tmp`. Verify the clone's HEAD equals the
-expected tip before starting.
+Every write goes in a fresh disposable copy of freshly fetched `main` (or of
+the base the task names): a clone under `/tmp`, or a `git worktree` of the
+persistent checkout made from the remote ref just fetched, which costs less
+disk:
+
+```bash
+git fetch origin main
+git worktree add -b <branch> <scratch-dir>/<name> origin/main
+```
+
+Verify the copy's HEAD equals the expected tip before starting. Mutation runs
+belong in the copy too (`engineering-code-review/references/delivery-checklist.md`,
+"Mutation check").
 
 Never write to the persistent checkout. Read-only inspection of it is fine
 after `git fetch`, against `origin/main` rather than its local branch; give an
@@ -38,12 +48,12 @@ classification pass read a checkout 30 commits behind `main`).
 
 The reason, recorded so it does not get optimised away: a checkout's branch
 and remote-tracking refs may be stale, and nothing in the checkout says so. A
-clone of freshly fetched `main` makes the base explicit — it is the SHA you
+copy of freshly fetched `main` makes the base explicit — it is the SHA you
 just verified.
 
-Build each clone into its own target directory: leave `CARGO_TARGET_DIR`
-unset or point it inside that clone, never at a directory another clone
-uses. Delete the clone's `target/` (or that directory) when finished.
+Build each copy into its own target directory: leave `CARGO_TARGET_DIR`
+unset or point it inside that copy, never at a directory another copy uses.
+Delete the copy's `target/` (or that directory) when finished.
 
 ## 3. Scope
 
@@ -91,9 +101,18 @@ How to carry out a merge that has already been instructed:
    reported on that SHA is success, stop and report. Which checks branch
    protection requires cannot be read with the available tools; do not infer
    it (`CLAUDE.md`, «Постоянные ограничения»).
-3. Merge with a normal merge commit. No squash, no rebase, no auto-merge, no
+3. If the PR is behind its base and branch protection requires it up to
+   date (as on `main`), merge the base into the head in the disposable copy
+   with a normal merge (`git fetch origin main && git merge --no-edit
+   origin/main`; never rebase or force-push), and push. The instruction
+   covers the updated head only if that merge is the whole update: `git diff
+   origin/main HEAD` must show only the PR's own changes. Anything more is a
+   new change for the owner. Then wait until every check run on the new head
+   is success and go back to step 1 with the new head SHA.
+4. Merge with a normal merge commit, pinned to the head SHA of step 1
+   (`expectedHeadSha`). No squash, no rebase, no auto-merge, no
    admin bypass. Keep the branch.
-4. Fresh-read afterwards, verifying against a freshly fetched tree rather than
+5. Fresh-read afterwards, verifying against a freshly fetched tree rather than
    the merge response.
 
 ## 8. Stuck CI is not failing CI
@@ -129,9 +148,16 @@ newest "Update" section before writing one:
 - Where an earlier row and a later section disagree, the later one wins. Every
   earlier row keeps the snapshot it cites.
 
+Before opening a tracker PR, have a fresh-context agent check, read-only,
+every claim and every `path:line` of the new text against the code and the
+docs at the SHA the section cites, and fix what it finds first. (2026-11: the
+check found an overstatement in #221, and two factual errors and a missing
+qualifier in #224.)
+
 ## 10. Housekeeping
 
-Delete the disposable clone when finished; the writable allowance is fixed.
+Delete the disposable copy when finished (`git worktree remove <path>` for a
+worktree); the writable allowance is fixed.
 
 Do not delete the PR branch on merge: branches are deleted only by the owner
 (cloud sessions cannot delete them), and stacked PRs still point at them.

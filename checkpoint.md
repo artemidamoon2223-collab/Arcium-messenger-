@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-19 03:33 UTC, by a Claude Code cloud session
+Updated: 2026-11-19 14:23 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,10 +13,10 @@ Updated: 2026-11-19 03:33 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `8bac3f3c982f611e818960546d4aba68f718ab86` (merge of PR #220, 2026-11-19)
+- `main` = `b26a483b0b9d0f7a5bc223c8bee8a46b4943e6fb` (merge of PR #221, 2026-11-19)
 
 ## Done
-- 19 Nov (D-060, D-061): #217 option B (`1cca4b8`), #218 R-21 older chains (`d983e8e`), #219 H-6 spare slot (`d1d2cde`), #220 R-24 card check + R-22 prune (`8bac3f3`); tracker PR #221 open.
+- 19 Nov (D-060, D-061): #217 option B (`1cca4b8`), #218 R-21 older chains (`d983e8e`), #219 H-6 spare slot (`d1d2cde`), #220 R-24 card check + R-22 prune (`8bac3f3`); tracker #221 (`b26a483`).
 - 18 Nov (D-059): #215 R-9 a V2 relay stores a SEND only from the envelope's authenticated sender (`c2acfb6`); #216 tracker R-9 OPEN, narrowed further (`38cc867`).
 - 18 Nov (D-058): #213 R-6 kept unrotated, one-time prekey replaced when an own session wins a simultaneous start (`9b95493`); #214 tracker R-6 ACCEPTED, one case fixed (`6d9c628`).
 - 18 Nov (D-057): #211 X-6 a handshake without a one-time prekey is never answered (`f452eb3`); #212 tracker X-6 FIXED, R-6 revisit due (`c8489d9`).
@@ -45,12 +45,12 @@ Updated: 2026-11-19 03:33 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #221 tracker (option B, R-21, H-6, R-24, R-22); needs an explicit Owner merge instruction naming it.
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
-- R-6 signed-prekey rotation: decided (D-061, separate task, next). Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
+- R-6 signed-prekey rotation: design approved, P = 7 days, clock risk documented (D-062); in progress. Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 
 ## Next work (D-036 order; supersedes the D-014 line)

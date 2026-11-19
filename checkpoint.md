@@ -13,9 +13,10 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `d5782957c6ba6f2e8e945e591b1bbab316f9dd4e` (merge of PR #224, 2026-11-19)
+- `main` = `cb46ed7737949b99572ffd916ba3f581ad22f44b` (merge of PR #225, 2026-11-19)
 
 ## Done
+- 19 Nov (D-063): #225 skills refresh (`cb46ed7`): threat-checklist conflict rule, test locations, mutation check, merging a PR that is behind, tracker-text check, worktree as disposable copy, CLAUDE.md pointer to repo-change-protocol; QC loop unchanged.
 - 19 Nov (D-062): #222 R-6 signed-prekey rotation (`553c3ba`): 7 days, and after a one-time-prekey change; previous key for one more period; V3 prekey record. #223 NET-MESSAGING qualifiers (`24c82c5`); #224 tracker R-6 PARTIAL and checklist (`d578295`).
 - 19 Nov (D-060, D-061): #217 option B (`1cca4b8`), #218 R-21 older chains (`d983e8e`), #219 H-6 spare slot (`d1d2cde`), #220 R-24 card check + R-22 prune (`8bac3f3`); tracker #221 (`b26a483`).
 - 18 Nov (D-059): #215 R-9 a V2 relay stores a SEND only from the envelope's authenticated sender (`c2acfb6`); #216 tracker R-9 OPEN, narrowed further (`38cc867`).
@@ -46,7 +47,7 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #225 `docs/skills-refresh`: skills refresh, items 1-9 (D-063); CI, then merge only on the Owner's instruction naming it.
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.

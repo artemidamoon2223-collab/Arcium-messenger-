@@ -333,3 +333,7 @@ D-063 · 2026-11-19 · OWNER · IN PROGRESS
 - Evidence: Owner message of 2026-11-19 in session `013Fd9w11HPCwF53H2tPuKpt`.
 - Update (D-063, AGENT): PR #225 (`docs/skills-refresh`, head `53352f6`) opened after an independent check (fixes tightened two procedure rules and restored two MBR cautions). Waiting for CI and the Owner's merge instruction naming #225.
 - Update (D-063): done. PR #225 merged as `cb46ed7` on the Owner's answer "Мёрдж #225" (AskUserQuestion; 12 check runs success on head `53352f6`, mergeable clean, no review threads); normal merge commit pinned with `expectedHeadSha`. Open for later, not applied: the QC loop (decide at a retro), CI on push only for `main`, splitting the lib.rs tests.
+
+D-064 · 2026-11-19 · OWNER · IN PROGRESS
+- What: protocol residuals R-9, R-14, R-21 ("Давай остатки протокола: R-9, R-14, R-21"). Asked (AskUserQuestion), the Owner chose: R-14/R-20 keep the far-skip wait in the store by the device clock, so it survives a restart ("Хранить в базе"; clock risk as accepted for R-6); R-21 remember 32 earlier receiving chains instead of 4 ("32 цепочки"; a build before cannot read a record with more than 4); R-9 delete a message with no session whatever its sender, so keep-versus-delete no longer shows whom the owner pinned ("Удалять у всех"). Also planned without a separate decision: tests for R-14's three untested paths, and the reset of option B as the way out past 100,000 losses. Each code change its own PR, then a tracker PR.
+- Evidence: Owner messages of 2026-11-19 in session `013Fd9w11HPCwF53H2tPuKpt`.

@@ -61,7 +61,7 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 3. Two phones through that relay, incl. background receive — needs phones.
 4. Release build and signing — needs the Owner's decision on the key.
 5. Phone checks: R-18 (b), H-8, F-9; memory and time of #200 and #205 on a phone (scudo); far-skip cost (#209) on a phone.
-6. Protocol: R-6 done (#222); R-9 residuals (operator, V1, a sender counting its own messages); R-14/R-20 residuals (over 100,000; a durable far-skip wait); R-21 beyond four chains.
+6. Protocol: R-6 done (#222); in progress (D-064): R-21 32 chains, R-9 delete no-session messages for all, R-14/R-20 durable far-skip wait; R-9 residuals (operator, V1, a sender counting its own messages); R-14/R-20 residuals (over 100,000; a durable far-skip wait); R-21 beyond four chains.
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Needs devices

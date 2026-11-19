@@ -552,8 +552,9 @@ mod tests {
         let (alice, bob) = pair();
         assert_eq!(alice.max_skipped, MAX_SKIPPED_KEYS);
         assert_eq!(bob.max_skipped, MAX_SKIPPED_KEYS);
-        // 182 + 68 * 2000 skipped keys + 1 + 36 * 4 earlier chains.
-        assert_eq!(RATCHET_CHECKPOINT_MAX_LEN, 136_327);
+        // 182 + 68 * 2000 skipped keys + 1 + 36 * 32 earlier chains.
+        assert_eq!(MAX_PREV_CHAINS, 32);
+        assert_eq!(RATCHET_CHECKPOINT_MAX_LEN, 137_335);
     }
 
     #[test]
@@ -641,8 +642,15 @@ mod tests {
             bob.skipped.insert((dh, n), Zeroizing::new([1; 32]));
             n += 1;
         }
+        // And every earlier chain: the largest valid record, decoded.
+        let mut i = 0u8;
+        while bob.prev_chains.len() < MAX_PREV_CHAINS {
+            bob.prev_chains.push(([0xA0 ^ i; 32], 1));
+            i += 1;
+        }
         let rec = bob.to_checkpoint().unwrap();
         assert_eq!(rec.len(), v2_len(&bob));
+        assert_eq!(rec.len(), RATCHET_CHECKPOINT_MAX_LEN);
         assert_same_state(&bob, &DoubleRatchet::from_checkpoint(&rec).unwrap());
 
         bob.skipped.insert((dh, n), Zeroizing::new([1; 32]));
@@ -797,19 +805,21 @@ mod tests {
             }
             r
         };
-        let four: Vec<_> = (1..=4u8).map(|i| ([i; 32], u32::from(i))).collect();
-        assert_eq!(DoubleRatchet::from_checkpoint(&with(&four)).unwrap().prev_chains, four);
-        let mut five = four.clone();
-        five.push(([9; 32], 9));
-        assert_eq!(decode_err(&with(&five)), CheckpointError::TooManyChains(5));
+        let limit = u8::try_from(MAX_PREV_CHAINS).unwrap();
+        let full: Vec<_> = (1..=limit).map(|i| ([i; 32], u32::from(i))).collect();
+        assert_eq!(DoubleRatchet::from_checkpoint(&with(&full)).unwrap().prev_chains, full);
+        let mut over = full.clone();
+        over.push(([0xEE; 32], 9));
+        let too_many = CheckpointError::TooManyChains(limit + 1);
+        assert_eq!(decode_err(&with(&over)), too_many);
         assert_eq!(
             decode_err(&with(&[([1; 32], 1), ([1; 32], 2)])),
             CheckpointError::DuplicateChain
         );
         assert_eq!(decode_err(&with(&[(dhr, 1)])), CheckpointError::DuplicateChain);
 
-        bob.prev_chains = five;
-        assert_eq!(bob.to_checkpoint().unwrap_err(), CheckpointError::TooManyChains(5));
+        bob.prev_chains = over;
+        assert_eq!(bob.to_checkpoint().unwrap_err(), too_many);
         bob.prev_chains = vec![(dhr, 1)];
         assert_eq!(bob.to_checkpoint().unwrap_err(), CheckpointError::DuplicateChain);
     }

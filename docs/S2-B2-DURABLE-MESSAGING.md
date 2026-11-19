@@ -647,7 +647,13 @@ until a message authenticates on it. The FFI messaging calls change shape
 the wire are identical. A provisional record may also sit beside this device's
 own unconfirmed initiator session (section 4c, same key and format); how
 records left by earlier builds are read is stated there. The exported
-`remove_session` now also deletes such a record.
+`remove_session` now also deletes such a record. The far-skip wait
+(`farwait:v1/<handle>`, written by the network layer since tracker R-14,
+`docs/NET-MESSAGING.md` section 3) is new and local; a build before it
+neither reads nor deletes it. Going back to such a build and forward
+again can leave a record whose wait already counts, so a far message of
+a chain it names may be tried without the full wait; going back is not
+supported, as above.
 
 ## 10. Verification plan
 

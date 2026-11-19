@@ -9,8 +9,9 @@
 use std::time::Duration;
 
 use super::net_harness::*;
+use crate::network::far_hook::{self, Stage};
 use crate::network::wire::{client_id, Envelope};
-use crate::SendResult;
+use crate::{ArciumCore, SendResult};
 use core_crypto::ratchet::{Header, HEADER_SIZE, MAX_SKIP};
 
 const GAP: usize = MAX_SKIP as usize + 500;
@@ -31,6 +32,35 @@ fn texts_in_one_chain(alice: &Device, bob: &Device) -> (Vec<Vec<u8>>, Vec<Vec<u8
 /// `d` tries a far skip as soon as a far message arrives.
 fn far_at_once(d: &Device) {
     d.net.set_far_skip_wait(Duration::ZERO);
+}
+
+/// The far-skip record `d` stores for the session `handle`, if any.
+fn far_record(d: &Device, handle: u64) -> Option<Vec<u8>> {
+    match d.core.store.lock().unwrap().get(&crate::network::far_wait_key(handle)) {
+        Ok(bytes) => Some(bytes.to_vec()),
+        Err(core_storage::StorageError::NotFound) => None,
+        Err(e) => panic!("{e}"),
+    }
+}
+
+/// A far message "from" `peer` naming a key of its own: it needs a far
+/// skip, and never decrypts.
+fn forged_far(peer: &Device, k: u8) -> Vec<u8> {
+    let far = Header {
+        dh: [k; 32],
+        pn: 0,
+        n: MAX_SKIP + 10,
+    };
+    message_from(peer, [&far.to_bytes()[..], &[0u8; 40][..]].concat())
+}
+
+/// Gives up the session `handle` of `d` as a reset does, from inside a
+/// round: its pending messages first, then the session.
+fn retire(d: &ArciumCore, handle: u64) {
+    for m in d.pending_outgoing(handle).unwrap() {
+        d.abandon_outgoing(handle, m.message_id).unwrap();
+    }
+    assert!(d.retire_session(handle, &[]).unwrap());
 }
 
 fn message_from(bob: &Device, wire: Vec<u8>) -> Vec<u8> {
@@ -431,8 +461,10 @@ fn deleting_a_contact_forgets_its_far_waits() {
     inject(&addr, &alice, message_from(&bob, [&far.to_bytes()[..], &[0u8; 40][..]].concat()));
     assert!(alice.sync().errors.is_empty());
     assert_eq!(alice.net.far_waits(to_bob), 1);
+    assert!(far_record(&alice, to_bob).is_some());
     alice.net.delete_contact(bob.pk.clone()).unwrap();
     assert_eq!(alice.net.far_waits(to_bob), 0);
+    assert_eq!(far_record(&alice, to_bob), None, "deleted with the contact");
     relay.stop();
 }
 
@@ -511,5 +543,251 @@ fn the_wait_counts_from_the_first_arrival() {
     std::thread::sleep(wait * 2 / 3);
     let r = round(); // the wait has passed since the first arrival
     assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "{r:?}");
+    relay.stop();
+}
+
+/// The wait goes on across a restart of the process (tracker R-14, R-20):
+/// it is kept in the store. Before, the new process started it again, so a
+/// gap healed only in a process that lived through the whole wait.
+#[test]
+fn the_wait_goes_on_across_a_restart() {
+    let wait = Duration::from_millis(300);
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    alice.net.set_far_skip_wait(wait);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let (ids, wires) = texts_in_one_chain(&alice, &bob);
+    for id in &ids[..GAP] {
+        bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+    }
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (0, 0), "{r:?}");
+    assert!(far_record(&alice, to_bob).is_some(), "the wait is stored");
+    std::thread::sleep(wait + Duration::from_millis(50));
+
+    let alice = alice.restart(&addr);
+    alice.net.set_far_skip_wait(wait);
+    assert_eq!(alice.net.far_waits(to_bob), 0, "nothing read yet");
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "the wait was kept: {r:?}");
+    assert_eq!(alice.texts(&bob).last().map(String::as_str), Some(format!("t{GAP}").as_str()));
+    assert_eq!(far_record(&alice, to_bob), None, "deleted once a message is accepted");
+    relay.stop();
+}
+
+/// A message the session accepts deletes the stored wait too: a new
+/// process starts the wait again instead of reading the old one.
+#[test]
+fn an_accepted_message_deletes_the_stored_wait() {
+    let wait = Duration::from_millis(300);
+    let pause = wait + Duration::from_millis(50);
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    alice.net.set_far_skip_wait(wait);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let near = bob.send(&alice, "near", "near");
+    let (ids, wires) = texts_in_one_chain(&alice, &bob);
+    for id in &ids[..GAP] {
+        bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+    }
+    let near_wire = bob
+        .core
+        .pending_outgoing(to_alice)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.message_id == near)
+        .unwrap()
+        .wire;
+    let far = || message_from(&bob, wires[GAP].clone());
+
+    inject(&addr, &alice, far());
+    assert!(alice.sync().errors.is_empty());
+    assert!(far_record(&alice, to_bob).is_some());
+    inject(&addr, &alice, message_from(&bob, near_wire));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(r.accepted, 1, "{r:?}");
+    assert_eq!(far_record(&alice, to_bob), None);
+    std::thread::sleep(pause);
+
+    let alice = alice.restart(&addr);
+    alice.net.set_far_skip_wait(wait);
+    inject(&addr, &alice, far());
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (0, 0), "the wait starts again: {r:?}");
+    relay.stop();
+}
+
+/// Giving the session up (a reset) forgets its far-skip waits, in memory
+/// and in the store: the next session with the contact has the same
+/// handle. (One of the three paths the review of PR #209 found untested.)
+#[test]
+fn resetting_the_session_forgets_its_far_waits() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    inject(&addr, &alice, forged_far(&bob, 9));
+    assert!(alice.sync().errors.is_empty());
+    assert_eq!(alice.net.far_waits(to_bob), 1);
+    assert!(far_record(&alice, to_bob).is_some());
+    alice.net.reset_session(bob.pk.clone()).unwrap();
+    assert_eq!(alice.net.far_waits(to_bob), 0);
+    assert_eq!(far_record(&alice, to_bob), None);
+    relay.stop();
+}
+
+/// A far try that fails other than by not decrypting (here the session was
+/// given up between the message pass and the try) is counted dropped and
+/// reported, and the pass goes on to the next session's try. (Untested
+/// before, review of PR #209.)
+#[test]
+fn a_far_try_that_fails_otherwise_is_dropped_and_reported() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let carol = Device::new(&addr, 3);
+    alice.knows(&carol);
+    carol.knows(&alice);
+    carol.net.publish_prekeys().unwrap();
+    alice.net.start_session(carol.pk.clone()).unwrap();
+    settle(&[&alice, &bob, &carol]);
+    far_at_once(&alice);
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    inject(&addr, &alice, forged_far(&bob, 9));
+    inject(&addr, &alice, forged_far(&carol, 9));
+    let core = alice.core.clone();
+    far_hook::set(move |stage, handle| {
+        if stage == Stage::BeforeTry && handle == to_bob {
+            retire(&core, handle);
+        }
+    });
+    let r = alice.sync();
+    far_hook::clear();
+    let failed: Vec<&String> = r
+        .errors
+        .iter()
+        .filter(|e| e.starts_with("reading a message far ahead in its chain"))
+        .collect();
+    assert_eq!(failed.len(), 1, "{:?}", r.errors);
+    assert_eq!((r.dropped, alice.net.far_tries()), (2, 2), "{r:?}");
+    relay.stop();
+}
+
+/// A message read with a far skip that then fails to settle (here its
+/// session was given up before the receipt) is reported, and the pass goes
+/// on to the next session's try. (Untested before, review of PR #209.)
+#[test]
+fn a_failed_settle_leaves_the_far_pass_going() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let carol = Device::new(&addr, 3);
+    alice.knows(&carol);
+    carol.knows(&alice);
+    carol.net.publish_prekeys().unwrap();
+    alice.net.start_session(carol.pk.clone()).unwrap();
+    settle(&[&alice, &bob, &carol]);
+    far_at_once(&alice);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    for peer in [&bob, &carol] {
+        let (ids, wires) = texts_in_one_chain(&alice, peer);
+        for id in &ids[..GAP] {
+            peer.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+        }
+        inject(&addr, &alice, message_from(peer, wires[GAP].clone()));
+    }
+    let core = alice.core.clone();
+    let mut first = None;
+    far_hook::set(move |stage, handle| {
+        if stage == Stage::BeforeSettle && first.is_none() {
+            first = Some(handle);
+            retire(&core, handle);
+        }
+    });
+    let r = alice.sync();
+    far_hook::clear();
+    let failed: Vec<&String> = r
+        .errors
+        .iter()
+        .filter(|e| e.starts_with("settling a message read with a far skip"))
+        .collect();
+    assert_eq!(failed.len(), 1, "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (2, 2), "{r:?}");
+    relay.stop();
+}
+
+/// A stored wait that does not parse is read as none: the wait starts at
+/// the next far message, the record is replaced with a good one, and the
+/// far skip comes once that wait is over (a damaged record holds nothing
+/// back for good).
+#[test]
+fn a_damaged_stored_wait_is_read_as_none_and_replaced() {
+    let wait = Duration::from_millis(300);
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let (ids, wires) = texts_in_one_chain(&alice, &bob);
+    for id in &ids[..GAP] {
+        bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+    }
+    alice
+        .core
+        .store
+        .lock()
+        .unwrap()
+        .put(&crate::network::far_wait_key(to_bob), &[1, 9, 9])
+        .unwrap();
+    let alice = alice.restart(&addr);
+    alice.net.set_far_skip_wait(wait);
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (0, 0), "{r:?}");
+    let replaced = far_record(&alice, to_bob).expect("written again");
+    assert_eq!((replaced.len(), &replaced[..2]), (2 + 48, &[1u8, 1][..]));
+    std::thread::sleep(wait + Duration::from_millis(50));
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "{r:?}");
+    relay.stop();
+}
+
+/// A chain's wait is stored when it starts, and a far message of the same
+/// chain seen again within the minute writes nothing more: the last
+/// sighting only orders the chains for dropping.
+#[test]
+fn a_chain_seen_again_within_a_minute_is_stored_once() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    for _ in 0..3 {
+        inject(&addr, &alice, forged_far(&bob, 9));
+        let r = alice.sync();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+    }
+    assert_eq!(alice.net.far_waits(to_bob), 1);
+    assert_eq!(alice.net.far_writes(), 1, "stored once");
+    inject(&addr, &alice, forged_far(&bob, 10));
+    assert!(alice.sync().errors.is_empty());
+    assert_eq!(alice.net.far_writes(), 2, "a new chain is stored at once");
     relay.stop();
 }

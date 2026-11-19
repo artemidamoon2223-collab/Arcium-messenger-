@@ -252,13 +252,42 @@ it is tried only once the session has seen far messages of that chain for
 retransmissions) without accepting a message, and at the end of a message
 pass in which it accepted none: by then a sender that keeps syncing has
 sent again every text it still holds, and those that fill the gap are
-read first. The wait is kept in memory: a restart of this device starts
-it again. A session tries at most one far skip per sync round, and a
+read first. The wait is kept in the store (below), so a restart of this
+device does not start it again. A session tries at most one far skip per sync round, and a
 round at most four. A lost message from before the kept keys can never be read: one of
 the current receiving chain, or of one of the last 32 chains left (the
 chain a far skip left included), is named back in a GONE message when it
 arrives (section 4); one of an older chain is not recognised (section 8). More than 100,000 consecutive lost messages of one sending
-chain still stop that direction for good.
+chain still stop that direction for good; the way out is a reset of the
+session on either device (option B, section 10), which gives up the texts
+pending on the old session (`NotDelivered`).
+
+The far-skip wait is the local record `farwait:v1/<handle>`
+(`FAR_WAIT_RECORD_V1`, never sent): version (1) = 1, a count (1) of at
+most `FAR_CHAINS_PER_SESSION` (4), then per chain the ratchet key a far
+message named (32) and when one was first and last seen (8 each,
+big-endian milliseconds of this device's clock). It is written when a
+chain starts waiting, when its wait starts again, and when its last
+sighting moved by a minute or more (the last sighting only orders the
+chains for dropping); it is deleted when the session accepts a message,
+when the network layer gives the session up (a reset, a restart by the
+contact, an own unconfirmed session given up) and, in the same
+transaction, with the contact. The exported `remove_session` does not
+delete it, which leaves the same as a failed delete (below). The deletes after an accepted message and after a session is
+given up are separate writes: a process death just before one, or a
+delete that failed (reported in the round's errors when it follows an
+accepted message; tried again at the next accepted message), leaves the
+record. A far message of a chain it names may then be tried without the
+full wait; after a session was given up the record names only that
+session's chains, and the next session's first accepted message deletes
+it. A record that does not decrypt or parse is read as no wait and
+replaced at the next write. If the store cannot be read (or its lock is
+poisoned), the session tries no far skip in that round, and the failure
+is reported. A write that fails is reported, and the store keeps what it
+held (a chain whose start it never took waits again after a restart);
+the write is asked for again the next time a far message of that chain
+is judged (one per session per pass). The wait is counted by this device's clock, also while the app is not
+running (section 8).
 
 `ENVELOPE_V1` (what the relay stores):
 `"ARN1" || kind(1) || sender_x25519_pk(32) || body`, kind 1 = the unchanged
@@ -695,7 +724,11 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   does not happen. And a far try takes tens of
   milliseconds where a message that does not decrypt takes microseconds,
   so whoever can time the round may tell a contact with a session from a
-  stranger (next to tracker R-9).
+  stranger (next to tracker R-9). The first far message of a chain also
+  costs a store write in that round (`farwait:v1`, section 3; the same
+  chain again at most once a minute, unless its previous write failed), which a far message "from" a
+  stranger does not, so a mailbox writer can see the same in the first
+  round, without waiting.
 - Delivery against a relay that withholds for longer than `FAR_SKIP_WAIT`.
   A relay that withholds the start of a run of more than 1,000 texts (on
   each retransmission) while passing the later ones makes this device
@@ -706,10 +739,22 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   chain stay pending until the user cancels them. The relay cannot tell this device
   apart from one whose gap nothing fills; before far skips, it could stop
   that direction for good instead.
-- A far-skip wait that survives a restart. The wait is in memory, so a
-  gap nothing fills is skipped only after this device has run for
-  `FAR_SKIP_WAIT` between two arrivals of far messages; a device whose
-  process never lives that long keeps waiting.
+- A far-skip wait independent of this device's clock (tracker R-14). The
+  wait is stored (section 3) and read from this device's wall clock, as
+  the Owner chose on 2026-11-19: a far skip is due once the clock reads
+  `FAR_SKIP_WAIT` or more after the chain's first sighting, and a reading
+  earlier than that sighting makes it the first sighting again. So the
+  wait goes on across restarts and while the app is not running: after
+  an absence of `FAR_SKIP_WAIT` or more, the first round may try the far
+  skip, unless that pass accepts a message of the session. A step of the
+  clock forward between two readings shortens the wait (also a clock set
+  back before the first sighting and then corrected), so a far skip may
+  come before the sender has sent again what it holds (what is skipped
+  then is lost as above); a step back that stays after the first
+  sighting lengthens it; a clock frozen, or held back by an attacker,
+  holds the far skip back for as long as it stays so. Before, the wait
+  was in memory and a device whose process never lived `FAR_SKIP_WAIT`
+  kept waiting.
 - Naming a message lost before a far skip's kept keys on a chain the skip
   left (tracker R-14): the skip to `pn` drops up to about 99,000 positions
   of the chain being left. A lost text from there is named in a GONE
@@ -1161,7 +1206,7 @@ entry per logical message, never written by the ratchet.
 | what a device keeps after it accepts a first contact (identity, signed prekey, prekey record) does not decrypt its first message again, and the session no longer uses the signed prekey; every confirmation of an own session replaces the one-time prekey in the confirming transaction, and nothing else does, and nothing is written if a record the replacement read changed before the commit (tracker R-6) | `what_a_device_keeps_after_a_first_contact_does_not_read_it_again`, `a_one_time_prekey_read_beside_a_session_that_wins_is_replaced`, `a_confirmation_of_an_own_session_replaces_the_prekey_and_nothing_else_does`; `core_protocol` `messaging::tests::beside`; the conflict test of `tests::chat` | runtime, in process; local relay over TCP |
 | signed-prekey rotation (tracker R-6): rotation at the start of a round, before the mailbox is read; no handshake read in a round whose PUT or whose record of the relay's acceptance failed (a rotation committed before the failure stays); a handshake built before one rotation answered under the previous key, one two rotations later refused (reason 3) and made again, its text `NotDelivered`; a restart under the previous key replacing the session and one past its grace refused and made again; a rotation whose publication failed still answering the bundle the relay kept serving after any absence; a late copy of the accepted handshake not refused after rotation; a copied store replacing a session only while its signed prekey is held, and at most once (also under its previous key); a store from an older build rotated at its first round, with and without the mark of option B; process deaths after the rotation and after the PUT rotating once; the rule ((E), (T) in both clock directions for keys of different ages, an unpublished key never aging), the record (V3, V2 read, strict parsing), every one-time-prekey writer dropping the previous key, the previous key answering only with its one-time prekey (also beside a session), two instances on one database creating and rotating once while the other holds its transaction | `tests::spk_rotation`, `tests::prekey_record`, `tests::legacy_upgrade::a_v2_prekey_record_is_rotated_on_the_first_round`, `tests::network_crash::a_device_killed_around_a_rotation_rotates_once_and_answers_the_served_bundle` | runtime, local relay over TCP; real process deaths; unit; two instances on one database stand in for two processes; device clocks not tested |
 | a reset replaces the session on both devices (texts committed to the old one `NotDelivered` on each, the contact told), also when an old-session text arrives in the same round, and ends the dead end of a false conflict; a restart whose one-time prekey another first contact consumed, or a confirmation replaced, is refused and made again; a late copy of the handshake a session came from is not refused, also when the relay replaced its ephemeral key with another encoding of the same keys; an unreadable `hsacc:` record stops no round and is written again; a receipt read in the round of a restart still delivers; a reset of an unreadable session changes nothing; a store from before option B replaces its one-time prekey once; a text sent while a reset gives the session up is given up with it; a forged restart and a replay of a handshake older than the session replace nothing; both users resetting at once is the conflict, resolved by the greater key; reset rules; process death at each new step on both devices (option B) | `tests::restart`; `tests::a_handshake_is_known_in_every_encoding_of_its_keys`; `core_protocol` `messaging::tests::beside::a_handshake_beside_an_established_session_is_kept_until_the_session_is_retired` | runtime, local relay over TCP; process crash |
-| a gap of more than `MAX_SKIP` in one chain (texts given up after they were encrypted, or lost on the relay) is crossed with a far skip and both directions go on; a far skip only after the wait without accepting a message and not in a pass that accepted one; a rotated mailbox and a lost start sent again later deliver every text; one far try per session per round, a far message without a try deleted and read when sent again, nothing kept on the relay; at most four tries per round over six sessions; the wait kept per chain (a forged key starts no genuine wait), counted from the chain's first arrival, the chain seen least recently dropped first, a session judged once per pass also when the round is full, and the waits forgotten when the contact is deleted; a lost text from before the kept keys of the current chain named back in a GONE message; in the ratchet, the gap in the current chain, in the chain being left and in both at once, the last `MAX_SKIP` keys kept, `MAX_FAR_SKIP` and no further, a forged far message changing nothing, no key left behind, no far skip past `MAX_RESUMABLE_NR` | `tests::far_skip`; `core_crypto::ratchet` (`a_far_skip_*`, `a_forged_far_message_changes_nothing`, `a_stored_key_needs_no_far_skip`, `no_temporary_key_outlives_a_far_skip`), `ratchet::checkpoint` (`a_far_skip_never_moves_nr_past_the_resumable_limit`) | runtime, local relay over TCP; unit |
+| a gap of more than `MAX_SKIP` in one chain (texts given up after they were encrypted, or lost on the relay) is crossed with a far skip and both directions go on; a far skip only after the wait without accepting a message and not in a pass that accepted one; a rotated mailbox and a lost start sent again later deliver every text; one far try per session per round, a far message without a try deleted and read when sent again, nothing kept on the relay; at most four tries per round over six sessions; the wait kept per chain (a forged key starts no genuine wait), counted from the chain's first arrival, the chain seen least recently dropped first, a session judged once per pass also when the round is full, and the waits forgotten when the contact is deleted; the wait kept in the store across a restart, deleted once a message is accepted, with the contact and on a reset; the record's layout and strict parsing, a record that does not parse read as none and replaced, a clock set back before a chain's first sighting starting its wait again, the last sighting stored at most once a minute (counted) while dropping follows the exact one, a write that failed asked for again (unit, sightings only); a far try that fails other than by not decrypting, and a message read with one that fails to settle, each reported with the pass going on; a lost text from before the kept keys of the current chain named back in a GONE message; in the ratchet, the gap in the current chain, in the chain being left and in both at once, the last `MAX_SKIP` keys kept, `MAX_FAR_SKIP` and no further, a forged far message changing nothing, no key left behind, no far skip past `MAX_RESUMABLE_NR` | `tests::far_skip`; `network::tests` (the far-wait record and sightings); `core_crypto::ratchet` (`a_far_skip_*`, `a_forged_far_message_changes_nothing`, `a_stored_key_needs_no_far_skip`, `no_temporary_key_outlives_a_far_skip`), `ratchet::checkpoint` (`a_far_skip_never_moves_nr_past_the_resumable_limit`) | runtime, local relay over TCP; unit |
 | a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history), also when it arrives after the ratchet turned, on a chain the recipient left (the last 32 are remembered, from `RATCHET_STATE_V2`; a V1 record reads as none); a GONE lost on the relay is sent again when the text is repeated, not again within the minute, and once more a minute later (the minute set by a test aid); ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`, `a_late_message_of_an_earlier_chain_whose_key_is_gone_is_beyond_recall`, `a_checkpoint_written_by_the_previous_implementation_round_trips_byte_for_byte`), `ratchet::checkpoint` (`earlier_chains_round_trip_and_their_rules_are_enforced`) | runtime, local relay over TCP; unit |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |

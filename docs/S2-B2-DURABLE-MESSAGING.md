@@ -570,8 +570,9 @@ last four receiving chains left, public keys and end positions only); a
 `RATCHET_STATE_V1` record is still read, as a state that remembers no
 earlier chain (`core_crypto::ratchet::checkpoint`). A build before that
 change refuses each session whose ratchet record is V2
-(`UnsupportedVersion`); the rest of the store reads as before. Going back
-to an older build is not supported. `PROVISIONAL_HANDSHAKE_RECORD_V1`
+(`UnsupportedVersion`), and since its sync round loads every session
+before it reads the mailbox, its rounds then fail for every contact.
+Going back to an older build is not supported. `PROVISIONAL_HANDSHAKE_RECORD_V1`
 (`hsin:`) is new and local. A responder session stored by an earlier build at
 generation 0, before any message authenticated, is still loaded as a session;
 it reads as `AwaitingPeer`, not `Established`, until a message from the peer

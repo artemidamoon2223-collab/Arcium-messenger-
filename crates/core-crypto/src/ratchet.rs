@@ -1692,11 +1692,6 @@ mod tests {
         assert!(!bob.is_beyond_recall(&other), "another chain");
     }
 
-    /// R-21: a late message of a chain Bob has left is beyond recall when
-    /// its position lies before that chain's end and its key is gone, for
-    /// the last `MAX_PREV_CHAINS` chains; a stored key, a position at or past
-    /// the end, and an older chain are not. A forged header that would start
-    /// a chain leaves the history as it was.
     /// A header of a remembered earlier chain never needs a far skip, at
     /// any position: no skip can read it, so the network layer names it
     /// back instead of spending a far try on it (R-21).
@@ -1728,6 +1723,11 @@ mod tests {
         assert_eq!(bob.prev_chains, before);
     }
 
+    /// R-21: a late message of a chain Bob has left is beyond recall when
+    /// its position lies before that chain's end and its key is gone, for
+    /// the last `MAX_PREV_CHAINS` chains; a stored key, a position at or past
+    /// the end, and an older chain are not. A forged header that would start
+    /// a chain leaves the history as it was.
     #[test]
     fn a_late_message_of_an_earlier_chain_whose_key_is_gone_is_beyond_recall() {
         let (mut alice, mut bob) = established_pair();

@@ -313,3 +313,7 @@ D-060 · 2026-11-18/19 · OWNER · OPEN (PRs #217–#220, awaiting the Owner)
 - Evidence: local runs listed in each PR body (e.g. #217 at `8134df9`: core-protocol 148 passed, mobile-ffi 254 passed, 0 failed); mutations per PR, each caught; CI #217 all green on `3732e31`, #218 all green on `91b94df`; later heads running. A shared CARGO_TARGET_DIR between worktrees once reused a stale test binary (caught, rerun on the worktree's own target) — never share target dirs between worktrees.
 - Next after merges: merge `main` into #218 (doc conflicts with #217), one tracker PR (R-6 reopened question, R-13 resolvable by reset, R-14/R-21/R-22/R-24/H-6/H-7 rows).
 - Update (D-060): #217 head `068d207` after a fifth review (nothing above INFO; INFO items fixed); locally core-protocol 148 passed, mobile-ffi 255 passed, 0 failed. CI all green on #217 `473030a` (after one re-run of a Maven Central download failure), #219 `8067f15`, #220 `56a0b6b`, #218 `91b94df`.
+
+D-061 · 2026-11-19 · OWNER · IN PROGRESS
+- What: "Ok" to the D-060 report; asked (AskUserQuestion) which PRs to merge, the Owner chose "Все четыре по порядку": #217 → #218 (after merging `main` in) → #219 → #220, each a normal merge commit once CI is green on its current head. Asked whether to rotate the signed prekey because of option B's key-compromise impersonation, the Owner chose "Да, отдельной задачей": R-6 is reopened as a separate protocol task after the merges and the tracker PR.
+- Evidence: Owner messages of 2026-11-19 in session `013Fd9w11HPCwF53H2tPuKpt`.

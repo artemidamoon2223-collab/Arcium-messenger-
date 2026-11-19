@@ -30,8 +30,8 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
   `docs/NET-MESSAGING.md` section 8)? That replacement is also what keeps a
   replayed handshake older than a session from restarting it (option B).
   The signed prekey is rotated (R-6, `plan_rotation`): does every round
-  still rotate it before the bundle is exported and before the mailbox is
-  read, with no scan in a round whose PUT or publication note failed? Does
+  still rotate it when due, before the bundle is exported and before the
+  mailbox is read, with no scan in a round whose PUT or publication note failed? Does
   every writer that replaces the one-time prekey drop the previous signed
   prekey in the same write, and does the previous key still answer only
   with the one-time prekey it was published with (`check_answerable`)?
@@ -160,7 +160,8 @@ the Android contact-card and add-contact code. Specification:
   impersonation; the signed prekey is rotated, tracker R-6), so a copy of
   this device's store lets its holder, if it can also write the mailbox
   (`docs/NET-MESSAGING.md` §3), replace a session while the copied signed
-  prekey is held, and at most once (§8). Check that no new path reaches
+  prekey is held, and, with one instance on the database, at most once
+  (§8). Check that no new path reaches
   `retire_session` or `accept_restart` on anything weaker; that an
   unanswerable handshake beside an established session is refused except a
   late copy of the handshake that session came from (`hsacc:`, compared by

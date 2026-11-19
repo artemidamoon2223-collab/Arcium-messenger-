@@ -18,7 +18,7 @@ class ChatStateReloadTest {
 
     private val entry = ChatEntry(1uL, true, ChatEntryState.PENDING, 1uL, byteArrayOf(0x61), PlaintextText("hi"))
     private val conversation = Conversation(
-        ByteArray(32) { 1 }, "Bob", "fp", ChatSessionState.Established, false, false, "", 0u, entry,
+        ByteArray(32) { 1 }, "Bob", "fp", ChatSessionState.Established, false, false, false, "", 0u, entry,
     )
 
     @Test

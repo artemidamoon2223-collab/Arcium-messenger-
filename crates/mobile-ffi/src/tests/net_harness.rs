@@ -277,3 +277,108 @@ fn relay_through(mut client: TcpStream, target: &str, armed: &AtomicU8, mode: &A
     let _ = client.shutdown(Shutdown::Both);
     let _ = server.shutdown(Shutdown::Both);
 }
+
+/// Other X25519 public keys that every clamped scalar maps to the same
+/// shared secret as `key`, so a relay can put either in place of an
+/// initiator's ephemeral key and the responder derives the same session
+/// (review of option B):
+/// - `key` with its top bit flipped, which X25519 ignores;
+/// - the point plus the point of order 2, whose u-coordinate is `1/u mod p`
+///   (on a Montgomery curve, x(P + (0, 0)) = 1/x(P)); a clamped scalar is a
+///   multiple of 8 and cancels it.
+///
+/// Test aid; callers check the claim with a real Diffie-Hellman.
+pub fn same_keys_other_encodings(key: [u8; 32]) -> [[u8; 32]; 2] {
+    let mut flipped = key;
+    flipped[31] ^= 0x80;
+    [flipped, field::to_bytes(&field::invert(&field::from_bytes(&key)))]
+}
+
+/// Arithmetic modulo p = 2^255 - 19 on four little-endian 64-bit limbs,
+/// only what `same_keys_other_encodings` needs. Not constant time.
+mod field {
+    pub type Fe = [u64; 4];
+    const P: Fe = [0xffff_ffff_ffff_ffed, u64::MAX, u64::MAX, 0x7fff_ffff_ffff_ffff];
+
+    pub fn from_bytes(b: &[u8; 32]) -> Fe {
+        let mut f = [0u64; 4];
+        for (i, limb) in f.iter_mut().enumerate() {
+            *limb = u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
+        }
+        f[3] &= 0x7fff_ffff_ffff_ffff;
+        reduce(f)
+    }
+
+    pub fn to_bytes(f: &Fe) -> [u8; 32] {
+        let mut b = [0u8; 32];
+        for (i, limb) in f.iter().enumerate() {
+            b[8 * i..8 * i + 8].copy_from_slice(&limb.to_le_bytes());
+        }
+        b
+    }
+
+    fn geq_p(f: &Fe) -> bool {
+        for i in (0..4).rev() {
+            if f[i] != P[i] {
+                return f[i] > P[i];
+            }
+        }
+        true
+    }
+
+    fn reduce(mut f: Fe) -> Fe {
+        while geq_p(&f) {
+            let mut borrow = 0u128;
+            for i in 0..4 {
+                let d = (f[i] as u128).wrapping_sub(P[i] as u128 + borrow);
+                f[i] = d as u64;
+                borrow = (d >> 127) & 1;
+            }
+        }
+        f
+    }
+
+    pub fn mul(a: &Fe, b: &Fe) -> Fe {
+        let mut r = [0u64; 8];
+        for i in 0..4 {
+            let mut carry = 0u128;
+            for j in 0..4 {
+                let cur = r[i + j] as u128 + (a[i] as u128) * (b[j] as u128) + carry;
+                r[i + j] = cur as u64;
+                carry = cur >> 64;
+            }
+            r[i + 4] = carry as u64;
+        }
+        // 2^256 = 38 (mod p).
+        let mut out = [0u64; 4];
+        let mut carry = 0u128;
+        for i in 0..4 {
+            let cur = r[i] as u128 + 38 * (r[i + 4] as u128) + carry;
+            out[i] = cur as u64;
+            carry = cur >> 64;
+        }
+        while carry > 0 {
+            let mut c = 38 * carry;
+            for limb in out.iter_mut() {
+                let cur = *limb as u128 + c;
+                *limb = cur as u64;
+                c = cur >> 64;
+            }
+            carry = c;
+        }
+        reduce(out)
+    }
+
+    /// `a^(p-2)`, the inverse of a non-zero `a`.
+    pub fn invert(a: &Fe) -> Fe {
+        let e: Fe = [0xffff_ffff_ffff_ffeb, u64::MAX, u64::MAX, 0x7fff_ffff_ffff_ffff];
+        let mut acc: Fe = [1, 0, 0, 0];
+        for bit in (0..255).rev() {
+            acc = mul(&acc, &acc);
+            if (e[bit / 64] >> (bit % 64)) & 1 == 1 {
+                acc = mul(&acc, a);
+            }
+        }
+        acc
+    }
+}

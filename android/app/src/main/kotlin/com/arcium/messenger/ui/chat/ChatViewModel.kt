@@ -209,6 +209,22 @@ class ChatViewModel(savedState: SavedStateHandle) : ViewModel() {
         }
     }
 
+    /**
+     * Starts the secure session again (Rust `reset_session`), on the sync
+     * thread so that a round in flight does not use the old session after
+     * it is given up. The next round starts the new one.
+     */
+    fun resetSession() {
+        viewModelScope.launch {
+            try {
+                service.callBetweenRounds { it.resetSession(peer) }
+            } catch (e: CoreException) {
+                _state.value = _state.value.copy(error = "Not reset: ${e.message}")
+            }
+            service.changed()
+        }
+    }
+
     fun resolveConflict() {
         viewModelScope.launch {
             try {

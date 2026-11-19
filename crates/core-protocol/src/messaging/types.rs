@@ -114,18 +114,19 @@ pub struct ProvisionalHandshake {
     pub handshake: Vec<u8>,
 }
 
-/// Side writes committed together with the deletion of a handshake recorded
-/// beside a session, when a message from the peer confirms that session
-/// ([`Messenger::with_beside_discard`](super::Messenger::with_beside_discard)).
-/// Called with the store as read by that receive and the handshake being
-/// deleted. An error ends the receive with nothing written; a precondition
-/// of a returned write that no longer holds at commit is a
+/// Side writes committed by the receive that confirms this device's own
+/// initiator session: the first message from the peer committed on it
+/// ([`Messenger::with_confirm_hook`](super::Messenger::with_confirm_hook)).
+/// Called with the store as read by that receive and the peer's handshake
+/// recorded beside the session, which the same transaction deletes, if
+/// there is one. An error ends the receive with nothing written; a
+/// precondition of a returned write that no longer holds at commit is a
 /// [`MessagingError::Conflict`], also with nothing written. A write must not
 /// name a key the receive writes itself (its inbox, seen and provisional
 /// records): the batch is then refused (`SideWriteError::DuplicateKey`) on
 /// every try, and the message is never committed.
-pub type BesideDiscard = Box<
-    dyn Fn(&EncryptedStore, &ProvisionalHandshake) -> Result<Vec<SideWrite>, MessagingError>
+pub type ConfirmHook = Box<
+    dyn Fn(&EncryptedStore, Option<&ProvisionalHandshake>) -> Result<Vec<SideWrite>, MessagingError>
         + Send,
 >;
 

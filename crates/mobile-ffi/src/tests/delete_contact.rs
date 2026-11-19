@@ -86,7 +86,7 @@ fn remaining(d: &Device, other: &Device) -> Vec<String> {
     let store = d.core.store.lock().unwrap();
     let mut out = Vec::new();
     for ns in [
-        "contact:", "session:", "handle:", "hsout:", "hsin:", "outbox:", "inbox:", "chat-meta:",
+        "contact:", "session:", "handle:", "hsout:", "hsin:", "hsacc:", "outbox:", "inbox:", "chat-meta:",
         "chat-open:", "chat-o:", "chat-r:", "chat-i:", &entries,
     ] {
         out.extend(

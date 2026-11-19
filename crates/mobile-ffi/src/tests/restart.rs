@@ -15,7 +15,7 @@ use super::*;
 use crate::network::chat::{test_hooks, ChatEntryState as S, ChatSessionState};
 use crate::network::wire::{Envelope, Payload};
 
-pub(super) fn canary() -> String {
+fn canary() -> String {
     String::from_utf8(CANARY.to_vec()).unwrap()
 }
 
@@ -105,7 +105,7 @@ pub(super) fn waiting(relay: &relay::server::RelayHandle, to: &Device) -> (usize
 
 /// Alice and Bob, contacts of each other, with an established session that
 /// Alice started, and one text delivered each way.
-pub(super) fn talking(addr: &str) -> (Device, Device) {
+fn talking(addr: &str) -> (Device, Device) {
     let (alice, bob) = (Device::new(addr, 1), Device::new(addr, 2));
     meet(&alice, &bob);
     round(&[&alice, &bob]); // Both bundles on the relay.

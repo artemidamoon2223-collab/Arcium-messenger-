@@ -69,16 +69,17 @@ fn talking_at(addr: &str, at: u64) -> (Device, Device) {
     (alice, bob)
 }
 
-/// What someone holding `copy`, a copy of `victim`'s prekey record, and the
-/// victim's identity secret (in the same store) can make while posing as
-/// `posing_as`: a handshake naming the copied signed prekey and the
+/// What someone holding `spk`, a signed-prekey secret from a copy of
+/// `victim`'s prekey record, and the victim's identity secret (in the same
+/// store) can make while posing as `posing_as`: a handshake naming that
+/// signed prekey and the
 /// one-time prekey the relay serves now, and a first message under it.
 /// Making it needs that one-time prekey's public key only (the initiator's
 /// DH4 is DH(ephemeral, one-time prekey)); this computes the same value
 /// from the responder's side, taking the secret from the live record as a
 /// stand-in when it is the one served, and a random one otherwise (the
 /// handshake is then refused before DH4 matters).
-fn forge_restart(addr: &str, victim: &Device, copy: &PrekeyRecord, posing_as: &Device, text: &str) -> [Vec<u8>; 2] {
+fn forge_restart(addr: &str, victim: &Device, spk: &StaticSecret, posing_as: &Device, text: &str) -> [Vec<u8>; 2] {
     let identity = victim.core.load_identity().unwrap().unwrap();
     let opk_id = served(addr, victim).one_time_prekey_id;
     let opk_sk = match record(victim).opk {
@@ -87,11 +88,11 @@ fn forge_restart(addr: &str, victim: &Device, copy: &PrekeyRecord, posing_as: &D
     };
     let ephemeral = StaticSecret::random_from_rng(OsRng);
     let posing = PublicKey::from(key(posing_as));
-    let spk_pk = PublicKey::from(&copy.signed_prekey_sk);
+    let spk_pk = PublicKey::from(spk);
     let derived = x3dh_respond(
         &identity.dh_key,
         PublicKey::from(&identity.dh_key),
-        &copy.signed_prekey_sk,
+        spk,
         Some(&opk_sk),
         posing,
         PublicKey::from(&ephemeral),
@@ -428,7 +429,7 @@ fn a_copied_store_cannot_replace_a_session_once_its_signed_prekey_is_gone() {
         }
         let history = chat(&bob, &alice);
         let generation = bob.generation_with(&alice);
-        inject_from(&addr, &bob, &alice, forge_restart(&addr, &bob, &copy, &alice, "forged"));
+        inject_from(&addr, &bob, &alice, forge_restart(&addr, &bob, &copy.signed_prekey_sk, &alice, "forged"));
         round(&[&bob]);
         let inside = matches!(after, After::Nothing | After::OneRotation);
         assert_eq!(peer_reset(&bob, &alice), inside, "{after:?}");
@@ -453,9 +454,13 @@ fn a_copied_store_cannot_replace_a_session_once_its_signed_prekey_is_gone() {
     }
 }
 
-/// One copy of the store makes at most one session replacement: the one
-/// accepted consumes the one-time prekey and the previous signed prekey,
-/// and the next round rotates before a new one-time prekey is published.
+/// One copy of the store makes at most one session replacement. The copy is
+/// taken a round after a rotation by time, so it holds a previous key the
+/// relay no longer names; two restarts are forged under it, "from" Alice
+/// and "from" Carol, with the one-time prekey the relay serves. The one
+/// accepted consumes that one-time prekey and the previous key in the same
+/// write, so the other is not; and the next round rotates ((E)) before a new
+/// one-time prekey is published, so a forgery under either copied key fails.
 #[test]
 fn a_copied_store_replaces_at_most_one_session() {
     let relay = start_relay();
@@ -470,13 +475,16 @@ fn a_copied_store_replaces_at_most_one_session() {
     rounds(&[&bob, &carol], 3);
     round(&[&bob]);
     assert_eq!(session(&bob, &carol), ChatSessionState::Established);
+    bob.net.set_now(Some(T0 + P));
+    round(&[&bob]);
 
     let copy = record(&bob);
-    let forged = [
-        forge_restart(&addr, &bob, &copy, &alice, "forged as alice"),
-        forge_restart(&addr, &bob, &copy, &carol, "forged as carol"),
+    let previous = copy.prev.as_ref().expect("the copy holds a previous key");
+    assert_ne!(served_spk(&addr, &bob), id_of(previous), "the relay names the new key");
+    let [a, c] = [
+        forge_restart(&addr, &bob, previous, &alice, "forged as alice"),
+        forge_restart(&addr, &bob, previous, &carol, "forged as carol"),
     ];
-    let [a, c] = forged;
     let (sa, sc) = (key(&alice), key(&carol));
     inject(&addr, &bob, Envelope::Handshake { sender: sa, handshake: a[0].clone() }.encode());
     inject(&addr, &bob, Envelope::Handshake { sender: sc, handshake: c[0].clone() }.encode());
@@ -485,11 +493,40 @@ fn a_copied_store_replaces_at_most_one_session() {
     round(&[&bob]);
     let replaced = [peer_reset(&bob, &alice), peer_reset(&bob, &carol)];
     assert_eq!(replaced.iter().filter(|r| **r).count(), 1, "{replaced:?}");
+    let after = record(&bob);
+    assert!(after.prev.is_none(), "the previous key went with the accepted forgery");
+    assert_ne!(after.opk_id(), copy.opk_id(), "and the one-time prekey");
 
     round(&[&bob]); // (E)
     let other = if replaced[0] { &carol } else { &alice };
-    inject_from(&addr, &bob, other, forge_restart(&addr, &bob, &copy, other, "again"));
+    for spk in [previous, &copy.signed_prekey_sk] {
+        inject_from(&addr, &bob, other, forge_restart(&addr, &bob, spk, other, "again"));
+        round(&[&bob]);
+        assert!(!peer_reset(&bob, other), "the copy is spent");
+    }
+    relay.stop();
+}
+
+/// The other half of the guard: a round whose PUT succeeds but whose record
+/// of that acceptance fails also ends before the mailbox.
+#[test]
+fn a_round_whose_publication_note_fails_processes_no_handshake() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = (Device::new(&addr, 1), Device::new(&addr, 2));
+    meet(&alice, &bob);
     round(&[&bob]);
-    assert!(!peer_reset(&bob, other), "the copy is spent");
+    say(&alice, &bob, "a1", "waits for a recorded publication");
+    round(&[&alice]);
+
+    crate::prekey_hooks::fail_next_note();
+    let r = bob.net.sync_conversations();
+    assert!(!r.errors.is_empty(), "the round fails");
+    assert_eq!(r.fetched, 0, "nothing was read from the mailbox");
+    assert_eq!(waiting(&relay, &bob).0, 1, "the handshake still waits");
+    assert_eq!(hsin(&bob, &alice), None);
+
+    round(&[&bob]);
+    assert_eq!(session(&bob, &alice), ChatSessionState::Established);
     relay.stop();
 }

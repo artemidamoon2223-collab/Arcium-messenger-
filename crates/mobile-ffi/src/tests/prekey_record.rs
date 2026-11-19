@@ -309,17 +309,61 @@ fn maintenance_is_idempotent_and_an_unpublished_key_does_not_age() {
     assert_eq!(read_record(&bob), rotated, "the new key is not published yet");
 }
 
+/// The clock rule as coded: a rotation when the clock reads a period or
+/// more from the publication, in either direction. A key three days old
+/// rotates once the clock reads four days ahead, and only once it reads a
+/// period and three days back; a smaller step back delays the next
+/// rotation. Every early rotation, forward or back, drops the older
+/// previous key early, and a jump of a period set right again rotates once
+/// more.
 #[test]
-fn a_backward_clock_jump_of_a_period_rotates_and_a_smaller_step_does_not() {
+fn a_clock_step_rotates_only_a_period_from_the_publication_in_either_direction() {
+    const DAY: u64 = 24 * 60 * 60;
     let (bob, _) = peer_with_prekeys(6);
-    let first = current_spk(&bob);
-    bob.note_prekeys_published(&first, T0).unwrap();
+    rotate_by_time(&bob, T0 - P); // now: current K1, previous K0
+    let (k0, k1) = (prev_spk(&bob).unwrap(), current_spk(&bob));
+    bob.note_prekeys_published(&k1, T0).unwrap(); // K1 published at T0
     let published = read_record(&bob);
-    bob.maintain_prekeys(T0 - (P - 1)).unwrap();
-    assert_eq!(read_record(&bob), published, "a step back of less than a period");
-    bob.maintain_prekeys(T0 - P).unwrap();
-    assert_ne!(current_spk(&bob), first, "a step back of a period rotates");
-    assert_eq!(prev_spk(&bob), Some(first), "and keeps the previous key");
+    let now = T0 + 3 * DAY; // K1 is three days old
+
+    for (clock, what) in [
+        (now - P, "a period back"),
+        (T0 - (P - 1), "a period and three days back, less a second"),
+        (now + 4 * DAY - 1, "four days ahead, less a second"),
+    ] {
+        bob.maintain_prekeys(clock).unwrap();
+        assert_eq!(read_record(&bob), published, "{what}: not rotated");
+    }
+
+    bob.maintain_prekeys(now + 4 * DAY).unwrap();
+    assert_ne!(current_spk(&bob), k1, "four days ahead rotates");
+    assert_eq!(prev_spk(&bob), Some(k1), "and keeps K1 as the previous key");
+    assert_ne!(prev_spk(&bob), Some(k0), "K0 is dropped early, forward too");
+    let k2 = current_spk(&bob);
+    bob.note_prekeys_published(&k2, now + 4 * DAY).unwrap();
+    let rotated = read_record(&bob);
+    bob.maintain_prekeys(now).unwrap();
+    assert_eq!(read_record(&bob), rotated, "four days back again only delays");
+
+    // A jump of a full period, set right afterwards, rotates twice.
+    let (carol, _) = peer_with_prekeys(30);
+    let first = current_spk(&carol);
+    carol.note_prekeys_published(&first, T0).unwrap();
+    carol.maintain_prekeys(T0 + P).unwrap();
+    let second = current_spk(&carol);
+    assert_ne!(second, first, "a period ahead rotates");
+    carol.note_prekeys_published(&second, T0 + P).unwrap();
+    carol.maintain_prekeys(T0).unwrap();
+    assert_ne!(current_spk(&carol), second, "setting the clock right rotates once more");
+    assert_eq!(prev_spk(&carol), Some(second), "and drops the first key early");
+
+    // A key published just now rotates a full period back.
+    let (dave, _) = peer_with_prekeys(31);
+    let first = current_spk(&dave);
+    dave.note_prekeys_published(&first, T0).unwrap();
+    dave.maintain_prekeys(T0 - P).unwrap();
+    assert_ne!(current_spk(&dave), first);
+    assert_eq!(prev_spk(&dave), Some(first));
 }
 
 #[test]
@@ -595,6 +639,10 @@ fn beside_an_own_session_and_beside_an_established_session_a_first_message_under
 
 /// Two instances on one database (an in-process stand-in for two
 /// processes): the record is created once and a due rotation happens once.
+/// The second instance starts its maintenance while the first holds its
+/// transaction, just before it writes; it must find the first one's record
+/// and write nothing. (If it read the record outside its transaction, it
+/// would plan from the old one and write a second record over it.)
 #[test]
 fn two_instances_create_prekeys_once_and_rotate_once() {
     let path = tempfile::tempdir().unwrap().keep().join("db").to_str().unwrap().to_string();
@@ -602,27 +650,34 @@ fn two_instances_create_prekeys_once_and_rotate_once() {
     a.save_identity(Identity::generate()).unwrap();
     let b = ArciumCore::new(path, key32(29)).unwrap();
 
-    a.maintain_prekeys(T0).unwrap();
-    let created = read_record(&a);
-    b.maintain_prekeys(T0).unwrap();
-    assert_eq!(read_record(&b), created, "created once");
+    let race = |now: u64| {
+        let other = b.clone();
+        let started = Arc::new(std::sync::Mutex::new(None));
+        let slot = started.clone();
+        crate::prekey_hooks::set_before_maintenance_write(move || {
+            let handle = std::thread::spawn(move || other.maintain_prekeys(now).unwrap());
+            // Long enough for the other instance to read and wait for the
+            // write lock this transaction holds.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            *slot.lock().unwrap() = Some(handle);
+        });
+        let a_wrote = a.maintain_prekeys(now).unwrap();
+        let handle = started.lock().unwrap().take().expect("the hook ran");
+        let b_wrote = handle.join().unwrap();
+        (a_wrote, b_wrote)
+    };
 
+    assert_eq!(race(T0), (true, false), "created once");
+    let created = read_record(&a);
     let first = current_spk(&a);
     a.note_prekeys_published(&first, T0).unwrap();
     b.note_prekeys_published(&first, T0 + 1).unwrap();
-    assert_eq!(record_of(&a).published_at, T0);
-    let barrier = std::sync::Barrier::new(2);
-    std::thread::scope(|s| {
-        for core in [&a, &b] {
-            let barrier = &barrier;
-            s.spawn(move || {
-                barrier.wait();
-                core.maintain_prekeys(T0 + P).unwrap();
-            });
-        }
-    });
+    assert_eq!(record_of(&a).published_at, T0, "recorded once");
+
+    assert_eq!(race(T0 + P), (true, false), "rotated once");
     let after = record_of(&a);
+    assert_ne!(read_record(&a), created);
     assert_ne!(id_of(&after.signed_prekey_sk), first);
-    assert_eq!(after.prev.as_ref().map(id_of), Some(first), "rotated once, not twice");
-    assert_eq!(read_record(&b), read_record(&a));
+    assert_eq!(after.prev.as_ref().map(id_of), Some(first));
+    assert!(!b.maintain_prekeys(T0 + P).unwrap(), "nothing due any more");
 }

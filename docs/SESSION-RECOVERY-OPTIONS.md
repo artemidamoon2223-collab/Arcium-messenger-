@@ -150,7 +150,8 @@ contact's identity secret, lets its holder replace an established session
 (`docs/NET-MESSAGING.md` section 8). The signed prekey was then never
 rotated, so that lasted for the life of the identity; it is now rotated
 (tracker R-6), which bounds the signed-prekey route to about two periods
-of 7 days. What follows is the proposal as written.
+of 7 days of rounds that publish the bundle (`docs/NET-MESSAGING.md`
+section 8). What follows is the proposal as written.
 
 **What it is**
 - A new handshake from a pinned contact is recorded provisionally even when a

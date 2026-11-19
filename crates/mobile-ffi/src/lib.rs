@@ -79,7 +79,9 @@ pub enum CoreError {
     /// from a bundle in flight would otherwise get a weaker X3DH accepted.
     #[error("this handshake must use the currently published one-time prekey")]
     OneTimePrekeyRequired,
-    /// The handshake names a signed prekey that is no longer current. The peer's
+    /// The handshake names a signed prekey this device no longer holds:
+    /// neither the current one nor the previous one, or the previous one
+    /// after the one-time prekey it was published with changed. The peer's
     /// bundle predates a rotation; fetching a fresh one resolves it.
     #[error("signed prekey is stale")]
     StaleSignedPrekey,
@@ -1134,7 +1136,10 @@ impl ArciumCore {
     /// rotation after a one-time-prekey change ((E), `plan_rotation`) relies
     /// on that: a bundle exported at any other time could pair the current
     /// signed prekey with a one-time prekey made since, and a handshake
-    /// built from it would be refused once and made again.
+    /// built from it would be refused once and made again. The exported
+    /// calls that skip the round (this one, `establish_session_responder`,
+    /// `receive_message`; on Android only the instrumentation-test
+    /// `MessageRepository` uses them) neither rotate nor publish.
     pub fn export_prekey_bundle(&self) -> Result<Vec<u8>, CoreError> {
         let identity = self.require_identity()?;
         // The decrypted record holds the signed-prekey and one-time-prekey
@@ -1661,20 +1666,31 @@ impl ArciumCore {
     /// clock; `plan_rotation`, tracker R-6), in one transaction that reads
     /// the record again under the write lock, so two instances on one
     /// database create it once and rotate it once. Nothing is written when
-    /// nothing is due. A record that cannot be read is an error: the round
-    /// fails, as its export would.
-    pub(crate) fn maintain_prekeys(&self, now: u64) -> Result<(), CoreError> {
+    /// nothing is due; `true` when it wrote. A record that cannot be read is
+    /// an error: the round fails, as its export would.
+    pub(crate) fn maintain_prekeys(&self, now: u64) -> Result<bool, CoreError> {
         let identity = self.require_identity()?;
         let mut store = self.store.lock().map_err(|_| CoreError::Storage {
             msg: "mutex poisoned".into(),
         })?;
+        // Most rounds have nothing to do: a plain read first, so they take
+        // no write lock (as before rotation existed).
+        match store.get(PREKEYS_KEY) {
+            Ok(bytes) => {
+                if plan_rotation(&unpack_prekeys(&Zeroizing::new(bytes))?, now).is_none() {
+                    return Ok(false);
+                }
+            }
+            Err(StorageError::NotFound) => {}
+            Err(e) => return Err(e.into()),
+        }
         // Dropping `tx` on an early return rolls it back.
         let tx = store.transaction()?;
         let record = match tx.get(PREKEYS_KEY) {
             Ok(bytes) => {
                 let mut record = unpack_prekeys(&Zeroizing::new(bytes))?;
                 let Some(rotation) = plan_rotation(&record, now) else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 rotate_signed_prekey(&mut record, &identity, rotation);
                 record
@@ -1682,9 +1698,11 @@ impl ArciumCore {
             Err(StorageError::NotFound) => PrekeyRecord::new(&identity),
             Err(e) => return Err(e.into()),
         };
+        #[cfg(test)]
+        prekey_hooks::before_maintenance_write();
         tx.put(PREKEYS_KEY, &pack_prekeys(&record))?;
         tx.commit()?;
-        Ok(())
+        Ok(true)
     }
 
     /// Records that the relay accepted a bundle naming the signed prekey
@@ -1701,6 +1719,12 @@ impl ArciumCore {
             record.published_at == PUBLISHED_NOT_YET
                 && spk_id(record.signed_prekey_pk().as_bytes()) == *spk
         };
+        #[cfg(test)]
+        if prekey_hooks::fail_note() {
+            return Err(CoreError::Storage {
+                msg: "test: the publication note fails".into(),
+            });
+        }
         let mut store = self.store.lock().map_err(|_| CoreError::Storage {
             msg: "mutex poisoned".into(),
         })?;
@@ -1862,6 +1886,39 @@ impl ArciumCore {
     fn require_identity(&self) -> Result<Arc<Identity>, CoreError> {
         self.load_identity()?
             .ok_or_else(|| CoreError::InvalidKey { msg: "no identity saved — call save_identity first".into() })
+    }
+}
+
+/// Test aids for the prekey maintenance of a round (tracker R-6), per
+/// thread: a closure run inside the maintenance transaction just before it
+/// writes, and a one-shot failure of the publication note.
+#[cfg(test)]
+pub(crate) mod prekey_hooks {
+    use std::cell::{Cell, RefCell};
+
+    type Hook = Box<dyn FnOnce()>;
+
+    thread_local! {
+        static BEFORE_WRITE: RefCell<Option<Hook>> = RefCell::new(None);
+        static FAIL_NOTE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) fn set_before_maintenance_write(hook: impl FnOnce() + 'static) {
+        BEFORE_WRITE.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn before_maintenance_write() {
+        if let Some(hook) = BEFORE_WRITE.with(|h| h.borrow_mut().take()) {
+            hook();
+        }
+    }
+
+    pub(crate) fn fail_next_note() {
+        FAIL_NOTE.with(|f| f.set(true));
+    }
+
+    pub(super) fn fail_note() -> bool {
+        FAIL_NOTE.with(|f| f.replace(false))
     }
 }
 

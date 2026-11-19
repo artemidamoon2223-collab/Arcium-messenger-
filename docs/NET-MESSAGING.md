@@ -585,7 +585,8 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 | the bundle's publication fails (the rotation check, the PUT, or the record of the relay's acceptance) | the round ends before anything is read from the mailbox; the next round publishes again. A rotation committed before the failure stays: its key does not age until the relay has accepted it, and the previous key, which the bundle the relay still serves names, still answers (tracker R-6) |
 | crash after a rotation committed, or after the relay accepted the rotated bundle and before that was recorded | the next round publishes the same key and records it; there is no second rotation |
 | prekey record unreadable | every round fails at its rotation check, as an export would |
-| device clock wrong | a steady offset changes nothing; a jump of 7 days or more either way rotates early (one backward also drops the older previous key early: a handshake naming it is refused once and made again); a smaller step back delays the next rotation by that step; a frozen clock stops rotation by time (section 8, "Clocks") |
+| device clock wrong | a rotation happens when the clock reads 7 days or more from the key's publication, in either direction (section 8, "Clocks"): a steady offset changes nothing; a step forward brings the next rotation forward by the step; a step back delays it by the step, unless the clock then reads 7 days or more before the publication; every early rotation drops the older previous key early (a handshake naming it is refused once and made again), and a jump of 7 days set right again rotates once more; a frozen clock stops rotation by time |
+| two instances on one database (two processes) | maintenance and the publication record read the prekey record again inside their transaction, so it is created once and rotated once. A first message promoted in one instance while the other rotates or records a publication fails its byte-identical precondition on the prekey record: it is deleted, the handshake is flagged as refused, and its retransmission is answered (under the previous key after a rotation). Production runs one sync loop; this is an in-process stand-in, not tested across processes |
 | going back to a build before signed-prekey rotation | not supported: that build cannot read the prekey record (186 bytes), so every round fails at the bundle export; the record is not overwritten |
 
 ## 8. Not provided
@@ -750,7 +751,11 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
     accepted, a confirmation of an own session, the replacement of option B,
     or the holder's own accepted forgery);
   - at the latest about two periods (14 days by this device's clock) after
-    the relay accepted that key, with regular rounds.
+    the relay accepted that key, counting only rounds that publish their
+    bundle. A key ages only once the relay has accepted it, so a relay that
+    refuses or cuts the bundle's publication delays this for as long as it
+    does so; meanwhile every round of the device fails before it reads the
+    mailbox, so the device processes nothing and shows the relay errors.
 
   Within that time a copy allows at most one session replacement or first
   contact: the one accepted consumes the one-time prekey and the previous
@@ -829,16 +834,31 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   texts read `NotDelivered`.
 - Clocks (tracker R-6). The age of a signed prekey is read from this
   device's clock, which is accepted and documented (Owner, 2026-11-19; to
-  be reconsidered at the security audit). A steady offset has no effect. A
-  jump of a period or more in either direction rotates early; one backward
-  also drops the older previous key early, so a handshake naming it is
-  refused once and made again. A smaller step back delays the next rotation
-  by that step. A frozen clock, or one an attacker holds, stops rotation by
-  time, which is no worse than before rotation existed, while a change of
-  the one-time prekey still rotates an active device. A clock that jumps by
-  a period every round rotates every round, so first contacts keep being
-  refused; that needs control of the clock, and an attacker in the network
-  path can block the relay anyway.
+  be reconsidered at the security audit). A rotation happens when the
+  clock reads 7 days or more from the time the relay accepted the key, in
+  either direction (`plan_rotation`). So:
+  - a steady offset has no effect;
+  - a step forward brings the next rotation forward by the step, and
+    rotates at the next round if the key is then 7 days old or more by
+    the clock;
+  - a step back delays the next rotation by the step, unless the clock
+    then reads 7 days or more before the publication, which rotates;
+  - every early rotation, forward or back, drops the older previous key
+    early, so a handshake naming it is refused once and made again; a jump
+    of 7 days or more that is set right again rotates once more;
+  - a frozen clock, or one an attacker holds, stops rotation by time,
+    which is no worse than before rotation existed, while a change of the
+    one-time prekey still rotates an active device;
+  - a clock that jumps by a period every round rotates every round, so
+    first contacts keep being refused; that needs control of the clock,
+    and an attacker in the network path can block the relay anyway.
+- The bundle changes about once a week while the device is online (tracker
+  R-6): a rotation by time publishes a new signed prekey, and `GET_BUNDLE`
+  needs no authentication. Whoever can fetch the bundle (anyone who knows
+  the device's key) can poll it and learn roughly when the device ran its
+  first round after each 7-day mark, for example when it came back after a
+  long absence. A change of the one-time prekey already changed the bundle
+  before rotation existed.
 - Simultaneous initiation: if both users start a session with each other
   before either handshake arrives, each device holds an unconfirmed initiator
   session and records the other's handshake beside it, so neither proceeds
@@ -1016,7 +1036,8 @@ entry per logical message, never written by the ratchet.
   confirmed, above). A restart the contact's device can no longer answer
   when it arrives (the one-time prekey it names was consumed by another
   first contact, or replaced at a confirmation, since the bundle was
-  fetched) is refused there, as in section 6, and the restarting device
+  fetched, or the signed prekey it names was rotated out, about a period
+  or more after the fetch, tracker R-6) is refused there, as in section 6, and the restarting device
   makes it again from the current bundle (`restart_after_refusal`); texts
   it had committed to the refused start read `NotDelivered`. A late copy
   of the handshake the contact's own responder session came from is never
@@ -1130,7 +1151,7 @@ entry per logical message, never written by the ratchet.
 | request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt, a replayed receipt not answered | `tests::network` V6 tests | runtime |
 | what a device keeps after it accepts a first contact (identity, signed prekey, prekey record) does not decrypt its first message again, and the session no longer uses the signed prekey; every confirmation of an own session replaces the one-time prekey in the confirming transaction, and nothing else does, and nothing is written if a record the replacement read changed before the commit (tracker R-6) | `what_a_device_keeps_after_a_first_contact_does_not_read_it_again`, `a_one_time_prekey_read_beside_a_session_that_wins_is_replaced`, `a_confirmation_of_an_own_session_replaces_the_prekey_and_nothing_else_does`; `core_protocol` `messaging::tests::beside`; the conflict test of `tests::chat` | runtime, in process; local relay over TCP |
-| signed-prekey rotation (tracker R-6): rotation at the start of a round, before the mailbox is read, and none in a round whose publication failed; a handshake built before one rotation answered under the previous key, one two rotations later refused (reason 3) and made again, its text `NotDelivered`; a restart under the previous key replacing the session and one past its grace refused and made again; a rotation whose publication failed still answering the bundle the relay kept serving after any absence; a late copy of the accepted handshake not refused after rotation; a copied store replacing a session only while its signed prekey is held, and at most once; a store from an older build rotated at its first round, with and without the mark of option B; process deaths after the rotation and after the PUT rotating once; the rule ((E), (T) in both clock directions, an unpublished key never aging), the record (V3, V2 read, strict parsing), every one-time-prekey writer dropping the previous key, the previous key answering only with its one-time prekey (also beside a session) | `tests::spk_rotation`, `tests::prekey_record`, `tests::legacy_upgrade::a_v2_prekey_record_is_rotated_on_the_first_round`, `tests::network_crash::a_device_killed_around_a_rotation_rotates_once_and_answers_the_served_bundle` | runtime, local relay over TCP; real process deaths; unit; two instances on one database stand in for two processes; device clocks not tested |
+| signed-prekey rotation (tracker R-6): rotation at the start of a round, before the mailbox is read; no handshake read in a round whose PUT or whose record of the relay's acceptance failed (a rotation committed before the failure stays); a handshake built before one rotation answered under the previous key, one two rotations later refused (reason 3) and made again, its text `NotDelivered`; a restart under the previous key replacing the session and one past its grace refused and made again; a rotation whose publication failed still answering the bundle the relay kept serving after any absence; a late copy of the accepted handshake not refused after rotation; a copied store replacing a session only while its signed prekey is held, and at most once (also under its previous key); a store from an older build rotated at its first round, with and without the mark of option B; process deaths after the rotation and after the PUT rotating once; the rule ((E), (T) in both clock directions for keys of different ages, an unpublished key never aging), the record (V3, V2 read, strict parsing), every one-time-prekey writer dropping the previous key, the previous key answering only with its one-time prekey (also beside a session), two instances on one database creating and rotating once while the other holds its transaction | `tests::spk_rotation`, `tests::prekey_record`, `tests::legacy_upgrade::a_v2_prekey_record_is_rotated_on_the_first_round`, `tests::network_crash::a_device_killed_around_a_rotation_rotates_once_and_answers_the_served_bundle` | runtime, local relay over TCP; real process deaths; unit; two instances on one database stand in for two processes; device clocks not tested |
 | a reset replaces the session on both devices (texts committed to the old one `NotDelivered` on each, the contact told), also when an old-session text arrives in the same round, and ends the dead end of a false conflict; a restart whose one-time prekey another first contact consumed, or a confirmation replaced, is refused and made again; a late copy of the handshake a session came from is not refused, also when the relay replaced its ephemeral key with another encoding of the same keys; an unreadable `hsacc:` record stops no round and is written again; a receipt read in the round of a restart still delivers; a reset of an unreadable session changes nothing; a store from before option B replaces its one-time prekey once; a text sent while a reset gives the session up is given up with it; a forged restart and a replay of a handshake older than the session replace nothing; both users resetting at once is the conflict, resolved by the greater key; reset rules; process death at each new step on both devices (option B) | `tests::restart`; `tests::a_handshake_is_known_in_every_encoding_of_its_keys`; `core_protocol` `messaging::tests::beside::a_handshake_beside_an_established_session_is_kept_until_the_session_is_retired` | runtime, local relay over TCP; process crash |
 | a gap of more than `MAX_SKIP` in one chain (texts given up after they were encrypted, or lost on the relay) is crossed with a far skip and both directions go on; a far skip only after the wait without accepting a message and not in a pass that accepted one; a rotated mailbox and a lost start sent again later deliver every text; one far try per session per round, a far message without a try deleted and read when sent again, nothing kept on the relay; at most four tries per round over six sessions; the wait kept per chain (a forged key starts no genuine wait), counted from the chain's first arrival, the chain seen least recently dropped first, a session judged once per pass also when the round is full, and the waits forgotten when the contact is deleted; a lost text from before the kept keys of the current chain named back in a GONE message; in the ratchet, the gap in the current chain, in the chain being left and in both at once, the last `MAX_SKIP` keys kept, `MAX_FAR_SKIP` and no further, a forged far message changing nothing, no key left behind, no far skip past `MAX_RESUMABLE_NR` | `tests::far_skip`; `core_crypto::ratchet` (`a_far_skip_*`, `a_forged_far_message_changes_nothing`, `a_stored_key_needs_no_far_skip`, `no_temporary_key_outlives_a_far_skip`), `ratchet::checkpoint` (`a_far_skip_never_moves_nr_past_the_resumable_limit`) | runtime, local relay over TCP; unit |
 | a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history), also when it arrives after the ratchet turned, on a chain the recipient left (the last four are remembered, from `RATCHET_STATE_V2`; a V1 record reads as none); a GONE lost on the relay is sent again when the text is repeated, not again within the minute, and once more a minute later (the minute set by a test aid); ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`, `a_late_message_of_an_earlier_chain_whose_key_is_gone_is_beyond_recall`, `a_checkpoint_written_by_the_previous_implementation_round_trips_byte_for_byte`), `ratchet::checkpoint` (`earlier_chains_round_trip_and_their_rules_are_enforced`) | runtime, local relay over TCP; unit |

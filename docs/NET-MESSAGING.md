@@ -302,8 +302,8 @@ GONE names messages of the peer's that arrived after their key was gone, so
 they can never be decrypted (tracker R-21): a message that did not decrypt,
 whose header names a position behind the next expected one of the
 session's current receiving chain, or behind the end of one of the last
-32 receiving chains the session left (`MAX_PREV_CHAINS`, about 16
-exchanges; the ratchet
+32 receiving chains the session left (`MAX_PREV_CHAINS`; one is left per
+exchange, so about the last 32 exchanges; the ratchet
 keeps each one's peer ratchet key and the position it ended at, the `pn`
 of the header that started the next chain), with no skipped key stored for
 it (evicted from the full store of 2,000, dropped by a far skip, or used).
@@ -701,7 +701,7 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   each retransmission) while passing the later ones makes this device
   skip to them after the wait: the withheld texts can no longer be read.
   Those of the current chain, and of a chain the skip left while it is
-  among the last four left, are named back and read `NotDelivered` once
+  among the last 32 left, are named back and read `NotDelivered` once
   they arrive, so their sender can send them again; those of an older
   chain stay pending until the user cancels them. The relay cannot tell this device
   apart from one whose gap nothing fills; before far skips, it could stop
@@ -724,7 +724,7 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   `FAR_SKIP_WAIT` of the first far message, while this device accepted
   nothing from it, is lost to a far skip; it is named back and reads
   `NotDelivered` if it arrives later on the current chain or on one of the
-  last four left.
+  last 32 left.
 - A second initiator racing for the same one-time prekey is refused and
   starts again (section 6). With k contacts racing, the k-th may wait up to
   about 10 minutes per further refusal (the per-contact limit).

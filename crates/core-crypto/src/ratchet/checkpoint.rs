@@ -642,8 +642,15 @@ mod tests {
             bob.skipped.insert((dh, n), Zeroizing::new([1; 32]));
             n += 1;
         }
+        // And every earlier chain: the largest valid record, decoded.
+        let mut i = 0u8;
+        while bob.prev_chains.len() < MAX_PREV_CHAINS {
+            bob.prev_chains.push(([0xA0 ^ i; 32], 1));
+            i += 1;
+        }
         let rec = bob.to_checkpoint().unwrap();
         assert_eq!(rec.len(), v2_len(&bob));
+        assert_eq!(rec.len(), RATCHET_CHECKPOINT_MAX_LEN);
         assert_same_state(&bob, &DoubleRatchet::from_checkpoint(&rec).unwrap());
 
         bob.skipped.insert((dh, n), Zeroizing::new([1; 32]));

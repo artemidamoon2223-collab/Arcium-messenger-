@@ -285,9 +285,14 @@ impl DoubleRatchet {
     /// Whether decrypting a message with `header` needs a skip of more than
     /// [`MAX_SKIP`] positions in a chain, which [`decrypt`](Self::decrypt)
     /// refuses and [`decrypt_far`](Self::decrypt_far) may allow. Reads state
-    /// only; changes nothing.
+    /// only; changes nothing. Never for a header of one of the remembered
+    /// earlier chains: no skip can read it (its stored keys are all there
+    /// is), so it is left to [`is_beyond_recall`](Self::is_beyond_recall)
+    /// (R-21).
     pub fn needs_far_skip(&self, header: &Header) -> bool {
-        if self.skipped.contains_key(&(header.dh, header.n)) {
+        if self.skipped.contains_key(&(header.dh, header.n))
+            || self.prev_chains.iter().any(|(dh, _)| *dh == header.dh)
+        {
             return false;
         }
         let near = |nr: u32, until: u32| nr.saturating_add(MAX_SKIP) >= until;
@@ -1692,6 +1697,37 @@ mod tests {
     /// the last `MAX_PREV_CHAINS` chains; a stored key, a position at or past
     /// the end, and an older chain are not. A forged header that would start
     /// a chain leaves the history as it was.
+    /// A header of a remembered earlier chain never needs a far skip, at
+    /// any position: no skip can read it, so the network layer names it
+    /// back instead of spending a far try on it (R-21).
+    #[test]
+    fn a_header_of_a_remembered_chain_never_needs_a_far_skip() {
+        let (_, mut bob) = established_pair();
+        let left = [0x31; 32];
+        bob.prev_chains = vec![(left, 5)];
+        for n in [0, 4, 5, MAX_SKIP + 7] {
+            let header = Header { dh: left, pn: 3 * MAX_SKIP, n };
+            assert!(!bob.needs_far_skip(&header), "n = {n}");
+        }
+        let fresh = Header { dh: [0x32; 32], pn: 0, n: MAX_SKIP + 7 };
+        assert!(bob.needs_far_skip(&fresh), "an unknown chain still does");
+    }
+
+    /// A far skip that fails leaves the remembered chains as they were, as
+    /// a near one does (one snapshot covers both).
+    #[test]
+    fn a_failed_far_skip_leaves_the_remembered_chains_alone() {
+        let (mut alice, mut bob) = established_pair();
+        let ad = b"assoc";
+        let (h, c) = alice.encrypt(b"x", ad).unwrap();
+        bob.decrypt(&h, &c, ad).unwrap();
+        bob.prev_chains = vec![([0x41; 32], 9)];
+        let before = bob.prev_chains.clone();
+        let forged = Header { dh: PublicKey::from(&StaticSecret::random_from_rng(OsRng)).to_bytes(), pn: 1, n: MAX_SKIP + 3 };
+        assert!(bob.decrypt_far(&forged, &c, ad).is_err());
+        assert_eq!(bob.prev_chains, before);
+    }
+
     #[test]
     fn a_late_message_of_an_earlier_chain_whose_key_is_gone_is_beyond_recall() {
         let (mut alice, mut bob) = established_pair();

@@ -591,7 +591,7 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   minute per set of ids, each leaving a send-id record: as a repeated text
   draws a receipt (section 5, tracker R-12).
 - Naming against a mailbox writer. Whoever saw a header of the current
-  chain and can put envelopes in the mailbox (the relay's operator; anyone
+  chain, or of one of the last four left, and can put envelopes in the mailbox (the relay's operator; anyone
   on V1) can fill the 256 places of each round's GONE with ids of messages
   of its own, so that a genuine late message is never named; a relay can as
   well withhold the GONE. Its length shows a reader of the mailbox how many
@@ -646,9 +646,10 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   A relay that withholds the start of a run of more than 1,000 texts (on
   each retransmission) while passing the later ones makes this device
   skip to them after the wait: the withheld texts can no longer be read.
-  Those of the current chain are named back and read `NotDelivered` once
-  they arrive, so their sender can send them again; those of a chain the
-  skip left stay pending until the user cancels them. The relay cannot tell this device
+  Those of the current chain, and of a chain the skip left while it is
+  among the last four left, are named back and read `NotDelivered` once
+  they arrive, so their sender can send them again; those of an older
+  chain stay pending until the user cancels them. The relay cannot tell this device
   apart from one whose gap nothing fills; before far skips, it could stop
   that direction for good instead.
 - A far-skip wait that survives a restart. The wait is in memory, so a
@@ -659,15 +660,17 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   left (tracker R-14): the skip to `pn` drops up to about 99,000 positions
   of the chain being left. A lost text from there is named in a GONE
   message like any late message of a chain left (section 4) while that
-  chain is among the last four left; after that it is deleted, or, when it
-  lies more than 1,000 positions into its chain, it may cost a far try,
-  which fails, and its sender keeps sending it until the user cancels it.
+  chain is among the last four left (a header of such a chain never takes
+  a far try); after that it is deleted, or, when it lies more than 1,000
+  positions into its chain, it may cost a far try, which fails, and its
+  sender keeps sending it until the user cancels it.
 - A far skip for a sender that is not sending. The wait assumes the sender
   syncs while far messages arrive, so that it sends again what fills a
   gap. A text the sender holds but has not sent again within
   `FAR_SKIP_WAIT` of the first far message, while this device accepted
   nothing from it, is lost to a far skip; it is named back and reads
-  `NotDelivered` if it arrives later on the current chain.
+  `NotDelivered` if it arrives later on the current chain or on one of the
+  last four left.
 - A second initiator racing for the same one-time prekey is refused and
   starts again (section 6). With k contacts racing, the k-th may wait up to
   about 10 minutes per further refusal (the per-contact limit).

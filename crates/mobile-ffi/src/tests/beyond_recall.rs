@@ -205,7 +205,9 @@ fn a_late_message_of_an_earlier_chain_is_named_back_too() {
     inject(&addr, &bob, Envelope::Message { sender: alice_key, wire: late }.encode());
     let r = bob.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert!(r.dropped >= 1 && r.published >= 1, "named in a GONE message: {r:?}");
+    // Bob's counts cannot tell a GONE from a retransmission; Alice's side
+    // below shows that text 0 was named.
+    assert!(r.dropped >= 1 && r.published >= 1, "{r:?}");
     let r = alice.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
     let record = alice.core.prior_send(&bob.core.our_identity_pk().unwrap(), &client_id::text(b"g0"));

@@ -140,7 +140,7 @@ pub enum CheckpointError {
     Oversized { actual: usize },
     #[error("unsupported ratchet checkpoint version {0}")]
     UnsupportedVersion(u8),
-    #[error("ratchet checkpoint length {actual} does not match {expected} implied by its skipped-key count")]
+    #[error("ratchet checkpoint length {actual} does not match {expected} implied by its skipped-key and chain counts")]
     LengthMismatch { expected: usize, actual: usize },
     #[error("ratchet checkpoint has unknown presence flags {0:#04x}")]
     UnknownFlags(u8),

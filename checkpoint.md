@@ -48,8 +48,8 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #228 `ccr-c1c2d0ae-0cypfu` (head `56cb2a5`): tracker update for R-21, R-14/R-20 and a note on R-9 (D-064); text checked by a fresh agent; CI, then merge only on the Owner's instruction naming it.
-- Skills fixes (D-065): committed locally as `88dcecc`, to be pushed as their own PR.
+- #228 `ccr-c1c2d0ae-0cypfu` (head `56cb2a5`): tracker update for R-21, R-14/R-20 and a note on R-9 (D-064); text checked by a fresh agent; CI green (12 runs); merge only on the Owner's instruction naming it.
+- #229 `docs/skills-links` (head `88dcecc`): skills fixes from the check (D-065); CI, then merge only on the Owner's instruction naming it.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.

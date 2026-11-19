@@ -408,7 +408,8 @@ which is dropped. No session is replaced automatically: not on
 timeouts, not when a peer is offline, not on a handshake alone. A session
 is replaced only when the peer's first message under a handshake recorded
 beside it authenticates there (option B), which needs the peer's identity
-secret, or by the user (`reset_session`, `resolve_session_conflict`,
+secret or this device's signed-prekey secret (section 8, "Protection of an
+established session"), or by the user (`reset_session`, `resolve_session_conflict`,
 `delete_contact`). The one
 exception is a responder session an earlier build stored on receipt of a
 handshake and nothing has happened to since (S2-B2 section 4b): the network
@@ -607,7 +608,11 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   the relay's operator, on V1 anyone) can keep replacing a
   contact's recorded handshake before its first message arrives; the genuine
   one is then
-  retransmitted and takes over. That delays first contact; it creates no
+  retransmitted and takes over. Since option B this also holds beside an
+  established session, where a record stays until the session is retired:
+  a writer can delay a genuine restart this way, and every message that
+  fails to decrypt on such a session costs one X3DH and one first-message
+  trial. That delays first contact; it creates no
   session and consumes no prekey. Each such first message costs the responder
   one X3DH and one ratchet step. The same holds for the handshake recorded
   beside a device's own unconfirmed session (section 10, "Conflict"):
@@ -683,25 +688,39 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   is refused and starts again, and the texts it had committed read
   `NotDelivered` for its user to send again; so is a contact's restart in
   flight ("Reset"). At most once per confirmation of an own session.
-- Protection of an established session against its contact. Whoever holds
-  the contact's identity secret can restart the session at will (section
-  10, "Reset"): this device's texts committed to it read `NotDelivered`.
-  That secret already allows impersonating the contact. A relay that
-  withholds the first message of a restart keeps the contact's device on
-  the old session, which the restarting device can no longer read; texts
-  wait until the relay passes it, as when it withholds anything else (once
-  the one-time prekey it names has changed, the restart is refused and made
-  again). A store written before option B did not replace its one-time
-  prekey when its own session was confirmed. Until that prekey next changes
-  (a first contact consumes it, or another own session is confirmed), a
-  genuine handshake of the contact built from it and its first message,
-  replayed by the relay's operator, replace the established session: one
-  recorded beside the session, or one this device never saw (the operator
-  withheld both during a simultaneous start before the upgrade, and the
-  contact gave that session up). The session is then one the contact no
-  longer holds: this device's texts read `NotDelivered`, `peer_reset` is
-  shown, and nothing more gets through until a reset on either device.
-  Inferred from the code; no store written before option B was tested.
+- Protection of an established session after a key compromise (option B).
+  A restart is authenticated by X3DH alone, so two secrets each suffice to
+  replace an established session and then read and write it as the
+  contact, at any later time: the contact's identity secret, and this
+  device's own signed-prekey secret (key-compromise impersonation: with it,
+  X3DH's first DH, `DH(signed prekey, contact's identity key)`, needs no
+  secret of the contact). The signed-prekey secret is in this device's
+  store and is never rotated (tracker R-6), so one copy of the store lets
+  its holder, who can also put envelopes in the mailbox as the contact (on
+  V2 the relay's operator; with the contact's secret, anyone), take over
+  any session of this device whenever it chooses. Before option B such a
+  compromise could not replace an existing session, and the Double
+  Ratchet's fresh DH steps ended the reach of a stolen session state; now
+  that healing no longer bounds it. The only sign is `peer_reset` ("the
+  contact restarted the secure session"), the same notice as a genuine
+  restart. Signal-style protocols accept new sessions the same way and
+  bound the device-side route by rotating the signed prekey; doing so here
+  is the open decision of tracker R-6. Confirmed at runtime by the third
+  review (a probe, not committed).
+- Restarts and the relay. A relay that withholds the first message of a
+  restart keeps the contact's device on the old session, which the
+  restarting device can no longer read; texts wait until the relay passes
+  it, as when it withholds anything else (once the one-time prekey it names
+  has changed, the restart is refused and made again). A store written
+  before option B did not replace its one-time prekey when its own session
+  was confirmed, so a genuine handshake of the contact built from it, which
+  this device never saw (the operator withheld it during a simultaneous
+  start the contact then gave up), could later replace the established
+  session with one the contact no longer holds. The first round of a build
+  with option B on such a store replaces the one-time prekey once
+  (`ArciumCore::replace_prekey_once`), which closes that; another contact's
+  first contact in flight under the old prekey is refused once and starts
+  again.
 - Rotation of the signed prekey (tracker R-6). It is made once and kept for
   the life of the identity. Every answered handshake uses a one-time
   prekey (tracker X-6), which is replaced when a first message under it is
@@ -862,7 +881,12 @@ entry per logical message, never written by the ratchet.
   starts it). It works without a connection, in any session state but a
   conflict (resolve that instead), also with no session (the dead end after
   resolving a false conflict, `AwaitingPeerSession`). A commit whose
-  outcome is unknown is settled first. The texts committed to the current
+  outcome is unknown is settled first. A session record that cannot be read
+  is refused with nothing changed (delete the contact instead, option C).
+  The contact's device must run a build with option B: an earlier build
+  drops a handshake beside an established session, so the resetting device
+  waits, and texts wait both ways, until the contact updates (or both
+  delete each other and exchange cards again). The texts committed to the current
   session, also one committed by a send on another thread while the reset
   runs, are marked `NotDelivered` and abandoned, the
   session is removed (S2-B2 section 6a, `retire_session`), and the next
@@ -870,9 +894,16 @@ entry per logical message, never written by the ratchet.
   no text queued. The contact's device records the new handshake beside
   its established session; when the first message under it (the OPEN that
   goes with every handshake) authenticates there, the contact's device
-  marks its own texts committed to the old session `NotDelivered`, abandons
-  them, removes that session and accepts the new one, all before deleting
-  the message from the relay, so a crash at any step repeats it. Its
+  marks its own texts committed to the old session `NotDelivered` (a text
+  whose receipt it read earlier in the same round reads `Delivered`),
+  abandons them, removes that session and accepts the new one, all before
+  deleting the message from the relay, so a crash at any step repeats it.
+  The notice below is written in the transaction that removes the session,
+  and on the resetting device so is its request to start again, so a crash
+  cannot leave the old session gone and no new one coming. A text the
+  contact sent on the old session that arrives in the same round as the
+  restart can enter the history after a text of the new session (only the
+  order differs). Its
   conversation then shows `peer_reset` ("the contact restarted the secure
   session") until its user sends a text or resets. A handshake alone, a
   forged first message, or a replay of a handshake older than the session
@@ -912,8 +943,9 @@ entry per logical message, never written by the ratchet.
   and a new handshake from this device is recorded beside it. If this
   device adds the contact again and sends a text, the first message of
   the new session replaces the contact's session there, as a reset does
-  ("Reset", above). Both users can also delete each other and exchange
-  cards again; the next text then starts a new session. Deleting again, or deleting someone who is not a contact, is
+  ("Reset", above), if the contact runs a build with option B. Both users
+  can also delete each other and exchange cards again; the next text then
+  starts a new session, with any build. Deleting again, or deleting someone who is not a contact, is
   harmless. Every chat record is written in a transaction that first finds
   the card still pinned, so a call that read the contact before the delete
   writes nothing for it after (a user action then fails as for any
@@ -993,7 +1025,7 @@ entry per logical message, never written by the ratchet.
 | request deadline against a trickling relay; round budget on a slow relay with every text received once; a cut round continuing past a page of kept envelopes; backoff to the cap | `tests::net_limits`, `relay` client tests | runtime, local sockets; time scaled down in tests |
 | replay, reorder, malformed, forged and cross-session receipts, replayed handshake, lost receipt, a replayed receipt not answered | `tests::network` V6 tests | runtime |
 | what a device keeps after it accepts a first contact (identity, signed prekey, prekey record) does not decrypt its first message again, and the session no longer uses the signed prekey; every confirmation of an own session replaces the one-time prekey in the confirming transaction, and nothing else does, and nothing is written if a record the replacement read changed before the commit (tracker R-6) | `what_a_device_keeps_after_a_first_contact_does_not_read_it_again`, `a_one_time_prekey_read_beside_a_session_that_wins_is_replaced`, `a_confirmation_of_an_own_session_replaces_the_prekey_and_nothing_else_does`; `core_protocol` `messaging::tests::beside`; the conflict test of `tests::chat` | runtime, in process; local relay over TCP |
-| a reset replaces the session on both devices (texts committed to the old one `NotDelivered` on each, the contact told), also when an old-session text arrives in the same round, and ends the dead end of a false conflict; a restart whose one-time prekey another first contact consumed, or a confirmation replaced, is refused and made again; a late copy of the handshake a session came from is not refused, also when the relay replaced its ephemeral key with another encoding of the same keys; an unreadable `hsacc:` record stops no round; a text sent while a reset gives the session up is given up with it; a forged restart and a replay of a handshake older than the session replace nothing; both users resetting at once is the conflict, resolved by the greater key; reset rules; process death at each new step on both devices (option B) | `tests::restart`; `tests::a_handshake_is_known_in_every_encoding_of_its_keys`; `core_protocol` `messaging::tests::beside::a_handshake_beside_an_established_session_is_kept_until_the_session_is_retired` | runtime, local relay over TCP; process crash |
+| a reset replaces the session on both devices (texts committed to the old one `NotDelivered` on each, the contact told), also when an old-session text arrives in the same round, and ends the dead end of a false conflict; a restart whose one-time prekey another first contact consumed, or a confirmation replaced, is refused and made again; a late copy of the handshake a session came from is not refused, also when the relay replaced its ephemeral key with another encoding of the same keys; an unreadable `hsacc:` record stops no round and is written again; a receipt read in the round of a restart still delivers; a reset of an unreadable session changes nothing; a store from before option B replaces its one-time prekey once; a text sent while a reset gives the session up is given up with it; a forged restart and a replay of a handshake older than the session replace nothing; both users resetting at once is the conflict, resolved by the greater key; reset rules; process death at each new step on both devices (option B) | `tests::restart`; `tests::a_handshake_is_known_in_every_encoding_of_its_keys`; `core_protocol` `messaging::tests::beside::a_handshake_beside_an_established_session_is_kept_until_the_session_is_retired` | runtime, local relay over TCP; process crash |
 | a gap of more than `MAX_SKIP` in one chain (texts given up after they were encrypted, or lost on the relay) is crossed with a far skip and both directions go on; a far skip only after the wait without accepting a message and not in a pass that accepted one; a rotated mailbox and a lost start sent again later deliver every text; one far try per session per round, a far message without a try deleted and read when sent again, nothing kept on the relay; at most four tries per round over six sessions; the wait kept per chain (a forged key starts no genuine wait), counted from the chain's first arrival, the chain seen least recently dropped first, a session judged once per pass also when the round is full, and the waits forgotten when the contact is deleted; a lost text from before the kept keys of the current chain named back in a GONE message; in the ratchet, the gap in the current chain, in the chain being left and in both at once, the last `MAX_SKIP` keys kept, `MAX_FAR_SKIP` and no further, a forged far message changing nothing, no key left behind, no far skip past `MAX_RESUMABLE_NR` | `tests::far_skip`; `core_crypto::ratchet` (`a_far_skip_*`, `a_forged_far_message_changes_nothing`, `a_stored_key_needs_no_far_skip`, `no_temporary_key_outlives_a_far_skip`), `ratchet::checkpoint` (`a_far_skip_never_moves_nr_past_the_resumable_limit`) | runtime, local relay over TCP; unit |
 | a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history); a GONE lost on the relay is sent again when the text is repeated, not again within the minute, and once more a minute later (the minute set by a test aid); ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`) | runtime, local relay over TCP |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |

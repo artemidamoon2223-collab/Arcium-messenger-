@@ -145,14 +145,20 @@ the Android contact-card and add-contact code. Specification:
 - **Session replacement and reset.** Who can cause a session to be removed or
   replaced? A handshake alone never does. Since option B an established
   session is replaced only when the contact's first message under a
-  handshake recorded beside it authenticates there (the contact's identity
-  secret), and only while that handshake names this device's current
-  one-time prekey; or by the user (`reset_session`, `resolve_session_conflict`,
-  `delete_contact`). Check that no new path reaches `retire_session` or
-  `accept_restart` on anything weaker, that an unanswerable handshake beside
-  an established session draws no refusal, and that the old session's
-  texts are given up (`NotDelivered`), never shown `Delivered` without a
-  receipt. Local removal follows the S2-B2 §6a rules.
+  handshake recorded beside it authenticates there, and only while that
+  handshake names this device's current one-time prekey; or by the user
+  (`reset_session`, `resolve_session_conflict`, `delete_contact`). X3DH
+  authenticates that first message with either the contact's identity
+  secret or this device's signed-prekey secret (key-compromise
+  impersonation; the signed prekey is not rotated, tracker R-6), so a copy
+  of this device's store lets its holder replace sessions later
+  (`docs/NET-MESSAGING.md` §8). Check that no new path reaches
+  `retire_session` or `accept_restart` on anything weaker; that an
+  unanswerable handshake beside an established session is refused except a
+  late copy of the handshake that session came from (`hsacc:`, compared by
+  the keys it derives, not its bytes); and that the old session's texts are
+  given up (`NotDelivered`), never shown `Delivered` without a receipt.
+  Local removal follows the S2-B2 §6a rules.
 - **Forged or replayed refusals and handshakes.** A refusal restarts first
   contact (`take_refusal` → `restart_after_refusal`) only if its tag checks for
   the sender's pinned key and ours and it names the handshake of our own

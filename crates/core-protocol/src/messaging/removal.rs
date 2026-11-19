@@ -10,7 +10,7 @@ use super::helpers::{commit_repeatable, keys_under};
 use super::records::*;
 use super::{MessageId, MessagingError, Messenger, MESSAGE_ID_LEN};
 use crate::checkpoint::session_storage_key;
-use crate::durable::Conflict;
+use crate::durable::{Conflict, SideWrite, SideWriteError};
 
 /// Which sessions [`Messenger::remove`] may delete, and whether a handshake
 /// recorded beside one goes with it.
@@ -74,7 +74,8 @@ impl Messenger {
     /// - [`MessagingError::Conflict`] if the session changed while this ran.
     ///
     /// Local removal proves nothing about the peer: a peer that accepted the
-    /// handshake keeps its session and refuses a new one for this identity.
+    /// handshake keeps its session until a new one replaces it there (the
+    /// network layer's option B).
     /// After [`MessagingError::RepeatableOutcomeUnknown`], calling this again
     /// reports [`MessagingError::NoSession`] if the removal took effect.
     pub fn remove_session(
@@ -83,7 +84,7 @@ impl Messenger {
         our_identity_pk: [u8; 32],
         handle: u64,
     ) -> Result<(), MessagingError> {
-        self.remove(store, our_identity_pk, handle, Removal::Unconfirmed)
+        self.remove(store, our_identity_pk, handle, Removal::Unconfirmed, &[])
     }
 
     /// Deletes the session under `handle` on the user's decision to start a
@@ -106,7 +107,24 @@ impl Messenger {
         our_identity_pk: [u8; 32],
         handle: u64,
     ) -> Result<(), MessagingError> {
-        self.remove(store, our_identity_pk, handle, Removal::Retire)
+        self.remove(store, our_identity_pk, handle, Removal::Retire, &[])
+    }
+
+    /// [`retire_session`](Self::retire_session) with the caller's own
+    /// records written in the same transaction (`extra`, preconditions
+    /// checked there), so the caller's note of why the session went cannot
+    /// be lost to a crash between the two. Refused as `retire_session` is,
+    /// and with [`MessagingError::ExtraConflict`] if a precondition fails or
+    /// [`MessagingError::SideWrite`] if `extra` names a record the removal
+    /// deletes; nothing is written then.
+    pub fn retire_session_with(
+        &mut self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+        extra: &[SideWrite],
+    ) -> Result<(), MessagingError> {
+        self.remove(store, our_identity_pk, handle, Removal::Retire, extra)
     }
 
     fn remove(
@@ -115,6 +133,7 @@ impl Messenger {
         our_identity_pk: [u8; 32],
         handle: u64,
         removal: Removal,
+        extra: &[SideWrite],
     ) -> Result<(), MessagingError> {
         self.require_resolved(handle)?;
         let (session, peer) = self.load(store, our_identity_pk, handle)?;
@@ -153,6 +172,17 @@ impl Messenger {
                     delete.push(provisional_key(handle))
                 }
                 Err(e) => return Err(MessagingError::Store(e)),
+            }
+        }
+        for (index, w) in extra.iter().enumerate() {
+            if delete.iter().any(|k| k == w.key()) {
+                return Err(MessagingError::SideWrite(SideWriteError::DuplicateKey));
+            }
+            if !w.apply_in(&tx).map_err(MessagingError::Store)? {
+                return Err(MessagingError::ExtraConflict {
+                    index,
+                    conflict: Conflict::RecordChanged,
+                });
             }
         }
         for key in delete {
@@ -195,8 +225,9 @@ impl Messenger {
     /// Unlike `remove_session`, this discards obligations: texts not yet
     /// acknowledged are never sent again, and incoming messages the
     /// application has not acknowledged are gone. The peer is told nothing
-    /// and keeps its own session; the two can start a new one only once both
-    /// have forgotten each other.
+    /// and keeps its own session until a new one from this store replaces it
+    /// there (the network layer's option B) or both have forgotten each
+    /// other.
     ///
     /// Refused, with nothing changed:
     /// - [`MessagingError::Unresolved`] while a commit on `handle` has an

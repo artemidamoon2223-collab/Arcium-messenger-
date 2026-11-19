@@ -41,6 +41,7 @@ here is transmitted.
 | `inbox:v1/<peer>/<id>` | `INBOX_RECORD_V1`: generation, message id, plaintext; only while undelivered | receive |
 | `seen:v1/<peer>/<id>` | `SEEN_RECORD_V1`: id of an acknowledged incoming message | acknowledge incoming |
 | `prekeys/v2` | unchanged format | responder session creation from the first authenticated message (same transaction) |
+| `prekeys/renewed-b0` | one byte: the one-time prekey was replaced once for option B (`ArciumCore::replace_prekey_once`) | the first round of a build with option B, in the transaction that replaces the prekey |
 | `hsacc:v1/<peer>` | 32 bytes identifying the handshake the latest responder session with the peer came from by the keys it derives (option B, section 4c): SHA-256 over a label, the initiator identity key, the ephemeral key's X25519 with a fixed public scalar, the signed-prekey id and the one-time-prekey id | responder session creation from the first authenticated message (same transaction, a side write); replaced by the next one; kept when the session is removed or retired; deleted when the peer is forgotten |
 
 `<peer>` is the peer's X25519 identity key in hex, `<handle>` the local `u64`
@@ -66,7 +67,7 @@ transaction; if any precondition fails, nothing is written.
 |---|---|---|
 | initiator establishment | session gen 0, handle, handshake | session absent, handle absent |
 | responder: handshake received | provisional handshake record only | handle absent, session absent (read in the same transaction) |
-| responder: first message authenticated | session gen 1, handle, inbox record (undelivered), rotated prekey record, provisional record deleted | session absent, handle absent, provisional record byte-identical to the one the session was derived from, inbox id absent, seen id absent, prekey record byte-identical to the one validated |
+| responder: first message authenticated | session gen 1, handle, inbox record (undelivered), rotated prekey record, provisional record deleted, `hsacc:` record written (option B) | session absent, handle absent, provisional record byte-identical to the one the session was derived from, inbox id absent, seen id absent, prekey record byte-identical to the one validated, `hsacc:` record byte-identical to the one read (or absent; one that could not be read is deleted first) |
 | handshake beside own session or an established one (4c) | provisional record only | session record byte-identical (SHA-256) to the one classified as this device's own initiator session with nothing received, or as one that has received from the peer, handle record naming the peer (read in the same transaction) |
 | send | session gen n+1, outbox record, send-id record | session is the record loaded (gen n, same SHA-256), outbox id absent, send-id absent |
 | receive | session gen n+1, inbox record (undelivered); on the first message from the peer committed on the session, the peer's provisional record beside it deleted, and for this device's own initiator session the confirm hook's side writes (4c; the one-time prekey replaced, tracker R-6, option B) | session is the record loaded, inbox id absent, seen id absent; on that first message, that provisional record exactly the one read (or still absent if none was) and each record a side write was made from exactly as read |
@@ -74,7 +75,7 @@ transaction; if any precondition fails, nothing is written.
 | acknowledge outgoing | outbox record deleted (send-id kept) | outbox record present, else no-op (idempotent) |
 | abandon outgoing | outbox record deleted, send-id marked abandoned | outbox record present, else no-op (idempotent) |
 | remove session | session, handle, handshake, the peer's provisional record beside it (4c) deleted | see 6a; session record unchanged since checked |
-| retire session (option B) | session, handle, handshake deleted; the peer's provisional record beside it kept | see 6a; session record unchanged since checked |
+| retire session (option B) | session, handle, handshake deleted; the peer's provisional record beside it kept; the caller's records (`retire_session_with`: the chat meta with the reset request or the restart notice) written | see 6a; session record unchanged since checked |
 
 A transition's precondition names the exact record it was staged from, not
 only its generation. A session that is removed and created again with the same
@@ -330,8 +331,9 @@ provisional record beside a session. This section changes that.
   A handshake that created a session here cannot be replayed this way (its
   one-time prekey was consumed and replaced, section 4). A handshake this
   device never accepted can, for as long as no other first contact consumes
-  that prekey and no confirmation of this device's own session beside it
-  replaces it. The consequence is in `docs/NET-MESSAGING.md` section 8. A
+  that prekey and no confirmation of an own session replaces it (since
+  option B every confirmation does, and a store written before it replaces
+  the prekey once). The consequence is in `docs/NET-MESSAGING.md` section 8. A
   handshake in the form without a one-time prekey, which would have no such
   protection, is never answered, also when this device holds no one-time
   prekey (`OneTimePrekeyRequired`; tracker X-6).

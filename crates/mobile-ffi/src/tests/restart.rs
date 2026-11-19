@@ -576,8 +576,8 @@ fn corrupt_accepted_handshake(d: &Device, peer: &Device) {
 
 /// An `hsacc:` record that no longer decrypts (damage, or tampering with
 /// the store) stops no round: a late copy of the handshake is then refused,
-/// as for a session an older build stored, and the next restart still
-/// replaces the session (stored without the record).
+/// as for a session an older build stored. The next restart still replaces
+/// the session and writes the record again.
 #[test]
 fn an_unreadable_accepted_handshake_record_stops_nothing() {
     let relay = start_relay();
@@ -604,6 +604,73 @@ fn an_unreadable_accepted_handshake_record_stops_nothing() {
     assert_eq!(session(&alice, &bob), ChatSessionState::Established);
     assert_eq!(session(&bob, &alice), ChatSessionState::Established);
     assert!(peer_reset(&bob, &alice));
+    let record = crate::accepted_handshake_key(&key(&alice));
+    assert!(bob.core.store.lock().unwrap().get(&record).is_ok(), "repaired");
+    relay.stop();
+}
+
+/// Alice reads Bob's text and sends her receipt under the old session, then
+/// resets. Bob reads the receipt and the restart in one round: the text is
+/// Delivered, not given up with the session (third review of option B).
+#[test]
+fn a_receipt_read_in_the_round_of_a_restart_still_counts() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    say(&bob, &alice, "b2", "read before the reset");
+    round(&[&bob]);
+    round(&[&alice]); // Alice accepts it and sends her receipt.
+    alice.net.reset_session(bob.pk.clone()).unwrap();
+    round(&[&alice]); // Her restart follows the receipt on the relay.
+    round(&[&bob]);
+    assert!(peer_reset(&bob, &alice), "the restart was accepted");
+    assert!(chat(&bob, &alice).contains(&(true, S::Delivered, "read before the reset".into())));
+    relay.stop();
+}
+
+/// A session record that cannot be read is refused by `reset_session`
+/// before anything changes: the texts committed to it are not given up.
+#[test]
+fn a_reset_of_an_unreadable_session_changes_nothing() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    say(&alice, &bob, "a2", "pending");
+    let hex: String = key(&bob).iter().map(|b| format!("{b:02x}")).collect();
+    alice
+        .core
+        .store
+        .lock()
+        .unwrap()
+        .put(&format!("session:v1/{hex}"), b"not a session checkpoint")
+        .unwrap();
+    assert!(alice.net.reset_session(bob.pk.clone()).is_err());
+    let last = chat(&alice, &bob).last().unwrap().clone();
+    assert_eq!((last.0, last.2.as_str()), (true, "pending"));
+    assert_ne!(last.1, S::NotDelivered, "nothing was given up");
+    assert!(alice.core.has_session(handle(&bob)).unwrap());
+    relay.stop();
+}
+
+/// The first time this build publishes from a store an earlier build wrote
+/// (no mark yet), it replaces the one-time prekey once; later rounds keep
+/// it, as does a new store's first round.
+#[test]
+fn a_store_from_before_option_b_replaces_its_one_time_prekey_once() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let d = Device::new(&addr, 1);
+    d.net.publish_prekeys().unwrap();
+    let first = d.core.export_prekey_bundle().unwrap();
+    d.net.publish_prekeys().unwrap();
+    assert_eq!(d.core.export_prekey_bundle().unwrap(), first, "a new store keeps it");
+    // As a store an earlier build wrote: no mark.
+    d.core.store.lock().unwrap().delete("prekeys/renewed-b0").unwrap();
+    d.net.publish_prekeys().unwrap();
+    let renewed = d.core.export_prekey_bundle().unwrap();
+    assert_ne!(renewed, first, "replaced once");
+    d.net.publish_prekeys().unwrap();
+    assert_eq!(d.core.export_prekey_bundle().unwrap(), renewed, "and only once");
     relay.stop();
 }
 
@@ -660,7 +727,8 @@ fn reset_session_rules() {
 
 /// Process death at each new step of a reset, on the device that resets
 /// (`reset_*`) and on the one that replaces its session (`restart_*`): each
-/// repeats safely, and the session is established on both afterwards.
+/// repeats safely, and the session is established on both afterwards. Once
+/// the session is removed, the reset needs no second call.
 #[cfg(unix)]
 #[test]
 fn process_death_at_each_restart_step_repeats_safely() {
@@ -669,7 +737,6 @@ fn process_death_at_each_restart_step_repeats_safely() {
         "reset_after_abandon",
         "reset_after_retire",
         "restart_after_record",
-        "restart_after_flag",
         "restart_after_mark",
         "restart_after_abandon",
         "restart_after_retire",
@@ -683,8 +750,12 @@ fn process_death_at_each_restart_step_repeats_safely() {
         let (alice, bob) = if point.starts_with("reset_") {
             super::network_crash::run_child(&alice, &addr, "reset", Some(point), &bob.pk);
             let alice = alice.restart(&addr);
-            // Calling it again completes it.
-            alice.net.reset_session(bob.pk.clone()).unwrap();
+            // Before the removal, calling it again completes it; after it,
+            // the request to start again was committed with the removal and
+            // the next round acts on it alone.
+            if point != "reset_after_retire" {
+                alice.net.reset_session(bob.pk.clone()).unwrap();
+            }
             (alice, bob)
         } else {
             alice.net.reset_session(bob.pk.clone()).unwrap();

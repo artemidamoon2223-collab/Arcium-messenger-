@@ -27,6 +27,7 @@ use zeroize::Zeroizing;
 use super::wire::client_id;
 use super::{crash_point, handle_of, peer_key, NetworkMessenger, SyncReport, TextState};
 use crate::messaging_api::SendResult;
+use core_protocol::durable::SideWrite;
 use crate::contacts::{contact_card_fingerprint, contact_key};
 use crate::accepted_handshake_key;
 use crate::{CoreError, PlaintextText};
@@ -459,6 +460,14 @@ impl Meta {
             note,
         })
     }
+}
+
+/// The meta change of `reset_session`: the next round starts a session,
+/// also with no text queued; a dead end or an earlier notice no longer
+/// applies.
+fn restart_requested(m: &mut Meta) {
+    m.flags = (m.flags | FLAG_RESTART) & !(FLAG_ACCEPT_ONLY | FLAG_PEER_RESET | FLAG_HANDSHAKE_REFUSED);
+    m.note.clear();
 }
 
 /// Which session `retire_session_texts` may remove.
@@ -901,8 +910,11 @@ impl NetworkMessenger {
     /// not sent again (the user can send them again). A commit on the
     /// session whose outcome is unknown is settled first, as a round does,
     /// and a text `chat_send` commits on another thread while the session
-    /// is given up is given up with it. Every step repeats safely after a
-    /// crash; calling it again completes it. Works without a connection.
+    /// is given up is given up with it. A session whose record cannot be
+    /// read is refused (`InvalidSession`), with nothing changed: delete the
+    /// contact instead. Every step repeats safely after a crash, but a
+    /// process death part way is not completed by itself: calling it again
+    /// completes it. Works without a connection.
     pub fn reset_session(&self, peer: Vec<u8>) -> Result<(), CoreError> {
         let key = peer_key(&peer)?;
         self.require_contact(&key)?;
@@ -913,20 +925,23 @@ impl NetworkMessenger {
         // The removal is refused while a commit has an unknown outcome.
         self.core.recover_if_unresolved(handle)?;
         if self.core.has_session(handle)? {
-            // A text committed after the abandon pass makes the removal
-            // fail; one more pass gives it up too.
-            match self.retire_session_texts(&key, "reset", Retire::Any) {
+            // A session record that cannot be read is refused by the
+            // removal; refuse it here, before any text is given up.
+            self.confirmed(handle)?;
+            // The request to start again is written with the removal, so
+            // a crash cannot leave the session gone and nothing started. A
+            // text committed after the abandon pass makes the removal fail;
+            // one more pass gives it up too.
+            match self.retire_session_texts(&key, "reset", Retire::Any, Some(&restart_requested)) {
                 Err(CoreError::PendingOutgoing { .. }) => {
-                    self.retire_session_texts(&key, "reset", Retire::Any)?
+                    self.retire_session_texts(&key, "reset", Retire::Any, Some(&restart_requested))?
                 }
                 other => other?,
             }
         }
         crash_point("reset_after_retire");
-        self.update_known_meta(&key, |m| {
-            m.flags = (m.flags | FLAG_RESTART) & !(FLAG_ACCEPT_ONLY | FLAG_PEER_RESET | FLAG_HANDSHAKE_REFUSED);
-            m.note.clear();
-        })
+        // With no session there was nothing to remove: only the request.
+        self.update_known_meta(&key, restart_requested)
     }
 
     /// Deletes the contact `peer` and everything this device keeps for it,
@@ -1122,23 +1137,23 @@ impl NetworkMessenger {
     /// crash. `stage` names its crash points (`{stage}_after_mark`,
     /// `{stage}_after_abandon`).
     fn retire_unconfirmed_session(&self, peer: &[u8; 32], stage: &str) -> Result<(), CoreError> {
-        self.retire_session_texts(peer, stage, Retire::Unconfirmed)
+        self.retire_session_texts(peer, stage, Retire::Unconfirmed, None)
     }
 
     /// The contact restarted the session (option B): its first message under
     /// the handshake recorded beside our established session authenticated
-    /// there (`NetworkMessenger::take_message`). Records that for the user,
-    /// then gives our session up as `reset_session` does: texts committed to
-    /// it `NotDelivered`, abandoned, the session removed, the recorded
-    /// handshake kept. The caller then reads the message again, as the first
+    /// there (`NetworkMessenger::take_message`). Gives our session up as
+    /// `reset_session` does: texts committed to it `NotDelivered`, abandoned,
+    /// the session removed, the recorded handshake kept; and records for the
+    /// user that the contact restarted it, in the transaction that removes
+    /// the session. The caller then reads the message again, as the first
     /// one of that handshake, which creates the new session. Every step
     /// repeats safely after a crash: the message stays on the relay until it
     /// is accepted, and the contact retransmits it until our receipt.
     pub(super) fn accept_restart(&self, peer: &[u8; 32], handle: u64) -> Result<(), CoreError> {
         debug_assert_eq!(handle, handle_of(peer));
-        self.update_meta(peer, |m| m.flags = (m.flags | FLAG_PEER_RESET) & !FLAG_RESTART)?;
-        crash_point("restart_after_flag");
-        self.retire_session_texts(peer, "restart", Retire::Any)
+        let note = |m: &mut Meta| m.flags = (m.flags | FLAG_PEER_RESET) & !FLAG_RESTART;
+        self.retire_session_texts(peer, "restart", Retire::Any, Some(&note))
     }
 
     /// Gives up our session with `peer` (`retire_unconfirmed_session`,
@@ -1146,8 +1161,26 @@ impl NetworkMessenger {
     /// `NotDelivered`, abandons them and removes the session, only an
     /// unconfirmed one with [`Retire::Unconfirmed`] (S2-B2 section 6a), any
     /// with [`Retire::Any`], which keeps a handshake recorded beside it.
-    fn retire_session_texts(&self, peer: &[u8; 32], stage: &str, retire: Retire) -> Result<(), CoreError> {
+    /// With `Retire::Any`, `note` changes the contact's meta in the
+    /// transaction that removes the session, so the change and the removal
+    /// happen together or not at all.
+    fn retire_session_texts(
+        &self,
+        peer: &[u8; 32],
+        stage: &str,
+        retire: Retire,
+        note: Option<&dyn Fn(&mut Meta)>,
+    ) -> Result<(), CoreError> {
         let handle = handle_of(peer);
+        // A text whose receipt was committed earlier in this round, before
+        // `refresh` read it, is Delivered, not given up: the receipt left
+        // only its send record (`refresh` reads it the same way).
+        let pending: HashSet<Vec<u8>> = self
+            .core
+            .pending_outgoing(handle)?
+            .into_iter()
+            .map(|m| m.message_id)
+            .collect();
         for e in self.open_entries(peer)? {
             if e.outgoing
                 && matches!(
@@ -1155,7 +1188,17 @@ impl NetworkMessenger {
                     ChatEntryState::Pending | ChatEntryState::Transmitted
                 )
             {
-                self.advance(peer, e.seq, ChatEntryState::NotDelivered, None)?;
+                let acknowledged = !pending.contains(&e.message_id)
+                    && matches!(
+                        self.core.prior_send(peer, &client_id::text(&e.app_id))?,
+                        Some(SendResult::AlreadyAcknowledged { message_id }) if message_id == e.message_id
+                    );
+                let state = if acknowledged {
+                    ChatEntryState::Delivered
+                } else {
+                    ChatEntryState::NotDelivered
+                };
+                self.advance(peer, e.seq, state, None)?;
             }
         }
         #[cfg(test)]
@@ -1169,11 +1212,38 @@ impl NetworkMessenger {
         test_hooks::before_retire();
         match retire {
             Retire::Unconfirmed => self.core.remove_session(handle)?,
-            Retire::Any => self.core.retire_session(handle)?,
+            Retire::Any => {
+                let extra = match note {
+                    Some(f) => vec![self.meta_write(peer, f)?],
+                    None => Vec::new(),
+                };
+                self.core.retire_session(handle, &extra)?
+            }
         }
         // The next session with this contact has the same handle.
         self.forget_far_waits(handle);
         Ok(())
+    }
+
+    /// `peer`'s meta changed by `f`, as a write that commits only if the
+    /// meta is still what was read here (for `retire_session_texts`).
+    fn meta_write(&self, peer: &[u8; 32], f: &dyn Fn(&mut Meta)) -> Result<SideWrite, CoreError> {
+        let store = self.core.store.lock().map_err(|_| poisoned())?;
+        let key = meta_key(peer);
+        let old = get_opt(store.get(&key))?;
+        let mut meta = match &old {
+            Some(bytes) => Meta::decode(bytes)?,
+            None => Meta::default(),
+        };
+        f(&mut meta);
+        let new = Zeroizing::new(meta.encode());
+        let write = match old {
+            Some(bytes) => SideWrite::replace(key, Zeroizing::new(bytes), new),
+            None => SideWrite::insert(key, new),
+        };
+        write.map_err(|_| CoreError::Storage {
+            msg: "chat meta key is reserved".into(),
+        })
     }
 
     fn meta(&self, peer: &[u8; 32]) -> Result<Meta, CoreError> {

@@ -293,6 +293,36 @@ fn a_handshake_beside_an_established_session_is_kept_until_the_session_is_retire
     assert_eq!(p.a.get(&provisional_key(ALICE_HANDLE)).unwrap(), *foreign);
 }
 
+/// `retire_session_with` writes the caller's records in the transaction
+/// that removes the session (option B: the reset request, the restart
+/// notice). A failed precondition, or a write to a record the removal
+/// deletes, leaves everything as it was.
+#[test]
+fn retire_session_with_writes_the_callers_records_with_the_removal() {
+    use crate::durable::{SideWrite, SideWriteError};
+    let mut p = memory_peers();
+    p.a.put("note:x", b"old").unwrap();
+    let bytes = |b: &[u8]| Zeroizing::new(b.to_vec());
+
+    let stale = SideWrite::replace("note:x".into(), bytes(b"other"), bytes(b"new")).unwrap();
+    assert!(matches!(
+        p.am.retire_session_with(&mut p.a, p.alice_pk, ALICE_HANDLE, &[stale]),
+        Err(MessagingError::ExtraConflict { index: 0, .. })
+    ));
+    let clash = SideWrite::insert(format!("handle:v1/{ALICE_HANDLE:016x}"), bytes(b"x")).unwrap();
+    assert!(matches!(
+        p.am.retire_session_with(&mut p.a, p.alice_pk, ALICE_HANDLE, &[clash]),
+        Err(MessagingError::SideWrite(SideWriteError::DuplicateKey))
+    ));
+    assert!(p.am.peer_of(&p.a, ALICE_HANDLE).unwrap().is_some(), "nothing removed");
+    assert_eq!(p.a.get("note:x").unwrap(), b"old", "nothing written");
+
+    let note = SideWrite::replace("note:x".into(), bytes(b"old"), bytes(b"new")).unwrap();
+    p.am.retire_session_with(&mut p.a, p.alice_pk, ALICE_HANDLE, &[note]).unwrap();
+    assert!(p.am.peer_of(&p.a, ALICE_HANDLE).unwrap().is_none(), "removed");
+    assert_eq!(p.a.get("note:x").unwrap(), b"new", "and written");
+}
+
 /// A messenger whose confirm hook (tracker R-6, option B) counts its calls
 /// and writes `value` at `R6_KEY`, replacing the record read there if any.
 fn counting_messenger(calls: Arc<std::sync::atomic::AtomicUsize>, value: &'static [u8]) -> Messenger {

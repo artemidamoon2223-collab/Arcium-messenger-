@@ -319,26 +319,33 @@ fn handshake_identity(handshake: &InitiatorHandshakeV1) -> [u8; 32] {
 /// The side write recording `handshake` as the one the responder session
 /// with `peer` about to be stored came from ([`accepted_handshake_key`]). It
 /// replaces the record of an earlier session only if that is still the
-/// record read here. `None` if that record cannot be read (damaged or
-/// tampered with): the session is then stored without it, and late copies
-/// of its handshake are refused as for a session an older build stored.
+/// record read here. A record that cannot be read (damaged, or tampered
+/// with) is deleted first and the new one inserted: until then late copies
+/// of the handshake are refused, as for a session an older build stored.
 fn accepted_handshake_write(
-    store: &EncryptedStore,
+    store: &mut EncryptedStore,
     peer: &[u8; 32],
     handshake: &InitiatorHandshakeV1,
-) -> Result<Option<SideWrite>, CoreError> {
+) -> Result<SideWrite, CoreError> {
     let key = accepted_handshake_key(peer);
     let value = Zeroizing::new(handshake_identity(handshake).to_vec());
     let write = match store.get(&key) {
         Ok(old) => SideWrite::replace(key, Zeroizing::new(old), value),
         Err(StorageError::NotFound) => SideWrite::insert(key, value),
-        Err(StorageError::Decryption) => return Ok(None),
+        Err(StorageError::Decryption) => {
+            store.delete(&key)?;
+            SideWrite::insert(key, value)
+        }
         Err(e) => return Err(e.into()),
     };
-    write.map(Some).map_err(|_| CoreError::Storage {
+    write.map_err(|_| CoreError::Storage {
         msg: "accepted-handshake key is reserved".into(),
     })
 }
+
+/// Marks a store whose one-time prekey was replaced once for option B
+/// ([`ArciumCore::replace_prekey_once`]).
+const PREKEY_RENEWED_KEY: &str = "prekeys/renewed-b0";
 
 // ── ARCIUM_X3DH_FORMAT_V1 ─────────────────────────────────────────────────────
 //
@@ -1219,7 +1226,7 @@ fn accept_first_message(
             })?],
         None => Vec::new(),
     };
-    extra.extend(accepted_handshake_write(store, &provisional.peer_identity_pk, &handshake)?);
+    extra.push(accepted_handshake_write(store, &provisional.peer_identity_pk, &handshake)?);
     let first = FirstContact {
         handle: session_id,
         session,
@@ -1322,8 +1329,9 @@ impl ArciumCore {
     }
 
     /// Records `initiator_handshake`, received from the peer of this
-    /// device's own unconfirmed initiator session under `session_id`,
-    /// beside that session (`Messenger::record_handshake_beside`,
+    /// device's own unconfirmed initiator session, or of an established
+    /// session (a possible restart, option B), under `session_id`, beside
+    /// that session (`Messenger::record_handshake_beside`,
     /// docs/S2-B2-DURABLE-MESSAGING.md section 4c). It is checked against
     /// this device's prekeys first, by the rules of
     /// `establish_session_responder`, and refused with the same errors when
@@ -1352,6 +1360,44 @@ impl ArciumCore {
                 },
             )
             .map_err(|e| CoreError::messaging(session_id, e))
+    }
+
+    /// Replaces this device's one-time prekey once, the first time a build
+    /// with option B runs on a store, and records that it did, in one
+    /// transaction. Earlier builds kept the prekey when their own session
+    /// was confirmed, so a genuine handshake of a contact built from it,
+    /// which this device never saw (withheld by the relay during a
+    /// simultaneous start the contact then gave up), could still be
+    /// answered, and with its first message replace an established session
+    /// (`docs/NET-MESSAGING.md` section 8). After this, as after every
+    /// confirmation, it cannot. The cost: another contact's first contact
+    /// in flight under the old prekey is refused once and starts again.
+    /// With no prekey record yet, only the mark is written.
+    pub(crate) fn replace_prekey_once(&self) -> Result<(), CoreError> {
+        let mut store = self.store.lock().map_err(|_| CoreError::Storage {
+            msg: "mutex poisoned".into(),
+        })?;
+        match store.get(PREKEY_RENEWED_KEY) {
+            Ok(_) => return Ok(()),
+            Err(StorageError::NotFound) => {}
+            Err(e) => return Err(e.into()),
+        }
+        let tx = store.transaction()?;
+        match tx.get(PREKEYS_KEY) {
+            Ok(bytes) => {
+                let bytes = Zeroizing::new(bytes);
+                let mut record = unpack_prekeys(&bytes)?;
+                if record.opk.is_some() {
+                    record.opk = Some(new_one_time_prekey());
+                    tx.put(PREKEYS_KEY, &pack_prekeys(&record))?;
+                }
+            }
+            Err(StorageError::NotFound) => {}
+            Err(e) => return Err(e.into()),
+        }
+        tx.put(PREKEY_RENEWED_KEY, &[1])?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Whether `handshake` from `peer` is the handshake this device's latest

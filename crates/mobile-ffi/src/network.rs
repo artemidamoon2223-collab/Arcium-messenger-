@@ -731,6 +731,7 @@ impl NetworkMessenger {
     }
 
     fn put_bundle(&self, conn: &mut Connection) -> Result<(), CoreError> {
+        self.core.replace_prekey_once()?;
         let exists = {
             let store = self.core.store.lock().map_err(|_| CoreError::Storage {
                 msg: "mutex poisoned".into(),

@@ -343,6 +343,10 @@ fn t2_an_old_authenticated_responder_session_is_kept_and_continues() {
     let addr = relay.addr().to_string();
     let (alice, bob) = open_fixture("t2", &addr);
     let (ha, hb) = (handle(&alice), handle(&bob));
+    // The first round of this build on a store an earlier build wrote
+    // replaces the one-time prekey once (option B); the handshake below is
+    // made from the bundle published after that.
+    bob.net.publish_prekeys().unwrap();
 
     assert!(bob.core.has_session(ha).unwrap());
     assert!(!bob.core.is_legacy_unconfirmed(ha).unwrap());

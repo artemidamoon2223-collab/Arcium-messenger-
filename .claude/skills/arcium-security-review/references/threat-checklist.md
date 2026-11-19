@@ -174,18 +174,29 @@ the Android contact-card and add-contact code. Specification:
   session with that sender, on which nothing was received yet; anything else
   is dropped (`docs/NET-MESSAGING.md` §6). A handshake is not authenticated
   where the network layer reads it: one naming a pinned contact while our
-  session with that contact is an unconfirmed start of our own raises the
-  conflict flag (the `Handshake` arm of `NetworkMessenger::process` in
-  `network.rs`). So a forged or replayed
-  handshake can raise a false conflict. Check what a resolve then does
+  session with that contact is an unconfirmed start of our own is recorded
+  beside that session and raises nothing (S2-B2 §4c; one this device cannot
+  answer is refused instead, `record_beside`). The conflict flag is set
+  only when, while our session is still that unconfirmed start, a message
+  from the contact that does not decrypt under it authenticates as the
+  first message under the recorded handshake (`beside_authenticates` in
+  `NetworkMessenger::take_message`, reached from the `Message` arm of
+  `process`, `network.rs`), which needs the contact's identity secret or a
+  signed-prekey secret this device still holds. So a
+  forged handshake alone raises nothing; a genuine handshake and first
+  message replayed while the prekeys they name can still be answered can
+  (tracker R-13, PARTIAL; `docs/NET-MESSAGING.md` §8, "Protection against a
+  replayed conflict"). Check what a resolve then does
   (`resolve_session_conflict` in `network/chat.rs`: committed texts
   `NotDelivered`, abandoned, our session removed, wait for the peer's
-  handshake). A probe at `de328a1` showed that a resolved false conflict can
-  dead-end the conversation for good: the contact accepts the original
-  handshake while this device waits for one that never comes (tracker R-13).
-  A change must not let a forged or replayed object reach a
-  restart or a session removal without either a verified refusal or the
-  user's own resolve.
+  handshake). A resolved false conflict can still leave the conversation
+  waiting for a handshake that never comes; the way out is a reset on the
+  waiting device (`reset_session`, option B) or deleting the contact on
+  both devices (tracker R-13). A change must not let a forged or replayed
+  object reach a restart or a session removal without a verified refusal,
+  the contact's first message authenticating under a handshake recorded
+  beside the session that still names this device's current one-time
+  prekey (option B), or the user's own resolve or reset.
 
 ## 4. Network
 

@@ -113,3 +113,15 @@ Give it to the owner in the session report. Post it on a PR only when asked.
   finding. (2026-11: #186 claimed every cited section still existed; the
   first version of #193 claimed wider coverage than its tests, corrected in
   27265c1.)
+- **A number is copied from the command that produced it.** A count, size
+  or total in a PR, report or tracker row comes from that command's output
+  (`grep -c '#\[test\]' <file>`, the `test result:` line), and the command is
+  named. A number from memory is a `goal_driven` finding. (2026-11: #222 and
+  the first draft of #224 said 17 and 10 new tests where there were 16 and 9.)
+- **Documentation states a rule as the code computes it.** Write the
+  condition the code checks. A case derived from it ("setting the clock
+  right rotates again") goes in only with a test that pins it or a trace
+  worked through in the review; one with neither is a `goal_driven`
+  finding. (2026-11: the clock statements of #222 were wrong in three review
+  rounds in a row, `9d33e84`, `a38f1ce`, `b6c96cb`, until the text stated the
+  rule itself.)

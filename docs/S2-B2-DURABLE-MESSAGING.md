@@ -40,7 +40,7 @@ here is transmitted.
 | `sendid:v1/<peer>/<client id>` | `SENDID_RECORD_V1`: the message id a logical message produced, sent or abandoned | send, abandon outgoing |
 | `inbox:v1/<peer>/<id>` | `INBOX_RECORD_V1`: generation, message id, plaintext; only while undelivered | receive |
 | `seen:v1/<peer>/<id>` | `SEEN_RECORD_V1`: id of an acknowledged incoming message | acknowledge incoming |
-| `prekeys/v2` | unchanged format | responder session creation from the first authenticated message (same transaction) |
+| `prekeys/v2` | `PERSISTED_PREKEY_RECORD_V3` (186 bytes: the current signed prekey and its signature, the one-time prekey, when the relay first accepted the current signed prekey, the one-time prekey it was made with, at most one previous signed prekey; tracker R-6); a `PERSISTED_PREKEY_RECORD_V2` value (138 bytes) is still read, as published long ago with no previous key, and replaced by V3 at its first write | the round's maintenance (create if absent, or rotate the signed prekey when due) and its record of the relay's acceptance; responder session creation from the first authenticated message (same transaction); the confirm hook (4c); the one-time replacement of option B; `establish_prekeys` (a hard reset). Every write that replaces the one-time prekey drops the previous signed prekey |
 | `prekeys/renewed-b0` | one byte: the one-time prekey was replaced once for option B (`ArciumCore::replace_prekey_once`) | the first round of a build with option B, in the transaction that replaces the prekey |
 | `hsacc:v1/<peer>` | 32 bytes identifying the handshake the latest responder session with the peer came from by the keys it derives (option B, section 4c): SHA-256 over a label, the initiator identity key, the ephemeral key's X25519 with a fixed public scalar, the signed-prekey id and the one-time-prekey id | responder session creation from the first authenticated message (same transaction, a side write); replaced by the next one; kept when the session is removed or retired; deleted when the peer is forgotten |
 
@@ -67,7 +67,7 @@ transaction; if any precondition fails, nothing is written.
 |---|---|---|
 | initiator establishment | session gen 0, handle, handshake | session absent, handle absent |
 | responder: handshake received | provisional handshake record only | handle absent, session absent (read in the same transaction) |
-| responder: first message authenticated | session gen 1, handle, inbox record (undelivered), rotated prekey record, provisional record deleted, `hsacc:` record written (option B) | session absent, handle absent, provisional record byte-identical to the one the session was derived from, inbox id absent, seen id absent, prekey record byte-identical to the one validated, `hsacc:` record byte-identical to the one read (or absent; one that could not be read is deleted first) |
+| responder: first message authenticated | session gen 1, handle, inbox record (undelivered), the prekey record with a new one-time prekey and no previous signed prekey, provisional record deleted, `hsacc:` record written (option B) | session absent, handle absent, provisional record byte-identical to the one the session was derived from, inbox id absent, seen id absent, prekey record byte-identical to the one validated, `hsacc:` record byte-identical to the one read (or absent; one that could not be read is deleted first) |
 | handshake beside own session or an established one (4c) | provisional record only | session record byte-identical (SHA-256) to the one classified as this device's own initiator session with nothing received, or as one that has received from the peer, handle record naming the peer (read in the same transaction) |
 | send | session gen n+1, outbox record, send-id record | session is the record loaded (gen n, same SHA-256), outbox id absent, send-id absent |
 | receive | session gen n+1, inbox record (undelivered); on the first message from the peer committed on the session, the peer's provisional record beside it deleted, and for this device's own initiator session the confirm hook's side writes (4c; the one-time prekey replaced, tracker R-6, option B) | session is the record loaded, inbox id absent, seen id absent; on that first message, that provisional record exactly the one read (or still absent if none was) and each record a side write was made from exactly as read |
@@ -76,6 +76,9 @@ transaction; if any precondition fails, nothing is written.
 | abandon outgoing | outbox record deleted, send-id marked abandoned | outbox record present, else no-op (idempotent) |
 | remove session | session, handle, handshake, the peer's provisional record beside it (4c) deleted | see 6a; session record unchanged since checked |
 | retire session (option B) | session, handle, handshake deleted; the peer's provisional record beside it kept; the caller's records (`retire_session_with`: the chat meta with the reset request or the restart notice) written | see 6a; session record unchanged since checked |
+| prekey maintenance (each round, before the bundle is published; tracker R-6) | the prekey record: created (a new signed prekey and one-time prekey), or its signed prekey rotated (the old one kept as the previous key after 7 days, none after a one-time-prekey change), or nothing (no transaction is opened unless a first read found a creation or rotation due and another instance wrote the record before the transaction began; that transaction is rolled back) | read again inside the transaction: created only if still absent, rotated only if still due |
+| record of the relay's acceptance (after the round's PUT) | the prekey record with the time the relay first accepted the current signed prekey | read again inside the transaction: only if no acceptance is recorded yet and the PUT named the current signed prekey |
+| one-time replacement (option B) | the prekey record with a new one-time prekey and no previous signed prekey, the mark `prekeys/renewed-b0` | read again inside the transaction: the mark still absent |
 
 A transition's precondition names the exact record it was staged from, not
 only its generation. A session that is removed and created again with the same
@@ -118,13 +121,16 @@ No output of a transition leaves Rust before its `COMMIT` returned `Ok`.
   against the prekeys held now (checked again), and the message is decrypted
   on that result held in memory (`durable::ProvisionalSession`, which cannot
   encrypt and is never stored). Only if the AEAD verifies — which requires the
-  keys X3DH derived, and so the initiator's identity secret (or this
-  device's signed-prekey secret: key-compromise impersonation,
-  `docs/NET-MESSAGING.md` section 8) — does one
+  keys X3DH derived, and so the initiator's identity secret (or a
+  signed-prekey secret this device still holds: key-compromise
+  impersonation, `docs/NET-MESSAGING.md` section 8) — does one
   transaction store the advanced session at generation 1 (it already has its
   receiving chain), its handle, the message as an undelivered inbox record,
-  the prekey record rotated past the one-time prekey, and delete the
-  provisional record. Preconditions: no session record for the peer, the
+  the prekey record with a new one-time prekey in place of the one used and
+  without a previous signed prekey, and delete the provisional record. X3DH
+  runs under the signed prekey the handshake names: the current one, or the
+  previous one, which answers only together with the one-time prekey it was
+  published with (tracker R-6). Preconditions: no session record for the peer, the
   handle free, the provisional record exactly the one used, the message never
   accepted, the prekey record byte-identical to what was validated. The
   plaintext is returned only after that commit.
@@ -283,7 +289,8 @@ provisional record beside a session. This section changes that.
     `Messenger::with_confirm_hook` commits, in the transaction of the
     receive that confirms this device's own initiator session, the side
     writes the hook returns. `mobile-ffi` replaces there this device's
-    one-time prekey (tracker R-6, option B): every handshake built from a
+    one-time prekey, and drops its previous signed prekey with it (tracker
+    R-6, option B): every handshake built from a
     bundle published before the confirmation is then unanswerable, so a
     first message of the peer that authenticated beside this session
     (read with that prekey, never accepted) cannot be derived again from a
@@ -321,8 +328,8 @@ provisional record beside a session. This section changes that.
     builds deleted it only by a promotion). Since option B it is kept there
     as a possible restart, like any record beside an established session:
     only a first message authenticating under it would replace the session,
-    which needs the peer's identity secret (or this device's signed-prekey
-    secret, `docs/NET-MESSAGING.md` section 8) and the one-time prekey it
+    which needs the peer's identity secret (or a signed-prekey secret this
+    device still holds, `docs/NET-MESSAGING.md` section 8) and the one-time prekey it
     names still published (a store written before option B did not replace
     that prekey when its session was confirmed; the first round of a build
     with option B replaces it once, `ArciumCore::replace_prekey_once`).
@@ -331,7 +338,9 @@ provisional record beside a session. This section changes that.
     (`docs/NET-MESSAGING.md` section 10).
 - **Replay.** A recorded genuine handshake and first message replayed later
   still authenticate if this device can still answer that handshake: its
-  one-time prekey is still the published one and its signed prekey current.
+  one-time prekey is still the published one and its signed prekey still
+  held (the current one, or the previous one for one more period, tracker
+  R-6).
   A handshake that created a session here cannot be replayed this way (its
   one-time prekey was consumed and replaced, section 4). A handshake this
   device never accepted can, for as long as no other first contact consumes
@@ -604,9 +613,16 @@ message). They are never listed, so they cost disk space, not time.
 
 ## 9. Compatibility
 
-`SESSION_CHECKPOINT_V1`, `PREKEY_BUNDLE_V1`, `INITIATOR_HANDSHAKE_V1`,
-`PERSISTED_PREKEY_RECORD_V2` and the message format `header(40) ||
-ciphertext` are unchanged. The ratchet record inside a session checkpoint
+`SESSION_CHECKPOINT_V1`, `PREKEY_BUNDLE_V1`, `INITIATOR_HANDSHAKE_V1` and
+the message format `header(40) || ciphertext` are unchanged. The prekey
+record (`prekeys/v2`, a local record, never transmitted) is written as
+`PERSISTED_PREKEY_RECORD_V3` since tracker R-6; a
+`PERSISTED_PREKEY_RECORD_V2` value is still read, as a signed prekey
+published long ago, so the first round of this build rotates it: after the
+one-time replacement of option B (a store without its mark) with no
+previous key, otherwise keeping the never-rotated key as the previous one
+for one period. A build before that change refuses the V3 record, so its
+rounds fail at the bundle export, and it does not overwrite the record. The ratchet record inside a session checkpoint
 is written as `RATCHET_STATE_V2` since tracker R-21 (the V1 layout plus the
 last four receiving chains left, public keys and end positions only); a
 `RATCHET_STATE_V1` record is still read, as a state that remembers no
@@ -638,7 +654,8 @@ records left by earlier builds are read is stated there. The exported
 | outbox bytes identical across retries and restarts | core-protocol + mobile-ffi | runtime |
 | duplicate ciphertext: no second acceptance, no ratchet step | core-protocol + mobile-ffi | runtime |
 | stale / competing instances cannot both publish | two connections, two threads, two `ArciumCore` | runtime |
-| responder: a handshake creates only a provisional record; the first authenticated message creates the session with its prekey rotation, once, atomically | `messaging/tests/first_contact.rs`, `mobile-ffi` `tests::responder`; process abort before/after the promotion's commit; race hook on a second connection | runtime; process crash; unknown outcomes simulated |
+| responder: a handshake creates only a provisional record; the first authenticated message creates the session with its one-time-prekey replacement, once, atomically | `messaging/tests/first_contact.rs`, `mobile-ffi` `tests::responder`; process abort before/after the promotion's commit; race hook on a second connection | runtime; process crash; unknown outcomes simulated |
+| prekey record (tracker R-6): V3 layout frozen, V2 read as published long ago and written back as V3, malformed records refused; maintenance created once and rotated once by two instances on one database, the second starting while the first holds its transaction; an unpublished key not aging; every one-time-prekey writer drops the previous key; a key past its grace refused with nothing written | `mobile-ffi` `tests::prekey_record`, `tests::legacy_upgrade::a_v2_prekey_record_is_rotated_on_the_first_round`; process abort after the maintenance and after the PUT (`tests::network_crash::a_device_killed_around_a_rotation_rotates_once_and_answers_the_served_bundle`) | runtime; process crash; two instances in one process stand in for two processes |
 | a handshake beside an own unconfirmed session: recorded and nothing else, refused for any other session, deleted by the confirming receive, the removal and the forgetting; the authentication check writes nothing and accepts only a message of that handshake's session; competing connections | `messaging/tests/beside.rs`; `messaging/tests/crash.rs` (`process_killed_around_recording_beside_*`, `process_killed_during_a_confirming_receive_*`); `mobile-ffi` `tests::false_conflict` | runtime; process crash; race hook on a second connection |
 | crash before / after `COMMIT`, before publication, before delivery | child process `abort()` at each point | process crash |
 | ambiguous `COMMIT` → unresolved, nothing released | scripted store failures | simulated |

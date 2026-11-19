@@ -79,7 +79,9 @@ pub enum CoreError {
     /// from a bundle in flight would otherwise get a weaker X3DH accepted.
     #[error("this handshake must use the currently published one-time prekey")]
     OneTimePrekeyRequired,
-    /// The handshake names a signed prekey that is no longer current. The peer's
+    /// The handshake names a signed prekey this device no longer holds:
+    /// neither the current one nor the previous one, or the previous one
+    /// after the one-time prekey it was published with changed. The peer's
     /// bundle predates a rotation; fetching a fresh one resolves it.
     #[error("signed prekey is stale")]
     StaleSignedPrekey,
@@ -267,11 +269,14 @@ fn identity_from_record(read: Result<Vec<u8>, StorageError>) -> Result<Option<Ar
     })))
 }
 
-// v2 is a strict cutover: `ARCIUM_X3DH_FORMAT_V1` changes the record's length and
-// contents, and a v1 record cannot be reinterpreted as one. Moving the key rather
-// than versioning inside the old one means a legacy record simply stops being
-// found, so `export_prekey_bundle` reports "no prekeys" and the caller re-runs
-// `establish_prekeys` — instead of a second parser that a downgrade could aim at.
+// The prekey record. The key moved to `v2` when `ARCIUM_X3DH_FORMAT_V1` changed
+// the record's contents: a v1 record cannot be reinterpreted, so it simply stops
+// being found. The key did not move again for `PERSISTED_PREKEY_RECORD_V3`
+// (tracker R-6): every writer, the one-time-prekey replacement of option B and
+// the conditional writes name this one record, and the V2 value it may hold is
+// read in place. The V2 parser cannot be aimed at as a downgrade: a V2 record
+// reads as published long ago, so its only effect is a rotation at the next
+// round (`plan_rotation`).
 const PREKEYS_KEY: &str = "prekeys/v2";
 
 /// The [`handshake_identity`] of the handshake this device's responder
@@ -385,7 +390,8 @@ pub const PREKEY_BUNDLE_V1_LEN: usize = 204;
 ///  76   8  opk_id (u64 big-endian)   zero when used_otp = 0
 /// ```
 pub const INITIATOR_HANDSHAKE_V1_LEN: usize = 84;
-/// `PERSISTED_PREKEY_RECORD_V2`, exactly 138 bytes. Never transmitted.
+/// `PERSISTED_PREKEY_RECORD_V2`, exactly 138 bytes. Never transmitted. Read,
+/// no longer written: the first write of the record replaces it with V3.
 ///
 /// ```text
 ///   0   1  record_version = 0x01
@@ -397,6 +403,45 @@ pub const INITIATOR_HANDSHAKE_V1_LEN: usize = 84;
 /// ```
 const PREKEY_RECORD_V2_LEN: usize = 138;
 const RECORD_VERSION: u8 = 0x01;
+/// `PERSISTED_PREKEY_RECORD_V3`, exactly 186 bytes. Never transmitted. Its
+/// first 138 bytes have the V2 layout.
+///
+/// ```text
+///   0   1  record_version = 0x02
+///   1  32  signed_prekey_sk        the current signed prekey
+///  33  64  spk_signature           of the current one, over SIGNED_PREKEY_OBJECT_V1
+///  97   1  flags   bit0 = opk_present, bit1 = prev_present, bit2 = born_present,
+///                  bits 3..7 = 0
+///  98   8  opk_id (u64 big-endian)   ┐ zero when opk_present = 0
+/// 106  32  opk_sk                    ┘
+/// 138   8  published_at (u64 big-endian): Unix seconds of this device's clock
+///          when the relay first accepted a bundle naming the current signed
+///          prekey; 0 = not yet, 1 = long ago (read from V2)
+/// 146   8  born_opk_id (u64 big-endian): the one-time prekey held when the
+///          current signed prekey was made; zero when born_present = 0
+/// 154  32  prev_signed_prekey_sk   zero when prev_present = 0
+/// ```
+///
+/// A previous signed prekey is held only together with the one-time prekey
+/// the current one was made with (prev_present requires opk_present,
+/// born_present and born_opk_id = opk_id); any other record is corrupt. It
+/// keeps no signature: it is never published again.
+const PREKEY_RECORD_V3_LEN: usize = 186;
+const RECORD_VERSION_V3: u8 = 0x02;
+/// Bit 1 of a V3 record's flags: a previous signed prekey is held.
+const FLAG_PREV: u8 = 0b0000_0010;
+/// Bit 2 of a V3 record's flags: `born_opk_id` is set.
+const FLAG_BORN: u8 = 0b0000_0100;
+/// `published_at` of a signed prekey the relay has not accepted yet. It
+/// never ages (`plan_rotation`).
+const PUBLISHED_NOT_YET: u64 = 0;
+/// `published_at` of a signed prekey read from a V2 record: published at
+/// an unknown time, so due for rotation at once.
+const PUBLISHED_LONG_AGO: u64 = 1;
+/// How long a signed prekey stays current after the relay first accepted
+/// it, and how long it then stays the previous one (tracker R-6): 7 days,
+/// the relay's envelope lifetime.
+pub(crate) const SIGNED_PREKEY_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Bit 0 of a `flags` byte: "a one-time prekey is present / was used".
 const FLAG_OTP: u8 = 0b0000_0001;
@@ -436,76 +481,242 @@ fn new_one_time_prekey() -> (u64, StaticSecret) {
     (u64::from_be_bytes(id), StaticSecret::random_from_rng(OsRng))
 }
 
-/// Parsed `PERSISTED_PREKEY_RECORD_V2`.
-struct PrekeyRecordV2 {
+/// Which signed prekey of a [`PrekeyRecord`] answers a handshake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spk {
+    /// The one the published bundle names.
+    Current,
+    /// The one before it, kept for one period after a rotation.
+    Previous,
+}
+
+/// A parsed prekey record (`PERSISTED_PREKEY_RECORD_V3`, or V2 read in
+/// place). Every secret in it wipes itself on drop.
+struct PrekeyRecord {
     signed_prekey_sk: StaticSecret,
     signature: Signature,
     /// The currently published one-time prekey, if any.
     opk: Option<(u64, StaticSecret)>,
+    /// When the relay first accepted a bundle naming the current signed
+    /// prekey ([`PUBLISHED_NOT_YET`], [`PUBLISHED_LONG_AGO`]).
+    published_at: u64,
+    /// The one-time prekey id held when the current signed prekey was made.
+    born_opk: Option<u64>,
+    /// The signed prekey before the current one.
+    prev: Option<StaticSecret>,
 }
 
-impl PrekeyRecordV2 {
-    /// This record's signed-prekey public key.
+impl PrekeyRecord {
+    /// A new record for `identity`: a new signed prekey and a new one-time
+    /// prekey, not yet published, no previous signed prekey.
+    fn new(identity: &Identity) -> Self {
+        let (signed_prekey_sk, signature) = new_signed_prekey(identity);
+        let opk = new_one_time_prekey();
+        Self {
+            signed_prekey_sk,
+            signature,
+            born_opk: Some(opk.0),
+            opk: Some(opk),
+            published_at: PUBLISHED_NOT_YET,
+            prev: None,
+        }
+    }
+
+    /// This record's current signed-prekey public key.
     fn signed_prekey_pk(&self) -> PublicKey {
         PublicKey::from(&self.signed_prekey_sk)
     }
+
+    /// The id of the one-time prekey held, if any.
+    fn opk_id(&self) -> Option<u64> {
+        self.opk.as_ref().map(|(id, _)| *id)
+    }
+
+    /// The secret of the signed prekey `which`.
+    fn signed_prekey(&self, which: Spk) -> Result<&StaticSecret, CoreError> {
+        match which {
+            Spk::Current => Ok(&self.signed_prekey_sk),
+            Spk::Previous => self.prev.as_ref().ok_or(CoreError::StaleSignedPrekey),
+        }
+    }
+
+    /// Publishes a new one-time prekey in place of the one held. The
+    /// previous signed prekey goes with it: it answers only together with
+    /// the one-time prekey it was published with (`check_answerable`).
+    fn renew_one_time_prekey(&mut self) {
+        self.opk = Some(new_one_time_prekey());
+        self.prev = None;
+    }
 }
 
-fn pack_prekeys(record: &PrekeyRecordV2) -> Zeroizing<Vec<u8>> {
-    let mut out = Zeroizing::new(vec![0u8; PREKEY_RECORD_V2_LEN]);
-    out[0] = RECORD_VERSION;
+/// A new signed prekey for `identity` and its signature over
+/// `SIGNED_PREKEY_OBJECT_V1`.
+fn new_signed_prekey(identity: &Identity) -> (StaticSecret, Signature) {
+    let signed_prekey_sk = StaticSecret::random_from_rng(OsRng);
+    let object = signed_prekey_object_v1(
+        &PublicKey::from(&identity.dh_key),
+        &identity.signing_key.verifying_key(),
+        &PublicKey::from(&signed_prekey_sk),
+    );
+    let signature = identity.signing_key.sign(&object);
+    (signed_prekey_sk, signature)
+}
+
+/// Serializes `record` as `PERSISTED_PREKEY_RECORD_V3`.
+fn pack_prekeys(record: &PrekeyRecord) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(vec![0u8; PREKEY_RECORD_V3_LEN]);
+    out[0] = RECORD_VERSION_V3;
     out[1..33].copy_from_slice(record.signed_prekey_sk.as_bytes());
     out[33..97].copy_from_slice(&record.signature.to_bytes());
+    let mut flags = 0;
     if let Some((id, sk)) = &record.opk {
-        out[97] = FLAG_OTP;
+        flags |= FLAG_OTP;
         out[98..106].copy_from_slice(&id.to_be_bytes());
         out[106..138].copy_from_slice(sk.as_bytes());
     }
-    // When absent, bytes 98..138 stay zero from the initial fill.
+    out[138..146].copy_from_slice(&record.published_at.to_be_bytes());
+    if let Some(id) = record.born_opk {
+        flags |= FLAG_BORN;
+        out[146..154].copy_from_slice(&id.to_be_bytes());
+    }
+    if let Some(sk) = &record.prev {
+        flags |= FLAG_PREV;
+        out[154..186].copy_from_slice(sk.as_bytes());
+    }
+    out[97] = flags;
+    // Absent regions stay zero from the initial fill.
     out
 }
 
-fn unpack_prekeys(bytes: &[u8]) -> Result<PrekeyRecordV2, CoreError> {
+/// Parses a prekey record: V3, or V2 read as published long ago, born with
+/// its one-time prekey and without a previous signed prekey.
+fn unpack_prekeys(bytes: &[u8]) -> Result<PrekeyRecord, CoreError> {
     let corrupt = |msg: String| CoreError::Storage { msg };
-    if bytes.len() != PREKEY_RECORD_V2_LEN {
+    let (len, known_flags) = match bytes.first() {
+        Some(&RECORD_VERSION) => (PREKEY_RECORD_V2_LEN, FLAG_OTP),
+        Some(&RECORD_VERSION_V3) => (PREKEY_RECORD_V3_LEN, FLAG_OTP | FLAG_PREV | FLAG_BORN),
+        Some(other) if [PREKEY_RECORD_V2_LEN, PREKEY_RECORD_V3_LEN].contains(&bytes.len()) => {
+            return Err(corrupt(format!("unknown prekey record version {other:#04x}")));
+        }
+        _ => {
+            return Err(corrupt(format!(
+                "corrupt prekey record: {} bytes, expected {PREKEY_RECORD_V3_LEN}",
+                bytes.len()
+            )));
+        }
+    };
+    if bytes.len() != len {
         return Err(corrupt(format!(
-            "corrupt prekey record: {} bytes, expected {PREKEY_RECORD_V2_LEN}",
-            bytes.len()
-        )));
-    }
-    if bytes[0] != RECORD_VERSION {
-        return Err(corrupt(format!(
-            "unknown prekey record version {:#04x}",
+            "corrupt prekey record: {} bytes, expected {len} for version {:#04x}",
+            bytes.len(),
             bytes[0]
         )));
     }
-    let signed_sk_bytes: Zeroizing<[u8; 32]> =
-        Zeroizing::new(bytes[1..33].try_into().expect("checked length"));
-    let sig_bytes: [u8; 64] = bytes[33..97].try_into().expect("checked length");
+    let zero = |range: std::ops::Range<usize>, what: &str| {
+        if bytes[range].iter().any(|b| *b != 0) {
+            return Err(corrupt(format!(
+                "corrupt prekey record: {what} absent but its bytes are not zero"
+            )));
+        }
+        Ok(())
+    };
+    let u64_at = |at: usize| u64::from_be_bytes(bytes[at..at + 8].try_into().expect("checked length"));
+    let secret_at = |at: usize| {
+        let sk: Zeroizing<[u8; 32]> =
+            Zeroizing::new(bytes[at..at + 32].try_into().expect("checked length"));
+        StaticSecret::from(*sk)
+    };
+
     let flags = bytes[97];
-    if flags & !FLAG_OTP != 0 {
+    if flags & !known_flags != 0 {
         return Err(corrupt(format!(
             "corrupt prekey record: unknown flag bits {flags:#04x}"
         )));
     }
+    let sig_bytes: [u8; 64] = bytes[33..97].try_into().expect("checked length");
     let opk = if flags & FLAG_OTP != 0 {
-        let id = u64::from_be_bytes(bytes[98..106].try_into().expect("checked length"));
-        let sk_bytes: Zeroizing<[u8; 32]> =
-            Zeroizing::new(bytes[106..138].try_into().expect("checked length"));
-        Some((id, StaticSecret::from(*sk_bytes)))
+        Some((u64_at(98), secret_at(106)))
     } else {
-        if bytes[98..138].iter().any(|b| *b != 0) {
-            return Err(corrupt(
-                "corrupt prekey record: one-time prekey absent but its bytes are not zero".into(),
-            ));
-        }
+        zero(98..138, "one-time prekey")?;
         None
     };
-    Ok(PrekeyRecordV2 {
-        signed_prekey_sk: StaticSecret::from(*signed_sk_bytes),
+    let opk_id = opk.as_ref().map(|(id, _)| *id);
+    let (published_at, born_opk, prev) = if len == PREKEY_RECORD_V2_LEN {
+        (PUBLISHED_LONG_AGO, opk_id, None)
+    } else {
+        let born_opk = if flags & FLAG_BORN != 0 {
+            Some(u64_at(146))
+        } else {
+            zero(146..154, "birth one-time prekey")?;
+            None
+        };
+        let prev = if flags & FLAG_PREV != 0 {
+            if opk_id.is_none() || born_opk != opk_id {
+                return Err(corrupt(
+                    "corrupt prekey record: a previous signed prekey without the one-time prekey it was published with".into(),
+                ));
+            }
+            Some(secret_at(154))
+        } else {
+            zero(154..186, "previous signed prekey")?;
+            None
+        };
+        (u64_at(138), born_opk, prev)
+    };
+    Ok(PrekeyRecord {
+        signed_prekey_sk: secret_at(1),
         signature: Signature::from_bytes(&sig_bytes),
         opk,
+        published_at,
+        born_opk,
+        prev,
     })
+}
+
+/// A rotation of the signed prekey that is due ([`plan_rotation`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Rotation {
+    /// Whether the current signed prekey becomes the previous one.
+    keep_previous: bool,
+}
+
+/// Whether the signed prekey of `record` is due for rotation at `now`
+/// (Unix seconds of this device's clock), and how (tracker R-6):
+/// - (E) the one-time prekey changed since the current signed prekey was
+///   made: rotate, and keep no previous key. Every bundle this device
+///   published pairs a signed prekey with the one-time prekey held then,
+///   and a handshake is answered only with the one-time prekey it names
+///   (X-6), so no honest handshake can be answered under either key any
+///   more.
+/// - (T) the relay accepted the current one `SIGNED_PREKEY_PERIOD_SECS` or
+///   more ago, in either direction of the clock: rotate, and keep the
+///   current one as the previous one if the one-time prekey it was
+///   published with is held. A key never accepted does not age.
+fn plan_rotation(record: &PrekeyRecord, now: u64) -> Option<Rotation> {
+    if record.opk_id() != record.born_opk {
+        return Some(Rotation { keep_previous: false });
+    }
+    if record.published_at != PUBLISHED_NOT_YET
+        && now.abs_diff(record.published_at) >= SIGNED_PREKEY_PERIOD_SECS
+    {
+        return Some(Rotation {
+            keep_previous: record.opk.is_some(),
+        });
+    }
+    None
+}
+
+/// Applies `rotation` to `record`: a new signed prekey made for
+/// `identity`, not yet published, born with the one-time prekey held. The
+/// old previous key is dropped (and wiped), and so is the old current one
+/// unless it is kept as the previous one.
+fn rotate_signed_prekey(record: &mut PrekeyRecord, identity: &Identity, rotation: Rotation) {
+    let (signed_prekey_sk, signature) = new_signed_prekey(identity);
+    let old = std::mem::replace(&mut record.signed_prekey_sk, signed_prekey_sk);
+    record.signature = signature;
+    record.prev = rotation.keep_previous.then_some(old);
+    record.born_opk = record.opk_id();
+    record.published_at = PUBLISHED_NOT_YET;
 }
 
 fn bytes_to_pubkey(b: &[u8]) -> Result<PublicKey, CoreError> {
@@ -887,36 +1098,26 @@ impl ArciumCore {
     /// Generates this device's signed prekey and one one-time prekey, signs the
     /// signed prekey over `SIGNED_PREKEY_OBJECT_V1`, and persists everything.
     ///
-    /// Calling this again replaces both prekeys. Every bundle already handed out
-    /// then names a signed prekey and a one-time prekey this device no longer
-    /// holds, so handshakes built from those bundles are refused with
+    /// Calling this again replaces both prekeys, and drops a previous signed
+    /// prekey: a hard reset. Every bundle already handed out then names a
+    /// signed prekey and a one-time prekey this device no longer holds, so
+    /// handshakes built from those bundles are refused with
     /// `StaleSignedPrekey` / `OneTimePrekeyUnavailable` rather than silently
     /// deriving a key the peer cannot match.
     ///
-    /// The network layer calls it only when no record exists, so the signed
-    /// prekey is kept for the life of the identity (tracker R-6). Every
-    /// answered handshake uses a one-time prekey (X-6). Once that prekey is
-    /// replaced, the secrets this device keeps no longer derive the keys of
-    /// a first message under it: the first message accepted under it
-    /// replaces it, and so does the receive that confirms this device's own
-    /// initiator session (`replace_prekey_on_confirm`). Until then they do,
-    /// for any first contact under the prekey held, however late it comes
-    /// (`docs/NET-MESSAGING.md` section 8).
+    /// The network layer does not call it: it creates the record if none
+    /// exists and rotates the signed prekey itself, at the start of every
+    /// round (`ArciumCore::maintain_prekeys`, tracker R-6). Every answered
+    /// handshake uses a one-time prekey (X-6). Once that prekey is replaced,
+    /// the secrets this device keeps no longer derive the keys of a first
+    /// message under it: the first message accepted under it replaces it,
+    /// and so does the receive that confirms this device's own initiator
+    /// session (`replace_prekey_on_confirm`). Until then they do, for any
+    /// first contact under the prekey held, until the signed prekey it names
+    /// is rotated out (`docs/NET-MESSAGING.md` section 8).
     pub fn establish_prekeys(&self) -> Result<(), CoreError> {
         let identity = self.require_identity()?;
-        let signed_prekey_sk = StaticSecret::random_from_rng(OsRng);
-        let signed_prekey_pk = PublicKey::from(&signed_prekey_sk);
-        let identity_dh_pk = PublicKey::from(&identity.dh_key);
-        let signing_pk = identity.signing_key.verifying_key();
-
-        let object = signed_prekey_object_v1(&identity_dh_pk, &signing_pk, &signed_prekey_pk);
-        let signature = identity.signing_key.sign(&object);
-
-        let record = PrekeyRecordV2 {
-            signed_prekey_sk,
-            signature,
-            opk: Some(new_one_time_prekey()),
-        };
+        let record = PrekeyRecord::new(&identity);
         self.store
             .lock()
             .map_err(|_| CoreError::Storage {
@@ -928,7 +1129,18 @@ impl ArciumCore {
 
     /// Pure read of the already-persisted prekey material as a
     /// `PREKEY_BUNDLE_V1` (D3) — generates nothing and consumes nothing, so two
-    /// calls return identical bytes. Fails if `establish_prekeys` never ran.
+    /// calls return identical bytes. Fails if no prekey record exists yet.
+    ///
+    /// The network layer exports the bundle only to publish it, right after
+    /// the rotation check of the round (`NetworkMessenger::put_bundle`). The
+    /// rotation after a one-time-prekey change ((E), `plan_rotation`) relies
+    /// on that: a bundle exported at any other time could pair the current
+    /// signed prekey with a one-time prekey made since, and a handshake
+    /// built from it would be refused once and made again. The exported
+    /// calls that skip the round (this one, `establish_session_responder`,
+    /// `receive_message`) neither rotate nor publish; no release code path
+    /// on Android calls them (instrumentation tests and the debug crash
+    /// provider do).
     pub fn export_prekey_bundle(&self) -> Result<Vec<u8>, CoreError> {
         let identity = self.require_identity()?;
         // The decrypted record holds the signed-prekey and one-time-prekey
@@ -1040,7 +1252,7 @@ impl ArciumCore {
     ///
     /// | stored state | `used_otp` | named `opk_id` | outcome |
     /// |---|---|---|---|
-    /// | any | any | any | `StaleSignedPrekey` if `spk_id` differs |
+    /// | any | any | any | `StaleSignedPrekey` if `spk_id` names neither the current signed prekey nor the previous one, or the previous one while the one-time prekey it was published with is no longer held |
     /// | one-time prekey held | yes | matches | recorded; consumed when the first message authenticates |
     /// | one-time prekey held | yes | differs | `OneTimePrekeyUnavailable` |
     /// | one-time prekey held | no | — | `OneTimePrekeyRequired` |
@@ -1050,7 +1262,9 @@ impl ArciumCore {
     /// A one-time prekey error never falls back to the weaker no-`dh4` path: that
     /// would let anyone who can edit bytes in flight choose the weaker handshake.
     /// The same rules are checked again when the first message arrives, against
-    /// the prekeys held then.
+    /// the prekeys held then. The one-time-prekey rows apply alike under the
+    /// current and the previous signed prekey (tracker R-6: a rotation keeps
+    /// the previous one for one period, `plan_rotation`).
     ///
     /// Because a consumed identifier is replaced rather than remembered,
     /// replaying a handshake whose session was created names an identifier
@@ -1112,16 +1326,33 @@ impl ArciumCore {
 }
 
 /// Whether this device can answer `handshake` from its prekey `record` (the
-/// table on `establish_session_responder`). Consumes nothing.
+/// table on `establish_session_responder`), and under which signed prekey.
+/// Consumes nothing.
+///
+/// The current signed prekey is preferred when both would match (a
+/// collision of the 8-byte ids). The previous one answers only while the
+/// one-time prekey held is the one the current signed prekey was made with:
+/// the one-time prekey every bundle naming the previous one was published
+/// with is then gone (every writer that replaces the one-time prekey drops
+/// the previous key too, `PrekeyRecord::renew_one_time_prekey`; this check
+/// does not rely on it).
 fn check_answerable(
-    record: &PrekeyRecordV2,
+    record: &PrekeyRecord,
     handshake: &InitiatorHandshakeV1,
-) -> Result<(), CoreError> {
-    if spk_id(record.signed_prekey_pk().as_bytes()) != handshake.spk_id {
+) -> Result<Spk, CoreError> {
+    let names = |sk: &StaticSecret| spk_id(PublicKey::from(sk).as_bytes()) == handshake.spk_id;
+    let which = if names(&record.signed_prekey_sk) {
+        Spk::Current
+    } else if record.prev.as_ref().is_some_and(names)
+        && record.opk.is_some()
+        && record.opk_id() == record.born_opk
+    {
+        Spk::Previous
+    } else {
         return Err(CoreError::StaleSignedPrekey);
-    }
-    match (record.opk.as_ref().map(|(id, _)| *id), handshake.opk_id) {
-        (Some(held), Some(named)) if held == named => Ok(()),
+    };
+    match (record.opk_id(), handshake.opk_id) {
+        (Some(held), Some(named)) if held == named => Ok(which),
         (Some(_), Some(named)) | (None, Some(named)) => {
             Err(CoreError::OneTimePrekeyUnavailable { opk_id: named })
         }
@@ -1133,7 +1364,8 @@ fn check_answerable(
 }
 
 /// The responder's session for `handshake`: X3DH with this device's
-/// identity, its signed prekey `signed_prekey_sk` and the one-time prekey
+/// identity, its signed prekey `signed_prekey_sk` (the current or the
+/// previous one, as `check_answerable` chose) and the one-time prekey
 /// `opk` the handshake names (if any), and the Double Ratchet initialised
 /// from the root key. Shared by the promotion (`accept_first_message`, which
 /// has taken `opk` out of the prekey record) and the check beside an own
@@ -1173,9 +1405,13 @@ fn responder_session(
 ///
 /// X3DH runs again from the provisional handshake against the prekeys held
 /// now, which are checked again first. The session is stored — together with
-/// the prekey record rotated past the one-time prekey it used, only if that
-/// record is still byte-identical to the one read here — only if `wire`
-/// decrypts under it; otherwise nothing is written.
+/// the prekey record with a new one-time prekey in place of the one it used
+/// and without a previous signed prekey, only if that record is still
+/// byte-identical to the one read here — only if `wire` decrypts under it;
+/// otherwise nothing is written. Under the previous signed prekey, its
+/// secret is taken out of the record and wiped when this returns. The
+/// signed prekey is not rotated here: the next round does, because the
+/// one-time prekey changed ((E), `plan_rotation`).
 fn accept_first_message(
     identity: &Identity,
     store: &mut EncryptedStore,
@@ -1194,32 +1430,42 @@ fn accept_first_message(
     let record_bytes = Zeroizing::new(store.get(PREKEYS_KEY)?);
     let mut record = unpack_prekeys(&record_bytes)?;
     let our_identity_pk = PublicKey::from(&identity.dh_key);
-    if let Err(refused) = check_answerable(&record, &handshake) {
-        // Another instance on this database may have created the session
-        // from this handshake since it was read here, consuming its prekey.
-        // The message then belongs to that session.
-        return match messenger.peer_of(store, session_id) {
-            Ok(Some(_)) => messenger
-                .receive(store, our_identity_pk.to_bytes(), session_id, wire)
-                .map_err(|e| CoreError::messaging(session_id, e)),
-            Ok(None) => Err(refused),
-            Err(e) => Err(CoreError::messaging(session_id, e)),
-        };
-    }
+    let which = match check_answerable(&record, &handshake) {
+        Ok(which) => which,
+        Err(refused) => {
+            // Another instance on this database may have created the session
+            // from this handshake since it was read here, consuming its prekey.
+            // The message then belongs to that session.
+            return match messenger.peer_of(store, session_id) {
+                Ok(Some(_)) => messenger
+                    .receive(store, our_identity_pk.to_bytes(), session_id, wire)
+                    .map_err(|e| CoreError::messaging(session_id, e)),
+                Ok(None) => Err(refused),
+                Err(e) => Err(CoreError::messaging(session_id, e)),
+            };
+        }
+    };
     let taken = record.opk.take().map(|(_, sk)| sk);
-    let rotated = taken.is_some().then(|| {
-        record.opk = Some(new_one_time_prekey());
+    // Out of the record before it is packed: the record written with the
+    // session holds no previous signed prekey (`renew_one_time_prekey`).
+    let previous = record.prev.take();
+    let renewed = taken.is_some().then(|| {
+        record.renew_one_time_prekey();
         pack_prekeys(&record)
     });
+    let signed_prekey_sk = match which {
+        Spk::Current => &record.signed_prekey_sk,
+        Spk::Previous => previous.as_ref().ok_or(CoreError::StaleSignedPrekey)?,
+    };
 
     let session = responder_session(
         identity,
         our_identity_pk,
-        &record.signed_prekey_sk,
+        signed_prekey_sk,
         taken.as_ref(),
         &handshake,
     )?;
-    let mut extra = match rotated {
+    let mut extra = match renewed {
         Some(new_record) => vec![SideWrite::replace(PREKEYS_KEY.into(), record_bytes, new_record)
             .map_err(|_| CoreError::Storage {
                 msg: "prekey record key is reserved".into(),
@@ -1247,14 +1493,17 @@ fn accept_first_message(
 
 /// The side write replacing this device's one-time prekey when its own
 /// initiator session is confirmed: the first message from the peer
-/// committed on it (`Messenger::with_confirm_hook`). The prekey record held
-/// now is compared at commit, as when a first message consumes a prekey.
+/// committed on it (`Messenger::with_confirm_hook`). The previous signed
+/// prekey goes with it (`PrekeyRecord::renew_one_time_prekey`). The prekey
+/// record held now is compared at commit, as when a first message consumes
+/// a prekey.
 ///
-/// Why: the signed prekey is never rotated (tracker R-6), so a handshake
-/// stays answerable for as long as the one-time prekey it names is the
-/// published one. Replacing it here makes every handshake built from a
-/// bundle this device published before its session with the peer was
-/// established unanswerable:
+/// Why: a handshake stays answerable for as long as the one-time prekey it
+/// names is the published one and the signed prekey it names is held, and a
+/// signed prekey is held for up to about two periods of rounds that
+/// publish the bundle (tracker R-6, `plan_rotation`). Replacing the one-time prekey here makes every
+/// handshake built from a bundle this device published before its session
+/// with the peer was established unanswerable at once:
 /// - a handshake of the peer recorded beside this session, whose first
 ///   message may have authenticated here, read with the prekey but never
 ///   accepted (a simultaneous start this device's session won), so that a
@@ -1284,7 +1533,7 @@ fn replace_prekey_on_confirm(
     if record.opk.is_none() {
         return Ok(Vec::new());
     }
-    record.opk = Some(new_one_time_prekey());
+    record.renew_one_time_prekey();
     let write = SideWrite::replace(PREKEYS_KEY.into(), bytes, pack_prekeys(&record))
         .map_err(MessagingError::SideWrite)?;
     Ok(vec![write])
@@ -1373,7 +1622,10 @@ impl ArciumCore {
     /// confirmation, it cannot. The cost: another contact's first contact
     /// or restart in flight under the old prekey is refused once and made
     /// again, its texts reading `NotDelivered` (a restart a contact made
-    /// while this device ran an earlier build is one).
+    /// while this device ran an earlier build is one). The previous signed
+    /// prekey goes too (`PrekeyRecord::renew_one_time_prekey`), and the
+    /// round's rotation check then rotates the signed prekey ((E),
+    /// `plan_rotation`).
     /// With no prekey record yet, only the mark is written. A mark that
     /// cannot be read counts as written: it must not stop every round.
     pub(crate) fn replace_prekey_once(&self) -> Result<(), CoreError> {
@@ -1398,7 +1650,7 @@ impl ArciumCore {
                 let bytes = Zeroizing::new(bytes);
                 let mut record = unpack_prekeys(&bytes)?;
                 if record.opk.is_some() {
-                    record.opk = Some(new_one_time_prekey());
+                    record.renew_one_time_prekey();
                     tx.put(PREKEYS_KEY, &pack_prekeys(&record))?;
                 }
             }
@@ -1406,6 +1658,90 @@ impl ArciumCore {
             Err(e) => return Err(e.into()),
         }
         tx.put(PREKEY_RENEWED_KEY, &[1])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Creates this device's prekey record if none exists, or rotates its
+    /// signed prekey if that is due at `now` (Unix seconds of this device's
+    /// clock; `plan_rotation`, tracker R-6), in one transaction that reads
+    /// the record again under the write lock, so two instances on one
+    /// database create it once and rotate it once. Nothing is written when
+    /// nothing is due; `true` when it wrote. A record that cannot be read is
+    /// an error: the round fails, as its export would.
+    pub(crate) fn maintain_prekeys(&self, now: u64) -> Result<bool, CoreError> {
+        let identity = self.require_identity()?;
+        let mut store = self.store.lock().map_err(|_| CoreError::Storage {
+            msg: "mutex poisoned".into(),
+        })?;
+        // Most rounds have nothing to do: a plain read first, so they take
+        // no write lock (as before rotation existed).
+        match store.get(PREKEYS_KEY) {
+            Ok(bytes) => {
+                if plan_rotation(&unpack_prekeys(&Zeroizing::new(bytes))?, now).is_none() {
+                    return Ok(false);
+                }
+            }
+            Err(StorageError::NotFound) => {}
+            Err(e) => return Err(e.into()),
+        }
+        #[cfg(test)]
+        prekey_hooks::after_plain_read();
+        // Dropping `tx` on an early return rolls it back.
+        let tx = store.transaction()?;
+        let record = match tx.get(PREKEYS_KEY) {
+            Ok(bytes) => {
+                let mut record = unpack_prekeys(&Zeroizing::new(bytes))?;
+                let Some(rotation) = plan_rotation(&record, now) else {
+                    return Ok(false);
+                };
+                rotate_signed_prekey(&mut record, &identity, rotation);
+                record
+            }
+            Err(StorageError::NotFound) => PrekeyRecord::new(&identity),
+            Err(e) => return Err(e.into()),
+        };
+        #[cfg(test)]
+        prekey_hooks::before_maintenance_write();
+        tx.put(PREKEYS_KEY, &pack_prekeys(&record))?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Records that the relay accepted a bundle naming the signed prekey
+    /// `spk` at `now`, if that is the current signed prekey and no
+    /// acceptance of it was recorded yet: from then on it ages
+    /// (`plan_rotation`). Opens a transaction only when it writes, and reads
+    /// the record again inside it.
+    pub(crate) fn note_prekeys_published(
+        &self,
+        spk: &[u8; SPK_ID_LEN],
+        now: u64,
+    ) -> Result<(), CoreError> {
+        let due = |record: &PrekeyRecord| {
+            record.published_at == PUBLISHED_NOT_YET
+                && spk_id(record.signed_prekey_pk().as_bytes()) == *spk
+        };
+        #[cfg(test)]
+        if prekey_hooks::fail_note() {
+            return Err(CoreError::Storage {
+                msg: "test: the publication note fails".into(),
+            });
+        }
+        let mut store = self.store.lock().map_err(|_| CoreError::Storage {
+            msg: "mutex poisoned".into(),
+        })?;
+        if !due(&unpack_prekeys(&Zeroizing::new(store.get(PREKEYS_KEY)?))?) {
+            return Ok(());
+        }
+        let tx = store.transaction()?;
+        let mut record = unpack_prekeys(&Zeroizing::new(tx.get(PREKEYS_KEY)?))?;
+        if !due(&record) {
+            return Ok(());
+        }
+        // 0 means "not yet": a clock before 1970 still records a publication.
+        record.published_at = now.max(PUBLISHED_LONG_AGO);
+        tx.put(PREKEYS_KEY, &pack_prekeys(&record))?;
         tx.commit()?;
         Ok(())
     }
@@ -1442,8 +1778,9 @@ impl ArciumCore {
     ///
     /// `false` when no handshake is recorded beside the session, when it
     /// names another peer, and when it can no longer be answered (its
-    /// one-time prekey was consumed, or its signed prekey is not the current
-    /// one): without that key no message can authenticate under it here.
+    /// one-time prekey was consumed, or its signed prekey is neither the
+    /// current nor the previous one): without that key no message can
+    /// authenticate under it here.
     pub(crate) fn beside_authenticates(
         &self,
         session_id: u64,
@@ -1467,14 +1804,14 @@ impl ArciumCore {
             return Ok(false);
         }
         let record = unpack_prekeys(&Zeroizing::new(store.get(PREKEYS_KEY)?))?;
-        if check_answerable(&record, &handshake).is_err() {
+        let Ok(which) = check_answerable(&record, &handshake) else {
             return Ok(false);
-        }
+        };
         let our_identity_pk = PublicKey::from(&identity.dh_key);
         let session = responder_session(
             &identity,
             our_identity_pk,
-            &record.signed_prekey_sk,
+            record.signed_prekey(which)?,
             record.opk.as_ref().map(|(_, sk)| sk),
             &handshake,
         )?;
@@ -1552,6 +1889,54 @@ impl ArciumCore {
     fn require_identity(&self) -> Result<Arc<Identity>, CoreError> {
         self.load_identity()?
             .ok_or_else(|| CoreError::InvalidKey { msg: "no identity saved — call save_identity first".into() })
+    }
+}
+
+/// Test aids for the prekey maintenance of a round (tracker R-6), per
+/// thread, each one-shot: a closure run after maintenance's read without a
+/// transaction, before its transaction begins; a closure run inside the
+/// maintenance transaction just before it writes; and a failure of the
+/// publication note.
+#[cfg(test)]
+pub(crate) mod prekey_hooks {
+    use std::cell::{Cell, RefCell};
+
+    type Hook = Box<dyn FnOnce()>;
+
+    thread_local! {
+        static BEFORE_WRITE: RefCell<Option<Hook>> = RefCell::new(None);
+        static AFTER_PLAIN_READ: RefCell<Option<Hook>> = RefCell::new(None);
+        static FAIL_NOTE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Runs once, in maintenance that found something due, after its read
+    /// without a transaction and before its transaction begins.
+    pub(crate) fn set_after_plain_read(hook: impl FnOnce() + 'static) {
+        AFTER_PLAIN_READ.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn after_plain_read() {
+        if let Some(hook) = AFTER_PLAIN_READ.with(|h| h.borrow_mut().take()) {
+            hook();
+        }
+    }
+
+    pub(crate) fn set_before_maintenance_write(hook: impl FnOnce() + 'static) {
+        BEFORE_WRITE.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn before_maintenance_write() {
+        if let Some(hook) = BEFORE_WRITE.with(|h| h.borrow_mut().take()) {
+            hook();
+        }
+    }
+
+    pub(crate) fn fail_next_note() {
+        FAIL_NOTE.with(|f| f.set(true));
+    }
+
+    pub(super) fn fail_note() -> bool {
+        FAIL_NOTE.with(|f| f.replace(false))
     }
 }
 
@@ -2745,7 +3130,7 @@ mod tests {
     /// secrets could read. Read-only.
     fn first_message_opens(
         core: &ArciumCore,
-        record: &PrekeyRecordV2,
+        record: &PrekeyRecord,
         opk: Option<&StaticSecret>,
         handshake: &[u8],
         wire: &[u8],
@@ -2760,19 +3145,19 @@ mod tests {
             .unwrap()
     }
 
-    fn held_opk(record: &PrekeyRecordV2) -> Option<StaticSecret> {
+    fn held_opk(record: &PrekeyRecord) -> Option<StaticSecret> {
         record.opk.as_ref().map(|(_, sk)| sk.clone())
     }
 
-    fn opk_id_of(record: &PrekeyRecordV2) -> Option<u64> {
+    fn opk_id_of(record: &PrekeyRecord) -> Option<u64> {
         record.opk.as_ref().map(|(id, _)| *id)
     }
 
-    /// R-6: the signed prekey is kept for the life of the identity. That
-    /// holds up only while the secrets this device keeps after accepting a
-    /// first contact cannot decrypt that contact's first message again: its
-    /// identity, its signed prekey and its prekey record, with the one-time
-    /// prekey that replaced the used one or with none. The one-time prekey
+    /// R-6: the signed prekey is kept until the next round rotates it. The
+    /// secrets this device keeps after accepting a first contact must not
+    /// decrypt that contact's first message again meanwhile: its identity,
+    /// its signed prekey and its prekey record, with the one-time prekey
+    /// that replaced the used one or with none. The one-time prekey
     /// the handshake used (one is required since X-6) is gone, and without
     /// it the root key cannot be derived. The control shows that the check
     /// does open the message with that prekey. (A first contact checked
@@ -2793,12 +3178,12 @@ mod tests {
         assert_eq!(
             after.signed_prekey_pk(),
             before.signed_prekey_pk(),
-            "the signed prekey is not rotated (R-6)"
+            "a promotion does not rotate the signed prekey; the next maintenance does (E)"
         );
         assert!(opk_id_of(&after).is_some(), "a new one-time prekey is published");
         assert_ne!(opk_id_of(&after), opk_id_of(&before), "the used one-time prekey is replaced");
 
-        let opens = |record: &PrekeyRecordV2, opk: Option<StaticSecret>| {
+        let opens = |record: &PrekeyRecord, opk: Option<StaticSecret>| {
             first_message_opens(&bob, record, opk.as_ref(), &handshake, &first)
         };
         assert!(
@@ -3069,6 +3454,8 @@ mod tests {
     mod unresolved;
     mod false_conflict;
     mod restart;
+    mod prekey_record;
+    mod spk_rotation;
     mod relay_v2;
     mod beyond_recall;
     mod far_skip;

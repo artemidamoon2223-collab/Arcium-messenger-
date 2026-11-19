@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use core_storage::StorageError;
+use core_crypto::spk_id::spk_id;
 use relay::address::{AddressError, RelayAddress, ADDRESS_PREFIX};
 use relay::client::{ClientError, Connection};
 use relay::protocol::{ErrorCode, DEFAULT_MAX_MAILBOX, MAX_FETCH, MIN_PAGE};
@@ -40,7 +40,7 @@ use core_protocol::messaging::{message_id, MessageId, Received};
 
 use crate::{
     handshake_hash, unpack_prekey_bundle, ArciumCore, CoreError, PlaintextBytes,
-    RefusalReason, SendResult, PREKEYS_KEY,
+    RefusalReason, SendResult,
 };
 use wire::{client_id, Envelope, Payload};
 
@@ -177,6 +177,9 @@ pub struct NetworkMessenger {
     /// Test aid: the minute [`Self::this_minute`] reads instead of the clock.
     #[cfg(test)]
     minute: Mutex<Option<u64>>,
+    /// Test aid: the second [`Self::this_second`] reads instead of the clock.
+    #[cfg(test)]
+    now: Mutex<Option<u64>>,
     /// Test aid: how many far skips this instance tried.
     #[cfg(test)]
     far_tries: std::sync::atomic::AtomicU32,
@@ -465,6 +468,8 @@ impl NetworkMessenger {
             #[cfg(test)]
             minute: Mutex::new(None),
             #[cfg(test)]
+            now: Mutex::new(None),
+            #[cfg(test)]
             far_tries: std::sync::atomic::AtomicU32::new(0),
             limits: Mutex::new(Limits::default()),
             resume: Mutex::new(Resume::default()),
@@ -472,9 +477,10 @@ impl NetworkMessenger {
     }
 
     /// Publishes this device's prekey bundle, creating prekeys first if none
-    /// exist yet. Existing prekeys are not replaced here, except the
-    /// one-time prekey once, the first time on a store an earlier build
-    /// wrote (`ArciumCore::replace_prekey_once`).
+    /// exist yet, and rotating the signed prekey first if that is due
+    /// (`ArciumCore::maintain_prekeys`, tracker R-6). The one-time prekey is
+    /// not replaced here, except once, the first time on a store an earlier
+    /// build wrote (`ArciumCore::replace_prekey_once`).
     pub fn publish_prekeys(&self) -> Result<(), CoreError> {
         let mut conn = self.connect_owner()?;
         self.put_bundle(&mut conn)
@@ -732,24 +738,30 @@ impl NetworkMessenger {
         pinned(&store, peer)?.ok_or(CoreError::UnknownContact)
     }
 
+    /// Publishes the bundle: the one-time prekey replaced once for option B,
+    /// then the prekey record created or its signed prekey rotated if due
+    /// (tracker R-6), then the bundle exported and stored by the relay, then
+    /// that acceptance recorded, from which the signed prekey ages. The
+    /// bundle is exported only here, right after the rotation check (the
+    /// rotation after a one-time-prekey change relies on it,
+    /// `export_prekey_bundle`). Any failure ends the round.
     fn put_bundle(&self, conn: &mut Connection) -> Result<(), CoreError> {
         self.core.replace_prekey_once()?;
-        let exists = {
-            let store = self.core.store.lock().map_err(|_| CoreError::Storage {
-                msg: "mutex poisoned".into(),
-            })?;
-            match store.get(PREKEYS_KEY) {
-                Ok(_) => true,
-                Err(StorageError::NotFound) => false,
-                Err(e) => return Err(e.into()),
-            }
-        };
-        if !exists {
-            self.core.establish_prekeys()?;
-        }
+        let now = self.this_second();
+        self.core.maintain_prekeys(now)?;
+        crash_point("bundle_after_maintain");
         let bundle = self.core.export_prekey_bundle()?;
+        let spk = bundle
+            .get(68..100)
+            .and_then(|pk| <[u8; 32]>::try_from(pk).ok())
+            .map(|pk| spk_id(&pk))
+            .ok_or_else(|| CoreError::Storage {
+                msg: "exported bundle is malformed".into(),
+            })?;
         conn.put_bundle(self.core.our_identity_pk()?, bundle)
-            .map_err(network)
+            .map_err(network)?;
+        crash_point("bundle_after_put");
+        self.core.note_prekeys_published(&spk, now)
     }
 
     /// Contacts that have a session, with its handle.
@@ -786,6 +798,11 @@ impl NetworkMessenger {
         // One connection for the whole round, authenticated on V2: the round
         // publishes the bundle and reads and deletes from the mailbox.
         let mut conn = self.connect_owner()?;
+        // Before anything is read from the mailbox, and fatal: no handshake
+        // or message is processed in a round whose bundle publication and
+        // its record did not both succeed. A handshake is answered only
+        // under a signed prekey that is current or the previous one, and
+        // only a published one ages into rotation (tracker R-6).
         self.put_bundle(&mut conn)?;
         self.publish_pending(&mut conn, &sessions, &budget, relay_refusals, report)?;
 
@@ -1244,7 +1261,8 @@ impl NetworkMessenger {
         // first message under a handshake recorded beside it, that is, the
         // contact restarted the session (option B). That it authenticates
         // there needs the contact's identity secret (or this device's
-        // signed-prekey secret: NET-MESSAGING section 8), and the handshake must
+        // signed-prekey secret, while that is still held: NET-MESSAGING
+        // section 8), and the handshake must
         // name this device's current one-time prekey, which a replay of a
         // handshake older than our session does not (`ArciumCore::new`
         // replaces it when an own session is confirmed). Checked before a far
@@ -1295,8 +1313,9 @@ impl NetworkMessenger {
                 // unconfirmed start of our own, this may be the
                 // contact's first message under a handshake
                 // recorded beside it. If it authenticates there —
-                // which needs the contact's identity secret (or our
-                // signed-prekey secret, NET-MESSAGING section 8) — both
+                // which needs the contact's identity secret (or a
+                // signed-prekey secret we still hold, NET-MESSAGING
+                // section 8) — both
                 // devices started a session with each other: the
                 // conflict is recorded so the application can show
                 // it (section 10). Nothing else is stored.
@@ -1481,6 +1500,12 @@ impl NetworkMessenger {
     #[cfg(test)]
     pub(crate) fn set_minute(&self, minute: Option<u64>) {
         *self.minute.lock().expect("minute") = minute;
+    }
+
+    /// Test aid: the second [`Self::this_second`] reads (`None`: the clock).
+    #[cfg(test)]
+    pub(crate) fn set_now(&self, now: Option<u64>) {
+        *self.now.lock().expect("now") = now;
     }
 
     /// Test aid: how many far skips this instance tried (R-14).
@@ -1935,6 +1960,22 @@ impl NetworkMessenger {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() / 60)
+            .unwrap_or(0)
+    }
+
+    /// Seconds since the Unix epoch, 0 before it: the age of the signed
+    /// prekey (`ArciumCore::maintain_prekeys`). Not monotonic: a rotation
+    /// is due when this clock reads a period or more from the key's
+    /// publication, in either direction (docs/NET-MESSAGING.md section 8,
+    /// "Clocks").
+    fn this_second(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(now) = *self.now.lock().expect("now") {
+            return now;
+        }
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
             .unwrap_or(0)
     }
 }

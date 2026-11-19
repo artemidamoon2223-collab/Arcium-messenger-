@@ -145,11 +145,13 @@ replaces it once. A restart that can no longer be answered when it arrives
 is refused, and the restarting device makes it again. Two limits found in
 review: a session record that cannot be read (situation 3) is refused by
 a reset, so it still needs option C; and a restart is authenticated by
-X3DH alone, so this device's never-rotated signed-prekey secret, as well
-as the contact's identity secret, lets its holder replace any established
-session at any later time (`docs/NET-MESSAGING.md` section 8; rotating
-the signed prekey, tracker R-6, would bound it). What follows is the
-proposal as written.
+X3DH alone, so this device's signed-prekey secret, as well as the
+contact's identity secret, lets its holder replace an established session
+(`docs/NET-MESSAGING.md` section 8). The signed prekey was then never
+rotated, so that lasted for the life of the identity; it is now rotated
+(tracker R-6), which bounds the signed-prekey route to about two periods
+of 7 days of rounds that publish the bundle (`docs/NET-MESSAGING.md`
+section 8). What follows is the proposal as written.
 
 **What it is**
 - A new handshake from a pinned contact is recorded provisionally even when a

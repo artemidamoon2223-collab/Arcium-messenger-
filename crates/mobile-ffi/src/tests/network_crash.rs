@@ -332,3 +332,73 @@ fn a_sender_killed_while_cancelling_never_sends_the_text() {
         relay.stop();
     }
 }
+
+/// Tracker R-6: Bob dies right after a rotation committed, and right after
+/// the relay accepted the rotated bundle, before that was recorded. After
+/// the restart the signed prekey is not rotated again, its publication is
+/// recorded, and Alice's handshake, built from the bundle the relay served
+/// before the rotation, is answered.
+#[cfg(unix)]
+#[test]
+fn a_device_killed_around_a_rotation_rotates_once_and_answers_the_served_bundle() {
+    let spk = |d: &Device| {
+        let record = unpack_prekeys(&read_record(&d.core)).unwrap();
+        (
+            spk_id(record.signed_prekey_pk().as_bytes()),
+            record.prev.as_ref().map(|sk| spk_id(PublicKey::from(sk).as_bytes())),
+            record.published_at,
+        )
+    };
+    let served = |addr: &str, d: &Device| {
+        let bundle = relay::client::Connection::connect(addr, std::time::Duration::from_secs(2))
+            .unwrap()
+            .get_bundle(d.pk.as_slice().try_into().unwrap())
+            .unwrap()
+            .unwrap();
+        spk_id(unpack_prekey_bundle(&bundle).unwrap().signed_prekey_pk.as_bytes())
+    };
+    for point in ["bundle_after_maintain", "bundle_after_put"] {
+        let relay = start_relay();
+        let addr = relay.addr().to_string();
+        let (alice, bob) = (Device::new(&addr, 1), Device::new(&addr, 2));
+        alice.knows(&bob);
+        bob.knows(&alice);
+        bob.net.publish_prekeys().unwrap();
+        // Accepted by the relay a period and a minute ago by Bob's clock:
+        // the child's round rotates it.
+        {
+            let store = bob.core.store.lock().unwrap();
+            let mut record = unpack_prekeys(&store.get(PREKEYS_KEY).unwrap()).unwrap();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            record.published_at = now - SIGNED_PREKEY_PERIOD_SECS - 60;
+            store.put(PREKEYS_KEY, &pack_prekeys(&record)).unwrap();
+        }
+        let (first, _, _) = spk(&bob);
+        alice.net.start_session(bob.pk.clone()).unwrap();
+        alice.send(&bob, "m", "across the rotation");
+        alice.sync();
+
+        run_child(&bob, &addr, "sync", Some(point), &alice.pk);
+        let bob = bob.restart(&addr);
+        let (rotated, prev, published_at) = spk(&bob);
+        assert_ne!(rotated, first, "{point}: rotated before the death");
+        assert_eq!(prev, Some(first), "{point}");
+        assert_eq!(published_at, 0, "{point}: the publication is not recorded yet");
+        let expected = if point == "bundle_after_put" { rotated } else { first };
+        assert_eq!(served(&addr, &bob), expected, "{point}");
+
+        let r = bob.sync();
+        assert!(r.errors.is_empty(), "{point}: {:?}", r.errors);
+        let (again, _, published_at) = spk(&bob);
+        assert_eq!(again, rotated, "{point}: not rotated a second time");
+        assert_ne!(published_at, 0, "{point}: the publication is recorded");
+        assert_eq!(served(&addr, &bob), rotated, "{point}");
+        assert_eq!(bob.texts(&alice), vec!["across the rotation"], "{point}");
+        settle(&[&alice, &bob]);
+        assert_eq!(alice.undelivered(&bob), 0, "{point}");
+        relay.stop();
+    }
+}

@@ -1,6 +1,7 @@
 //! A handshake recorded beside this device's own unconfirmed session (R-13,
-//! option A of `docs/SESSION-RECOVERY-OPTIONS.md`). Specification:
-//! `docs/S2-B2-DURABLE-MESSAGING.md`, section 4c.
+//! option A of `docs/SESSION-RECOVERY-OPTIONS.md`), or beside an established
+//! session, where it may be the peer's restart of the session (option B).
+//! Specification: `docs/S2-B2-DURABLE-MESSAGING.md`, section 4c.
 //!
 //! When both devices start a session with each other, each receives the
 //! other's handshake while it holds an unconfirmed initiator session of its
@@ -12,12 +13,16 @@
 //! consuming anything, whether a message from the peer that does not
 //! decrypt under our session authenticates as the peer's first message
 //! under it ([`Messenger::first_message_authenticates`]). Only that needs
-//! the peer's identity secret.
+//! the peer's identity secret (or this device's signed-prekey secret, as
+//! X3DH allows: `docs/NET-MESSAGING.md` section 8).
 //!
-//! It goes when our session is confirmed (a message from the peer committed
-//! on it: [`discard_beside`] in [`Messenger::receive`], with the side writes
-//! of [`Messenger::with_beside_discard`]), removed
-//! ([`Messenger::remove_session`]) or forgotten ([`Messenger::forget_peer`]).
+//! Beside an unconfirmed session it goes when that session is confirmed (a
+//! message from the peer committed on it: [`discard_beside`] in
+//! [`Messenger::receive`], with the side writes of
+//! [`Messenger::with_confirm_hook`]). Beside either it goes when the session
+//! is removed ([`Messenger::remove_session`]) or forgotten
+//! ([`Messenger::forget_peer`]). [`Messenger::retire_session`] keeps it: it
+//! is then the provisional handshake a new session may come from.
 
 use core_crypto::ratchet::{Header, HEADER_SIZE};
 use core_storage::{EncryptedStore, StorageError};
@@ -34,8 +39,9 @@ impl Messenger {
     /// Records `provisional` — a handshake from the peer of the session under
     /// `handle`, not authenticated by anything — beside that session, which
     /// must be this device's own initiator session on which nothing from the
-    /// peer has been received yet. Replaces a handshake recorded there
-    /// before; recording the same one again changes nothing. Creates
+    /// peer has been received yet, or a session that has received a message
+    /// from the peer (established; option B). Replaces a handshake recorded
+    /// there before; recording the same one again changes nothing. Creates
     /// nothing, consumes nothing and leaves the session record as it is.
     ///
     /// Refused, with nothing written:
@@ -44,9 +50,10 @@ impl Messenger {
     /// - [`MessagingError::NoSession`] if no session is registered under
     ///   `handle`, [`MessagingError::HandleCollision`] if it belongs to
     ///   another peer;
-    /// - [`MessagingError::AlreadyExists`] for any other session: a
-    ///   responder session, one that has received a message from the peer
-    ///   (the peer holds it), or one whose record cannot be read;
+    /// - [`MessagingError::AlreadyExists`] for any other session: a responder
+    ///   session on which nothing was received (one an earlier build stored
+    ///   on receipt of a handshake, S2-B2 section 4b), or one whose record
+    ///   cannot be read;
     /// - [`MessagingError::Conflict`] if the session or its handle changed
     ///   since they were read here (a receive committed meanwhile, for
     ///   example, which confirms the session).
@@ -74,7 +81,8 @@ impl Messenger {
         if owner != peer {
             return Err(MessagingError::HandleCollision { handle });
         }
-        if session.role() != SessionRole::Initiator || session.has_received() {
+        let own_unconfirmed = session.role() == SessionRole::Initiator && !session.has_received();
+        if !own_unconfirmed && !session.has_received() {
             return Err(MessagingError::AlreadyExists { handle });
         }
         #[cfg(test)]

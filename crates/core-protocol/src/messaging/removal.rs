@@ -10,7 +10,17 @@ use super::helpers::{commit_repeatable, keys_under};
 use super::records::*;
 use super::{MessageId, MessagingError, Messenger, MESSAGE_ID_LEN};
 use crate::checkpoint::session_storage_key;
-use crate::durable::Conflict;
+use crate::durable::{Conflict, SideWrite, SideWriteError};
+
+/// Which sessions [`Messenger::remove`] may delete, and whether a handshake
+/// recorded beside one goes with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Removal {
+    /// Only one that has received nothing; the handshake beside it goes.
+    Unconfirmed,
+    /// Any, on the user's decision to restart; the handshake beside it stays.
+    Retire,
+}
 
 impl Messenger {
     /// Gives up on the pending outgoing message `id` without claiming it was
@@ -64,7 +74,8 @@ impl Messenger {
     /// - [`MessagingError::Conflict`] if the session changed while this ran.
     ///
     /// Local removal proves nothing about the peer: a peer that accepted the
-    /// handshake keeps its session and refuses a new one for this identity.
+    /// handshake keeps its session until a new one replaces it there (the
+    /// network layer's option B).
     /// After [`MessagingError::RepeatableOutcomeUnknown`], calling this again
     /// reports [`MessagingError::NoSession`] if the removal took effect.
     pub fn remove_session(
@@ -73,9 +84,60 @@ impl Messenger {
         our_identity_pk: [u8; 32],
         handle: u64,
     ) -> Result<(), MessagingError> {
+        self.remove(store, our_identity_pk, handle, Removal::Unconfirmed, &[])
+    }
+
+    /// Deletes the session under `handle` on the user's decision to start a
+    /// new one with the peer (option B, `docs/S2-B2-DURABLE-MESSAGING.md`
+    /// section 6a): as [`remove_session`](Self::remove_session), also when
+    /// the session has committed a message from the peer, and keeping the
+    /// peer's handshake recorded beside it, which is then the provisional
+    /// handshake a new session with the peer may be created from. Refused,
+    /// with nothing changed, as `remove_session` is, except for
+    /// `SessionEstablished`; the caller gives up the pending outgoing
+    /// messages first ([`abandon_outgoing`](Self::abandon_outgoing)).
+    ///
+    /// The peer keeps its own copy of the session until it accepts a new one,
+    /// so whatever it sends on the old session cannot be read here any more.
+    /// After [`MessagingError::RepeatableOutcomeUnknown`], calling this again
+    /// reports [`MessagingError::NoSession`] if the removal took effect.
+    pub fn retire_session(
+        &mut self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+    ) -> Result<(), MessagingError> {
+        self.remove(store, our_identity_pk, handle, Removal::Retire, &[])
+    }
+
+    /// [`retire_session`](Self::retire_session) with the caller's own
+    /// records written in the same transaction (`extra`, preconditions
+    /// checked there), so the caller's note of why the session went cannot
+    /// be lost to a crash between the two. Refused as `retire_session` is,
+    /// and with [`MessagingError::ExtraConflict`] if a precondition fails or
+    /// [`MessagingError::SideWrite`] if `extra` names a record the removal
+    /// deletes; nothing is written then.
+    pub fn retire_session_with(
+        &mut self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+        extra: &[SideWrite],
+    ) -> Result<(), MessagingError> {
+        self.remove(store, our_identity_pk, handle, Removal::Retire, extra)
+    }
+
+    fn remove(
+        &mut self,
+        store: &mut EncryptedStore,
+        our_identity_pk: [u8; 32],
+        handle: u64,
+        removal: Removal,
+        extra: &[SideWrite],
+    ) -> Result<(), MessagingError> {
         self.require_resolved(handle)?;
         let (session, peer) = self.load(store, our_identity_pk, handle)?;
-        if session.has_received() {
+        if session.has_received() && removal == Removal::Unconfirmed {
             return Err(MessagingError::SessionEstablished);
         }
         let pending = keys_under(store, OUTBOX_NAMESPACE, &outbox_prefix(&peer))?.len();
@@ -102,12 +164,26 @@ impl Messenger {
         // retransmits its handshake while its own session is unconfirmed,
         // and it is then recorded as for any first contact. Another peer's
         // handshake under a colliding handle is not this peer's to delete.
-        match tx.get(&provisional_key(handle)) {
-            Ok(bytes) if decode_provisional(&bytes).is_ok_and(|p| p.peer_identity_pk != peer) => {}
-            Ok(_) | Err(StorageError::NotFound | StorageError::Decryption) => {
-                delete.push(provisional_key(handle))
+        // A retired session leaves it: it may be the peer's restart.
+        if removal == Removal::Unconfirmed {
+            match tx.get(&provisional_key(handle)) {
+                Ok(bytes) if decode_provisional(&bytes).is_ok_and(|p| p.peer_identity_pk != peer) => {}
+                Ok(_) | Err(StorageError::NotFound | StorageError::Decryption) => {
+                    delete.push(provisional_key(handle))
+                }
+                Err(e) => return Err(MessagingError::Store(e)),
             }
-            Err(e) => return Err(MessagingError::Store(e)),
+        }
+        for (index, w) in extra.iter().enumerate() {
+            if delete.iter().any(|k| k == w.key()) || extra[..index].iter().any(|o| o.key() == w.key()) {
+                return Err(MessagingError::SideWrite(SideWriteError::DuplicateKey));
+            }
+            if !w.apply_in(&tx).map_err(MessagingError::Store)? {
+                return Err(MessagingError::ExtraConflict {
+                    index,
+                    conflict: Conflict::RecordChanged,
+                });
+            }
         }
         for key in delete {
             tx.delete(&key).map_err(MessagingError::NotCommitted)?;
@@ -149,8 +225,9 @@ impl Messenger {
     /// Unlike `remove_session`, this discards obligations: texts not yet
     /// acknowledged are never sent again, and incoming messages the
     /// application has not acknowledged are gone. The peer is told nothing
-    /// and keeps its own session; the two can start a new one only once both
-    /// have forgotten each other.
+    /// and keeps its own session until a new one from this store replaces it
+    /// there (the network layer's option B) or both have forgotten each
+    /// other.
     ///
     /// Refused, with nothing changed:
     /// - [`MessagingError::Unresolved`] while a commit on `handle` has an

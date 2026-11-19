@@ -453,6 +453,34 @@ impl SideWrite {
     pub fn key(&self) -> &str {
         &self.key
     }
+
+    /// Checks this write's precondition inside `tx` and, if it holds,
+    /// applies it there. `Ok(false)`: the precondition failed and nothing
+    /// was written. For callers that commit `tx` themselves (removal).
+    pub(crate) fn apply_in(&self, tx: &core_storage::StoreTransaction<'_>) -> Result<bool, StorageError> {
+        let current = match tx.get(&self.key) {
+            Ok(v) => Some(Zeroizing::new(v)),
+            Err(StorageError::NotFound) => None,
+            // A record that cannot be read matches no precondition, as in
+            // the durable commit path.
+            Err(StorageError::Decryption) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        let holds = match (&self.expect, &current) {
+            (SideExpect::Absent, None) => true,
+            (SideExpect::Exactly(want), Some(have)) => want.as_slice() == have.as_slice(),
+            _ => false,
+        };
+        if !holds {
+            return Ok(false);
+        }
+        match &self.action {
+            SideAction::Put(v) => tx.put(&self.key, v)?,
+            SideAction::Delete => tx.delete(&self.key)?,
+            SideAction::Check => {}
+        }
+        Ok(true)
+    }
 }
 
 /// The session write followed by the side writes, refusing a batch that

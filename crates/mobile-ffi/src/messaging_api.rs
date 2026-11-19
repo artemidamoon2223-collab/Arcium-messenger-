@@ -7,6 +7,7 @@
 use x25519_dalek::PublicKey;
 use zeroize::Zeroizing;
 
+use core_protocol::durable::SideWrite;
 use core_protocol::messaging::{self, MessagingError, Received, SendOutcome};
 
 use crate::{accept_first_message, ArciumCore, CoreError, PlaintextBytes};
@@ -200,6 +201,26 @@ impl ArciumCore {
         messenger
             .pending_outgoing_ids(&store)
             .map_err(|e| CoreError::messaging(0, e))
+    }
+
+    /// Removes the session `session_id` on the user's decision to start a new
+    /// one with the peer (option B; `Messenger::retire_session`): also when a
+    /// message from the peer was accepted on it, and keeping a handshake of
+    /// the peer recorded beside it. Refused as [`Self::remove_session`] is,
+    /// except for `SessionEstablished`. Not exported (it is in this plain
+    /// `impl` block for that reason): the network layer gives up the
+    /// session's pending texts first. `extra` is written in the same
+    /// transaction (`Messenger::retire_session_with`). `Ok(false)`: a
+    /// precondition of `extra` failed (the record changed since it was
+    /// read), and nothing was written; the caller reads it again.
+    pub(crate) fn retire_session(&self, session_id: u64, extra: &[SideWrite]) -> Result<bool, CoreError> {
+        let our = self.our_identity_pk()?;
+        let (mut store, mut messenger) = self.lock()?;
+        match messenger.retire_session_with(&mut store, our, session_id, extra) {
+            Ok(()) => Ok(true),
+            Err(MessagingError::ExtraConflict { .. }) => Ok(false),
+            Err(e) => Err(CoreError::messaging(session_id, e)),
+        }
     }
 
     /// [`send_message`](Self::send_message) for a plaintext already held in a

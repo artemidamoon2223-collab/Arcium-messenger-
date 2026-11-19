@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-19 02:30 UTC, by a Claude Code cloud session
+Updated: 2026-11-19 02:11 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -45,7 +45,7 @@ Updated: 2026-11-19 02:30 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #217 option B (head `8134df9`), #218 R-21 (head `c112923`; merge after #217, then merge `main` in), #219 H-6 (head `8067f15`), #220 R-24 card check + R-22 prune (head `56a0b6b`). Each needs an explicit Owner merge instruction naming it.
+- #217 option B (head `068d207`), #218 R-21 (head `c112923`; merge after #217, then merge `main` in), #219 H-6 (head `8067f15`), #220 R-24 card check + R-22 prune (head `56a0b6b`). Each needs an explicit Owner merge instruction naming it.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.

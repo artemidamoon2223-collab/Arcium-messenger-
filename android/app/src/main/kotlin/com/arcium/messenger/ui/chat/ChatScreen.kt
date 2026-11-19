@@ -265,7 +265,9 @@ private fun ResetSessionDialog(name: String, onConfirm: () -> Unit, onDismiss: (
                     "delivered, also ones shown as not sent yet, are marked not delivered; " +
                     "you can send them again. Queued messages, and ones you write after " +
                     "this, go in the new session. $name's device switches to it when the " +
-                    "new session's first message reaches it, if $name's app is up to date.",
+                    "new session's first message reaches it. If $name's app is not up to " +
+                    "date, the switch waits for the update, and messages written meanwhile " +
+                    "will have to be sent again.",
             )
         },
         confirmButton = {

@@ -13,7 +13,8 @@
 //! consuming anything, whether a message from the peer that does not
 //! decrypt under our session authenticates as the peer's first message
 //! under it ([`Messenger::first_message_authenticates`]). Only that needs
-//! the peer's identity secret.
+//! the peer's identity secret (or this device's signed-prekey secret, as
+//! X3DH allows: `docs/NET-MESSAGING.md` section 8).
 //!
 //! Beside an unconfirmed session it goes when that session is confirmed (a
 //! message from the peer committed on it: [`discard_beside`] in

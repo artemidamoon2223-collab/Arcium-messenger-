@@ -200,13 +200,17 @@ impl ArciumCore {
     /// except for `SessionEstablished`. Not exported (it is in this plain
     /// `impl` block for that reason): the network layer gives up the
     /// session's pending texts first. `extra` is written in the same
-    /// transaction (`Messenger::retire_session_with`).
-    pub(crate) fn retire_session(&self, session_id: u64, extra: &[SideWrite]) -> Result<(), CoreError> {
+    /// transaction (`Messenger::retire_session_with`). `Ok(false)`: a
+    /// precondition of `extra` failed (the record changed since it was
+    /// read), and nothing was written; the caller reads it again.
+    pub(crate) fn retire_session(&self, session_id: u64, extra: &[SideWrite]) -> Result<bool, CoreError> {
         let our = self.our_identity_pk()?;
         let (mut store, mut messenger) = self.lock()?;
-        messenger
-            .retire_session_with(&mut store, our, session_id, extra)
-            .map_err(|e| CoreError::messaging(session_id, e))
+        match messenger.retire_session_with(&mut store, our, session_id, extra) {
+            Ok(()) => Ok(true),
+            Err(MessagingError::ExtraConflict { .. }) => Ok(false),
+            Err(e) => Err(CoreError::messaging(session_id, e)),
+        }
     }
 
     /// [`send_message`](Self::send_message) for a plaintext already held in a

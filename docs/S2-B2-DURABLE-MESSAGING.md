@@ -118,7 +118,9 @@ No output of a transition leaves Rust before its `COMMIT` returned `Ok`.
   against the prekeys held now (checked again), and the message is decrypted
   on that result held in memory (`durable::ProvisionalSession`, which cannot
   encrypt and is never stored). Only if the AEAD verifies — which requires the
-  keys X3DH derived, and so the initiator's identity secret — does one
+  keys X3DH derived, and so the initiator's identity secret (or this
+  device's signed-prekey secret: key-compromise impersonation,
+  `docs/NET-MESSAGING.md` section 8) — does one
   transaction store the advanced session at generation 1 (it already has its
   receiving chain), its handle, the message as an undelivered inbox record,
   the prekey record rotated past the one-time prekey, and delete the
@@ -319,9 +321,11 @@ provisional record beside a session. This section changes that.
     builds deleted it only by a promotion). Since option B it is kept there
     as a possible restart, like any record beside an established session:
     only a first message authenticating under it would replace the session,
-    which needs the peer's identity secret and the one-time prekey it names
-    still published (a store written before option B did not replace that
-    prekey when its session was confirmed).
+    which needs the peer's identity secret (or this device's signed-prekey
+    secret, `docs/NET-MESSAGING.md` section 8) and the one-time prekey it
+    names still published (a store written before option B did not replace
+    that prekey when its session was confirmed; the first round of a build
+    with option B replaces it once, `ArciumCore::replace_prekey_once`).
   - Nothing is rewritten in place, and no record format changes. The
     conflict flag of the network layer changes meaning
     (`docs/NET-MESSAGING.md` section 10).

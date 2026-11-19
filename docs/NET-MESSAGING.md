@@ -65,8 +65,9 @@ Ed25519 (signs its prekeys; the signed object binds the X25519 key, F-2).
   contact: the handshake is recorded as provisional and creates no session.
   The session is created when the initiator's first message (OPEN)
   authenticates under the keys the handshake derives — which requires the
-  secret of the pinned identity key (S2-B2 section 4). The relay and Kotlin
-  never decide that.
+  secret of the pinned identity key, or this device's own signed-prekey
+  secret (key-compromise impersonation, section 8) (S2-B2 section 4). The
+  relay and Kotlin never decide that.
 
 There is no trust on first use in the application. (The CI peer in
 `tests/net_peer.rs` pins on first use; it is a test harness.)
@@ -692,12 +693,14 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   A restart is authenticated by X3DH alone, so two secrets each suffice to
   replace an established session and then read and write it as the
   contact, at any later time: the contact's identity secret, and this
-  device's own signed-prekey secret (key-compromise impersonation: with it,
+  device's own signed-prekey secret (key-compromise impersonation, which
+  also makes a first contact or a conflict "from" any pinned contact; with it,
   X3DH's first DH, `DH(signed prekey, contact's identity key)`, needs no
   secret of the contact). The signed-prekey secret is in this device's
   store and is never rotated (tracker R-6), so one copy of the store lets
   its holder, who can also put envelopes in the mailbox as the contact (on
-  V2 the relay's operator; with the contact's secret, anyone), take over
+  V2 the relay's operator; on V1 anyone who reaches the relay; with the
+  contact's secret, anyone), take over
   any session of this device whenever it chooses. Before option B such a
   compromise could not replace an existing session, and the Double
   Ratchet's fresh DH steps ended the reach of a stolen session state; now
@@ -825,7 +828,7 @@ entry per logical message, never written by the ratchet.
   (S2-B2 section 4c), replacing one recorded before. The conflict is
   recorded when a message from the contact that does not decrypt under our
   session authenticates as the contact's first message under that
-  handshake, which needs the contact's identity secret. Nothing is stored
+  handshake, which needs the contact's identity secret or this device's signed-prekey secret (section 8, "Protection of an established session"). Nothing is stored
   for that message, and it is deleted from the relay like any message that
   does not decrypt here: the contact keeps it in its outbox and
   retransmits it, with its handshake, until our receipt (which no session
@@ -885,8 +888,11 @@ entry per logical message, never written by the ratchet.
   is refused with nothing changed (delete the contact instead, option C).
   The contact's device must run a build with option B: an earlier build
   drops a handshake beside an established session, so the resetting device
-  waits, and texts wait both ways, until the contact updates (or both
-  delete each other and exchange cards again). The texts committed to the current
+  waits until the contact updates (or both delete each other and exchange
+  cards again). The update replaces the contact's one-time prekey once, so
+  the waiting restart is refused and made again: the texts the resetting
+  user wrote while waiting read `NotDelivered` and must be sent again, as
+  must the contact's texts on the old session. The texts committed to the current
   session, also one committed by a send on another thread while the reset
   runs, are marked `NotDelivered` and abandoned, the
   session is removed (S2-B2 section 6a, `retire_session`), and the next

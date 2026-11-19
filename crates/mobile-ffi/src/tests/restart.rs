@@ -6,7 +6,8 @@
 //!
 //! A handshake alone replaces nothing; neither does a replay of one older
 //! than the session, nor anything a writer to the mailbox can make without
-//! the contact's identity secret. When both users reset at once, the
+//! the contact's identity secret (or this device's signed-prekey secret:
+//! `docs/NET-MESSAGING.md` section 8). When both users reset at once, the
 //! existing conflict is shown and resolved (Owner decision, 2026-11-18).
 
 use super::net_harness::*;
@@ -625,6 +626,62 @@ fn a_receipt_read_in_the_round_of_a_restart_still_counts() {
     round(&[&bob]);
     assert!(peer_reset(&bob, &alice), "the restart was accepted");
     assert!(chat(&bob, &alice).contains(&(true, S::Delivered, "read before the reset".into())));
+    relay.stop();
+}
+
+/// A write to the contact's meta between reading it and the removal (here
+/// a rename, as from another thread) fails the removal's precondition with
+/// nothing written; the reset reads the meta again and completes, and the
+/// rename stays (fourth review of option B).
+#[test]
+fn a_meta_write_racing_a_reset_does_not_stop_it() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    say(&alice, &bob, "a2", "pending");
+    let (net, to) = (alice.net.clone(), bob.pk.clone());
+    test_hooks::set_between_meta_and_retire(move || {
+        net.rename_contact(to, "renamed".into()).unwrap();
+    });
+    alice.net.reset_session(bob.pk.clone()).unwrap();
+    assert_eq!(session(&alice, &bob), ChatSessionState::None);
+    assert_eq!(alice.net.conversation(bob.pk.clone()).unwrap().name, "renamed");
+    assert_eq!(chat(&alice, &bob).last().unwrap(), &(true, S::NotDelivered, "pending".into()));
+    rounds(&[&alice, &bob, &alice, &bob], 3);
+    assert_eq!(session(&alice, &bob), ChatSessionState::Established);
+    assert!(peer_reset(&bob, &alice));
+    relay.stop();
+}
+
+/// On a store an earlier build wrote, the first round replaces the one-time
+/// prekey before it reads the mailbox. A genuine handshake made from the
+/// bundle published before (one this device never saw, replayed) is then
+/// refused in that round, not recorded beside the session.
+#[test]
+fn a_handshake_from_before_the_upgrade_is_refused_in_the_first_upgraded_round() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    bob.core.store.lock().unwrap().delete("prekeys/renewed-b0").unwrap();
+    // Alice's keys on a second database, against Bob's bundle of now.
+    let second = ArciumCore::new(
+        tempdir().unwrap().keep().join("db").to_str().unwrap().to_string(),
+        key32(9),
+    )
+    .unwrap();
+    second.save_identity(alice.core.load_identity().unwrap().unwrap()).unwrap();
+    let handshake = second
+        .establish_session_initiator(handle(&bob), bob.core.export_prekey_bundle().unwrap())
+        .unwrap();
+    let env = Envelope::Handshake {
+        sender: key(&alice),
+        handshake,
+    };
+    inject(&addr, &bob, env.encode());
+    round(&[&bob]);
+    assert!(hsin(&bob, &alice).is_none(), "not recorded beside the session");
+    assert!(waiting(&relay, &alice).1 >= 1, "refused");
+    assert_eq!(session(&bob, &alice), ChatSessionState::Established);
     relay.stop();
 }
 

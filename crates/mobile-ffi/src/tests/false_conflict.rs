@@ -1,5 +1,6 @@
 //! R-13, option A of `docs/SESSION-RECOVERY-OPTIONS.md`: a session conflict
-//! is raised only by evidence that needs the contact's identity secret.
+//! is raised only by evidence that needs the contact's identity secret (or
+//! this device's signed-prekey secret: `docs/NET-MESSAGING.md` section 8).
 //!
 //! A handshake "from" a pinned contact that arrives while this device holds
 //! an unconfirmed session of its own is public bytes: anyone who reaches the

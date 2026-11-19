@@ -151,8 +151,8 @@ the Android contact-card and add-contact code. Specification:
   authenticates that first message with either the contact's identity
   secret or this device's signed-prekey secret (key-compromise
   impersonation; the signed prekey is not rotated, tracker R-6), so a copy
-  of this device's store lets its holder replace sessions later
-  (`docs/NET-MESSAGING.md` §8). Check that no new path reaches
+  of this device's store lets its holder, if it can also write the mailbox
+  (`docs/NET-MESSAGING.md` §3), replace sessions later (§8). Check that no new path reaches
   `retire_session` or `accept_restart` on anything weaker; that an
   unanswerable handshake beside an established session is refused except a
   late copy of the handshake that session came from (`hsacc:`, compared by

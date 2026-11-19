@@ -912,7 +912,10 @@ impl NetworkMessenger {
     /// and a text `chat_send` commits on another thread while the session
     /// is given up is given up with it. A session whose record cannot be
     /// read is refused (`InvalidSession`), with nothing changed: delete the
-    /// contact instead. Every step repeats safely after a crash, but a
+    /// contact instead. The contact's device must run a build with option
+    /// B; until it does, the restart waits, and once it does the restart is
+    /// refused once and made again, so texts written meanwhile read
+    /// `NotDelivered` (`docs/NET-MESSAGING.md` section 10, "Reset"). Every step repeats safely after a crash, but a
     /// process death part way is not completed by itself: calling it again
     /// completes it. Works without a connection.
     pub fn reset_session(&self, peer: Vec<u8>) -> Result<(), CoreError> {
@@ -1213,11 +1216,30 @@ impl NetworkMessenger {
         match retire {
             Retire::Unconfirmed => self.core.remove_session(handle)?,
             Retire::Any => {
-                let extra = match note {
-                    Some(f) => vec![self.meta_write(peer, f)?],
-                    None => Vec::new(),
-                };
-                self.core.retire_session(handle, &extra)?
+                // Any write to the meta between reading it and the removal
+                // (a new entry, a text marked seen, a rename on another
+                // thread) fails the removal's precondition with nothing
+                // written; the meta is then read again.
+                let mut tries = 0;
+                loop {
+                    let extra = match note {
+                        Some(f) => vec![self.meta_write(peer, f)?],
+                        None => Vec::new(),
+                    };
+                    #[cfg(test)]
+                    test_hooks::between_meta_and_retire();
+                    if self.core.retire_session(handle, &extra)? {
+                        break;
+                    }
+                    tries += 1;
+                    if tries == 3 {
+                        return Err(CoreError::Storage {
+                            msg: "the contact's record kept changing while the session was given up; \
+                                  try again"
+                                .into(),
+                        });
+                    }
+                }
             }
         }
         // The next session with this contact has the same handle.
@@ -1672,6 +1694,7 @@ pub(crate) mod test_hooks {
         static BETWEEN: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
         static BEFORE_RECORD: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
         static BEFORE_RETIRE: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+        static META_RETIRE: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
     }
 
     /// Runs `f` once, on this thread, in the next `chat_send` on this thread
@@ -1683,6 +1706,19 @@ pub(crate) mod test_hooks {
 
     pub(super) fn chat_send_before_record() {
         if let Some(f) = BEFORE_RECORD.with(|h| h.borrow_mut().take()) {
+            f();
+        }
+    }
+
+    /// Runs `f` once, on this thread, in the next session given up on this
+    /// thread with a meta change, after the meta was read and before the
+    /// removal that writes it.
+    pub(crate) fn set_between_meta_and_retire(f: impl FnOnce() + 'static) {
+        META_RETIRE.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(super) fn between_meta_and_retire() {
+        if let Some(f) = META_RETIRE.with(|h| h.borrow_mut().take()) {
             f();
         }
     }

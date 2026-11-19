@@ -1371,18 +1371,28 @@ impl ArciumCore {
     /// answered, and with its first message replace an established session
     /// (`docs/NET-MESSAGING.md` section 8). After this, as after every
     /// confirmation, it cannot. The cost: another contact's first contact
-    /// in flight under the old prekey is refused once and starts again.
-    /// With no prekey record yet, only the mark is written.
+    /// or restart in flight under the old prekey is refused once and made
+    /// again, its texts reading `NotDelivered` (a restart a contact made
+    /// while this device ran an earlier build is one).
+    /// With no prekey record yet, only the mark is written. A mark that
+    /// cannot be read counts as written: it must not stop every round.
     pub(crate) fn replace_prekey_once(&self) -> Result<(), CoreError> {
         let mut store = self.store.lock().map_err(|_| CoreError::Storage {
             msg: "mutex poisoned".into(),
         })?;
         match store.get(PREKEY_RENEWED_KEY) {
-            Ok(_) => return Ok(()),
+            Ok(_) | Err(StorageError::Decryption) => return Ok(()),
             Err(StorageError::NotFound) => {}
             Err(e) => return Err(e.into()),
         }
         let tx = store.transaction()?;
+        // Read again under the write lock: another connection to this
+        // database may have done it meanwhile.
+        match tx.get(PREKEY_RENEWED_KEY) {
+            Ok(_) | Err(StorageError::Decryption) => return Ok(()),
+            Err(StorageError::NotFound) => {}
+            Err(e) => return Err(e.into()),
+        }
         match tx.get(PREKEYS_KEY) {
             Ok(bytes) => {
                 let bytes = Zeroizing::new(bytes);

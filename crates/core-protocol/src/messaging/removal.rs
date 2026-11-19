@@ -175,7 +175,7 @@ impl Messenger {
             }
         }
         for (index, w) in extra.iter().enumerate() {
-            if delete.iter().any(|k| k == w.key()) {
+            if delete.iter().any(|k| k == w.key()) || extra[..index].iter().any(|o| o.key() == w.key()) {
                 return Err(MessagingError::SideWrite(SideWriteError::DuplicateKey));
             }
             if !w.apply_in(&tx).map_err(MessagingError::Store)? {

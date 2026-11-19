@@ -472,7 +472,9 @@ impl NetworkMessenger {
     }
 
     /// Publishes this device's prekey bundle, creating prekeys first if none
-    /// exist yet. Existing prekeys are never replaced here.
+    /// exist yet. Existing prekeys are not replaced here, except the
+    /// one-time prekey once, the first time on a store an earlier build
+    /// wrote (`ArciumCore::replace_prekey_once`).
     pub fn publish_prekeys(&self) -> Result<(), CoreError> {
         let mut conn = self.connect_owner()?;
         self.put_bundle(&mut conn)
@@ -1244,7 +1246,8 @@ impl NetworkMessenger {
         // Not a message of our established session: it may be the contact's
         // first message under a handshake recorded beside it, that is, the
         // contact restarted the session (option B). That it authenticates
-        // there needs the contact's identity secret, and the handshake must
+        // there needs the contact's identity secret (or this device's
+        // signed-prekey secret: NET-MESSAGING section 8), and the handshake must
         // name this device's current one-time prekey, which a replay of a
         // handshake older than our session does not (`ArciumCore::new`
         // replaces it when an own session is confirmed). Checked before a far
@@ -1295,7 +1298,8 @@ impl NetworkMessenger {
                 // unconfirmed start of our own, this may be the
                 // contact's first message under a handshake
                 // recorded beside it. If it authenticates there —
-                // which needs the contact's identity secret — both
+                // which needs the contact's identity secret (or our
+                // signed-prekey secret, NET-MESSAGING section 8) — both
                 // devices started a session with each other: the
                 // conflict is recorded so the application can show
                 // it (section 10). Nothing else is stored.

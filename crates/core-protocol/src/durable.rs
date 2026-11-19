@@ -461,6 +461,9 @@ impl SideWrite {
         let current = match tx.get(&self.key) {
             Ok(v) => Some(Zeroizing::new(v)),
             Err(StorageError::NotFound) => None,
+            // A record that cannot be read matches no precondition, as in
+            // the durable commit path.
+            Err(StorageError::Decryption) => return Ok(false),
             Err(e) => return Err(e),
         };
         let holds = match (&self.expect, &current) {

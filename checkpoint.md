@@ -46,12 +46,14 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- Tracker PR for R-6 (`docs/tracker-r6-rotation`): being checked, then CI; merge only on the Owner's instruction naming it.
+- #223 `docs/r6-bounds-precision`: NET-MESSAGING qualifiers of the R-6 bounds (docs only); merge first.
+- #224 `docs/tracker-r6-rotation`: tracker R-6 PARTIAL and checklist lines.
+- Both: CI, then merge only on the Owner's instruction naming them.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
-- R-6 signed-prekey rotation: design approved, P = 7 days, clock risk documented (D-062); merged as #222 (`553c3ba`); tracker PR next. Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
+- R-6 signed-prekey rotation: design approved, P = 7 days, clock risk documented (D-062); merged as #222 (`553c3ba`); docs #223 and tracker #224 open. Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 
 ## Next work (D-036 order; supersedes the D-014 line)

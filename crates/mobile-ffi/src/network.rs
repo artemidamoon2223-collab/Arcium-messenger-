@@ -1933,26 +1933,26 @@ impl NetworkMessenger {
     /// accepted a message, or it is gone and a new session with the contact
     /// will have the same handle. The stored record is deleted unless this
     /// process knows it holds no wait, so an accepted message costs no
-    /// write once that is known. Whether no record is left. After a failed
-    /// delete the session is read from the store again, and the next
+    /// write once that is known. After a failed delete (its cause is
+    /// returned) the session is read from the store again, and the next
     /// accepted message tries the delete again; until then a far message of
     /// a chain the record names may be tried without the full wait
     /// (docs/NET-MESSAGING.md section 3).
-    pub(crate) fn forget_far_waits(&self, handle: u64) -> bool {
+    pub(crate) fn forget_far_waits(&self, handle: u64) -> Result<(), String> {
         let mut seen = self.far_seen.lock().expect("far_seen");
         if seen.get(&handle).is_some_and(Vec::is_empty) {
-            return true;
+            return Ok(());
         }
-        let deleted = match self.core.store.lock() {
-            Ok(store) => store.delete(&far_wait_key(handle)).is_ok(),
-            Err(_) => false,
+        let result = match self.core.store.lock() {
+            Ok(store) => store.delete(&far_wait_key(handle)).map_err(|e| e.to_string()),
+            Err(_) => Err("the store lock is poisoned".to_string()),
         };
-        if deleted {
+        if result.is_ok() {
             seen.insert(handle, Vec::new());
         } else {
             seen.remove(&handle);
         }
-        deleted
+        result
     }
 
     /// The far-skip waits of the session `handle` kept in the store: none if
@@ -1985,8 +1985,9 @@ impl NetworkMessenger {
     }
 
     /// Stores the far-skip waits of the session `handle`; whether it did.
-    /// A failure is reported: the wait then goes on in memory, and starts
-    /// again after a restart.
+    /// A failure is reported. The store keeps what it held: a chain whose
+    /// start it never took waits again after a restart, and the write is
+    /// asked for again when a far message of the chain is next judged.
     fn store_far_waits(&self, handle: u64, waits: &[FarWait], report: &mut SyncReport) -> bool {
         let result = match self.core.store.lock() {
             Ok(store) => store.put(&far_wait_key(handle), &pack_far_waits(waits)),
@@ -2023,10 +2024,10 @@ impl NetworkMessenger {
     /// starts again, and it tries none this round (R-14). A failure to
     /// delete the stored wait is reported.
     fn far_progress(&self, handle: u64, report: &mut SyncReport) {
-        if !self.forget_far_waits(handle) {
-            report
-                .errors
-                .push("deleting the wait before a far skip; tried again at the next message".into());
+        if let Err(e) = self.forget_far_waits(handle) {
+            report.errors.push(format!(
+                "deleting the wait before a far skip failed: {e}; tried again at the next accepted message"
+            ));
         }
         self.far_round
             .lock()

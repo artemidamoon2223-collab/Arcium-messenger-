@@ -1247,7 +1247,7 @@ impl NetworkMessenger {
         // The next session with this contact has the same handle. A record
         // a failed delete leaves names only this session's chains, and the
         // next session's first accepted message deletes it.
-        self.forget_far_waits(handle);
+        let _ = self.forget_far_waits(handle);
         Ok(())
     }
 

@@ -337,3 +337,43 @@ fn a_failed_round_keeps_no_messages_to_name() {
     assert_eq!((r.dropped, r.published), (20, 1), "{r:?}");
     relay.stop();
 }
+
+/// R-21 with 32 earlier chains remembered (Owner, 2026-11-19), through the
+/// stored session: Alice's message 0, whose key Bob evicted, is still
+/// recognised as beyond recall after every turn of the conversation up to
+/// 32 (four were remembered before), and no longer after the 33rd. Bob's
+/// session is written to the store and read back at every message, so the
+/// chains survive `RATCHET_STATE_V2` each time.
+#[test]
+fn a_late_message_is_recognised_for_32_turns_through_the_stored_session() {
+    // The number decided, not the constant: a test counting turns by
+    // `MAX_PREV_CHAINS` would pass whatever its value.
+    const REMEMBERED: usize = 32;
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+
+    let wires: Vec<Vec<u8>> = (0..2101u32)
+        .map(|i| alice.core.encrypt_message(to_bob, i.to_be_bytes().to_vec()).unwrap())
+        .collect();
+    for i in [900, 1800, 2100] {
+        bob.core.decrypt_message(to_alice, wires[i].clone()).unwrap();
+    }
+    let late = &wires[0];
+    assert!(bob.core.beyond_recall(to_alice, late).unwrap(), "evicted, on the current chain");
+
+    for turn in 1..=REMEMBERED + 1 {
+        let b = bob.core.encrypt_message(to_alice, b"turn".to_vec()).unwrap();
+        alice.core.decrypt_message(to_bob, b).unwrap();
+        let a = alice.core.encrypt_message(to_bob, b"turn".to_vec()).unwrap();
+        bob.core.decrypt_message(to_alice, a).unwrap();
+        assert_eq!(
+            bob.core.beyond_recall(to_alice, late).unwrap(),
+            turn <= REMEMBERED,
+            "after {turn} turns"
+        );
+    }
+    relay.stop();
+}

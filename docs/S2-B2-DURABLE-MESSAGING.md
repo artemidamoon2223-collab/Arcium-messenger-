@@ -624,10 +624,13 @@ previous key, otherwise keeping the never-rotated key as the previous one
 for one period. A build before that change refuses the V3 record, so its
 rounds fail at the bundle export, and it does not overwrite the record. The ratchet record inside a session checkpoint
 is written as `RATCHET_STATE_V2` since tracker R-21 (the V1 layout plus the
-last four receiving chains left, public keys and end positions only); a
-`RATCHET_STATE_V1` record is still read, as a state that remembers no
-earlier chain (`core_crypto::ratchet::checkpoint`). A build before that
-change refuses each session whose ratchet record is V2
+last 32 receiving chains left, public keys and end positions only; at
+most 4 before the Owner's decision of 2026-11-19); a `RATCHET_STATE_V1` record is still read,
+as a state that remembers no earlier chain (`core_crypto::ratchet::checkpoint`).
+A build that remembers at most 4 refuses a V2 record holding more, as
+`TooManyChains`, so after about five exchanges in any session its rounds fail for
+every contact, as below. A build before R-21 refuses each session whose
+ratchet record is V2
 (`UnsupportedVersion`), and since its sync round loads every session
 before it reads the mailbox, its rounds then fail for every contact.
 Going back to an older build is not supported. `PROVISIONAL_HANDSHAKE_RECORD_V1`

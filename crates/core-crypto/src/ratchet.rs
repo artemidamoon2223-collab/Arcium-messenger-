@@ -54,8 +54,12 @@ pub const MAX_FAR_SKIP: u32 = 100_000;
 /// ratchet key of each and the position it ended at (the `pn` of the header
 /// that started the next chain). Only used to tell that a late message of
 /// such a chain can never be read here ([`DoubleRatchet::is_beyond_recall`];
-/// tracker R-21). Public keys and counters only, no secret.
-pub const MAX_PREV_CHAINS: usize = 4;
+/// tracker R-21). Public keys and counters only, no secret. A receiving
+/// chain is left once per exchange (the peer writes again after reading this
+/// side), so this covers about the last 32 exchanges.
+/// The limit is part of `RATCHET_STATE_V2`: a build that remembered fewer
+/// refuses a record holding more.
+pub const MAX_PREV_CHAINS: usize = 32;
 /// Header is: DH public key (32) || PN (4) || N (4).
 pub const HEADER_SIZE: usize = 32 + 4 + 4;
 /// XChaCha20Poly1305 nonce size.
@@ -1828,12 +1832,16 @@ mod tests {
         assert!(bob.decrypt(&forged, &[0u8; 40], ad).is_err());
         assert_eq!(bob.prev_chains, vec![(m[0].0.dh, 6)]);
 
-        // Four more turns: the first chain left is forgotten.
-        for _ in 0..MAX_PREV_CHAINS {
+        // `MAX_PREV_CHAINS` more turns: the first chain left is remembered
+        // until the last of them, then forgotten.
+        for turn in 1..=MAX_PREV_CHAINS {
             let (h, c) = bob.encrypt(b"turn", ad).unwrap();
             alice.decrypt(&h, &c, ad).unwrap();
             let (h, c) = alice.encrypt(b"turn", ad).unwrap();
             bob.decrypt(&h, &c, ad).unwrap();
+            if turn < MAX_PREV_CHAINS {
+                assert!(bob.is_beyond_recall(&m[0].0), "still remembered after {turn} more turns");
+            }
         }
         assert_eq!(bob.prev_chains.len(), MAX_PREV_CHAINS);
         assert!(!bob.is_beyond_recall(&m[0].0), "no longer remembered");

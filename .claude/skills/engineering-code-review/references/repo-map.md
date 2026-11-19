@@ -98,6 +98,9 @@ here.
 - `docs/RELAY-DEPLOY.md` — running one `arcium-relay` (V2, with `--db` and
   `--keys`) on a rented Linux server, and configuring the app for it. Not yet
   run on a real server.
+- `docs/RELAY-PRODUCTION-DESIGN.md` — why the production relay is built as it
+  is (persistence, TLS with a pinned key, mailbox authentication) and what it
+  left open; its sections 1 and 2 describe the relay before that work.
 - `docs/SESSION-RECOVERY-OPTIONS.md` — the options for recovering a session
   (C, A and B implemented: delete a contact, the conflict rules, reset and
   restart), with what any option must keep.

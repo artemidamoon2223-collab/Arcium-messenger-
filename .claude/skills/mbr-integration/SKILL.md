@@ -118,9 +118,9 @@ test was objectively mis-specified — and record that it was.
 
 ## References
 
-- `references/evidence-ledger.md` — what MBR demonstrated, with artifact hashes,
+- [`references/evidence-ledger.md`](references/evidence-ledger.md) — what MBR demonstrated, with artifact hashes,
   minimal counterexample traces, and the declared negative results.
-- `references/arcium-integration-map.md` — where to read Arcium's state per
+- [`references/arcium-integration-map.md`](references/arcium-integration-map.md) — where to read Arcium's state per
   mechanism, what is absent or only assumed, re-derivation commands, and the
   proposed staging with its status as last checked (`d578295`: S1–S4
   implemented; S5 partly, in a different shape; S6–S8 not).

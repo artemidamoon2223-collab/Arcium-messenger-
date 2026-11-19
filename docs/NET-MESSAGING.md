@@ -585,8 +585,8 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 | the bundle's publication fails (the rotation check, the PUT, or the record of the relay's acceptance) | the round ends before anything is read from the mailbox; the next round publishes again. A rotation committed before the failure stays: its key does not age until the relay has accepted it, and the previous key, which the bundle the relay still serves names, still answers (tracker R-6) |
 | crash after a rotation committed, or after the relay accepted the rotated bundle and before that was recorded | the next round publishes the same key and records it; there is no second rotation |
 | prekey record unreadable | every round fails at its rotation check, as an export would |
-| device clock wrong | a rotation happens when the clock reads 7 days or more from the key's publication, in either direction (section 8, "Clocks"): a steady offset changes nothing; a step forward brings the next rotation forward by the step; a step back delays it by the step, unless the clock then reads 7 days or more before the publication; every early rotation drops the older previous key early (a handshake naming it is refused once and made again), and a jump of 7 days set right again rotates once more; a frozen clock stops rotation by time |
-| two instances on one database (two processes) | maintenance and the publication record read the prekey record again inside their transaction, so it is created once and rotated once. A first message promoted in one instance while the other rotates or records a publication fails its byte-identical precondition on the prekey record: it is deleted, the handshake is flagged as refused, and its retransmission is answered (under the previous key after a rotation). Production runs one sync loop; this is an in-process stand-in, not tested across processes |
+| device clock wrong | a rotation happens when the clock reads 7 days or more from the key's publication, in either direction (section 8, "Clocks"): a steady offset changes nothing; a step forward brings the next rotation forward by the step; a step back delays it by the step, unless the clock then reads 7 days or more before the publication; every early rotation drops the older previous key early (a handshake naming it is refused once and made again); a key made under a wrong clock is aged from that clock's reading, so setting the clock right rotates again if the clock then reads 7 days or more from it, and otherwise delays the next rotation; a frozen clock stops rotation by time |
+| two instances on one database (two processes) | maintenance and the publication record read the prekey record again inside their transaction, so it is created once and rotated once. A first message promoted in one instance while the other rotates or records a publication fails its byte-identical precondition on the prekey record: it is deleted, the handshake is flagged as refused, and its retransmission is answered (under the previous key after a rotation). Maintenance reads the record without a transaction first, so while another instance's promotion is uncommitted it can find nothing due, and the bundle exported after that promotion commits pairs the current signed prekey with the new one-time prekey: a handshake built from it is refused once (the next round rotates) and made again. Production runs one sync loop; the tests use two instances in one process, not two processes |
 | going back to a build before signed-prekey rotation | not supported: that build cannot read the prekey record (186 bytes), so every round fails at the bundle export; the record is not overwritten |
 
 ## 8. Not provided
@@ -802,7 +802,8 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   "Conflict"). After that, the identity, the signed prekeys and the prekey
   record this device keeps do not derive the keys of a first message under
   it. Before it, they do, but only while the signed prekey it names is
-  still held, at most about two periods: whoever later takes this device's
+  still held, at most about two periods of rounds that publish the bundle
+  (see "Protection of an established session" above): whoever later takes this device's
   store, and holds a copy of the messages (the relay's operator can keep
   one), can read the first messages of handshakes built from bundles that
   name keys in the copy, without being seen. Those are the next first
@@ -844,8 +845,12 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   - a step back delays the next rotation by the step, unless the clock
     then reads 7 days or more before the publication, which rotates;
   - every early rotation, forward or back, drops the older previous key
-    early, so a handshake naming it is refused once and made again; a jump
-    of 7 days or more that is set right again rotates once more;
+    early, so a handshake naming it is refused once and made again;
+  - a key made under a wrong clock is aged from that clock's reading, so
+    setting the clock right rotates again if the clock then reads 7 days or
+    more from it (always after a backward jump that rotated; after a
+    forward jump only while the correction comes within the jump less 7
+    days), and otherwise delays the next rotation;
   - a frozen clock, or one an attacker holds, stops rotation by time,
     which is no worse than before rotation existed, while a change of the
     one-time prekey still rotates an active device;
@@ -871,7 +876,8 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   handshake and first message replayed later still do, if this device never
   accepted that handshake and can still answer it: the one-time prekey it
   names is still the published one, and the signed prekey it names still
-  held, at most about two periods (tracker R-6; S2-B2 section 4c). Whoever reads this
+  held, at most about two periods of rounds that publish the bundle
+  (tracker R-6; S2-B2 section 4c). Whoever reads this
   device's mailbox on the relay can capture them: on V2 the relay's
   operator, on V1 anyone who reaches the relay. A dead end needs more than
   the replay: the contact must have given that session up without this device (for

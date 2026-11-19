@@ -1138,8 +1138,9 @@ impl ArciumCore {
     /// signed prekey with a one-time prekey made since, and a handshake
     /// built from it would be refused once and made again. The exported
     /// calls that skip the round (this one, `establish_session_responder`,
-    /// `receive_message`; on Android only the instrumentation-test
-    /// `MessageRepository` uses them) neither rotate nor publish.
+    /// `receive_message`) neither rotate nor publish; no release code path
+    /// on Android calls them (instrumentation tests and the debug crash
+    /// provider do).
     pub fn export_prekey_bundle(&self) -> Result<Vec<u8>, CoreError> {
         let identity = self.require_identity()?;
         // The decrypted record holds the signed-prekey and one-time-prekey
@@ -1499,8 +1500,8 @@ fn accept_first_message(
 ///
 /// Why: a handshake stays answerable for as long as the one-time prekey it
 /// names is the published one and the signed prekey it names is held, and a
-/// signed prekey is held for up to two periods (tracker R-6,
-/// `plan_rotation`). Replacing the one-time prekey here makes every
+/// signed prekey is held for up to about two periods of rounds that
+/// publish the bundle (tracker R-6, `plan_rotation`). Replacing the one-time prekey here makes every
 /// handshake built from a bundle this device published before its session
 /// with the peer was established unanswerable at once:
 /// - a handshake of the peer recorded beside this session, whose first
@@ -1684,6 +1685,8 @@ impl ArciumCore {
             Err(StorageError::NotFound) => {}
             Err(e) => return Err(e.into()),
         }
+        #[cfg(test)]
+        prekey_hooks::after_plain_read();
         // Dropping `tx` on an early return rolls it back.
         let tx = store.transaction()?;
         let record = match tx.get(PREKEYS_KEY) {
@@ -1900,7 +1903,20 @@ pub(crate) mod prekey_hooks {
 
     thread_local! {
         static BEFORE_WRITE: RefCell<Option<Hook>> = RefCell::new(None);
+        static AFTER_PLAIN_READ: RefCell<Option<Hook>> = RefCell::new(None);
         static FAIL_NOTE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Runs once, in maintenance that found something due, after its read
+    /// without a transaction and before its transaction begins.
+    pub(crate) fn set_after_plain_read(hook: impl FnOnce() + 'static) {
+        AFTER_PLAIN_READ.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn after_plain_read() {
+        if let Some(hook) = AFTER_PLAIN_READ.with(|h| h.borrow_mut().take()) {
+            hook();
+        }
     }
 
     pub(crate) fn set_before_maintenance_write(hook: impl FnOnce() + 'static) {

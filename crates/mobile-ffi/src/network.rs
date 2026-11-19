@@ -1964,9 +1964,10 @@ impl NetworkMessenger {
     }
 
     /// Seconds since the Unix epoch, 0 before it: the age of the signed
-    /// prekey (`ArciumCore::maintain_prekeys`). Not monotonic: a clock set
-    /// back or forward by a period or more rotates early (docs/NET-MESSAGING.md
-    /// section 8).
+    /// prekey (`ArciumCore::maintain_prekeys`). Not monotonic: a rotation
+    /// is due when this clock reads a period or more from the key's
+    /// publication, in either direction (docs/NET-MESSAGING.md section 8,
+    /// "Clocks").
     fn this_second(&self) -> u64 {
         #[cfg(test)]
         if let Some(now) = *self.now.lock().expect("now") {

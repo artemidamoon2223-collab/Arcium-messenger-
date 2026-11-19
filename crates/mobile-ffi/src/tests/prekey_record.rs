@@ -314,8 +314,8 @@ fn maintenance_is_idempotent_and_an_unpublished_key_does_not_age() {
 /// rotates once the clock reads four days ahead, and only once it reads a
 /// period and three days back; a smaller step back delays the next
 /// rotation. Every early rotation, forward or back, drops the older
-/// previous key early, and a jump of a period set right again rotates once
-/// more.
+/// previous key early, and a jump of a period ahead set right at once
+/// rotates once more (the new key is aged from the jumped clock).
 #[test]
 fn a_clock_step_rotates_only_a_period_from_the_publication_in_either_direction() {
     const DAY: u64 = 24 * 60 * 60;
@@ -345,7 +345,7 @@ fn a_clock_step_rotates_only_a_period_from_the_publication_in_either_direction()
     bob.maintain_prekeys(now).unwrap();
     assert_eq!(read_record(&bob), rotated, "four days back again only delays");
 
-    // A jump of a full period, set right afterwards, rotates twice.
+    // A jump of a full period ahead, set right at once, rotates twice.
     let (carol, _) = peer_with_prekeys(30);
     let first = current_spk(&carol);
     carol.note_prekeys_published(&first, T0).unwrap();
@@ -639,10 +639,11 @@ fn beside_an_own_session_and_beside_an_established_session_a_first_message_under
 
 /// Two instances on one database (an in-process stand-in for two
 /// processes): the record is created once and a due rotation happens once.
-/// The second instance starts its maintenance while the first holds its
-/// transaction, just before it writes; it must find the first one's record
-/// and write nothing. (If it read the record outside its transaction, it
-/// would plan from the old one and write a second record over it.)
+/// The second instance runs its maintenance while the first holds its
+/// transaction, just before it writes: it reads the old record, finds work
+/// due, waits for the write lock, and must then find the first one's record
+/// and write nothing. (If it planned from the read outside its transaction,
+/// it would write a second record over the first.)
 #[test]
 fn two_instances_create_prekeys_once_and_rotate_once() {
     let path = tempfile::tempdir().unwrap().keep().join("db").to_str().unwrap().to_string();
@@ -655,10 +656,17 @@ fn two_instances_create_prekeys_once_and_rotate_once() {
         let started = Arc::new(std::sync::Mutex::new(None));
         let slot = started.clone();
         crate::prekey_hooks::set_before_maintenance_write(move || {
-            let handle = std::thread::spawn(move || other.maintain_prekeys(now).unwrap());
-            // Long enough for the other instance to read and wait for the
+            let (read, has_read) = std::sync::mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                crate::prekey_hooks::set_after_plain_read(move || read.send(()).unwrap());
+                other.maintain_prekeys(now).unwrap()
+            });
+            // The other instance has read the record as it was before this
+            // transaction writes, found work due, and now waits for the
             // write lock this transaction holds.
-            std::thread::sleep(std::time::Duration::from_millis(300));
+            has_read
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the other instance read the record first");
             *slot.lock().unwrap() = Some(handle);
         });
         let a_wrote = a.maintain_prekeys(now).unwrap();

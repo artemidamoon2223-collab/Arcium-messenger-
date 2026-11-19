@@ -62,6 +62,26 @@ pub const NONCE_SIZE: usize = 24;
 type ChainKey = Zeroizing<[u8; 32]>;
 type MessageKey = Zeroizing<[u8; 32]>;
 
+/// The key of the placeholder entry [`overwrite_spare_slot`] writes: an
+/// all-zero DH key and the last message number, which no stored key has in
+/// practice (a chain would have to reach `u32::MAX`).
+const PLACEHOLDER: ([u8; 32], u32) = ([0; 32], u32::MAX);
+
+/// After `shift_remove`, which moves every later entry one slot down, the
+/// slot just past the last entry is spare capacity that still holds a copy
+/// of the last key (H-6). Pushing a placeholder entry writes over that
+/// slot, and popping it again leaves only the placeholder's zero key there.
+/// The store is unchanged afterwards. Skipped if the placeholder's key is
+/// stored (`insert` would then overwrite that entry in place), and if the
+/// map is full (`insert` could then grow its buffer).
+fn overwrite_spare_slot(skipped: &mut IndexMap<([u8; 32], u32), MessageKey>) {
+    if skipped.len() >= skipped.capacity() || skipped.contains_key(&PLACEHOLDER) {
+        return;
+    }
+    skipped.insert(PLACEHOLDER, Zeroizing::new([0; 32]));
+    drop(skipped.pop());
+}
+
 /// A copy of a skipped-key store with room for `MAX_SKIPPED_KEYS` keys, so
 /// that skipping into the copy never grows its buffer (H-6). A plain clone
 /// sizes its entries to the source's index table, which can be smaller after
@@ -319,6 +339,7 @@ impl DoubleRatchet {
         // `shift_remove` keeps insertion order, which `trim_skipped` relies on
         // to evict the oldest key first (R-23).
         if let Some(mk) = self.skipped.shift_remove(&(header.dh, header.n)) {
+            overwrite_spare_slot(&mut self.skipped);
             return aead_decrypt(&mk, ciphertext, &full_ad);
         }
 
@@ -1420,6 +1441,54 @@ mod tests {
             mks[1],
             "the kept key is intact"
         );
+    }
+
+    /// H-6: a late read writes a placeholder over the slot past the last
+    /// stored key and drops it again, which the drop log shows as one zero
+    /// key; the store keeps exactly the other keys, in order, with the same
+    /// room. (That the slot no longer holds a copy of the last key is seen
+    /// only by reading spare capacity, which this test does not do.)
+    #[test]
+    fn a_late_read_overwrites_the_slot_it_frees_and_changes_nothing_else() {
+        let (mut alice, mut bob) = established_pair();
+        let ad = b"assoc";
+        let sent: Vec<_> = (0..4u8).map(|i| alice.encrypt(&[i], ad).unwrap()).collect();
+        bob.decrypt(&sent[3].0, &sent[3].1, ad).unwrap();
+        let room = bob.skipped.capacity();
+        let kept: Vec<_> = [0usize, 2]
+            .iter()
+            .map(|&n| *bob.skipped[&(sent[n].0.dh, n as u32)])
+            .collect();
+
+        start_log();
+        assert_eq!(*bob.decrypt(&sent[1].0, &sent[1].1, ad).unwrap(), [1]);
+        let log = take_log();
+
+        assert_eq!(log.iter().filter(|k| **k == [0u8; 32]).count(), 1, "the placeholder");
+        let keys: Vec<_> = bob.skipped.iter().map(|(k, v)| (k.1, **v)).collect();
+        assert_eq!(keys, vec![(0, kept[0]), (2, kept[1])]);
+        assert!(!bob.skipped.contains_key(&PLACEHOLDER));
+        assert_eq!(bob.skipped.capacity(), room, "the buffer did not grow");
+    }
+
+    /// A stored key equal to the placeholder's is not overwritten: then the
+    /// late read only removes the key it used.
+    #[test]
+    fn a_late_read_leaves_a_stored_key_like_the_placeholder_alone() {
+        let (mut alice, mut bob) = established_pair();
+        let ad = b"assoc";
+        let sent: Vec<_> = (0..3u8).map(|i| alice.encrypt(&[i], ad).unwrap()).collect();
+        bob.decrypt(&sent[2].0, &sent[2].1, ad).unwrap();
+        bob.skipped.insert(PLACEHOLDER, Zeroizing::new([0xAB; 32]));
+
+        start_log();
+        assert_eq!(*bob.decrypt(&sent[0].0, &sent[0].1, ad).unwrap(), [0]);
+        let log = take_log();
+
+        assert!(!log.contains(&[0u8; 32]), "no placeholder was written");
+        let keys: Vec<_> = bob.skipped.keys().map(|k| k.1).collect();
+        assert_eq!(keys, vec![1, u32::MAX]);
+        assert_eq!(*bob.skipped[&PLACEHOLDER], [0xAB; 32]);
     }
 
     /// An evicted skipped key is wiped when it is evicted; the ones that fit

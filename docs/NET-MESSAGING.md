@@ -54,7 +54,10 @@ Ed25519 (signs its prekeys; the signed object binds the X25519 key, F-2).
   with `contact_card_fingerprint` (16 bytes of
   `SHA-256("ARCIUM-CONTACT-CARD-V1" || card)`, in hex).
 - `add_contact(card)` pins it. A different card for a pinned X25519 key is
-  refused (`ContactIdentityChanged`); nothing is replaced silently.
+  refused (`ContactIdentityChanged`); nothing is replaced silently. A card
+  whose X25519 key has low order is refused (`InvalidContactCard`, tracker
+  R-24): X3DH refuses such a key, so no session could be made with it. A
+  card an older build pinned is not checked again.
 - **Initiator.** `start_session(peer)` fetches the peer's bundle from the relay
   and refuses it (`PeerIdentityMismatch`) unless both keys equal the pinned
   card. X3DH then checks the prekey signature under that pinned Ed25519 key.

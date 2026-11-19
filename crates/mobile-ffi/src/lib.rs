@@ -604,7 +604,7 @@ fn unpack_initiator_handshake(bytes: &[u8]) -> Result<InitiatorHandshakeV1, Core
 /// public constant. A clamped scalar is 8·k′ with 2^251 ≤ k′ < 2^252, so it
 /// sends every point of order dividing 8 to zero, and no other point: k′ is
 /// below the large prime orders of the curve and of its twist.
-fn has_low_order(pk: &PublicKey) -> bool {
+pub(crate) fn has_low_order(pk: &PublicKey) -> bool {
     !StaticSecret::from([1u8; 32]).diffie_hellman(pk).was_contributory()
 }
 
@@ -2247,6 +2247,34 @@ mod tests {
                 "expected InvalidHandshake (low order), got {err:?}"
             );
         }
+    }
+
+    /// R-24: a contact card whose X25519 identity key has low order is
+    /// refused when it is added, and nothing is pinned. Every session keyed
+    /// from it would fail X3DH, so the card could never be used.
+    #[test]
+    fn a_contact_card_with_a_low_order_identity_key_is_refused() {
+        let alice = fresh_core(216);
+        alice.save_identity(Identity::generate()).unwrap();
+        let card = fresh_core(217);
+        card.save_identity(Identity::generate()).unwrap();
+        let card = card.contact_card().unwrap();
+        let mut low = [0u8; 32];
+        low[0] = 1; // u = 1, order 4
+        for key in [low, [0u8; 32]] {
+            let mut forged = card.clone();
+            forged[1..33].copy_from_slice(&key);
+            let err = alice
+                .add_contact(forged)
+                .expect_err("a low-order identity key must be refused");
+            assert!(
+                matches!(&err, CoreError::InvalidContactCard { msg } if msg.contains("low order")),
+                "expected InvalidContactCard (low order), got {err:?}"
+            );
+        }
+        assert!(alice.contacts().unwrap().is_empty(), "nothing is pinned");
+        alice.add_contact(card).expect("the genuine card is still accepted");
+        assert_eq!(alice.contacts().unwrap().len(), 1);
     }
 
     /// R-24: a bundle whose one-time prekey has low order is refused by the

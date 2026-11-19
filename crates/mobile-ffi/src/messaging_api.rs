@@ -192,6 +192,16 @@ fn send_result(outcome: SendOutcome) -> SendResult {
 /// the messenger's own types, so a plaintext stays in its wiping owner instead
 /// of being copied into, or out of, an ordinary `Vec<u8>`.
 impl ArciumCore {
+    /// The ids of every pending outgoing message, to every peer, from the
+    /// store's key names alone (`Messenger::pending_outgoing_ids`). Read by
+    /// the network layer's prune of `last_sent` (tracker R-22).
+    pub(crate) fn pending_outgoing_ids(&self) -> Result<Vec<[u8; 32]>, CoreError> {
+        let (store, messenger) = self.lock()?;
+        messenger
+            .pending_outgoing_ids(&store)
+            .map_err(|e| CoreError::messaging(0, e))
+    }
+
     /// [`send_message`](Self::send_message) for a plaintext already held in a
     /// wiping owner: it is borrowed from that owner, not copied. The exported
     /// method wraps its argument and calls this, so there is one send path.

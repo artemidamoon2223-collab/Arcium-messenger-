@@ -199,7 +199,7 @@ fn pending_keys(store: &EncryptedStore, peer: &[u8; 32]) -> Result<Vec<String>, 
 }
 
 /// The message id an `outbox:` or `inbox:` key under `prefix` ends with.
-fn id_in_key(key: &str, prefix: &str) -> Option<MessageId> {
+pub(super) fn id_in_key(key: &str, prefix: &str) -> Option<MessageId> {
     let hex = key.strip_prefix(prefix)?;
     if hex.len() != 2 * MESSAGE_ID_LEN {
         return None;

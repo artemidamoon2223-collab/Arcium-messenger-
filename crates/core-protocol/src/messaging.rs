@@ -661,6 +661,27 @@ impl Messenger {
         Ok(out)
     }
 
+    /// The ids of every committed outgoing message not yet acknowledged, to
+    /// every peer, in no particular order. Read from the store's key names
+    /// alone: no outbox record is read or decrypted, so the cost grows with
+    /// the number of pending messages, not with their size, and does not
+    /// depend on how many sessions there are. An `outbox:` key that does
+    /// not end in a message id is skipped.
+    pub fn pending_outgoing_ids(
+        &self,
+        store: &EncryptedStore,
+    ) -> Result<Vec<MessageId>, MessagingError> {
+        Ok(store
+            .list_keys_with_prefix(OUTBOX_NAMESPACE)
+            .map_err(MessagingError::Store)?
+            .iter()
+            .filter_map(|key| {
+                let (dir, _) = key.rsplit_once('/')?;
+                removal::id_in_key(key, &key[..=dir.len()])
+            })
+            .collect())
+    }
+
     /// What `send` with `client_id` to `peer` committed so far, read only:
     /// `None` if nothing; otherwise the outcome a repeated `send` would
     /// report (`AlreadyPending`, `AlreadyAcknowledged` or `Abandoned`), and

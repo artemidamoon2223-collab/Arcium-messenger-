@@ -211,6 +211,9 @@ pub enum Cut {
     Request,
     /// The relay handles the request; its response never arrives.
     Response,
+    /// The request never reaches the relay, and the client is answered
+    /// with an error; the connection stays open.
+    Refuse,
 }
 
 /// A TCP proxy in front of a relay. Arm it with an operation byte (see
@@ -238,8 +241,12 @@ impl Proxy {
     }
 
     pub fn arm(&self, op: u8, cut: Cut) {
-        self.mode
-            .store(matches!(cut, Cut::Response) as u8, Ordering::SeqCst);
+        let mode = match cut {
+            Cut::Request => 0,
+            Cut::Response => 1,
+            Cut::Refuse => 2,
+        };
+        self.mode.store(mode, Ordering::SeqCst);
         self.armed.store(op, Ordering::SeqCst);
     }
 
@@ -260,6 +267,13 @@ fn relay_through(mut client: TcpStream, target: &str, armed: &AtomicU8, mode: &A
                 .is_ok();
         if hit && mode.load(Ordering::SeqCst) == 0 {
             break; // drop the request
+        }
+        if hit && mode.load(Ordering::SeqCst) == 2 {
+            let refused = relay::protocol::Response::Error(relay::protocol::ErrorCode::Full);
+            if write_frame(&mut client, &refused.encode()).is_err() {
+                break;
+            }
+            continue;
         }
         if write_frame(&mut server, &req).is_err() {
             break;

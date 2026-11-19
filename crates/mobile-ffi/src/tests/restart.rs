@@ -15,26 +15,26 @@ use super::*;
 use crate::network::chat::{test_hooks, ChatEntryState as S, ChatSessionState};
 use crate::network::wire::{Envelope, Payload};
 
-fn canary() -> String {
+pub(super) fn canary() -> String {
     String::from_utf8(CANARY.to_vec()).unwrap()
 }
 
 /// One `sync_conversations` per device, in order; none may report an error.
-fn round(devices: &[&Device]) {
+pub(super) fn round(devices: &[&Device]) {
     for d in devices {
         let r = d.net.sync_conversations();
         assert!(r.errors.is_empty(), "{:?}", r.errors);
     }
 }
 
-fn rounds(devices: &[&Device], n: usize) {
+pub(super) fn rounds(devices: &[&Device], n: usize) {
     for _ in 0..n {
         round(devices);
     }
 }
 
 /// Both pin each other's card under a name, as after an out-of-band exchange.
-fn meet(a: &Device, b: &Device) {
+pub(super) fn meet(a: &Device, b: &Device) {
     a.net
         .add_named_contact(b.core.contact_card().unwrap(), "peer".into())
         .unwrap();
@@ -43,7 +43,7 @@ fn meet(a: &Device, b: &Device) {
         .unwrap();
 }
 
-fn say(from: &Device, to: &Device, app_id: &str, text: &str) {
+pub(super) fn say(from: &Device, to: &Device, app_id: &str, text: &str) {
     from.net
         .chat_send(
             to.pk.clone(),
@@ -54,7 +54,7 @@ fn say(from: &Device, to: &Device, app_id: &str, text: &str) {
 }
 
 /// `from`'s conversation with `with`: (outgoing, state, text without canary).
-fn chat(from: &Device, with: &Device) -> Vec<(bool, S, String)> {
+pub(super) fn chat(from: &Device, with: &Device) -> Vec<(bool, S, String)> {
     from.net
         .chat_entries(with.pk.clone())
         .unwrap()
@@ -63,24 +63,24 @@ fn chat(from: &Device, with: &Device) -> Vec<(bool, S, String)> {
         .collect()
 }
 
-fn session(from: &Device, with: &Device) -> ChatSessionState {
+pub(super) fn session(from: &Device, with: &Device) -> ChatSessionState {
     from.net.conversation(with.pk.clone()).unwrap().session
 }
 
-fn peer_reset(from: &Device, with: &Device) -> bool {
+pub(super) fn peer_reset(from: &Device, with: &Device) -> bool {
     from.net.conversation(with.pk.clone()).unwrap().peer_reset
 }
 
-fn key(d: &Device) -> [u8; 32] {
+pub(super) fn key(d: &Device) -> [u8; 32] {
     d.pk.as_slice().try_into().unwrap()
 }
 
-fn handle(of: &Device) -> u64 {
+pub(super) fn handle(of: &Device) -> u64 {
     core_crypto::session_handle::local_session_handle(&key(of))
 }
 
 /// The provisional handshake record `d` holds under `other`'s handle, raw.
-fn hsin(d: &Device, other: &Device) -> Option<Vec<u8>> {
+pub(super) fn hsin(d: &Device, other: &Device) -> Option<Vec<u8>> {
     let store = d.core.store.lock().unwrap();
     match store.get(&format!("hsin:v1/{:016x}", handle(other))) {
         Ok(bytes) => Some(bytes),
@@ -91,7 +91,7 @@ fn hsin(d: &Device, other: &Device) -> Option<Vec<u8>> {
 
 /// How many envelopes of each kind wait in `to`'s mailbox:
 /// (handshakes, refusals).
-fn waiting(relay: &relay::server::RelayHandle, to: &Device) -> (usize, usize) {
+pub(super) fn waiting(relay: &relay::server::RelayHandle, to: &Device) -> (usize, usize) {
     let kinds: Vec<_> = relay
         .stored(&key(to))
         .into_iter()
@@ -105,7 +105,7 @@ fn waiting(relay: &relay::server::RelayHandle, to: &Device) -> (usize, usize) {
 
 /// Alice and Bob, contacts of each other, with an established session that
 /// Alice started, and one text delivered each way.
-fn talking(addr: &str) -> (Device, Device) {
+pub(super) fn talking(addr: &str) -> (Device, Device) {
     let (alice, bob) = (Device::new(addr, 1), Device::new(addr, 2));
     meet(&alice, &bob);
     round(&[&alice, &bob]); // Both bundles on the relay.

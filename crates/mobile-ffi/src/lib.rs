@@ -3078,11 +3078,11 @@ mod tests {
         record.opk.as_ref().map(|(id, _)| *id)
     }
 
-    /// R-6: the signed prekey is kept for the life of the identity. That
-    /// holds up only while the secrets this device keeps after accepting a
-    /// first contact cannot decrypt that contact's first message again: its
-    /// identity, its signed prekey and its prekey record, with the one-time
-    /// prekey that replaced the used one or with none. The one-time prekey
+    /// R-6: the signed prekey is kept until the next round rotates it. The
+    /// secrets this device keeps after accepting a first contact must not
+    /// decrypt that contact's first message again meanwhile: its identity,
+    /// its signed prekey and its prekey record, with the one-time prekey
+    /// that replaced the used one or with none. The one-time prekey
     /// the handshake used (one is required since X-6) is gone, and without
     /// it the root key cannot be derived. The control shows that the check
     /// does open the message with that prekey. (A first contact checked
@@ -3103,7 +3103,7 @@ mod tests {
         assert_eq!(
             after.signed_prekey_pk(),
             before.signed_prekey_pk(),
-            "the signed prekey is not rotated (R-6)"
+            "a promotion does not rotate the signed prekey; the next maintenance does (E)"
         );
         assert!(opk_id_of(&after).is_some(), "a new one-time prekey is published");
         assert_ne!(opk_id_of(&after), opk_id_of(&before), "the used one-time prekey is replaced");
@@ -3379,6 +3379,8 @@ mod tests {
     mod unresolved;
     mod false_conflict;
     mod restart;
+    mod prekey_record;
+    mod spk_rotation;
     mod relay_v2;
     mod beyond_recall;
     mod far_skip;

@@ -416,3 +416,58 @@ fn t2_an_old_authenticated_responder_session_is_kept_and_continues() {
         assert_eq!(now.get(k), Some(v), "{k}");
     }
 }
+
+/// Tracker R-6: the first round of this build rotates the prekey record the
+/// old build wrote (`PERSISTED_PREKEY_RECORD_V2`). Carol, a new contact,
+/// made her first contact from Bob's bundle as the old build published it.
+/// - Without the mark of option B (as the old build left the store): the
+///   one-time prekey is replaced once, so the signed prekey rotates without
+///   a previous key ((E)), and Carol's handshake is refused once.
+/// - With the mark (a store an option-B build before R-6 wrote): the record
+///   reads as published long ago, so the signed prekey rotates and the
+///   never-rotated one stays the previous key ((T)): Carol's handshake is
+///   answered under it.
+#[test]
+fn a_v2_prekey_record_is_rotated_on_the_first_round() {
+    for marked in [false, true] {
+        let relay = start_relay();
+        let addr = relay.addr().to_string();
+        let (_alice, bob) = open_fixture("t2", &addr);
+        let raw = bob.core.store.lock().unwrap().get(PREKEYS_KEY).unwrap();
+        assert_eq!((raw.len(), raw[0]), (138, 0x01), "the old build wrote V2");
+        let old = unpack_prekeys(&raw).unwrap();
+        let old_spk = spk_id(old.signed_prekey_pk().as_bytes());
+        if marked {
+            bob.core.store.lock().unwrap().put(PREKEY_RENEWED_KEY, &[1]).unwrap();
+        }
+        let bob_pk: [u8; 32] = bob.pk.as_slice().try_into().unwrap();
+        relay::client::Connection::connect(&addr, std::time::Duration::from_secs(2))
+            .unwrap()
+            .put_bundle(bob_pk, bob.core.export_prekey_bundle().unwrap())
+            .unwrap();
+        let carol = Device::new(&addr, 3);
+        carol.knows(&bob);
+        bob.knows(&carol);
+        carol.net.start_session(bob.pk.clone()).unwrap();
+        carol.send(&bob, "c1", "built before the upgrade");
+        let r = carol.sync();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+
+        let r = bob.sync();
+        let raw = bob.core.store.lock().unwrap().get(PREKEYS_KEY).unwrap();
+        assert_eq!((raw.len(), raw[0]), (186, 0x02), "marked {marked}: written as V3");
+        let now = unpack_prekeys(&raw).unwrap();
+        assert_ne!(spk_id(now.signed_prekey_pk().as_bytes()), old_spk, "marked {marked}: rotated");
+        assert!(bob.core.store.lock().unwrap().get(PREKEY_RENEWED_KEY).is_ok());
+        if marked {
+            assert!(r.errors.is_empty(), "{:?}", r.errors);
+            assert_eq!(bob.texts(&carol), ["built before the upgrade"]);
+            assert!(now.prev.is_none(), "the first contact consumed the previous key");
+        } else {
+            assert_eq!(r.errors, ["handshake refused: signed prekey is stale"]);
+            assert!(!bob.core.has_session(handle(&carol)).unwrap(), "no session with Carol");
+            assert!(now.prev.is_none(), "(E) keeps no previous key");
+        }
+        relay.stop();
+    }
+}

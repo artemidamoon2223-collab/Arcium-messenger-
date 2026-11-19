@@ -472,7 +472,7 @@ fn check_answerable_selects_current_or_previous() {
     same.prev = Some(same.signed_prekey_sk.clone());
     let both = id_of(&same.signed_prekey_sk);
     assert!(matches!(ask(&same, both, same.opk_id()), Ok(Spk::Current)));
-    assert!(matches!(same.signed_prekey(Spk::Previous), Ok(_)));
+    assert!(same.signed_prekey(Spk::Previous).is_ok());
     assert!(matches!(
         PrekeyRecord::new(&identity).signed_prekey(Spk::Previous),
         Err(CoreError::StaleSignedPrekey)

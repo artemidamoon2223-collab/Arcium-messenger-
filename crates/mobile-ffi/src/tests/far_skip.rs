@@ -728,3 +728,66 @@ fn a_failed_settle_leaves_the_far_pass_going() {
     assert_eq!((r.accepted, alice.net.far_tries()), (2, 2), "{r:?}");
     relay.stop();
 }
+
+/// A stored wait that does not parse is read as none: the wait starts at
+/// the next far message, the record is replaced with a good one, and the
+/// far skip comes once that wait is over (a damaged record holds nothing
+/// back for good).
+#[test]
+fn a_damaged_stored_wait_is_read_as_none_and_replaced() {
+    let wait = Duration::from_millis(300);
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let (ids, wires) = texts_in_one_chain(&alice, &bob);
+    for id in &ids[..GAP] {
+        bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+    }
+    alice
+        .core
+        .store
+        .lock()
+        .unwrap()
+        .put(&crate::network::far_wait_key(to_bob), &[1, 9, 9])
+        .unwrap();
+    let alice = alice.restart(&addr);
+    alice.net.set_far_skip_wait(wait);
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (0, 0), "{r:?}");
+    let replaced = far_record(&alice, to_bob).expect("written again");
+    assert_eq!((replaced.len(), &replaced[..2]), (2 + 48, &[1u8, 1][..]));
+    std::thread::sleep(wait + Duration::from_millis(50));
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (1, 1), "{r:?}");
+    relay.stop();
+}
+
+/// A chain's wait is stored when it starts, and a far message of the same
+/// chain seen again within the minute writes nothing more: the last
+/// sighting only orders the chains for dropping.
+#[test]
+fn a_chain_seen_again_within_a_minute_is_stored_once() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    for _ in 0..3 {
+        inject(&addr, &alice, forged_far(&bob, 9));
+        let r = alice.sync();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+    }
+    assert_eq!(alice.net.far_waits(to_bob), 1);
+    assert_eq!(alice.net.far_writes(), 1, "stored once");
+    inject(&addr, &alice, forged_far(&bob, 10));
+    assert!(alice.sync().errors.is_empty());
+    assert_eq!(alice.net.far_writes(), 2, "a new chain is stored at once");
+    relay.stop();
+}

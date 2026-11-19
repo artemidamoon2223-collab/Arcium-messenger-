@@ -24,6 +24,7 @@
 pub(crate) mod chat;
 pub(crate) mod wire;
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -186,6 +187,9 @@ pub struct NetworkMessenger {
     /// Test aid: how many far skips this instance tried.
     #[cfg(test)]
     far_tries: std::sync::atomic::AtomicU32,
+    /// Test aid: how many times this instance stored a far-skip wait.
+    #[cfg(test)]
+    far_writes: std::sync::atomic::AtomicU32,
 }
 
 /// Refusals this process owes or sent (docs/NET-MESSAGING.md, section 6).
@@ -278,8 +282,10 @@ struct FarWait {
     chain: [u8; 32],
     first: u64,
     last: u64,
-    /// The `last` the store holds (not stored itself).
-    stored_last: u64,
+    /// The `last` the store was last given for this chain; `None` if it
+    /// was given none since the chain started (or started again) waiting.
+    /// Not stored itself.
+    stored_last: Option<u64>,
 }
 
 /// The store key of the far-skip waits of the session `handle` (tracker
@@ -326,7 +332,8 @@ fn unpack_far_waits(bytes: &[u8]) -> Option<FarWaits> {
     }
     let u64_at = |b: &[u8]| u64::from_be_bytes(b.try_into().expect("8 bytes"));
     let mut waits: FarWaits = Vec::with_capacity(usize::from(count));
-    for e in rest.chunks_exact(FAR_WAIT_ENTRY_LEN) {
+    // `rest` holds exactly `count` entries (checked above).
+    for e in rest.as_chunks::<FAR_WAIT_ENTRY_LEN>().0 {
         let chain: [u8; 32] = e[..32].try_into().expect("32 bytes");
         if waits.iter().any(|w| w.chain == chain) {
             return None;
@@ -336,7 +343,7 @@ fn unpack_far_waits(bytes: &[u8]) -> Option<FarWaits> {
             chain,
             first: u64_at(&e[32..40]),
             last,
-            stored_last: last,
+            stored_last: Some(last),
         });
     }
     Some(waits)
@@ -348,17 +355,22 @@ fn unpack_far_waits(bytes: &[u8]) -> Option<FarWaits> {
 /// recently once [`FAR_CHAINS_PER_SESSION`] wait. A clock read before the
 /// chain's first sighting (set back) starts its wait again. The last
 /// sighting is kept exact in memory and stored at most once per
-/// [`FAR_WAIT_LAST_STEP_MS`]: once `waits` is stored, the caller sets each
+/// [`FAR_WAIT_LAST_STEP_MS`], and at the next sighting while the store
+/// was not given it: once `waits` is stored, the caller sets each
 /// `stored_last` to its `last`.
 fn note_far_sighting(waits: &mut FarWaits, chain: [u8; 32], now: u64) -> (u64, bool) {
     if let Some(w) = waits.iter_mut().find(|w| w.chain == chain) {
         if now < w.first {
             w.first = now;
             w.last = now;
+            w.stored_last = None;
             return (now, true);
         }
         w.last = w.last.max(now);
-        return (w.first, w.last.saturating_sub(w.stored_last) >= FAR_WAIT_LAST_STEP_MS);
+        let due = w
+            .stored_last
+            .is_none_or(|stored| w.last.saturating_sub(stored) >= FAR_WAIT_LAST_STEP_MS);
+        return (w.first, due);
     }
     if waits.len() >= FAR_CHAINS_PER_SESSION {
         if let Some(stale) = (0..waits.len()).min_by_key(|&i| waits[i].last) {
@@ -369,7 +381,7 @@ fn note_far_sighting(waits: &mut FarWaits, chain: [u8; 32], now: u64) -> (u64, b
         chain,
         first: now,
         last: now,
-        stored_last: now,
+        stored_last: None,
     });
     (now, true)
 }
@@ -571,6 +583,8 @@ impl NetworkMessenger {
             now: Mutex::new(None),
             #[cfg(test)]
             far_tries: std::sync::atomic::AtomicU32::new(0),
+            #[cfg(test)]
+            far_writes: std::sync::atomic::AtomicU32::new(0),
             limits: Mutex::new(Limits::default()),
             resume: Mutex::new(Resume::default()),
         })
@@ -1392,7 +1406,7 @@ impl NetworkMessenger {
         }
         match received {
             Ok(Received::Accepted(message)) => {
-                self.far_progress(handle);
+                self.far_progress(handle, report);
                 report.accepted += 1;
                 if first {
                     report.sessions_accepted += 1;
@@ -1612,6 +1626,12 @@ impl NetworkMessenger {
     #[cfg(test)]
     pub(crate) fn far_tries(&self) -> u32 {
         self.far_tries.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Test aid: how many times a far-skip wait was stored.
+    #[cfg(test)]
+    pub(crate) fn far_writes(&self) -> u32 {
+        self.far_writes.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Test aid: how many messages found beyond recall wait to be named.
@@ -1881,19 +1901,21 @@ impl NetworkMessenger {
         let now = self.this_millis();
         let since = {
             let mut seen = self.far_seen.lock().expect("far_seen");
-            if !seen.contains_key(&handle) {
-                // A wait that cannot be read tries no far skip this round.
-                let Some(stored) = self.stored_far_waits(handle, report) else {
-                    round.judged.insert(handle);
-                    return false;
-                };
-                seen.insert(handle, stored);
-            }
-            let waits = seen.get_mut(&handle).expect("inserted above");
+            let waits = match seen.entry(handle) {
+                Entry::Occupied(e) => e.into_mut(),
+                Entry::Vacant(e) => {
+                    // A wait that cannot be read tries no far skip this round.
+                    let Some(stored) = self.stored_far_waits(handle, report) else {
+                        round.judged.insert(handle);
+                        return false;
+                    };
+                    e.insert(stored)
+                }
+            };
             let (since, changed) = note_far_sighting(waits, chain, now);
             if changed && self.store_far_waits(handle, waits, report) {
                 for w in waits.iter_mut() {
-                    w.stored_last = w.last;
+                    w.stored_last = Some(w.last);
                 }
             }
             since
@@ -1911,18 +1933,18 @@ impl NetworkMessenger {
     /// accepted a message, or it is gone and a new session with the contact
     /// will have the same handle. The stored record is deleted unless this
     /// process knows it holds no wait, so an accepted message costs no
-    /// write once that is known. A failed delete is not reported: the
-    /// session is then read from the store again, and the next accepted
-    /// message tries the delete again; until then a far message of a chain
-    /// the record names may be tried without the full wait
+    /// write once that is known. Whether no record is left. After a failed
+    /// delete the session is read from the store again, and the next
+    /// accepted message tries the delete again; until then a far message of
+    /// a chain the record names may be tried without the full wait
     /// (docs/NET-MESSAGING.md section 3).
-    pub(crate) fn forget_far_waits(&self, handle: u64) {
+    pub(crate) fn forget_far_waits(&self, handle: u64) -> bool {
         let mut seen = self.far_seen.lock().expect("far_seen");
         if seen.get(&handle).is_some_and(Vec::is_empty) {
-            return;
+            return true;
         }
         let deleted = match self.core.store.lock() {
-            Ok(store) => matches!(store.delete(&far_wait_key(handle)), Ok(()) | Err(StorageError::NotFound)),
+            Ok(store) => store.delete(&far_wait_key(handle)).is_ok(),
             Err(_) => false,
         };
         if deleted {
@@ -1930,6 +1952,7 @@ impl NetworkMessenger {
         } else {
             seen.remove(&handle);
         }
+        deleted
     }
 
     /// The far-skip waits of the session `handle` kept in the store: none if
@@ -1939,7 +1962,10 @@ impl NetworkMessenger {
     fn stored_far_waits(&self, handle: u64, report: &mut SyncReport) -> Option<FarWaits> {
         let stored = match self.core.store.lock() {
             Ok(store) => store.get(&far_wait_key(handle)),
-            Err(_) => return None,
+            Err(_) => {
+                report.errors.push("reading the wait before a far skip: the store lock is poisoned".into());
+                return None;
+            }
         };
         match stored {
             Ok(bytes) => Some(unpack_far_waits(&bytes).unwrap_or_default()),
@@ -1964,10 +1990,18 @@ impl NetworkMessenger {
     fn store_far_waits(&self, handle: u64, waits: &[FarWait], report: &mut SyncReport) -> bool {
         let result = match self.core.store.lock() {
             Ok(store) => store.put(&far_wait_key(handle), &pack_far_waits(waits)),
-            Err(_) => return false,
+            Err(_) => {
+                report.errors.push("storing the wait before a far skip: the store lock is poisoned".into());
+                return false;
+            }
         };
         match result {
-            Ok(()) => true,
+            Ok(()) => {
+                #[cfg(test)]
+                self.far_writes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                true
+            }
             Err(e) => {
                 report.errors.push(format!("storing the wait before a far skip: {e}"));
                 false
@@ -1986,9 +2020,14 @@ impl NetworkMessenger {
     }
 
     /// The session `handle` accepted a message: the wait before a far skip
-    /// starts again, and it tries none this round (R-14).
-    fn far_progress(&self, handle: u64) {
-        self.forget_far_waits(handle);
+    /// starts again, and it tries none this round (R-14). A failure to
+    /// delete the stored wait is reported.
+    fn far_progress(&self, handle: u64, report: &mut SyncReport) {
+        if !self.forget_far_waits(handle) {
+            report
+                .errors
+                .push("deleting the wait before a far skip; tried again at the next message".into());
+        }
         self.far_round
             .lock()
             .expect("far_round")
@@ -2022,7 +2061,7 @@ impl NetworkMessenger {
             match self.core.receive_committed_far(handle, &wire) {
                 Ok(Received::Accepted(message)) => {
                     report.accepted += 1;
-                    self.far_progress(handle);
+                    self.far_progress(handle, report);
                     crash_point("after_accept");
                     #[cfg(test)]
                     far_hook::run(far_hook::Stage::BeforeSettle, handle);
@@ -2246,14 +2285,14 @@ mod tests {
             chain: [k; 32],
             first,
             last,
-            stored_last: last,
+            stored_last: Some(last),
         }
     }
 
     /// What the caller does once `waits` is stored.
     fn stored(waits: &mut FarWaits) {
         for w in waits.iter_mut() {
-            w.stored_last = w.last;
+            w.stored_last = Some(w.last);
         }
     }
 
@@ -2279,14 +2318,19 @@ mod tests {
     }
 
     #[test]
-    fn a_damaged_far_wait_record_is_read_as_no_wait() {
+    fn a_damaged_far_wait_record_is_refused_by_the_parser() {
         let good = pack_far_waits(&[wait(1, 5, 6), wait(2, 7, 8)]);
         assert!(unpack_far_waits(&good).is_some());
         let mut other_version = good.clone();
         other_version[0] = 2;
         let mut more_than_held = pack_far_waits(&vec![wait(1, 1, 1); FAR_CHAINS_PER_SESSION + 1]);
         // Distinct chains, so only the count is wrong.
-        for (i, e) in more_than_held[2..].chunks_exact_mut(FAR_WAIT_ENTRY_LEN).enumerate() {
+        for (i, e) in more_than_held[2..]
+            .as_chunks_mut::<FAR_WAIT_ENTRY_LEN>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
             e[0] = u8::try_from(i).unwrap();
         }
         let mut count_too_high = good.clone();
@@ -2307,10 +2351,26 @@ mod tests {
     }
 
     #[test]
-    fn a_new_chain_starts_waiting_and_is_stored() {
+    fn a_new_chain_starts_waiting_and_asks_to_be_stored() {
         let mut waits = FarWaits::new();
         assert_eq!(note_far_sighting(&mut waits, [1; 32], 1_000), (1_000, true));
-        assert_eq!(waits, vec![wait(1, 1_000, 1_000)]);
+        assert_eq!(waits.len(), 1);
+        assert_eq!((waits[0].chain, waits[0].first, waits[0].last), ([1; 32], 1_000, 1_000));
+    }
+
+    /// A write that failed is asked for again at the chain's next sighting,
+    /// not a minute later.
+    #[test]
+    fn a_chain_whose_write_failed_asks_again() {
+        let mut waits = FarWaits::new();
+        assert_eq!(note_far_sighting(&mut waits, [1; 32], 1_000), (1_000, true));
+        // Not stored.
+        assert_eq!(note_far_sighting(&mut waits, [1; 32], 1_500), (1_000, true));
+        stored(&mut waits);
+        assert_eq!(note_far_sighting(&mut waits, [1; 32], 2_000), (1_000, false));
+        // A clock set back starts the wait again, and asks again until stored.
+        assert_eq!(note_far_sighting(&mut waits, [1; 32], 500), (500, true));
+        assert_eq!(note_far_sighting(&mut waits, [1; 32], 600), (500, true));
     }
 
     #[test]

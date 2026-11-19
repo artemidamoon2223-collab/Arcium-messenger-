@@ -586,7 +586,7 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 | crash after a rotation committed, or after the relay accepted the rotated bundle and before that was recorded | the next round publishes the same key and records it; there is no second rotation |
 | prekey record unreadable | every round fails at its rotation check, as an export would |
 | device clock wrong | a key's age is the difference between two readings of this device's clock: the one when the relay accepted its bundle, and the one of the current round; it rotates when that is 7 days or more, in either direction (section 8, "Clocks"). A steady offset changes nothing; a step of the clock between the two readings moves the next rotation earlier (forward) or later (back), or makes it due at once when the difference reaches 7 days either way; every early rotation drops the older previous key early (a handshake naming it is refused once and made again); a frozen clock stops rotation by time |
-| two instances on one database (two processes) | maintenance and the publication record read the prekey record again inside their transaction, so it is created once and rotated once. A first message promoted in one instance while the other rotates or records a publication fails its byte-identical precondition on the prekey record: it is deleted, the handshake is flagged as refused, and its retransmission is answered (under the previous key after a rotation). A promotion in the other instance that commits between this instance's maintenance read and its export (maintenance first reads without a transaction, and the export is a separate read) makes the published bundle pair the current signed prekey with the new one-time prekey: a handshake built from it is refused once (the next round rotates) and made again. Production runs one sync loop; the tests use two instances in one process, not two processes |
+| two instances on one database (two processes) | maintenance and the publication record read the prekey record again inside their transaction, so it is created once and rotated once. A first message promoted in one instance while the other rotates or records a publication fails its byte-identical precondition on the prekey record: it is deleted, the handshake is flagged as refused, and its retransmission is answered (under the previous key after a rotation). A promotion in the other instance that commits between this instance's maintenance read and its export (maintenance first reads without a transaction, and the export is a separate read) makes the published bundle pair the current signed prekey with the new one-time prekey: until the next round rotates, a handshake under that pair is answered (so a copy of the store holding the current key could replace a second session, section 8), and one read after that rotation is refused once and made again. Production runs one sync loop; the tests use two instances in one process for creation and rotation only, and none runs this interleaving |
 | going back to a build before signed-prekey rotation | not supported: that build cannot read the prekey record (186 bytes), so every round fails at the bundle export; the record is not overwritten |
 
 ## 8. Not provided
@@ -753,21 +753,25 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   - at the latest about two periods (14 days by this device's clock) after
     the relay accepted that key, counting only rounds that publish their
     bundle. A key ages only once the relay has accepted it, so a relay that
-    refuses or cuts the bundle's publication delays this for as long as it
-    does so; meanwhile every round of the device fails before it reads the
+    refuses or cuts the bundle's publication delays this (the copied key is
+    not removed while its successor is unaccepted) for as long as it does
+    so; meanwhile every round of the device fails before it reads the
     mailbox, so the device processes nothing and shows the relay errors.
 
-  Within that time a copy allows at most one session replacement or first
-  contact: the one accepted consumes the one-time prekey and the previous
-  key in the same write, and the next round rotates before a new one-time
-  prekey is published. A conflict beside an own unconfirmed session can
-  still be raised meanwhile (that check only reads). Not bounded:
+  Within that time, with one instance on the database, a copy allows at
+  most one session replacement or first contact: the one accepted consumes
+  the one-time prekey and the previous key in the same write, and the next
+  round rotates before a new one-time prekey is published. (With two
+  instances, a promotion in one can be published by the other before it
+  rotates, section 7.) A conflict beside an own unconfirmed session can
+  still be raised meanwhile, more than once (that check only reads). Not bounded:
   - the identity secret is in the same store, and its holder can sign
     signed prekeys of its own, impersonate this device to its contacts and
     restart its sessions there, for as long as the identity is used;
   - malware with lasting access gets every new key;
   - a rollback of the store (S2-B2 section 8, D-009) brings old keys back
-    until they are due.
+    until they are rotated out; a restored key due by time stays about one
+    more period as the previous key.
 
   Before option B such a compromise could not replace an existing session,
   and the Double Ratchet's fresh DH steps ended the reach of a stolen

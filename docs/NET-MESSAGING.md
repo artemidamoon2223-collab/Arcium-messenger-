@@ -57,7 +57,8 @@ Ed25519 (signs its prekeys; the signed object binds the X25519 key, F-2).
   refused (`ContactIdentityChanged`); nothing is replaced silently. A card
   whose X25519 key has low order is refused (`InvalidContactCard`, tracker
   R-24): X3DH refuses such a key, so no session could be made with it. A
-  card an older build pinned is not checked again.
+  card an older build pinned is not checked again, though adding it again
+  (or renaming the contact that way) is refused.
 - **Initiator.** `start_session(peer)` fetches the peer's bundle from the relay
   and refuses it (`PeerIdentityMismatch`) unless both keys equal the pinned
   card. X3DH then checks the prekey signature under that pinned Ed25519 key.

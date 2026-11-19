@@ -13,9 +13,10 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `cb46ed7737949b99572ffd916ba3f581ad22f44b` (merge of PR #225, 2026-11-19)
+- `main` = `b476035c8b34d384989d8ed230ae990dc831f1ac` (merge of PR #226, 2026-11-19)
 
 ## Done
+- 19 Nov (D-064): #226 R-21 remembers 32 earlier receiving chains (`b476035`).
 - 19 Nov (D-063): #225 skills refresh (`cb46ed7`): threat-checklist conflict rule, test locations, mutation check, merging a PR that is behind, tracker-text check, worktree as disposable copy, CLAUDE.md pointer to repo-change-protocol; QC loop unchanged.
 - 19 Nov (D-062): #222 R-6 signed-prekey rotation (`553c3ba`): 7 days, and after a one-time-prekey change; previous key for one more period; V3 prekey record. #223 NET-MESSAGING qualifiers (`24c82c5`); #224 tracker R-6 PARTIAL and checklist (`d578295`).
 - 19 Nov (D-060, D-061): #217 option B (`1cca4b8`), #218 R-21 older chains (`d983e8e`), #219 H-6 spare slot (`d1d2cde`), #220 R-24 card check + R-22 prune (`8bac3f3`); tracker #221 (`b26a483`).
@@ -47,8 +48,7 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #226 `fix/r21-32-chains` (head `0100df0`): R-21 remembers 32 earlier chains (D-064); CI green; merge only on the Owner's instruction naming it.
-- #227 `ccr-c1c2d0ae-0cypfu` (head `10ac5e2`): R-14/R-20 far-skip wait kept in the store across restarts (D-064); CI green; merge only on the Owner's instruction naming it. Both edit nearby lines of NET-MESSAGING; the second to merge may need `main` merged in.
+- #227 `ccr-c1c2d0ae-0cypfu` (head `a4a9ebc`, `main` merged in after #226): R-14/R-20 far-skip wait kept in the store across restarts (D-064); CI on the new head pending; merge only on the Owner's instruction naming it.
 - Then: tracker PR for R-21, R-14/R-20 and a note on R-9 (deferred), after both merges.
 
 ## Waiting for the Owner
@@ -63,7 +63,7 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 3. Two phones through that relay, incl. background receive — needs phones.
 4. Release build and signing — needs the Owner's decision on the key.
 5. Phone checks: R-18 (b), H-8, F-9; memory and time of #200 and #205 on a phone (scudo); far-skip cost (#209) on a phone.
-6. Protocol: R-6 done (#222); in review (D-064): R-21 32 chains (#226), R-14/R-20 durable far-skip wait (#227); R-9 keep/delete change deferred by the Owner (reconsider with the relay deployment); R-9 residuals (operator, V1, a sender counting its own messages, the far-wait write timing); R-14/R-20 residuals (over 100,000, way out a reset of option B; the delete after an accept is a separate write; the device clock); R-21 beyond 32 chains.
+6. Protocol: R-6 done (#222); R-21 32 chains done (#226); in review (D-064): R-14/R-20 durable far-skip wait (#227); R-9 keep/delete change deferred by the Owner (reconsider with the relay deployment); R-9 residuals (operator, V1, a sender counting its own messages, the far-wait write timing); R-14/R-20 residuals (over 100,000, way out a reset of option B; the delete after an accept is a separate write; the device clock); R-21 beyond 32 chains.
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Needs devices

@@ -424,8 +424,10 @@ impl Messenger {
     }
 
     /// Whether `wire`, a message that did not decrypt under the session
-    /// `handle`, names a position of that session's current receiving chain
-    /// whose key is gone, so it can never be decrypted here (tracker R-21).
+    /// `handle`, names a position of that session's current receiving chain,
+    /// or of one of the last chains it left, whose key is gone, so it can
+    /// never be decrypted here (tracker R-21;
+    /// `DoubleRatchet::is_beyond_recall`).
     /// `false` for bytes too short or malformed to have a header. Reads
     /// state only; changes nothing.
     pub fn beyond_recall(

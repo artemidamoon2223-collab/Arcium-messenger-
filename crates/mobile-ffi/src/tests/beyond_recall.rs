@@ -133,6 +133,93 @@ fn a_message_whose_key_is_gone_is_named_back_and_abandoned() {
     relay.stop();
 }
 
+/// R-21 for a chain the recipient has left: Alice's text 0, whose key Bob
+/// evicted, reaches Bob only after the ratchet turned (Bob answered, Alice
+/// wrote on a new chain, and Bob read that). Bob still names it, from the
+/// end he remembers of Alice's earlier chain, and Alice gives it up.
+#[test]
+fn a_late_message_of_an_earlier_chain_is_named_back_too() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+
+    alice
+        .net
+        .chat_send(bob.pk.clone(), b"g0".to_vec(), "late".into())
+        .unwrap();
+    let mut ids: Vec<Vec<u8>> = vec![Vec::new()];
+    ids.extend((1..2101).map(|i| alice.send(&bob, &format!("g{i}"), "x")));
+    let pending = alice.core.pending_outgoing(to_bob).unwrap();
+    ids[0] = pending
+        .iter()
+        .find(|m| m.client_message_id == client_id::text(b"g0"))
+        .expect("text 0 pending")
+        .message_id
+        .clone();
+    let wire = |i: usize| {
+        pending
+            .iter()
+            .find(|m| m.message_id == ids[i])
+            .expect("pending")
+            .wire
+            .clone()
+    };
+    let late = wire(0);
+    // Bob reads three of them: the key of text 0 is evicted.
+    for i in [900, 1800, 2100] {
+        bob.core.receive_committed(to_alice, &wire(i)).unwrap();
+    }
+    for id in &ids[1..] {
+        alice.core.abandon_outgoing(to_bob, id.clone()).unwrap();
+    }
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+
+    // The ratchet turns: Bob answers, Alice reads it and writes on a new
+    // chain. Whatever reached Bob's mailbox meanwhile is lost; only the new
+    // text arrives.
+    bob.send(&alice, "b1", "turn");
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    let new_id = alice.send(&bob, "a2", "on a new chain");
+    let new_wire = alice
+        .core
+        .pending_outgoing(to_bob)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.message_id == new_id)
+        .expect("pending")
+        .wire;
+    lose_mailbox(&addr, &bob);
+    let alice_key = alice.core.our_identity_pk().unwrap();
+    inject(&addr, &bob, Envelope::Message { sender: alice_key, wire: new_wire }.encode());
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(r.accepted, 1, "Bob is on Alice's new chain: {r:?}");
+
+    // Text 0 arrives late, on the chain Bob left: named back.
+    inject(&addr, &bob, Envelope::Message { sender: alice_key, wire: late }.encode());
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    // Bob's counts cannot tell a GONE from a retransmission; Alice's side
+    // below shows that text 0 was named.
+    assert!(r.dropped >= 1 && r.published >= 1, "{r:?}");
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    let record = alice.core.prior_send(&bob.core.our_identity_pk().unwrap(), &client_id::text(b"g0"));
+    assert!(
+        matches!(record, Ok(Some(SendResult::Abandoned { .. }))),
+        "text 0 reads as abandoned: {record:?}"
+    );
+    let history = alice.net.chat_entries(bob.pk.clone()).unwrap();
+    assert_eq!(history[0].state, ChatEntryState::NotDelivered);
+    relay.stop();
+}
+
 /// A GONE message changes nothing for an id the sender has not pending as a
 /// text: another message, a message that is not a text, or one already
 /// delivered.

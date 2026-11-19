@@ -51,7 +51,7 @@ Updated: 2026-11-19 17:20 UTC, by a Claude Code cloud session
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
-Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
+- Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 
 ## Next work (D-036 order; supersedes the D-014 line)

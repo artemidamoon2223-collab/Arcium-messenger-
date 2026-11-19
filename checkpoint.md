@@ -47,7 +47,9 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #226 `fix/r21-32-chains`: R-21 remembers 32 earlier chains (D-064); CI, then merge only on the Owner's instruction naming it.
+- #226 `fix/r21-32-chains` (head `0100df0`): R-21 remembers 32 earlier chains (D-064); CI green; merge only on the Owner's instruction naming it.
+- #227 `ccr-c1c2d0ae-0cypfu` (head `10ac5e2`): R-14/R-20 far-skip wait kept in the store across restarts (D-064); CI green; merge only on the Owner's instruction naming it. Both edit nearby lines of NET-MESSAGING; the second to merge may need `main` merged in.
+- Then: tracker PR for R-21, R-14/R-20 and a note on R-9 (deferred), after both merges.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -61,7 +63,7 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 3. Two phones through that relay, incl. background receive — needs phones.
 4. Release build and signing — needs the Owner's decision on the key.
 5. Phone checks: R-18 (b), H-8, F-9; memory and time of #200 and #205 on a phone (scudo); far-skip cost (#209) on a phone.
-6. Protocol: R-6 done (#222); in progress (D-064): R-21 32 chains (#226), R-14/R-20 durable far-skip wait; R-9 keep/delete change deferred by the Owner; R-9 residuals (operator, V1, a sender counting its own messages); R-14/R-20 residuals (over 100,000; a durable far-skip wait); R-21 beyond four chains.
+6. Protocol: R-6 done (#222); in review (D-064): R-21 32 chains (#226), R-14/R-20 durable far-skip wait (#227); R-9 keep/delete change deferred by the Owner (reconsider with the relay deployment); R-9 residuals (operator, V1, a sender counting its own messages, the far-wait write timing); R-14/R-20 residuals (over 100,000, way out a reset of option B; the delete after an accept is a separate write; the device clock); R-21 beyond 32 chains.
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Needs devices

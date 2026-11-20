@@ -13,9 +13,10 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `00ca8842d7bf6ace9675c07638b24b677c9b4d04` (merge of PR #234, 2026-11-20)
+- `main` = `6dd93b28af19234655cff041ee97298cbdebdd39` (merge of PR #235, 2026-11-20)
 
 ## Done
+- 20 Nov (D-067 step 4): #235 hot-crate opt-level in test builds, CI test stores in memory (`6dd93b2`). With the warm cache: core-rust 11:25 → 6:28, tests step 7:09 → 2:45, clippy 59 s → 4 s.
 - 20 Nov (D-067 steps 2, 3, 5): #233 CI `push` on `main` only (`f8b58b8`); #234 cargo cache in CI, saved on main only, cargo-audit not cached (`00ca884`); cloud environment "Arcium-messenger" with a prefetch setup script.
 - 20 Nov (D-067 step 1): #232 drops the unused `core-transport` from `mobile-ffi` (`a777c87`): Android graph 390 → 131 packages, bridge build 9:23 → 5:23, `.so` smaller (TLS 1.2 code gone).
 - 20 Nov (D-066): #230 R-21 beyond 32 chains, a message of a forgotten chain named on its second arrival (`7b6677f`); the one local test failure was a stale mutant binary, not a flake. Tracker #231 R-21 PARTIAL narrowed further, R-14 and R-9 notes (`ec6e00e`).
@@ -52,7 +53,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #235 (D-067 step 4, faster tests), branch `ccr-c48f1096-31srvj`, head `580da92`; 9 check runs success; merge only on the Owner's word. After the merge, check that a `main` run restores the cache with the new key and the CI gain appears.
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -70,7 +71,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Optimization plan (D-067, approved by the Owner, in order)
-0, 6, 1 (#232), 2 (#233), 3 (#234), 5 (environment): done → **4 PR #235 open** → 7 split `lib.rs`/`network.rs` at the retro. Follow-ups found: stale comment `crates/relay/Cargo.toml:8-14` and tracker notes F-15/D-008 (core-transport no longer a mobile-ffi dependency); `log` maybe unused in mobile-ffi; pre-existing timing-flaky test `net_limits::a_cut_round_continues_past_a_page_of_kept_envelopes` (400 ms budget, fails under CPU load on old and new code).
+0, 6, 1 (#232), 2 (#233), 3 (#234), 4 (#235), 5 (environment): done → 7 split `lib.rs`/`network.rs` at the retro. Follow-ups found: stale comment `crates/relay/Cargo.toml:8-14` and tracker notes F-15/D-008 (core-transport no longer a mobile-ffi dependency); `log` maybe unused in mobile-ffi; pre-existing timing-flaky test `net_limits::a_cut_round_continues_past_a_page_of_kept_envelopes` (400 ms budget, fails under CPU load on old and new code).
 
 ## Needs devices
 Two phones with a local relay (incl. background receive with the screen off); Pixel instrumentation; APK and `.so` signature check; H-8 on a release build; F-9 on a phone; devnet deploy at home (`docs/HOME-DEPLOY.md`).

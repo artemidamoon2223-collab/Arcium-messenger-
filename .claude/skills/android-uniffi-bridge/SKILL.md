@@ -88,6 +88,6 @@ for.
 
 ## References
 
-- `references/bridge-topology.md` — the full pipeline, the workflows that call
+- [`references/bridge-topology.md`](references/bridge-topology.md) — the full pipeline, the workflows that call
   it, exact paths, pinned versions, the proof boundary per ABI, and the
   commands to re-derive all of it.

@@ -85,11 +85,11 @@ guards against, all of which have actually occurred in this repository:
 
 ## References
 
-- `references/delivery-checklist.md` — the checklist to run before reporting a
+- [`references/delivery-checklist.md`](references/delivery-checklist.md) — the checklist to run before reporting a
   task done.
-- `references/repo-map.md` — where things live, and how to re-derive the map
+- [`references/repo-map.md`](references/repo-map.md) — where things live, and how to re-derive the map
   instead of trusting it.
-- `references/karpathy-review.md` — how to review a change against the four
+- [`references/karpathy-review.md`](references/karpathy-review.md) — how to review a change against the four
   principles, reading every changed file in full, and the result block.
-- `references/karpathy-origin.md` — the original external principles this
+- [`references/karpathy-origin.md`](references/karpathy-origin.md) — the original external principles this
   skill was derived from. Optional background, non-normative.

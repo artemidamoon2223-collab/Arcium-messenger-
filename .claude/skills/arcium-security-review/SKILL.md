@@ -165,5 +165,5 @@ owner in the session report. Post it on a PR only when asked.
 
 ## References
 
-- `references/threat-checklist.md` — the areas, where they live, and what to
+- [`references/threat-checklist.md`](references/threat-checklist.md) — the areas, where they live, and what to
   check in each.

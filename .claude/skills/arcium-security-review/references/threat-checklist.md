@@ -69,7 +69,13 @@ Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
   `FAR_TRIES_PER_ROUND` per sync round, and only after `FAR_SKIP_WAIT`
   per chain without progress, so that with an honest relay a gap
   retransmissions fill is not skipped (a relay withholding longer can make
-  it skipped; `docs/NET-MESSAGING.md` section 8).
+  it skipped; `docs/NET-MESSAGING.md` section 8). That wait is kept in the
+  local record `farwait:v1/<handle>` and read from the device's wall clock,
+  so it survives a restart: a record left behind (its delete after an
+  accepted message is a separate write) or a clock step forward makes a far
+  skip come early. A change to the wait must keep the record deleted on
+  every path `docs/NET-MESSAGING.md` section 3 lists (the exported
+  `remove_session` is a documented exception).
 - **Counter exhaustion.** `ns`, `nr`, `pn` are `u32`. Two different things
   bound them, and a claim about one is not a claim about the other:
   - the raw `DoubleRatchet` increments with an unchecked `+= 1`; without

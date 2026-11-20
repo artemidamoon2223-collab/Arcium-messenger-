@@ -49,7 +49,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- None.
+- #230 `ccr-c1c2d0ae-0cypfu` (head `f4aa1ad`): R-21 beyond 32 chains, a message of a forgotten chain named on its second arrival (D-066); CI, then merge only on the Owner's instruction naming it; tracker PR after.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -63,7 +63,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session
 3. Two phones through that relay, incl. background receive — needs phones.
 4. Release build and signing — needs the Owner's decision on the key.
 5. Phone checks: R-18 (b), H-8, F-9; memory and time of #200 and #205 on a phone (scudo); far-skip cost (#209) on a phone.
-6. Protocol: R-6 done (#222); R-21 32 chains done (#226); R-14/R-20 durable far-skip wait done (#227), tracker done (#228); R-9 keep/delete change deferred by the Owner (reconsider with the relay deployment); R-9 residuals (operator, V1, a sender counting its own messages, the far-wait write timing); R-14/R-20 residuals (over 100,000, way out a reset of option B; the delete after an accept is a separate write; the device clock); R-21 beyond 32 chains.
+6. Protocol: R-6 done (#222); R-21 32 chains done (#226); R-14/R-20 durable far-skip wait done (#227), tracker done (#228); R-9 keep/delete change deferred by the Owner (reconsider with the relay deployment); R-9 residuals (operator, V1, a sender counting its own messages, the far-wait write timing); R-14/R-20 residuals (over 100,000, way out a reset of option B; the delete after an accept is a separate write; the device clock); R-21 beyond 32 chains in review (#230, D-066).
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Needs devices

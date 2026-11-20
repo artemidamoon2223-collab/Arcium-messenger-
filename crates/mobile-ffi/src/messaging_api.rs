@@ -8,7 +8,7 @@ use x25519_dalek::PublicKey;
 use zeroize::Zeroizing;
 
 use core_protocol::durable::SideWrite;
-use core_protocol::messaging::{self, MessagingError, Received, SendOutcome};
+use core_protocol::messaging::{self, MessagingError, Recall, Received, SendOutcome};
 
 use crate::{accept_first_message, ArciumCore, CoreError, PlaintextBytes};
 
@@ -274,10 +274,10 @@ impl ArciumCore {
     }
 
     /// Whether `message`, which did not decrypt under the session
-    /// `session_id`, can never be decrypted here because its key is gone,
-    /// or names a chain the session no longer knows
+    /// `session_id`, can never be decrypted here: its key is gone, or it
+    /// names a chain the session no longer knows
     /// (`Messenger::beyond_recall`; tracker R-21).
-    pub(crate) fn beyond_recall(&self, session_id: u64, message: &[u8]) -> Result<bool, CoreError> {
+    pub(crate) fn beyond_recall(&self, session_id: u64, message: &[u8]) -> Result<Recall, CoreError> {
         let identity = self.require_identity()?;
         let our = PublicKey::from(&identity.dh_key).to_bytes();
         let (mut store, messenger) = self.lock()?;

@@ -79,6 +79,24 @@ pub enum Received {
     },
 }
 
+/// Whether a message that did not decrypt under a session can never be read
+/// there ([`Messenger::beyond_recall`](super::Messenger::beyond_recall);
+/// tracker R-21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recall {
+    /// Not known to be lost: it may still be read, or it is not the
+    /// session's at all.
+    Unknown,
+    /// Its position lies behind the session's current receiving chain, or
+    /// behind the end of one of the chains it remembers, and its key is gone.
+    KeyGone,
+    /// It names a chain the session, which has received from the peer, no
+    /// longer knows, with no key stored and no far skip needed: a chain left
+    /// longer ago, a message of another session of the peer, or a forged
+    /// header, which cannot be told apart.
+    ForgottenChain,
+}
+
 /// A new session to store, from X3DH.
 ///
 /// [`Messenger::create_session`](super::Messenger::create_session) stores it

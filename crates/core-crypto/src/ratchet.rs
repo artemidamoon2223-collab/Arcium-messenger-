@@ -52,9 +52,12 @@ pub const MAX_FAR_SKIP: u32 = 100_000;
 
 /// Earlier receiving chains a ratchet remembers, newest last: the peer's
 /// ratchet key of each and the position it ended at (the `pn` of the header
-/// that started the next chain). Only used to tell that a late message of
-/// such a chain can never be read here ([`DoubleRatchet::is_beyond_recall`];
-/// tracker R-21). Public keys and counters only, no secret. A receiving
+/// that started the next chain). Used to tell that a late message of such a
+/// chain can never be read here ([`DoubleRatchet::is_beyond_recall`]), and
+/// that a header of one needs no far skip and names no forgotten chain
+/// ([`DoubleRatchet::needs_far_skip`],
+/// [`DoubleRatchet::names_forgotten_chain`]; tracker R-21). Public keys and
+/// counters only, no secret. A receiving
 /// chain is left once per exchange (the peer writes again after reading this
 /// side), so this covers about the last 32 exchanges.
 /// The limit is part of `RATCHET_STATE_V2`: a build that remembered fewer

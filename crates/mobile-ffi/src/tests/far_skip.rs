@@ -793,8 +793,9 @@ fn a_chain_seen_again_within_a_minute_is_stored_once() {
 }
 
 /// A far message whose wait is not over is not named back as late (R-21
-/// beyond the remembered chains): its key is not gone, a far skip may read
-/// it later. Here a header of a key the session never saw, far ahead.
+/// beyond the remembered chains), however often it arrives: its key is not
+/// gone, a far skip may read it later. Here a header of a key the session
+/// never saw, far ahead.
 #[test]
 fn a_far_message_in_its_wait_draws_no_gone() {
     let relay = start_relay();
@@ -802,9 +803,11 @@ fn a_far_message_in_its_wait_draws_no_gone() {
     let (alice, bob) = connected(&addr);
     settle(&[&alice, &bob]);
     alice.net.set_far_skip_wait(Duration::from_secs(600));
-    inject(&addr, &alice, forged_far(&bob, 9));
-    let r = alice.sync();
-    assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert_eq!((r.dropped, r.published, alice.net.far_tries()), (1, 0, 0), "{r:?}");
+    for arrival in 1..=2 {
+        inject(&addr, &alice, forged_far(&bob, 9));
+        let r = alice.sync();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!((r.dropped, r.published, alice.net.far_tries()), (1, 0, 0), "arrival {arrival}: {r:?}");
+    }
     relay.stop();
 }

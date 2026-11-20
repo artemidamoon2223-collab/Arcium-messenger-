@@ -301,9 +301,7 @@ fn a_restart_under_the_previous_replaces_the_session_and_one_past_grace_is_made_
         inject(&addr, &bob, env);
     }
     round(&[&bob]);
-    // Not replaced: the one commit is the GONE naming the refused restart's
-    // first message, whose header names a chain Bob does not know (R-21).
-    assert_eq!(bob.generation_with(&alice), generation + 1, "not replaced");
+    assert_eq!(bob.generation_with(&alice), generation, "not replaced");
     assert!(waiting(&relay, &alice).1 >= 1, "the restart is refused");
 
     rounds(&[&alice, &bob], 4);
@@ -443,9 +441,7 @@ fn a_copied_store_cannot_replace_a_session_once_its_signed_prekey_is_gone() {
         } else {
             assert_eq!(hsin(&bob, &alice), None, "{after:?}: refused, not recorded");
             assert_eq!(session(&bob, &alice), ChatSessionState::Established, "{after:?}");
-            // The one commit is the GONE naming the forged message, whose
-            // header names a chain Bob does not know (R-21).
-            assert_eq!(bob.generation_with(&alice), generation + 1, "{after:?}");
+            assert_eq!(bob.generation_with(&alice), generation, "{after:?}");
             assert_eq!(chat(&bob, &alice), history, "{after:?}");
             say(&alice, &bob, "a2", "still our session");
             rounds(&[&alice, &bob], 2);

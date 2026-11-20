@@ -13,9 +13,10 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `b2c2760dc1fe5b0d7c4de68534cace454a9c7041` (merge of PR #238, 2026-11-20)
+- `main` = `8305ed680ac1582b46e8e49ed093a7ca065d3918` (merge of PR #239, 2026-11-20)
 
 ## Done
+- 20 Nov (D-069): #239 core-transport drops unused `anyhow`, `core-crypto`, `futures` (`8305ed6`); workspace and Android graphs unchanged.
 - 20 Nov (D-068): #236 tracker note F-15/D-008 and relay comment, core-transport not a mobile-ffi dependency (`1d26e28`); #237 net_limits cut-round test no longer timing-dependent (`761cf43`); #238 unused `log` dependency of mobile-ffi dropped (`b2c2760`).
 - 20 Nov (D-067 step 4): #235 hot-crate opt-level in test builds, CI test stores in memory (`6dd93b2`). With the warm cache: core-rust 11:25 → 6:28, tests step 7:09 → 2:45, clippy 59 s → 4 s; Android bridge build step 9:23 → 1:59.
 - 20 Nov (D-067 steps 2, 3, 5): #233 CI `push` on `main` only (`f8b58b8`); #234 cargo cache in CI, saved on main only, cargo-audit not cached (`00ca884`); cloud environment "Arcium-messenger" with a prefetch setup script.
@@ -72,7 +73,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Optimization plan (D-067, approved by the Owner, in order)
-0, 6, 1 (#232), 2 (#233), 3 (#234), 4 (#235), 5 (environment): done → 7 split `lib.rs`/`network.rs` at the retro. Follow-ups (D-068): relay comment and tracker notes done (#236); flaky net_limits test done (#237); unused `log` done (#238). Seen in CI logs, not acted on: cargo warns that core-transport's `anyhow` and `core-crypto` dependencies are unused.
+0, 6, 1 (#232), 2 (#233), 3 (#234), 4 (#235), 5 (environment): done → 7 split `lib.rs`/`network.rs` at the retro. Follow-ups (D-068): relay comment and tracker notes done (#236); flaky net_limits test done (#237); unused `log` done (#238). core-transport's unused `anyhow`, `core-crypto`, `futures` done (#239, D-069).
 
 ## Needs devices
 Two phones with a local relay (incl. background receive with the screen off); Pixel instrumentation; APK and `.so` signature check; H-8 on a release build; F-9 on a phone; devnet deploy at home (`docs/HOME-DEPLOY.md`).

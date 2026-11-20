@@ -651,10 +651,7 @@ dependencies = [
 name = "core-transport"
 version = "0.3.0"
 dependencies = [
- "anyhow",
  "arti-client",
- "core-crypto",
- "futures",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

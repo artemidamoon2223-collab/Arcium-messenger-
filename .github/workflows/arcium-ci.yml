@@ -81,7 +81,15 @@ jobs:
           key: ${{ steps.cargo-cache.outputs.key }}
       # --locked: the tracked Cargo.lock is the dependency graph (H-10). Cargo
       # fails instead of resolving anew if it is missing or out of date.
+      # The tests' temporary stores live in memory (/dev/shm): the store syncs
+      # every commit to disk (journal_mode DELETE, synchronous EXTRA in
+      # core-storage), which took about 40 % of the mobile-ffi suite's time
+      # on a disk. No test cuts power; a process that dies keeps what it
+      # wrote in memory as on a disk. The stores the tests keep
+      # (TempDir::keep) go with the runner after the job.
       - name: Core crates tests
+        env:
+          TMPDIR: /dev/shm
         run: cargo test --workspace --locked
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --locked -- -D warnings

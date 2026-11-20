@@ -12,6 +12,41 @@ description: >
 runs:
   using: "composite"
   steps:
+    # Cargo cache: the downloaded crates and the three target directories the
+    # build below uses. Every run restores it; only a push to main saves it,
+    # so no pull request writes what a later run reuses. The key is exact (no
+    # prefix fallback) and covers rustc, Cargo.lock, the root Cargo.toml (its
+    # profiles) and this file (the NDK version is set here): any change starts
+    # cold, so a cache entry lives no longer than one of each. Cargo rebuilds
+    # what changed: the checkout's files are normally newer than the cached
+    # build, so every workspace crate, and every dependency whose version,
+    # features, flags or C compiler changed.
+    - name: Cargo cache key
+      id: cargo-cache
+      shell: bash
+      env:
+        CARGO_HASH: ${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+        ACTION_HASH: ${{ hashFiles('.github/actions/uniffi-android-bridge/action.yml') }}
+      run: |
+        set -euo pipefail
+        test -n "${CARGO_HASH}"
+        test -n "${ACTION_HASH}"
+        rustc_id="$(rustc -vV | sha256sum | cut -c1-16)"
+        echo "key=android-bridge-${RUNNER_OS}-${rustc_id}-${CARGO_HASH}-${ACTION_HASH:0:16}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the cargo cache
+      id: cargo-restore
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          ${{ runner.temp }}/uniffi-bindgen-target
+          ${{ runner.temp }}/arcium-host-target
+          ${{ runner.temp }}/arcium-android-target
+        key: ${{ steps.cargo-cache.outputs.key }}
+
     - name: Build native libs (x86_64 + arm64-v8a) and generate UniFFI Kotlin into Gradle build dir
       shell: bash
       run: |
@@ -158,3 +193,17 @@ runs:
 
         git diff --exit-code -- Cargo.lock
         echo "BRIDGE_INPUTS_READY kotlin=${KOTLIN_FILE} so=${SO_PATHS[*]}"
+
+    # After the build succeeded; never on a pull request.
+    - name: Save the cargo cache (push to main only)
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          ${{ runner.temp }}/uniffi-bindgen-target
+          ${{ runner.temp }}/arcium-host-target
+          ${{ runner.temp }}/arcium-android-target
+        key: ${{ steps.cargo-cache.outputs.key }}

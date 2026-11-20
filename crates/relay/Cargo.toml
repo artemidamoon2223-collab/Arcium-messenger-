@@ -6,12 +6,14 @@ license.workspace = true
 
 # An untrusted store-and-forward relay for end-to-end encrypted envelopes, and
 # the blocking client the app uses to reach it. Every dependency is a package
-# the workspace lockfile already holds, so the Android build adds no crate:
-# rusqlite (the relay's optional SQLite file) with the version and features
-# core-storage uses; rustls 0.23 with the ring provider and no default
-# features (RELAY_PROTOCOL_V2: TLS 1.3 with a pinned raw public key), the
-# version and provider the Tor client already links; and the RustCrypto and
-# dalek crates core-crypto uses (the V2 mailbox authentication).
+# the workspace lockfile already holds: rusqlite (the relay's optional SQLite
+# file) with the version and features core-storage uses; rustls 0.23 with the
+# ring provider and no default features (RELAY_PROTOCOL_V2: TLS 1.3 with a
+# pinned raw public key), the version and provider the Tor client
+# (core-transport) also uses; and the RustCrypto and dalek crates core-crypto
+# uses (the V2 mailbox authentication). mobile-ffi does not depend on
+# core-transport (#232), so this crate is how rustls and ring reach the
+# Android build.
 [lib]
 name = "relay"
 

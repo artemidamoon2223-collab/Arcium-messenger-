@@ -186,7 +186,10 @@ fn a_cut_round_continues_past_a_page_of_kept_envelopes() {
     assert_eq!(bob.texts(&alice), ["behind the kept page"]);
 
     // Both passes reached the end, so the next round reads the mailbox from
-    // the beginning again: every kept envelope is seen once more.
+    // the beginning again: every kept envelope is seen once more. That round
+    // must run to its end to show it; its time is not what is checked, so it
+    // gets the usual 120 s budget (a loaded machine took more than 400 ms).
+    net.set_limits(Duration::from_secs(2), Duration::from_secs(120), Duration::from_secs(300));
     let r = net.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
     assert_eq!((r.fetched, r.deferred), (KEPT, KEPT), "{r:?}");

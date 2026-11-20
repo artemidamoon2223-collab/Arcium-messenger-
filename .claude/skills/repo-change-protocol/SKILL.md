@@ -104,9 +104,12 @@ How to carry out a merge that has already been instructed:
 1. Fresh-read the PR state; record the exact head SHA. If it differs from the
    expected SHA, stop and report.
 2. Fresh-read the check state on that exact SHA. Unless every check run
-   reported on that SHA is success, stop and report. Which checks branch
-   protection requires cannot be read with the available tools; do not infer
-   it (`CLAUDE.md`, «Постоянные ограничения»).
+   reported on that SHA is success, stop and report. No check runs at all is
+   not success: CI runs on a pull request's `pull_request` event only, so a
+   head just updated, or one with a merge conflict, has none yet. The jobs of
+   `arcium-ci.yml` at that SHA must be among the runs; until they are, wait.
+   Which checks branch protection requires cannot be read with the available
+   tools; do not infer it (`CLAUDE.md`, «Постоянные ограничения»).
 3. If GitHub refuses the merge because the head is behind its base, or
    reports the PR as behind, update the head by a merge of the base and
    nothing else: `mcp__github__update_pull_request_branch` with

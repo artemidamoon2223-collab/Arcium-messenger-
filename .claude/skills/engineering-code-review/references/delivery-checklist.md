@@ -26,7 +26,7 @@ Running them locally is the cheapest way to know what CI will say.
 Knowing this prevents both false confidence and pointless waiting. This is the
 one copy of the path filters in the skills; other skills point here. It is
 derived from the `on:` block of every file in `.github/workflows/` (the path
-lists at `de328a1`; `push` limited to `main` after `ec6e00e`). Those blocks are
+lists at `de328a1`; `push` limited to `main` by #233). Those blocks are
 the source: re-derive at your target SHA with
 
 ```bash
@@ -42,7 +42,8 @@ grep -nE "^  (push|pull_request|schedule|workflow_dispatch):|^    branches:|^   
 | `android-build-baseline.yml`, `native-artifact-baseline.yml` | never: manual (`workflow_dispatch`) only |
 | `monthly-backup.yml` | never: monthly schedule and manual only |
 
-- A push to any other branch runs nothing (`branches: [main]` under `push`):
+- A push to any other branch, or of a tag, runs nothing (`branches: [main]`
+  under `push`):
   a branch is checked by the `pull_request` run once it has a pull request,
   and that run's check runs are reported on the head commit. GitHub does not
   start a `pull_request` run while the pull request has a merge conflict.

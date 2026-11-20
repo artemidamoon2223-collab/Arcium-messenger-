@@ -249,6 +249,10 @@ Where: `crates/mobile-ffi/src/network.rs`, `network/wire.rs`,
   that a change keeps every app SEND on a connection authenticated as its
   sender, and adds no further keep/delete,
   answer/no-answer or timing difference that depends on who is pinned.
+  Accepted exception (Owner, 2026-11-20; R-21): a message whose header names
+  a chain a session that has received no longer knows draws a GONE on its
+  second arrival, which shows a mailbox writer that the session exists
+  (`NET-MESSAGING.md` §8, "Naming against a mailbox writer").
 - **History numbering.** History entries are numbered without gaps and never
   deleted, so a number is missing only from a damaged store. Paging
   (`chat_entries_page`), the summary and the one-time build of the open-entry

@@ -52,9 +52,12 @@ pub const MAX_FAR_SKIP: u32 = 100_000;
 
 /// Earlier receiving chains a ratchet remembers, newest last: the peer's
 /// ratchet key of each and the position it ended at (the `pn` of the header
-/// that started the next chain). Only used to tell that a late message of
-/// such a chain can never be read here ([`DoubleRatchet::is_beyond_recall`];
-/// tracker R-21). Public keys and counters only, no secret. A receiving
+/// that started the next chain). Used to tell that a late message of such a
+/// chain can never be read here ([`DoubleRatchet::is_beyond_recall`]), and
+/// that a header of one needs no far skip and names no forgotten chain
+/// ([`DoubleRatchet::needs_far_skip`],
+/// [`DoubleRatchet::names_forgotten_chain`]; tracker R-21). Public keys and
+/// counters only, no secret. A receiving
 /// chain is left once per exchange (the peer writes again after reading this
 /// side), so this covers about the last 32 exchanges.
 /// The limit is part of `RATCHET_STATE_V2`: a build that remembered fewer
@@ -399,7 +402,8 @@ impl DoubleRatchet {
     /// when the store was full, or dropped by a far skip). Reads state only;
     /// changes nothing. A position at or past a left chain's end is `false`:
     /// the peer sent nothing there. A header of an older chain is not
-    /// recognised (`false`) (tracker R-21).
+    /// recognised here (`false`); see
+    /// [`names_forgotten_chain`](Self::names_forgotten_chain) (tracker R-21).
     pub fn is_beyond_recall(&self, header: &Header) -> bool {
         let behind = if self.dhr.is_some_and(|dhr| *dhr.as_bytes() == header.dh) {
             header.n < self.nr
@@ -409,6 +413,32 @@ impl DoubleRatchet {
                 .any(|(dh, end)| *dh == header.dh && header.n < *end)
         };
         behind && !self.skipped.contains_key(&(header.dh, header.n))
+    }
+
+    /// Whether `header` names a chain this state no longer knows, once it
+    /// has a receiving chain: neither the current receiving chain nor one
+    /// of the remembered ones, with no stored key for its position and no
+    /// far skip needed to reach it. A message of the peer's next chain
+    /// decrypts (a DH step needs no history), so a genuine message of this
+    /// session with such a header belongs to a chain left more than
+    /// [`MAX_PREV_CHAINS`] steps ago, or before this state remembered any
+    /// (a `RATCHET_STATE_V1` record), and its key is gone. A forged header
+    /// answers `true` as well: the two cannot be told apart, so a caller may
+    /// only use this where naming a message that is not the peer's changes
+    /// nothing (a GONE message, tracker R-21). `false` until this state has
+    /// a receiving chain (it received a message from the peer): an
+    /// initiator's state knows the peer's signed prekey as its first
+    /// receiving key, and a message under a handshake of the peer's own (a
+    /// simultaneous start) would otherwise look forgotten. Reads state only;
+    /// changes nothing.
+    pub fn names_forgotten_chain(&self, header: &Header) -> bool {
+        let (Some(dhr), Some(_)) = (self.dhr, &self.ckr) else {
+            return false;
+        };
+        *dhr.as_bytes() != header.dh
+            && !self.prev_chains.iter().any(|(dh, _)| *dh == header.dh)
+            && !self.skipped.contains_key(&(header.dh, header.n))
+            && !self.needs_far_skip(header)
     }
 
     /// At a DH step into the chain of `entering`: remembers the receiving
@@ -1802,7 +1832,8 @@ mod tests {
     /// R-21: a late message of a chain Bob has left is beyond recall when
     /// its position lies before that chain's end and its key is gone, for
     /// the last `MAX_PREV_CHAINS` chains; a stored key, a position at or past
-    /// the end, and an older chain are not. A forged header that would start
+    /// the end, and an older chain are not (an older chain is one Bob no
+    /// longer knows, `names_forgotten_chain`). A forged header that would start
     /// a chain leaves the history as it was.
     #[test]
     fn a_late_message_of_an_earlier_chain_whose_key_is_gone_is_beyond_recall() {
@@ -1845,6 +1876,59 @@ mod tests {
         }
         assert_eq!(bob.prev_chains.len(), MAX_PREV_CHAINS);
         assert!(!bob.is_beyond_recall(&m[0].0), "no longer remembered");
+        assert!(bob.names_forgotten_chain(&m[0].0), "but a chain Bob no longer knows");
+    }
+
+    /// One turn of the conversation: Bob writes, Alice reads it and writes
+    /// on a new chain, Bob reads that.
+    fn turn(alice: &mut DoubleRatchet, bob: &mut DoubleRatchet) {
+        let (h, c) = bob.encrypt(b"turn", b"assoc").unwrap();
+        alice.decrypt(&h, &c, b"assoc").unwrap();
+        let (h, c) = alice.encrypt(b"turn", b"assoc").unwrap();
+        bob.decrypt(&h, &c, b"assoc").unwrap();
+    }
+
+    /// R-21 beyond the remembered chains (Owner, 2026-11-20): a header of a
+    /// chain the state no longer knows is named once it has a receiving
+    /// chain. Not before (an initiator knows the peer's signed prekey as its
+    /// first receiving key), and not the current chain, a remembered one, a
+    /// position whose key is stored (it is read, also on a forgotten
+    /// chain), or a header left to a far skip.
+    #[test]
+    fn a_header_of_a_forgotten_chain_is_named() {
+        let (mut alice, mut bob) = established_pair();
+        let ad = b"assoc";
+        let unknown = Header { dh: [7; 32], pn: 0, n: 0 };
+        assert!(!alice.names_forgotten_chain(&unknown), "an initiator that received nothing");
+        assert!(!bob.names_forgotten_chain(&unknown), "a responder that received nothing");
+
+        // Alice's first chain: Bob reads m1 only, so m0's key is stored, and
+        // m2's once Bob leaves the chain (Alice sent three there).
+        let m0 = alice.encrypt(b"m0", ad).unwrap();
+        let m1 = alice.encrypt(b"m1", ad).unwrap();
+        let m2 = alice.encrypt(b"m2", ad).unwrap();
+        bob.decrypt(&m1.0, &m1.1, ad).unwrap();
+        assert!(bob.names_forgotten_chain(&unknown), "a key Bob never saw");
+        assert!(!bob.names_forgotten_chain(&m1.0), "the current chain, read");
+        assert!(!bob.names_forgotten_chain(&m2.0), "the current chain, ahead");
+        let far = Header { dh: [7; 32], pn: 0, n: MAX_SKIP + 1 };
+        assert!(bob.needs_far_skip(&far));
+        assert!(!bob.names_forgotten_chain(&far), "left to a far skip");
+
+        turn(&mut alice, &mut bob);
+        assert!(!bob.names_forgotten_chain(&m1.0), "a remembered chain");
+        let past_end = Header { dh: m1.0.dh, pn: 0, n: 99 };
+        assert!(!bob.names_forgotten_chain(&past_end), "a remembered chain, past its end");
+
+        for _ in 0..MAX_PREV_CHAINS {
+            turn(&mut alice, &mut bob);
+        }
+        assert!(bob.names_forgotten_chain(&m1.0), "forgotten, its key used");
+        assert!(bob.decrypt(&m1.0, &m1.1, ad).is_err(), "and indeed cannot be read");
+        for (m, text) in [(&m0, b"m0"), (&m2, b"m2")] {
+            assert!(!bob.names_forgotten_chain(&m.0), "its key is stored");
+            assert_eq!(*bob.decrypt(&m.0, &m.1, ad).unwrap(), *text, "so it is read");
+        }
     }
 
     /// Alice and Bob after one message from Alice: Bob reads her current

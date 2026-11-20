@@ -698,6 +698,14 @@ impl DurableSession {
         self.session.ratchet.is_beyond_recall(header)
     }
 
+    /// Whether `header` names a receiving chain this session no longer
+    /// knows (`DoubleRatchet::names_forgotten_chain`; tracker R-21): a chain
+    /// left more than `MAX_PREV_CHAINS` steps ago, a message of another
+    /// session of the peer, or a forged header. Reads state only.
+    pub fn names_forgotten_chain(&self, header: &Header) -> bool {
+        self.session.ratchet.names_forgotten_chain(header)
+    }
+
     /// Whether decrypting a message with `header` under this session needs
     /// a far skip (`DoubleRatchet::needs_far_skip`; tracker R-14). Reads
     /// state only.

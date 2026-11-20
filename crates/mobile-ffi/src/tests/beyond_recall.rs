@@ -6,6 +6,7 @@ use super::net_harness::*;
 use crate::network::chat::ChatEntryState;
 use crate::network::wire::{client_id, Envelope, Payload};
 use crate::SendResult;
+use core_protocol::messaging::Recall;
 
 /// Deletes everything the relay holds for `of`, as a relay that loses it.
 fn lose_mailbox(addr: &str, of: &Device) -> usize {
@@ -340,10 +341,11 @@ fn a_failed_round_keeps_no_messages_to_name() {
 
 /// R-21 with 32 earlier chains remembered (Owner, 2026-11-19), through the
 /// stored session: Alice's message 0, whose key Bob evicted, is still
-/// recognised as beyond recall after every turn of the conversation up to
-/// 32 (four were remembered before), and no longer after the 33rd. Bob's
-/// session is written to the store and read back at every message, so the
-/// chains survive `RATCHET_STATE_V2` each time.
+/// recognised by its remembered chain after every turn of the conversation
+/// up to 32 (four were remembered before), and from the 33rd on as a
+/// message of a chain Bob no longer knows (Owner, 2026-11-20): no turn
+/// misses it. Bob's session is written to the store and read back at every
+/// message, so the chains survive `RATCHET_STATE_V2` each time.
 #[test]
 fn a_late_message_is_recognised_for_32_turns_through_the_stored_session() {
     // The number decided, not the constant: a test counting turns by
@@ -362,18 +364,202 @@ fn a_late_message_is_recognised_for_32_turns_through_the_stored_session() {
         bob.core.decrypt_message(to_alice, wires[i].clone()).unwrap();
     }
     let late = &wires[0];
-    assert!(bob.core.beyond_recall(to_alice, late).unwrap(), "evicted, on the current chain");
+    assert_eq!(bob.core.beyond_recall(to_alice, late).unwrap(), Recall::KeyGone, "evicted, on the current chain");
 
-    for turn in 1..=REMEMBERED + 1 {
+    for turn in 1..=REMEMBERED + 2 {
         let b = bob.core.encrypt_message(to_alice, b"turn".to_vec()).unwrap();
         alice.core.decrypt_message(to_bob, b).unwrap();
         let a = alice.core.encrypt_message(to_bob, b"turn".to_vec()).unwrap();
         bob.core.decrypt_message(to_alice, a).unwrap();
-        assert_eq!(
-            bob.core.beyond_recall(to_alice, late).unwrap(),
-            turn <= REMEMBERED,
-            "after {turn} turns"
-        );
+        let expected = if turn <= REMEMBERED {
+            Recall::KeyGone
+        } else {
+            Recall::ForgottenChain
+        };
+        assert_eq!(bob.core.beyond_recall(to_alice, late).unwrap(), expected, "after {turn} turns");
     }
+    relay.stop();
+}
+
+/// R-21 beyond the remembered chains (Owner, 2026-11-20): Alice's text 0,
+/// whose key Bob evicted, reaches Bob only after 33 turns of the
+/// conversation, when he no longer remembers its chain. Bob names it all the
+/// same, on its second arrival (a GONE is sent once, a late text again and
+/// again), and Alice gives it up. (Before, it was deleted silently and Alice
+/// kept sending it until the user cancelled it.)
+#[test]
+fn a_late_message_of_a_forgotten_chain_is_named_back() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+
+    alice
+        .net
+        .chat_send(bob.pk.clone(), b"g0".to_vec(), "late".into())
+        .unwrap();
+    let mut ids: Vec<Vec<u8>> = vec![Vec::new()];
+    ids.extend((1..2101).map(|i| alice.send(&bob, &format!("g{i}"), "x")));
+    let pending = alice.core.pending_outgoing(to_bob).unwrap();
+    ids[0] = pending
+        .iter()
+        .find(|m| m.client_message_id == client_id::text(b"g0"))
+        .expect("text 0 pending")
+        .message_id
+        .clone();
+    let wire = |i: usize| {
+        pending
+            .iter()
+            .find(|m| m.message_id == ids[i])
+            .expect("pending")
+            .wire
+            .clone()
+    };
+    let late = wire(0);
+    // Bob reads three of them: the key of text 0 is evicted.
+    for i in [900, 1800, 2100] {
+        bob.core.receive_committed(to_alice, &wire(i)).unwrap();
+    }
+    for id in &ids[1..] {
+        alice.core.abandon_outgoing(to_bob, id.clone()).unwrap();
+    }
+    // 33 turns, directly on the sessions: Alice does not sync meanwhile, so
+    // text 0 is not sent again before its chain is forgotten. Each turn
+    // message is a receipt for an id nobody holds, which a round settles
+    // without effect.
+    let turn = Payload::Receipt(vec![[0x55; 32]]).encode().to_vec();
+    for _ in 0..33 {
+        let b = bob.core.encrypt_message(to_alice, turn.clone()).unwrap();
+        alice.core.decrypt_message(to_bob, b).unwrap();
+        let a = alice.core.encrypt_message(to_bob, turn.clone()).unwrap();
+        bob.core.decrypt_message(to_alice, a).unwrap();
+    }
+    // The turns are not the point: their messages are given up.
+    for m in bob.core.pending_outgoing(to_alice).unwrap() {
+        bob.core.abandon_outgoing(to_alice, m.message_id).unwrap();
+    }
+    for m in alice.core.pending_outgoing(to_bob).unwrap() {
+        if m.message_id != ids[0] {
+            alice.core.abandon_outgoing(to_bob, m.message_id).unwrap();
+        }
+    }
+
+    lose_mailbox(&addr, &bob);
+    let alice_key = alice.core.our_identity_pk().unwrap();
+    let late = Envelope::Message { sender: alice_key, wire: late }.encode();
+    // Bob's first round also sends receipts for the three texts he read.
+    inject(&addr, &bob, late.clone());
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, 3), "seen once: the receipts, no GONE: {r:?}");
+    inject(&addr, &bob, late);
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, 1), "named on its second arrival: {r:?}");
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    let record = alice.core.prior_send(&bob.core.our_identity_pk().unwrap(), &client_id::text(b"g0"));
+    assert!(
+        matches!(record, Ok(Some(SendResult::Abandoned { .. }))),
+        "text 0 reads as abandoned: {record:?}"
+    );
+    let history = alice.net.chat_entries(bob.pk.clone()).unwrap();
+    assert_eq!(history[0].state, ChatEntryState::NotDelivered);
+    relay.stop();
+}
+
+/// A message under a header the session does not know is named back only
+/// once the session has received from the contact: before that, on this
+/// device's own unconfirmed start, it may be the contact's first message
+/// under a handshake of its own (a simultaneous start), and draws no GONE.
+/// Afterwards a forged one is named like a late one when it arrives again
+/// (the contact ignores an id it has not pending).
+#[test]
+fn an_unknown_header_draws_no_gone_before_the_session_is_confirmed() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = (Device::new(&addr, 1), Device::new(&addr, 2));
+    alice.knows(&bob);
+    bob.knows(&alice);
+    bob.net.publish_prekeys().unwrap();
+    alice.net.start_session(bob.pk.clone()).unwrap();
+    let forged = || {
+        let header = core_crypto::ratchet::Header {
+            dh: [7; 32],
+            pn: 0,
+            n: 0,
+        };
+        Envelope::Message {
+            sender: bob.core.our_identity_pk().unwrap(),
+            wire: [&header.to_bytes()[..], &[0u8; 40][..]].concat(),
+        }
+        .encode()
+    };
+    let base = alice.sync();
+    assert!(base.errors.is_empty(), "{:?}", base.errors);
+    let base = alice.sync();
+    for arrival in 1..=2 {
+        inject(&addr, &alice, forged());
+        let r = alice.sync();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!((r.dropped, r.published), (1, base.published), "arrival {arrival}, no GONE: {r:?}");
+    }
+
+    settle(&[&alice, &bob]);
+    inject(&addr, &alice, forged());
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, 0), "seen once: {r:?}");
+    inject(&addr, &alice, forged());
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, 1), "named once confirmed, when seen again: {r:?}");
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(bob.undelivered(&alice), 0, "nothing of Bob's was named");
+    relay.stop();
+}
+
+/// A message of a chain the session no longer knows is named only when it
+/// arrives again, so a GONE that cannot be read here (sent once, by a device
+/// whose session diverged from ours) is not answered. A message named stays
+/// noted and is named again at its next arrival, at most once a minute. The
+/// notes are bounded per session: exactly 256 are kept, the least recently
+/// seen dropped first.
+#[test]
+fn messages_of_forgotten_chains_are_noted_and_bounded() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    let forged = |n: u32| {
+        let header = core_crypto::ratchet::Header { dh: [7; 32], pn: 0, n };
+        Envelope::Message {
+            sender: bob.core.our_identity_pk().unwrap(),
+            wire: [&header.to_bytes()[..], &[0u8; 40][..]].concat(),
+        }
+        .encode()
+    };
+    let round = |envs: Vec<Vec<u8>>| {
+        for env in envs {
+            inject(&addr, &alice, env);
+        }
+        let r = alice.sync();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        (r.dropped, r.published)
+    };
+    let cap = crate::network::FORGOTTEN_SEEN_PER_SESSION as u32;
+    assert_eq!(cap, 256);
+    alice.net.set_minute(Some(1_000));
+    assert_eq!(round((0..cap).map(forged).collect()), (cap, 0), "256 noted, none named");
+    assert_eq!(round(vec![forged(0)]), (1, 1), "the oldest of exactly 256 is still noted: named");
+    alice.net.set_minute(Some(1_001));
+    assert_eq!(round(vec![forged(0)]), (1, 1), "still noted, so named again at once");
+    // 256 newer notes push out every older one, the last named included.
+    assert_eq!(round((cap..2 * cap).map(forged).collect()), (cap, 0));
+    alice.net.set_minute(Some(1_002));
+    assert_eq!(round(vec![forged(0)]), (1, 0), "pushed out: seen once again");
+    assert_eq!(round(vec![forged(0)]), (1, 1), "now named");
     relay.stop();
 }

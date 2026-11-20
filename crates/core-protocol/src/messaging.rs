@@ -424,29 +424,35 @@ impl Messenger {
     }
 
     /// Whether `wire`, a message that did not decrypt under the session
-    /// `handle`, names a position of that session's current receiving chain,
-    /// or of one of the last chains it left, whose key is gone, so it can
-    /// never be decrypted here (tracker R-21;
-    /// `DoubleRatchet::is_beyond_recall`).
-    /// `false` for bytes too short or malformed to have a header. Reads
-    /// state only; changes nothing.
+    /// `handle`, can never be decrypted here (tracker R-21): it names a
+    /// position of that session's current receiving chain, or of one of the
+    /// last chains it left, whose key is gone (`Recall::KeyGone`;
+    /// `DoubleRatchet::is_beyond_recall`), or, once the session received a
+    /// message from the peer, a chain it no longer knows
+    /// (`Recall::ForgottenChain`; `DoubleRatchet::names_forgotten_chain`).
+    /// `Recall::Unknown` for bytes too short or malformed to have a header.
+    /// Reads state only; changes nothing.
     pub fn beyond_recall(
         &self,
         store: &mut EncryptedStore,
         our_identity_pk: [u8; 32],
         handle: u64,
         wire: &[u8],
-    ) -> Result<bool, MessagingError> {
+    ) -> Result<Recall, MessagingError> {
         let Some(header_bytes) = wire.get(..HEADER_SIZE) else {
-            return Ok(false);
+            return Ok(Recall::Unknown);
         };
         let Ok(header) = Header::from_bytes(header_bytes) else {
-            return Ok(false);
+            return Ok(Recall::Unknown);
         };
-        Ok(self
-            .load(store, our_identity_pk, handle)?
-            .0
-            .is_beyond_recall(&header))
+        let session = self.load(store, our_identity_pk, handle)?.0;
+        Ok(if session.is_beyond_recall(&header) {
+            Recall::KeyGone
+        } else if session.names_forgotten_chain(&header) {
+            Recall::ForgottenChain
+        } else {
+            Recall::Unknown
+        })
     }
 
     /// Whether receiving `wire` under the session `handle` needs a far skip:

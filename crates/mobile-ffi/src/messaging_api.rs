@@ -274,7 +274,8 @@ impl ArciumCore {
     }
 
     /// Whether `message`, which did not decrypt under the session
-    /// `session_id`, can never be decrypted here because its key is gone
+    /// `session_id`, can never be decrypted here because its key is gone,
+    /// or names a chain the session no longer knows
     /// (`Messenger::beyond_recall`; tracker R-21).
     pub(crate) fn beyond_recall(&self, session_id: u64, message: &[u8]) -> Result<bool, CoreError> {
         let identity = self.require_identity()?;

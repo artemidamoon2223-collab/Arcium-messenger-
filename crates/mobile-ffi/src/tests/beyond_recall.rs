@@ -364,16 +364,143 @@ fn a_late_message_is_recognised_for_32_turns_through_the_stored_session() {
     let late = &wires[0];
     assert!(bob.core.beyond_recall(to_alice, late).unwrap(), "evicted, on the current chain");
 
-    for turn in 1..=REMEMBERED + 1 {
+    // Remembered for 32 turns, then a chain Bob no longer knows, which is
+    // recognised as well (Owner, 2026-11-20): no turn in between misses it.
+    for turn in 1..=REMEMBERED + 2 {
         let b = bob.core.encrypt_message(to_alice, b"turn".to_vec()).unwrap();
         alice.core.decrypt_message(to_bob, b).unwrap();
         let a = alice.core.encrypt_message(to_bob, b"turn".to_vec()).unwrap();
         bob.core.decrypt_message(to_alice, a).unwrap();
-        assert_eq!(
-            bob.core.beyond_recall(to_alice, late).unwrap(),
-            turn <= REMEMBERED,
-            "after {turn} turns"
-        );
+        assert!(bob.core.beyond_recall(to_alice, late).unwrap(), "after {turn} turns");
     }
+    relay.stop();
+}
+
+/// R-21 beyond the remembered chains (Owner, 2026-11-20): Alice's text 0,
+/// whose key Bob evicted, reaches Bob only after 33 turns of the
+/// conversation, when he no longer remembers its chain. Bob names it all the
+/// same, and Alice gives it up. (Before, it was deleted silently and Alice
+/// kept sending it until the user cancelled it.)
+#[test]
+fn a_late_message_of_a_forgotten_chain_is_named_back() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+
+    alice
+        .net
+        .chat_send(bob.pk.clone(), b"g0".to_vec(), "late".into())
+        .unwrap();
+    let mut ids: Vec<Vec<u8>> = vec![Vec::new()];
+    ids.extend((1..2101).map(|i| alice.send(&bob, &format!("g{i}"), "x")));
+    let pending = alice.core.pending_outgoing(to_bob).unwrap();
+    ids[0] = pending
+        .iter()
+        .find(|m| m.client_message_id == client_id::text(b"g0"))
+        .expect("text 0 pending")
+        .message_id
+        .clone();
+    let wire = |i: usize| {
+        pending
+            .iter()
+            .find(|m| m.message_id == ids[i])
+            .expect("pending")
+            .wire
+            .clone()
+    };
+    let late = wire(0);
+    // Bob reads three of them: the key of text 0 is evicted.
+    for i in [900, 1800, 2100] {
+        bob.core.receive_committed(to_alice, &wire(i)).unwrap();
+    }
+    for id in &ids[1..] {
+        alice.core.abandon_outgoing(to_bob, id.clone()).unwrap();
+    }
+    // 33 turns, directly on the sessions: Alice does not sync meanwhile, so
+    // text 0 is not sent again before its chain is forgotten. Each turn
+    // message is a receipt for an id nobody holds, which a round settles
+    // without effect.
+    let turn = Payload::Receipt(vec![[0x55; 32]]).encode().to_vec();
+    for _ in 0..33 {
+        let b = bob.core.encrypt_message(to_alice, turn.clone()).unwrap();
+        alice.core.decrypt_message(to_bob, b).unwrap();
+        let a = alice.core.encrypt_message(to_bob, turn.clone()).unwrap();
+        bob.core.decrypt_message(to_alice, a).unwrap();
+    }
+    // The turns are not the point: their messages are given up.
+    for m in bob.core.pending_outgoing(to_alice).unwrap() {
+        bob.core.abandon_outgoing(to_alice, m.message_id).unwrap();
+    }
+    for m in alice.core.pending_outgoing(to_bob).unwrap() {
+        if m.message_id != ids[0] {
+            alice.core.abandon_outgoing(to_bob, m.message_id).unwrap();
+        }
+    }
+
+    lose_mailbox(&addr, &bob);
+    let alice_key = alice.core.our_identity_pk().unwrap();
+    inject(&addr, &bob, Envelope::Message { sender: alice_key, wire: late }.encode());
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    // Bob also sends receipts for the three texts he read; Alice's side
+    // below shows that text 0 was named.
+    assert!(r.dropped == 1 && r.published >= 1, "{r:?}");
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    let record = alice.core.prior_send(&bob.core.our_identity_pk().unwrap(), &client_id::text(b"g0"));
+    assert!(
+        matches!(record, Ok(Some(SendResult::Abandoned { .. }))),
+        "text 0 reads as abandoned: {record:?}"
+    );
+    let history = alice.net.chat_entries(bob.pk.clone()).unwrap();
+    assert_eq!(history[0].state, ChatEntryState::NotDelivered);
+    relay.stop();
+}
+
+/// A message under a header the session does not know is named back only
+/// once the session has received from the contact: before that, on this
+/// device's own unconfirmed start, it may be the contact's first message
+/// under a handshake of its own (a simultaneous start), and draws no GONE.
+/// Afterwards a forged one is named like a late one (the contact ignores
+/// an id it has not pending).
+#[test]
+fn an_unknown_header_draws_no_gone_before_the_session_is_confirmed() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = (Device::new(&addr, 1), Device::new(&addr, 2));
+    alice.knows(&bob);
+    bob.knows(&alice);
+    bob.net.publish_prekeys().unwrap();
+    alice.net.start_session(bob.pk.clone()).unwrap();
+    let forged = || {
+        let header = core_crypto::ratchet::Header {
+            dh: [7; 32],
+            pn: 0,
+            n: 0,
+        };
+        Envelope::Message {
+            sender: bob.core.our_identity_pk().unwrap(),
+            wire: [&header.to_bytes()[..], &[0u8; 40][..]].concat(),
+        }
+        .encode()
+    };
+    let base = alice.sync();
+    assert!(base.errors.is_empty(), "{:?}", base.errors);
+    let base = alice.sync();
+    inject(&addr, &alice, forged());
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, base.published), "no GONE: {r:?}");
+
+    settle(&[&alice, &bob]);
+    inject(&addr, &alice, forged());
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, 1), "named once confirmed: {r:?}");
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(bob.undelivered(&alice), 0, "nothing of Bob's was named");
     relay.stop();
 }

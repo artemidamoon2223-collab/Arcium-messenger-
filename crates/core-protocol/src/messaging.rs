@@ -427,9 +427,12 @@ impl Messenger {
     /// `handle`, names a position of that session's current receiving chain,
     /// or of one of the last chains it left, whose key is gone, so it can
     /// never be decrypted here (tracker R-21;
-    /// `DoubleRatchet::is_beyond_recall`).
-    /// `false` for bytes too short or malformed to have a header. Reads
-    /// state only; changes nothing.
+    /// `DoubleRatchet::is_beyond_recall`), or names a chain the session no
+    /// longer knows once it received a message from the peer
+    /// (`DoubleRatchet::names_forgotten_chain`): a chain left longer ago,
+    /// or a forged header, which cannot be told apart. `false` for bytes
+    /// too short or malformed to have a header. Reads state only; changes
+    /// nothing.
     pub fn beyond_recall(
         &self,
         store: &mut EncryptedStore,
@@ -443,10 +446,8 @@ impl Messenger {
         let Ok(header) = Header::from_bytes(header_bytes) else {
             return Ok(false);
         };
-        Ok(self
-            .load(store, our_identity_pk, handle)?
-            .0
-            .is_beyond_recall(&header))
+        let session = self.load(store, our_identity_pk, handle)?.0;
+        Ok(session.is_beyond_recall(&header) || session.names_forgotten_chain(&header))
     }
 
     /// Whether receiving `wire` under the session `handle` needs a far skip:

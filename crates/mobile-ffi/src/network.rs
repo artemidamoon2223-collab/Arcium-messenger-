@@ -1465,11 +1465,14 @@ impl NetworkMessenger {
                 // A message of our session whose key is gone (it
                 // arrived after the key was evicted) can never be
                 // read: name it to the contact, who then stops
-                // sending it (R-21). Only the contact can read the
-                // GONE message, and it changes nothing for an id the
-                // contact has not pending, so a forged message that
-                // only looks late gains nothing, and draws at most
-                // one GONE per session per round. A failed check is
+                // sending it (R-21). Once our session has received
+                // from the contact, that includes a message of a chain
+                // it no longer knows (left more than `MAX_PREV_CHAINS`
+                // steps ago), and a forged message looks the same. Only
+                // the contact can read the GONE message, and it changes
+                // nothing for an id the contact has not pending, so a
+                // forged message gains nothing, and draws at most one
+                // GONE per session per round. A failed check is
                 // reported and must not abort the round.
                 if !first {
                     match self.core.beyond_recall(handle, wire) {

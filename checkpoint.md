@@ -13,10 +13,10 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `761cf43580b39f8bdfe329231e1e873f64faca5b` (merge of PR #237, 2026-11-20)
+- `main` = `b2c2760dc1fe5b0d7c4de68534cace454a9c7041` (merge of PR #238, 2026-11-20)
 
 ## Done
-- 20 Nov (D-068): #236 tracker note F-15/D-008 and relay comment, core-transport not a mobile-ffi dependency (`1d26e28`); #237 net_limits cut-round test no longer timing-dependent (`761cf43`).
+- 20 Nov (D-068): #236 tracker note F-15/D-008 and relay comment, core-transport not a mobile-ffi dependency (`1d26e28`); #237 net_limits cut-round test no longer timing-dependent (`761cf43`); #238 unused `log` dependency of mobile-ffi dropped (`b2c2760`).
 - 20 Nov (D-067 step 4): #235 hot-crate opt-level in test builds, CI test stores in memory (`6dd93b2`). With the warm cache: core-rust 11:25 → 6:28, tests step 7:09 → 2:45, clippy 59 s → 4 s; Android bridge build step 9:23 → 1:59.
 - 20 Nov (D-067 steps 2, 3, 5): #233 CI `push` on `main` only (`f8b58b8`); #234 cargo cache in CI, saved on main only, cargo-audit not cached (`00ca884`); cloud environment "Arcium-messenger" with a prefetch setup script.
 - 20 Nov (D-067 step 1): #232 drops the unused `core-transport` from `mobile-ffi` (`a777c87`): Android graph 390 → 131 packages, bridge build 9:23 → 5:23, `.so` smaller (TLS 1.2 code gone).
@@ -54,7 +54,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #238 (D-068, drop the unused `log` dependency of mobile-ffi), branch `ccr-c48f1096-31srvj`, head `965d9b5`; merge only on the Owner's word.
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -72,7 +72,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Optimization plan (D-067, approved by the Owner, in order)
-0, 6, 1 (#232), 2 (#233), 3 (#234), 4 (#235), 5 (environment): done → 7 split `lib.rs`/`network.rs` at the retro. Follow-ups (D-068): relay comment and tracker notes done (#236); flaky net_limits test done (#237); unused `log` in PR #238. Seen in CI logs, not acted on: cargo warns that core-transport's `anyhow` and `core-crypto` dependencies are unused.
+0, 6, 1 (#232), 2 (#233), 3 (#234), 4 (#235), 5 (environment): done → 7 split `lib.rs`/`network.rs` at the retro. Follow-ups (D-068): relay comment and tracker notes done (#236); flaky net_limits test done (#237); unused `log` done (#238). Seen in CI logs, not acted on: cargo warns that core-transport's `anyhow` and `core-crypto` dependencies are unused.
 
 ## Needs devices
 Two phones with a local relay (incl. background receive with the screen off); Pixel instrumentation; APK and `.so` signature check; H-8 on a release build; F-9 on a phone; devnet deploy at home (`docs/HOME-DEPLOY.md`).

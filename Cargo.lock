@@ -2130,7 +2130,6 @@ dependencies = [
  "core-crypto",
  "core-protocol",
  "core-storage",
- "core-transport",
  "ed25519-dalek",
  "log",
  "rand_core 0.6.4",

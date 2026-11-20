@@ -34,6 +34,65 @@ lto = true
 codegen-units = 1
 strip = true 
 
+# Test and debug builds optimize the crates the mobile-ffi tests spend their
+# time in: encryption, hashing, key agreement and signatures, ML-KEM, SQLite
+# and TLS, run thousands of times per test. Unoptimized, they took about a
+# third of that suite's time. Only opt-level changes: debug assertions and
+# overflow checks stay on, and the workspace's own crates stay unoptimized.
+# Release builds already optimize everything and are not affected. A crate
+# missing from this list is only slower, never tested differently.
+[profile.dev.package]
+# AEAD: XChaCha20-Poly1305
+aead = { opt-level = 3 }
+chacha20 = { opt-level = 3 }
+chacha20poly1305 = { opt-level = 3 }
+cipher = { opt-level = 3 }
+inout = { opt-level = 3 }
+poly1305 = { opt-level = 3 }
+universal-hash = { opt-level = 3 }
+# Hashes and KDFs
+block-buffer = { opt-level = 3 }
+crypto-common = { opt-level = 3 }
+digest = { opt-level = 3 }
+hkdf = { opt-level = 3 }
+hmac = { opt-level = 3 }
+keccak = { opt-level = 3 }
+sha2 = { opt-level = 3 }
+sha3 = { opt-level = 3 }
+# X25519, Ed25519
+curve25519-dalek = { opt-level = 3 }
+ed25519 = { opt-level = 3 }
+ed25519-dalek = { opt-level = 3 }
+signature = { opt-level = 3 }
+x25519-dalek = { opt-level = 3 }
+# ML-KEM
+kem = { opt-level = 3 }
+ml-kem = { opt-level = 3 }
+module-lattice = { opt-level = 3 }
+# Shared building blocks of the above
+cmov = { opt-level = 3 }
+cpufeatures = { opt-level = 3 }
+ctutils = { opt-level = 3 }
+generic-array = { opt-level = 3 }
+hybrid-array = { opt-level = 3 }
+subtle = { opt-level = 3 }
+zeroize = { opt-level = 3 }
+# SQLite (C, compiled with -O3 instead of -O0) and its Rust side
+hashbrown = { opt-level = 3 }
+hashlink = { opt-level = 3 }
+libsqlite3-sys = { opt-level = 3 }
+rusqlite = { opt-level = 3 }
+# TLS of the V2 relay
+ring = { opt-level = 3 }
+rustls = { opt-level = 3 }
+rustls-webpki = { opt-level = 3 }
+untrusted = { opt-level = 3 }
+# Encoding
+bincode = { opt-level = 3 }
+indexmap = { opt-level = 3 }
+serde = { opt-level = 3 }
+serde_json = { opt-level = 3 }
+
 # RUSTSEC-2026-0459: libsqlite3-sys before 0.39 bundles a vulnerable SQLite.
 # tor-dirmgr 0.21 (via arti-client) requires rusqlite 0.31, and every arti
 # release so far caps it below 0.41, so the workspace could not resolve

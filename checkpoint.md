@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
+Updated: 2026-11-20 UTC, by a Claude Code cloud session
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `2a6074fd39e33a0f814a49a7118ee8b5f2abe3e6` (merge of PR #227, 2026-11-19)
+- `main` = `0c9cdfd6a334bc7456ec39e1ce3699b6a739c113` (merge of PR #229, 2026-11-19)
 
 ## Done
+- 19 Nov (D-064, D-065): tracker #228 R-21, R-14, R-20 PARTIAL narrowed, R-9 note (`9c49e59`); #229 skills: reference links, the stored far-skip wait in the threat checklist, the relay design doc in the repo map (`0c9cdfd`).
 - 19 Nov (D-064): #226 R-21 remembers 32 earlier receiving chains (`b476035`); #227 R-14/R-20 far-skip wait kept in the store across restarts (`2a6074f`); R-9 keep/delete change deferred by the Owner.
 - 19 Nov (D-063): #225 skills refresh (`cb46ed7`): threat-checklist conflict rule, test locations, mutation check, merging a PR that is behind, tracker-text check, worktree as disposable copy, CLAUDE.md pointer to repo-change-protocol; QC loop unchanged.
 - 19 Nov (D-062): #222 R-6 signed-prekey rotation (`553c3ba`): 7 days, and after a one-time-prekey change; previous key for one more period; V3 prekey record. #223 NET-MESSAGING qualifiers (`24c82c5`); #224 tracker R-6 PARTIAL and checklist (`d578295`).
@@ -48,8 +49,7 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #228 `ccr-c1c2d0ae-0cypfu` (head `56cb2a5`): tracker update for R-21, R-14/R-20 and a note on R-9 (D-064); text checked by a fresh agent; CI green (12 runs); merge only on the Owner's instruction naming it.
-- #229 `docs/skills-links` (head `88dcecc`): skills fixes from the check (D-065); CI, then merge only on the Owner's instruction naming it.
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -63,7 +63,7 @@ Updated: 2026-11-19 (evening) UTC, by a Claude Code cloud session
 3. Two phones through that relay, incl. background receive — needs phones.
 4. Release build and signing — needs the Owner's decision on the key.
 5. Phone checks: R-18 (b), H-8, F-9; memory and time of #200 and #205 on a phone (scudo); far-skip cost (#209) on a phone.
-6. Protocol: R-6 done (#222); R-21 32 chains done (#226); R-14/R-20 durable far-skip wait done (#227), tracker #228 in review; R-9 keep/delete change deferred by the Owner (reconsider with the relay deployment); R-9 residuals (operator, V1, a sender counting its own messages, the far-wait write timing); R-14/R-20 residuals (over 100,000, way out a reset of option B; the delete after an accept is a separate write; the device clock); R-21 beyond 32 chains.
+6. Protocol: R-6 done (#222); R-21 32 chains done (#226); R-14/R-20 durable far-skip wait done (#227), tracker done (#228); R-9 keep/delete change deferred by the Owner (reconsider with the relay deployment); R-9 residuals (operator, V1, a sender counting its own messages, the far-wait write timing); R-14/R-20 residuals (over 100,000, way out a reset of option B; the delete after an accept is a separate write; the device clock); R-21 beyond 32 chains.
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Needs devices

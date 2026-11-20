@@ -50,6 +50,35 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component clippy
+      # Cargo cache: the downloaded crates and the compiled target/. Every run
+      # restores it; only a push to main saves it, so no pull request writes
+      # what a later run reuses. The key is exact (no prefix fallback): a new
+      # rustc, Cargo.lock or root Cargo.toml (which holds the build profiles)
+      # starts cold, so a cache entry lives no longer than one of each. Cargo
+      # rebuilds what changed: the checkout's files are normally newer than
+      # the cached build, so every workspace crate, and every dependency whose
+      # version, features or flags changed. cargo-audit is not cached: the
+      # audit must not depend on what an earlier run left behind.
+      - name: Cargo cache key
+        id: cargo-cache
+        shell: bash
+        env:
+          CARGO_HASH: ${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+        run: |
+          set -euo pipefail
+          test -n "${CARGO_HASH}"
+          rustc_id="$(rustc -vV | sha256sum | cut -c1-16)"
+          echo "key=core-rust-${RUNNER_OS}-${rustc_id}-${CARGO_HASH}" >> "$GITHUB_OUTPUT"
+      - name: Restore the cargo cache
+        id: cargo-restore
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ steps.cargo-cache.outputs.key }}
       # --locked: the tracked Cargo.lock is the dependency graph (H-10). Cargo
       # fails instead of resolving anew if it is missing or out of date.
       - name: Core crates tests
@@ -74,6 +103,17 @@ jobs:
         run: |
           git ls-files --error-unmatch Cargo.lock
           git diff --exit-code -- Cargo.lock
+      # Last, after every check passed; never on a pull request.
+      - name: Save the cargo cache (push to main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ steps.cargo-cache.outputs.key }}
 
   # ── Job 2: TS crypto — offline, verified ──
   ts-crypto:

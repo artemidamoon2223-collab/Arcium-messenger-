@@ -1,7 +1,10 @@
 name: Android CI
 
 on:
+  # push runs on main only: a branch with a pull request is checked by its
+  # pull_request run, and a push run of the same commit only repeated it.
   push:
+    branches: [main]
     paths:
       - 'android/**'
       - '.github/workflows/android-ci.yml'

@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-20 UTC, by a Claude Code cloud session
+Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoHR)
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -13,9 +13,10 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `ec6e00eed9c5c3c52aa32e502122aad88c87ebf8` (merge of PR #231, 2026-11-20)
+- `main` = `a777c87f70c55f921ed7a2eac3cbcb365bfb5547` (merge of PR #232, 2026-11-20)
 
 ## Done
+- 20 Nov (D-067 step 1): #232 drops the unused `core-transport` from `mobile-ffi` (`a777c87`): Android graph 390 → 131 packages, bridge build 9:23 → 5:23, `.so` smaller (TLS 1.2 code gone).
 - 20 Nov (D-066): #230 R-21 beyond 32 chains, a message of a forgotten chain named on its second arrival (`7b6677f`); the one local test failure was a stale mutant binary, not a flake. Tracker #231 R-21 PARTIAL narrowed further, R-14 and R-9 notes (`ec6e00e`).
 - 19 Nov (D-064, D-065): tracker #228 R-21, R-14, R-20 PARTIAL narrowed, R-9 note (`9c49e59`); #229 skills: reference links, the stored far-skip wait in the threat checklist, the relay design doc in the repo map (`0c9cdfd`).
 - 19 Nov (D-064): #226 R-21 remembers 32 earlier receiving chains (`b476035`); #227 R-14/R-20 far-skip wait kept in the store across restarts (`2a6074f`); R-9 keep/delete change deferred by the Owner.
@@ -50,7 +51,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- None.
+- #233 (D-067 step 2, CI `push` on `main` only), branch `ccr-c48f1096-31srvj`, head `9fc243c`; merge only on the Owner's word.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -68,7 +69,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Optimization plan (D-067, approved by the Owner, in order)
-0 failing test in #230: done (stale mutant binary) → merge #230 and tracker #231: done → **6 new session (the Owner starts it) → next: 1** drop unused `core-transport` from `mobile-ffi` → 2 CI push trigger only on `main` → 3 CI cargo cache → 4 faster slow `mobile-ffi` tests → 5 cloud environment with a setup script → 7 split `lib.rs`/`network.rs` at the retro.
+0, the merges of #230/#231, 6 and 1 (#232): done → **2 PR #233 open** → 3 CI cargo cache (commit prepared locally, not pushed) → 4 faster `mobile-ffi` tests (prepared locally: hot-crate opt-level + TMPDIR=/dev/shm in CI) → 5 cloud environment with a setup script (script tested; the Owner approves on its card) → 7 split `lib.rs`/`network.rs` at the retro. One PR at a time on the session branch (the Owner's choice).
 
 ## Needs devices
 Two phones with a local relay (incl. background receive with the screen off); Pixel instrumentation; APK and `.so` signature check; H-8 on a release build; F-9 on a phone; devnet deploy at home (`docs/HOME-DEPLOY.md`).

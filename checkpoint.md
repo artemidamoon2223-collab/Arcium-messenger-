@@ -55,7 +55,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- None.
+- D-070 step 7 part A (lib.rs tests to src/tests/mod.rs), branch `ccr-c48f1096-31srvj`, head `844a957`; merge only on the Owner's word. Parts B and C follow, one at a time.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -73,7 +73,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Optimization plan (D-067, approved by the Owner, in order)
-0, 6, 1 (#232), 2 (#233), 3 (#234), 4 (#235), 5 (environment): done → 7 split `lib.rs`/`network.rs` at the retro. Follow-ups (D-068): relay comment and tracker notes done (#236); flaky net_limits test done (#237); unused `log` done (#238). core-transport's unused `anyhow`, `core-crypto`, `futures` done (#239, D-069).
+0, 6, 1 (#232), 2 (#233), 3 (#234), 4 (#235), 5 (environment): done → **7 split `lib.rs`/`network.rs`: started now (D-070), parts A, B, C**. Follow-ups (D-068): relay comment and tracker notes done (#236); flaky net_limits test done (#237); unused `log` done (#238). core-transport's unused `anyhow`, `core-crypto`, `futures` done (#239, D-069).
 
 ## Needs devices
 Two phones with a local relay (incl. background receive with the screen off); Pixel instrumentation; APK and `.so` signature check; H-8 on a release build; F-9 on a phone; devnet deploy at home (`docs/HOME-DEPLOY.md`).

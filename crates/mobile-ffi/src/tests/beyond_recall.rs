@@ -448,16 +448,11 @@ fn a_late_message_of_a_forgotten_chain_is_named_back() {
     lose_mailbox(&addr, &bob);
     let alice_key = alice.core.our_identity_pk().unwrap();
     let late = Envelope::Message { sender: alice_key, wire: late }.encode();
-    // Bob also sends receipts for the three texts he read in his first
-    // round; his pending messages show whether a GONE was committed.
+    // Bob's first round also sends receipts for the three texts he read.
     inject(&addr, &bob, late.clone());
     let r = bob.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert_eq!(r.dropped, 1, "{r:?}");
-    assert_eq!(bob.net.gone_len(), 0);
-    let r = bob.sync();
-    assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert_eq!(r.published, 0, "seen once: not named yet: {r:?}");
+    assert_eq!((r.dropped, r.published), (1, 3), "seen once: the receipts, no GONE: {r:?}");
     inject(&addr, &bob, late);
     let r = bob.sync();
     assert!(r.errors.is_empty(), "{:?}", r.errors);
@@ -504,10 +499,12 @@ fn an_unknown_header_draws_no_gone_before_the_session_is_confirmed() {
     let base = alice.sync();
     assert!(base.errors.is_empty(), "{:?}", base.errors);
     let base = alice.sync();
-    inject(&addr, &alice, forged());
-    let r = alice.sync();
-    assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert_eq!((r.dropped, r.published), (1, base.published), "no GONE: {r:?}");
+    for arrival in 1..=2 {
+        inject(&addr, &alice, forged());
+        let r = alice.sync();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!((r.dropped, r.published), (1, base.published), "arrival {arrival}, no GONE: {r:?}");
+    }
 
     settle(&[&alice, &bob]);
     inject(&addr, &alice, forged());
@@ -526,11 +523,12 @@ fn an_unknown_header_draws_no_gone_before_the_session_is_confirmed() {
 
 /// A message of a chain the session no longer knows is named only when it
 /// arrives again, so a GONE that cannot be read here (sent once, by a device
-/// whose session diverged from ours) is never answered. The notes of
-/// messages seen once are bounded per session: 256 newer ones push the
-/// oldest out, and it counts as seen once again.
+/// whose session diverged from ours) is not answered. A message named stays
+/// noted and is named again at its next arrival, at most once a minute. The
+/// notes are bounded per session: exactly 256 are kept, the least recently
+/// seen dropped first.
 #[test]
-fn messages_of_forgotten_chains_are_noted_once_and_bounded() {
+fn messages_of_forgotten_chains_are_noted_and_bounded() {
     let relay = start_relay();
     let addr = relay.addr().to_string();
     let (alice, bob) = connected(&addr);
@@ -543,23 +541,25 @@ fn messages_of_forgotten_chains_are_noted_once_and_bounded() {
         }
         .encode()
     };
+    let round = |envs: Vec<Vec<u8>>| {
+        for env in envs {
+            inject(&addr, &alice, env);
+        }
+        let r = alice.sync();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        (r.dropped, r.published)
+    };
     let cap = crate::network::FORGOTTEN_SEEN_PER_SESSION as u32;
     assert_eq!(cap, 256);
-    // The first is noted, then pushed out by 256 newer notes.
-    for n in 0..=cap {
-        inject(&addr, &alice, forged(n));
-    }
-    let r = alice.sync();
-    assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert_eq!((r.dropped, r.published), (cap + 1, 0), "{r:?}");
-    inject(&addr, &alice, forged(0));
-    let r = alice.sync();
-    assert_eq!((r.dropped, r.published), (1, 0), "pushed out, so seen once again: {r:?}");
-    inject(&addr, &alice, forged(0));
-    let r = alice.sync();
-    assert_eq!((r.dropped, r.published), (1, 1), "now named: {r:?}");
-    inject(&addr, &alice, forged(0));
-    let r = alice.sync();
-    assert_eq!((r.dropped, r.published), (1, 0), "named, so noted afresh: {r:?}");
+    alice.net.set_minute(Some(1_000));
+    assert_eq!(round((0..cap).map(forged).collect()), (cap, 0), "256 noted, none named");
+    assert_eq!(round(vec![forged(0)]), (1, 1), "the oldest of exactly 256 is still noted: named");
+    alice.net.set_minute(Some(1_001));
+    assert_eq!(round(vec![forged(0)]), (1, 1), "still noted, so named again at once");
+    // 256 newer notes push out every older one, the last named included.
+    assert_eq!(round((cap..2 * cap).map(forged).collect()), (cap, 0));
+    alice.net.set_minute(Some(1_002));
+    assert_eq!(round(vec![forged(0)]), (1, 0), "pushed out: seen once again");
+    assert_eq!(round(vec![forged(0)]), (1, 1), "now named");
     relay.stop();
 }

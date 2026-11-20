@@ -860,3 +860,34 @@ fn process_death_at_each_restart_step_repeats_safely() {
         relay.stop();
     }
 }
+
+/// R-21: giving the session up (a reset) clears the notes of messages of
+/// chains it no longer knows. The next session with the contact has the same
+/// handle, and a message noted before counts as seen once under it.
+#[test]
+fn a_reset_clears_the_notes_of_forgotten_chains() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    let forged = || {
+        let header = core_crypto::ratchet::Header { dh: [7; 32], pn: 0, n: 0 };
+        Envelope::Message {
+            sender: key(&bob),
+            wire: [&header.to_bytes()[..], &[0u8; 40][..]].concat(),
+        }
+        .encode()
+    };
+    inject(&addr, &alice, forged());
+    let r = alice.net.sync_conversations();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, 0), "noted: {r:?}");
+
+    alice.net.reset_session(bob.pk.clone()).unwrap();
+    rounds(&[&alice, &bob, &alice, &bob], 3);
+    assert_eq!(session(&alice, &bob), ChatSessionState::Established);
+    inject(&addr, &alice, forged());
+    let r = alice.net.sync_conversations();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, 0), "noted afresh under the new session: {r:?}");
+    relay.stop();
+}

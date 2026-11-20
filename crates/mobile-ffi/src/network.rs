@@ -164,14 +164,19 @@ pub struct NetworkMessenger {
     /// every round: a message not named (a crash, a round that failed) is
     /// sent again by the peer and found again.
     gone: Mutex<HashMap<u64, Vec<[u8; 32]>>>,
-    /// Per session, messages of a chain it no longer knows seen once and
-    /// not named yet, oldest first, at most [`FORGOTTEN_SEEN_PER_SESSION`]
+    /// Per session, messages of a chain it no longer knows that arrived,
+    /// least recently seen first, at most [`FORGOTTEN_SEEN_PER_SESSION`]
     /// (R-21). Such a message is named when it arrives again: a late text
-    /// is sent again until it is named, while a GONE is sent once, so two
-    /// devices whose sessions diverged (a rollback, a copied store) do not
-    /// name each other's GONE messages forever. In memory only: a restart
-    /// forgets them, and the texts are found again on their next two
-    /// arrivals.
+    /// is sent again until it is named, while a GONE is sent until the
+    /// relay's acceptance is seen (normally once), so two devices whose
+    /// sessions diverged (a rollback, a copied store) do not name each
+    /// other's GONE messages round after round; a fault that delivers one
+    /// twice draws one GONE more. A message named stays noted, so it is
+    /// named again at its next arrival (its GONE lost, or a round that
+    /// failed before committing it), at most once a minute
+    /// ([`Self::name_gone`]). In memory only: a restart forgets them, and
+    /// the texts are found again on their next two arrivals; deleting the
+    /// contact or giving the session up clears the session's notes.
     forgotten_seen: Mutex<HashMap<u64, VecDeque<[u8; 32]>>>,
     /// Per session and per chain (the ratchet key a header names), when a
     /// message far ahead in that chain was first seen since the session
@@ -448,9 +453,10 @@ pub(crate) const FAR_SKIP_WAIT: Duration = Duration::from_secs(2 * 5 * 60);
 /// after it stops.
 pub(crate) const FAR_CHAINS_PER_SESSION: usize = 4;
 
-/// How many messages of chains a session no longer knows it notes, seen once
-/// and not yet named (R-21, `NetworkMessenger::forgotten_seen`): a GONE
-/// names at most 256 ids, and a forged flood only pushes out older notes.
+/// How many messages of chains a session no longer knows it notes (R-21,
+/// `NetworkMessenger::forgotten_seen`), as a GONE names at most 256 ids. A
+/// flood of forged ones pushes a genuine note out, so its text is named
+/// only after two more arrivals (docs/NET-MESSAGING.md section 8).
 pub(crate) const FORGOTTEN_SEEN_PER_SESSION: usize = 256;
 
 /// The deadline of one round's relay requests, and whether it stopped any
@@ -1657,21 +1663,33 @@ impl NetworkMessenger {
     }
 
     /// Whether the message `id` of a chain the session `handle` no longer
-    /// knows was seen before (R-21, `forgotten_seen`): then it is taken off
-    /// the list and named; otherwise it is noted, the oldest note of the
-    /// session dropped once [`FORGOTTEN_SEEN_PER_SESSION`] are held.
+    /// knows was seen before (R-21, `forgotten_seen`): then it is named.
+    /// Either way it becomes the session's newest note, the least recently
+    /// seen one dropped once [`FORGOTTEN_SEEN_PER_SESSION`] are held.
     fn seen_again(&self, handle: u64, id: [u8; 32]) -> bool {
         let mut seen = self.forgotten_seen.lock().expect("forgotten_seen");
         let ids = seen.entry(handle).or_default();
-        if let Some(at) = ids.iter().position(|seen| *seen == id) {
-            ids.remove(at);
-            return true;
-        }
-        if ids.len() >= FORGOTTEN_SEEN_PER_SESSION {
-            ids.pop_front();
-        }
+        let again = match ids.iter().position(|seen| *seen == id) {
+            Some(at) => {
+                ids.remove(at);
+                true
+            }
+            None => {
+                if ids.len() >= FORGOTTEN_SEEN_PER_SESSION {
+                    ids.pop_front();
+                }
+                false
+            }
+        };
         ids.push_back(id);
-        false
+        again
+    }
+
+    /// Forgets the notes of messages of chains the session `handle` no
+    /// longer knows (R-21, `forgotten_seen`): it is gone, and a new session
+    /// with the contact has the same handle.
+    pub(crate) fn forget_forgotten_notes(&self, handle: u64) {
+        self.forgotten_seen.lock().expect("forgotten_seen").remove(&handle);
     }
 
     /// Test aid: how many messages found beyond recall wait to be named.

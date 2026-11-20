@@ -351,10 +351,14 @@ device refused, a session given up), and either way it cannot be read
 here. A forged header looks the same and is named as well; the peer
 changes nothing for an id it has not pending, and a session it gave up
 cannot read the GONE. A first arrival is only noted, in memory, up to 256
-per session (the oldest note dropped first; a restart forgets them): a
-late text is sent again until it is named, while a GONE is sent once, so
-two devices whose sessions diverged (a rollback, a copied store) do not
-name each other's GONE messages round after round. Not before the
+per session (the least recently seen dropped first; a restart forgets
+them, and deleting the contact or giving the session up clears them): a
+late text is sent again until it is named, while a GONE is sent until the
+relay's acceptance is seen (normally once), so two devices whose sessions
+diverged (a rollback, a copied store) do not name each other's GONE
+messages round after round; a fault that delivers one twice draws one
+GONE more. A message named stays noted, so its next arrival is named
+again, as below. Not before the
 session received: an initiator's ratchet knows the peer's signed prekey
 as its first receiving key, and the contact's first message under a
 handshake of its own (a simultaneous start) would look forgotten. The messages found in one
@@ -681,7 +685,10 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   need a far skip (it lies more than 1,000 positions into its chain, or
   its `pn` is more than 1,000 past the current chain's position): it is
   then left to the far-skip path (section 3), where its try fails, and
-  its sender keeps sending it until the user cancels it. A GONE lost
+  its sender keeps sending it until the user cancels it. After a restart
+  of this device such a message needs two arrivals again, and a mailbox
+  writer who sends 256 or more forged ones of that kind between two
+  arrivals pushes its note out. A GONE lost
   after the relay accepted it is named again only when the sender sends
   the message again.
 - A bound on GONE messages sent again. A sender that does not act on a GONE
@@ -694,7 +701,9 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   contact's identity secret; anyone on V1) can fill the 256 places of each
   round's GONE with ids of messages of its own, so that a genuine late
   message is never named: a header of a key the session does not know,
-  sent twice, is enough, no header of the session needs to be seen. A
+  sent twice, is enough (or 256 of them sent once, between two arrivals of
+  a genuine message of a forgotten chain), no header of the session needs
+  to be seen. A
   relay can as well withhold the GONE. Its length shows a reader of the
   mailbox how many ids it names, so how many late messages were found.
   Such a message draws a GONE only from a session that has received from
@@ -763,8 +772,9 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
   Those that arrive are named back and read `NotDelivered` (section 4), so
   their sender can send them again, except, once the chain the skip left
   is no longer among the last 32, those whose reaching would need a far
-  skip (more than 1,000 positions into it), which stay pending until the
-  user cancels them. The relay cannot tell this device
+  skip (more than 1,000 positions into it, or a `pn` more than 1,000 past
+  the current chain's position), which stay pending until the user
+  cancels them. The relay cannot tell this device
   apart from one whose gap nothing fills; before far skips, it could stop
   that direction for good instead.
 - A far-skip wait independent of this device's clock (tracker R-14). The

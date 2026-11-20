@@ -392,3 +392,36 @@ fn a_write_racing_a_delete_leaves_nothing_for_the_contact() {
     );
     relay.stop();
 }
+
+/// R-21: deleting the contact clears the notes of messages of chains its
+/// session no longer knows. The session with the contact added again has
+/// the same handle, and a message noted before counts as seen once under it.
+#[test]
+fn deleting_a_contact_clears_the_notes_of_forgotten_chains() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    let forged = || {
+        let header = core_crypto::ratchet::Header { dh: [7; 32], pn: 0, n: 0 };
+        Envelope::Message {
+            sender: key(&bob),
+            wire: [&header.to_bytes()[..], &[0u8; 40][..]].concat(),
+        }
+        .encode()
+    };
+    inject(&addr, &alice, forged());
+    let r = alice.net.sync_conversations();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, 0), "noted: {r:?}");
+
+    alice.net.delete_contact(bob.pk.clone()).unwrap();
+    meet_one(&alice, &bob);
+    say(&alice, &bob, "a2", "added again");
+    rounds(&[&alice, &bob, &alice, &bob], 3);
+    assert_eq!(session(&alice, &bob), ChatSessionState::Established);
+    inject(&addr, &alice, forged());
+    let r = alice.net.sync_conversations();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, 0), "noted afresh under the new session: {r:?}");
+    relay.stop();
+}

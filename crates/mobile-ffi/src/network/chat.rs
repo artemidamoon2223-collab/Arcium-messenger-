@@ -1010,6 +1010,7 @@ impl NetworkMessenger {
         // A new session with this contact has the same handle; its stored
         // waits went with the rest.
         self.far_waits_deleted(handle);
+        self.forget_forgotten_notes(handle);
         let mut refusals = self.refusals.lock().expect("refusals");
         refusals.queued.retain(|(to, _, _)| *to != key);
         refusals.last_to.remove(&key);
@@ -1248,6 +1249,7 @@ impl NetworkMessenger {
         // a failed delete leaves names only this session's chains, and the
         // next session's first accepted message deletes it.
         let _ = self.forget_far_waits(handle);
+        self.forget_forgotten_notes(handle);
         Ok(())
     }
 

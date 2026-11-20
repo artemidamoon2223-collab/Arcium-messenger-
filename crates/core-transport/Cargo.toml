@@ -19,10 +19,7 @@ arti-client = { version = "0.21", default-features = false, features = [
 ] }
 tor-rtcompat = { version = "0.21", features = ["tokio", "rustls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
-futures = "0.3"
 thiserror.workspace = true
-anyhow = "1"
-core-crypto = { path = "../core-crypto" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

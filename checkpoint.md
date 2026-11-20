@@ -13,10 +13,10 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `7b6677f7d62eb2eefd5f0bf17ef9522253cee61d` (merge of PR #230, 2026-11-20)
+- `main` = `ec6e00eed9c5c3c52aa32e502122aad88c87ebf8` (merge of PR #231, 2026-11-20)
 
 ## Done
-- 20 Nov (D-066): #230 R-21 beyond 32 chains, a message of a forgotten chain named on its second arrival (`7b6677f`); the one local test failure was a stale mutant binary, not a flake.
+- 20 Nov (D-066): #230 R-21 beyond 32 chains, a message of a forgotten chain named on its second arrival (`7b6677f`); the one local test failure was a stale mutant binary, not a flake. Tracker #231 R-21 PARTIAL narrowed further, R-14 and R-9 notes (`ec6e00e`).
 - 19 Nov (D-064, D-065): tracker #228 R-21, R-14, R-20 PARTIAL narrowed, R-9 note (`9c49e59`); #229 skills: reference links, the stored far-skip wait in the threat checklist, the relay design doc in the repo map (`0c9cdfd`).
 - 19 Nov (D-064): #226 R-21 remembers 32 earlier receiving chains (`b476035`); #227 R-14/R-20 far-skip wait kept in the store across restarts (`2a6074f`); R-9 keep/delete change deferred by the Owner.
 - 19 Nov (D-063): #225 skills refresh (`cb46ed7`): threat-checklist conflict rule, test locations, mutation check, merging a PR that is behind, tracker-text check, worktree as disposable copy, CLAUDE.md pointer to repo-change-protocol; QC loop unchanged.
@@ -50,7 +50,7 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session
 - 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
 
 ## Open PRs
-- #231 `ccr-c1c2d0ae-0cypfu` (head `54f28f7`): tracker for #230, R-21 PARTIAL narrowed further, R-14 and R-9 notes (D-066); merge only on the Owner's instruction naming it.
+- None.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -64,11 +64,11 @@ Updated: 2026-11-20 UTC, by a Claude Code cloud session
 3. Two phones through that relay, incl. background receive — needs phones.
 4. Release build and signing — needs the Owner's decision on the key.
 5. Phone checks: R-18 (b), H-8, F-9; memory and time of #200 and #205 on a phone (scudo); far-skip cost (#209) on a phone.
-6. Protocol: R-6 done (#222); R-21 32 chains done (#226); R-14/R-20 durable far-skip wait done (#227), tracker done (#228); R-9 keep/delete change deferred by the Owner (reconsider with the relay deployment); R-9 residuals (operator, V1, a sender counting its own messages, the far-wait write timing); R-14/R-20 residuals (over 100,000, way out a reset of option B; the delete after an accept is a separate write; the device clock); R-21 beyond 32 chains done (#230), tracker #231 open.
+6. Protocol: R-6 done (#222); R-21 32 chains done (#226); R-14/R-20 durable far-skip wait done (#227), tracker done (#228); R-9 keep/delete change deferred by the Owner (reconsider with the relay deployment); R-9 residuals (operator, V1, a sender counting its own messages, the far-wait write timing); R-14/R-20 residuals (over 100,000, way out a reset of option B; the delete after an accept is a separate write; the device clock); R-21 beyond 32 chains done (#230), tracker done (#231).
 7. Tor (F-15) → devnet (publish the circuit first) → PSI in the app.
 
 ## Optimization plan (D-067, approved by the Owner, in order)
-0 failing test in #230: done (stale mutant binary) → merge #230 (done) and tracker #231 → 6 new session → 1 drop unused `core-transport` from `mobile-ffi` → 2 CI push trigger only on `main` → 3 CI cargo cache → 4 faster slow `mobile-ffi` tests → 5 cloud environment with a setup script → 7 split `lib.rs`/`network.rs` at the retro.
+0 failing test in #230: done (stale mutant binary) → merge #230 and tracker #231: done → **6 new session (the Owner starts it) → next: 1** drop unused `core-transport` from `mobile-ffi` → 2 CI push trigger only on `main` → 3 CI cargo cache → 4 faster slow `mobile-ffi` tests → 5 cloud environment with a setup script → 7 split `lib.rs`/`network.rs` at the retro.
 
 ## Needs devices
 Two phones with a local relay (incl. background receive with the screen off); Pixel instrumentation; APK and `.so` signature check; H-8 on a release build; F-9 on a phone; devnet deploy at home (`docs/HOME-DEPLOY.md`).

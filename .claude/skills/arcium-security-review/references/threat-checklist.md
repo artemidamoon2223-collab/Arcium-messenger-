@@ -15,7 +15,7 @@ attack path described in `SKILL.md`, step 5.
 Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
 `ratchet/checkpoint.rs`, `hybrid.rs`, `spk_id.rs`, `session_handle.rs`,
 `refusal_mac.rs`; in `crates/mobile-ffi/src/`, `lib.rs` (the `ArciumCore`
-entry points: `establish_session_*`, `maintain_prekeys`,
+entry points, among them `establish_session_*`, `maintain_prekeys`,
 `make_handshake_refusal`, `identity_dh`), `handshake.rs` (the
 `ARCIUM_X3DH_FORMAT_V1` header and structures, the low-order check,
 `HANDSHAKE_REFUSAL_V1`), `prekeys.rs` (the stored prekey record and

@@ -13,9 +13,10 @@ Updated: 2026-11-21 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `43a5ae185fdfb29d8894aefcd1e15317c0849f91` (merge of PR #244, 2026-11-21)
+- `main` = `256fed059062fd784227ccabd746a40b2b2a9622` (merge of PR #246, 2026-11-21)
 
 ## Done
+- 21 Nov (D-073): #245 tracker code locations of live rows after the split (`0b60dda`); #246 QC markers also by crypto words and algorithm constants, test code by place and build (`256fed0`).
 - 21 Nov (D-072): #244 QC classes a new or ungated code file by the crypto and wire-format names its added code uses (a language-aware reader); every marked code file needs an owner-gated rule, checked by qc-unit (`43a5ae1`).
 - 21 Nov (D-071): #243 QC risk rules classify the files that hold keys, wire formats, identities and records (mobile-ffi split files, Android identity/relay/store code, vendor/ as SUPPLY_CHAIN); test_qc_rules.py pins them (`e31a55a`).
 - 21 Nov (D-070, step 7 of D-067): #240 lib.rs tests to src/tests/mod.rs (`bfad8c0`); #241 lib.rs code into error.rs, identity.rs, prekeys.rs, handshake.rs, responder.rs (`ed0cad6`); #242 network.rs internals into network/far_skip.rs, inbox.rs, mailbox.rs, outbox.rs, refusals.rs, tests.rs (`5a32f0c`). Pure moves: same 307 test names, Kotlin byte-identical; lib.rs 3,462 → 763 lines, network.rs 2,480 → 959.

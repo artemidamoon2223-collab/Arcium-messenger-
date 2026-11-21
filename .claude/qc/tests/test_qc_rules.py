@@ -249,6 +249,7 @@ class RulesTest(unittest.TestCase):
             ("const m = 'Hkdf';", "a.ts", set()),
             ("const m = `a ${'Hkdf'} b`;", "a.ts", set()),
             ("const m = `a ${new Hkdf(x)} b`;", "a.ts", {"CRYPTO"}),
+            ('const s = "${"; const k = Sha256.create(); const t = "}";', "a.ts", {"CRYPTO"}),
             # a whole file knows its comments: a `*` line outside one is code
             ("let x = a\n    * Sha256::digest(b);", "a.rs", {"CRYPTO"}),
             ("/**\n * Hkdf here\n */\nfn f() {}", "a.rs", set()),

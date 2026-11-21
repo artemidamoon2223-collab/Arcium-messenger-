@@ -711,7 +711,7 @@ def code_lines(text, path="x.rs", doc_lines=False):
     `path` gives the language. `doc_lines` drops a `* text` line read without its opening `/**`
     (one line read on its own; a whole file knows where its comments are)."""
     lang = path.rsplit(".", 1)[-1]
-    templates, ts = lang in ("kt", "kts", "ts"), lang == "ts"
+    templates, ts = lang in ("kt", "kts"), lang == "ts"  # `${…}` in Kotlin strings; in TypeScript, backticks only
     out, stack = [], []  # ["block"] | ["str", closer, escapes, templates] | ["tmpl", brace depth]
     for line in text.split("\n"):
         buf, i, n = [], 0, len(line)

@@ -1,0 +1,172 @@
+"""Risk classification of this repository's own files (qc.py RULES).
+
+Pins the classes of the files that hold keys, wire formats, identities and
+stored records, so that narrowing a rule, or renaming or removing a pinned
+file, fails here instead of silently dropping a review or an owner gate.
+Code moved into a new file gets only its directory's classes: the new file
+needs a rule in qc.py and a line in EXPECTED. RulesTest reads the checkout
+and writes nothing; GateTest runs qc.py in a throwaway repository, like the
+other QC tests.
+"""
+
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+from test_qc import PASSING, PY, Repo
+
+QC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(QC_DIR))
+
+_spec = importlib.util.spec_from_file_location("qc_rules_under_test", os.path.join(QC_DIR, "qc.py"))
+qc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(qc)
+
+KT = "android/app/src/main/kotlin/com/arcium/messenger/"
+
+# path -> the exact classes it must get. Every path must exist in the checkout.
+EXPECTED = {
+    "crates/mobile-ffi/src/lib.rs": {"FFI", "CRYPTO", "PROTOCOL", "IDENTITY", "DURABLE_STATE"},
+    "crates/mobile-ffi/src/identity.rs": {"FFI", "IDENTITY", "CRYPTO", "DURABLE_STATE"},
+    "crates/mobile-ffi/src/prekeys.rs": {"FFI", "CRYPTO", "PROTOCOL", "DURABLE_STATE"},
+    "crates/mobile-ffi/src/handshake.rs": {"FFI", "CRYPTO", "PROTOCOL"},
+    "crates/mobile-ffi/src/responder.rs": {"FFI", "CRYPTO", "PROTOCOL", "DURABLE_STATE"},
+    "crates/mobile-ffi/src/messaging_api.rs": {"FFI", "PROTOCOL", "DURABLE_STATE"},
+    "crates/mobile-ffi/src/contacts.rs": {"FFI", "IDENTITY", "DURABLE_STATE"},
+    "crates/mobile-ffi/src/error.rs": {"FFI"},
+    "crates/mobile-ffi/src/plaintext.rs": {"FFI"},
+    "crates/mobile-ffi/src/network.rs": {"FFI", "NETWORK", "PROTOCOL"},
+    "crates/mobile-ffi/src/network/wire.rs": {"FFI", "NETWORK", "PROTOCOL"},
+    "crates/mobile-ffi/src/network/inbox.rs": {"FFI", "NETWORK", "PROTOCOL"},
+    "crates/mobile-ffi/src/network/chat.rs": {"FFI", "NETWORK", "PROTOCOL", "DURABLE_STATE"},
+    "crates/mobile-ffi/src/network/far_skip.rs": {"FFI", "NETWORK", "PROTOCOL", "DURABLE_STATE"},
+    "crates/core-crypto/src/x3dh.rs": {"CRYPTO"},
+    "crates/core-protocol/src/messaging.rs": {"DURABLE_STATE", "PROTOCOL"},
+    "crates/core-storage/src/lib.rs": {"DURABLE_STATE", "CRYPTO"},
+    "crates/relay/src/server.rs": {"NETWORK", "PROTOCOL"},
+    KT + "security/MasterKeyProvider.kt": {"ANDROID_LIFECYCLE", "IDENTITY", "CRYPTO"},
+    KT + "ffi/ArciumCore.kt": {"ANDROID_LIFECYCLE", "FFI"},
+    KT + "data/IdentityRepository.kt": {"ANDROID_LIFECYCLE", "IDENTITY"},
+    KT + "data/MessageRepository.kt": {"ANDROID_LIFECYCLE", "PROTOCOL", "IDENTITY"},
+    KT + "messaging/RelayRules.kt": {"ANDROID_LIFECYCLE", "NETWORK"},
+    KT + "messaging/RelaySettings.kt": {"ANDROID_LIFECYCLE", "NETWORK"},
+    KT + "messaging/MessengerService.kt": {"ANDROID_LIFECYCLE", "NETWORK"},
+    KT + "messaging/BackgroundReceiveService.kt": {"ANDROID_LIFECYCLE", "NETWORK"},
+    KT + "messaging/ContactCardText.kt": {"ANDROID_LIFECYCLE", "NETWORK", "IDENTITY"},
+    KT + "startup/StoreStartup.kt": {"ANDROID_LIFECYCLE", "CRYPTO", "DURABLE_STATE"},
+    KT + "startup/AppStartup.kt": {"ANDROID_LIFECYCLE", "CRYPTO", "DURABLE_STATE"},
+    KT + "ui/contacts/AddContactViewModel.kt": {"ANDROID_LIFECYCLE", "IDENTITY"},
+    KT + "ui/contacts/AddContactScreen.kt": {"ANDROID_LIFECYCLE", "IDENTITY"},
+    KT + "ui/navigation/IdentityGate.kt": {"ANDROID_LIFECYCLE", "IDENTITY"},
+    KT + "ui/onboarding/OnboardingViewModel.kt": {"ANDROID_LIFECYCLE", "IDENTITY"},
+    KT + "ui/theme/Theme.kt": {"ANDROID_LIFECYCLE"},
+    "vendor/tor-dirmgr/src/lib.rs": {"SUPPLY_CHAIN"},
+    "arcium-psi/programs/arcium-psi/src/lib.rs": {"PSI"},
+}
+
+# Directories never part of the change set (qc.py TRUSTED_BUILD_DIRS and their kin).
+SKIP_DIRS = {".git", "target", "build", "node_modules", ".gradle"}
+
+
+def classes(path):
+    return set(qc.classify_paths([path])[path])
+
+
+class RulesTest(unittest.TestCase):
+    def test_the_pinned_files_exist(self):
+        missing = [p for p in EXPECTED if not os.path.isfile(os.path.join(REPO, p))]
+        self.assertEqual(missing, [], "update EXPECTED with the code's new location")
+
+    def test_security_files_get_exactly_their_classes(self):
+        wrong = {p: sorted(classes(p)) for p, want in EXPECTED.items() if classes(p) != want}
+        self.assertEqual(wrong, {})
+
+    def test_crypto_and_protocol_code_reaches_an_owner_gate(self):
+        for p, want in EXPECTED.items():
+            self.assertLessEqual(want & {"CRYPTO", "PROTOCOL", "SUPPLY_CHAIN", "PSI"}, qc.OWNER_GATED, p)
+
+    def test_vendored_code_is_supply_chain(self):
+        for p in ("vendor/tor-dirmgr/src/storage/sqlite.rs", "vendor/tor-dirmgr/testdata/microdescs.txt",
+                  "vendor/README.md"):
+            self.assertIn("SUPPLY_CHAIN", classes(p), p)
+            self.assertIn("SUPPLY_CHAIN", qc.OWNER_GATED)
+
+    def test_every_source_file_has_a_security_class(self):
+        exts = (".rs", ".kt", ".ts", ".py", ".sh")
+        unclassified = []
+        for top in ("crates", "android", "arcium-psi", "vendor"):
+            for d, subdirs, files in os.walk(os.path.join(REPO, top)):
+                subdirs[:] = [s for s in subdirs if s not in SKIP_DIRS]
+                for name in files:
+                    if name.endswith(exts):
+                        rel = os.path.relpath(os.path.join(d, name), REPO).replace(os.sep, "/")
+                        if not classes(rel) & qc.SECURITY_CLASSES:
+                            unclassified.append(rel)
+        self.assertEqual(unclassified, [])
+
+    def test_a_new_file_beside_pinned_ones_keeps_its_directory_classes(self):
+        # Exact-file rules do not reach a new file; the directory rules still do.
+        self.assertLessEqual({"FFI"}, classes("crates/mobile-ffi/src/new_module.rs"))
+        self.assertLessEqual({"FFI", "NETWORK", "PROTOCOL"}, classes("crates/mobile-ffi/src/network/new_part.rs"))
+        self.assertLessEqual({"ANDROID_LIFECYCLE", "NETWORK"}, classes(KT + "messaging/NewThing.kt"))
+
+
+class GateTest(unittest.TestCase):
+    """What the classification does to a real change: reviews, skills and the owner gate."""
+
+    FILES = ("crates/mobile-ffi/src/handshake.rs", "crates/mobile-ffi/src/prekeys.rs",
+             KT + "startup/StoreStartup.kt", "vendor/tor-dirmgr/src/lib.rs")
+
+    def setUp(self):
+        self.parent = tempfile.mkdtemp(prefix="qc-parent-")
+        self.r = Repo(parent=self.parent)
+        for rel in self.FILES:
+            self.r.write(rel, "// v1\n")
+        self.r.git("add", "-A")
+        self.r.git("commit", "-qm", "files")
+        self.r.base = self.r.git("rev-parse", "HEAD").strip()
+
+    def tearDown(self):
+        shutil.rmtree(self.parent, ignore_errors=True)
+
+    def classify(self, sid):
+        p = subprocess.run([PY, ".claude/qc/qc.py", "classify", sid], cwd=self.r.dir, capture_output=True,
+                           text=True, env=self.r.env())
+        return json.loads(p.stdout)
+
+    def test_a_handshake_change_needs_the_owner_and_both_reviews(self):
+        self.r.locked("t-hs", [PASSING])
+        self.r.write("crates/mobile-ffi/src/handshake.rs", "// v2\n")
+        out = self.classify("t-hs")
+        self.assertEqual(out["owner_gated"], ["CRYPTO", "PROTOCOL"])
+        self.assertEqual(out["required_reviews"], ["engineering-code-review", "arcium-security-review"])
+        self.assertEqual(out["load_with_security_review"], ["android-uniffi-bridge"])
+        rc, line = self.r.qc("run", "t-hs")
+        self.assertIn("ESCALATE_TO_OWNER", line)
+        self.assertIn("owner-gated", line)
+
+    def test_an_authorized_handshake_change_is_not_escalated(self):
+        self.r.locked("t-hs-ok", [PASSING], owner_authorizes=["CRYPTO", "PROTOCOL"])
+        self.r.write("crates/mobile-ffi/src/handshake.rs", "// v2\n")
+        rc, line = self.r.qc("run", "t-hs-ok")
+        self.assertNotIn("ESCALATE_TO_OWNER", line)
+
+    def test_a_prekey_record_change_loads_the_durable_state_skill(self):
+        self.r.locked("t-pk", [PASSING])
+        self.r.write("crates/mobile-ffi/src/prekeys.rs", "// v2\n")
+        self.assertEqual(self.classify("t-pk")["load_with_security_review"],
+                         ["android-uniffi-bridge", "mbr-integration"])
+
+    def test_store_startup_and_vendored_code_are_owner_gated(self):
+        self.r.locked("t-sv", [PASSING])
+        self.r.write(KT + "startup/StoreStartup.kt", "// v2\n")
+        self.r.write("vendor/tor-dirmgr/src/lib.rs", "// v2\n")
+        self.assertEqual(self.classify("t-sv")["owner_gated"], ["CRYPTO", "SUPPLY_CHAIN"])
+
+
+if __name__ == "__main__":
+    unittest.main()

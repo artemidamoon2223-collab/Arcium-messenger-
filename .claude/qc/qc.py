@@ -112,19 +112,44 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # ── Risk classification ──────────────────────────────────────────────────────
 # (path prefix or exact path, classes). Every matching rule applies.
 # `self-test` checks every prefix still exists, so a moved directory is
-# reported instead of silently unclassified.
+# reported instead of silently unclassified. A new file gets only the rules
+# of its directory: one that holds keys, a wire format, an identity or a
+# stored record needs a rule of its own (and a line in
+# tests/test_qc_rules.py, which pins these classes).
 RULES = [
     ("crates/core-crypto/", {"CRYPTO"}),
     ("crates/core-storage/", {"DURABLE_STATE", "CRYPTO"}),
     ("crates/core-protocol/", {"DURABLE_STATE", "PROTOCOL"}),
-    ("crates/mobile-ffi/src/contacts.rs", {"IDENTITY"}),
+    # mobile-ffi: each file of the core beside its FFI surface, by what it holds
+    # (the X3DH entry points and wire formats, key material, stored records).
+    ("crates/mobile-ffi/src/lib.rs", {"CRYPTO", "PROTOCOL", "IDENTITY", "DURABLE_STATE"}),
+    ("crates/mobile-ffi/src/identity.rs", {"IDENTITY", "CRYPTO", "DURABLE_STATE"}),
+    ("crates/mobile-ffi/src/prekeys.rs", {"CRYPTO", "PROTOCOL", "DURABLE_STATE"}),
+    ("crates/mobile-ffi/src/handshake.rs", {"CRYPTO", "PROTOCOL"}),
+    ("crates/mobile-ffi/src/responder.rs", {"CRYPTO", "PROTOCOL", "DURABLE_STATE"}),
+    ("crates/mobile-ffi/src/messaging_api.rs", {"PROTOCOL", "DURABLE_STATE"}),
+    ("crates/mobile-ffi/src/contacts.rs", {"IDENTITY", "DURABLE_STATE"}),
     ("crates/mobile-ffi/src/network", {"NETWORK", "PROTOCOL"}),
+    ("crates/mobile-ffi/src/network/chat.rs", {"DURABLE_STATE"}),
+    ("crates/mobile-ffi/src/network/far_skip.rs", {"DURABLE_STATE"}),
     ("crates/mobile-ffi/", {"FFI"}),
     ("crates/relay/", {"NETWORK", "PROTOCOL"}),
     ("crates/core-transport/", {"NETWORK"}),
+    # Android: the code that holds keys and identities, talks to the relay or
+    # opens the store, beside the lifecycle class every Android path has.
     ("android/app/src/main/kotlin/com/arcium/messenger/security/", {"IDENTITY", "CRYPTO"}),
     ("android/app/src/main/kotlin/com/arcium/messenger/ffi/", {"FFI"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/data/IdentityRepository.kt", {"IDENTITY"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/data/MessageRepository.kt", {"PROTOCOL", "IDENTITY"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/messaging/", {"NETWORK"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/messaging/ContactCardText.kt", {"IDENTITY"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/startup/", {"CRYPTO", "DURABLE_STATE"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/ui/contacts/", {"IDENTITY"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/ui/navigation/IdentityGate.kt", {"IDENTITY"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/ui/onboarding/", {"IDENTITY"}),
     ("android/", {"ANDROID_LIFECYCLE"}),
+    # Third-party code built in place of a crates.io release ([patch.crates-io]).
+    ("vendor/", {"SUPPLY_CHAIN"}),
     ("arcium-psi/", {"PSI"}),
     (".github/", {"CI_INTEGRITY"}),
     (".cargo/", {"SUPPLY_CHAIN"}),

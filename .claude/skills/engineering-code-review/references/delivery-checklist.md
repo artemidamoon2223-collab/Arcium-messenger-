@@ -21,6 +21,13 @@ The first three commands are the ones `.github/workflows/arcium-ci.yml` runs
 `.devcontainer/setup.sh` prints `cargo test --workspace` as its quick-start.
 Running them locally is the cheapest way to know what CI will say.
 
+A new source file that holds keys, a wire format, an identity or a stored
+record gets only its directory's QC classes (`.claude/qc/qc.py`, `RULES`):
+in `crates/mobile-ffi/src/` that is FFI alone, with no owner gate. Give it a
+rule of its own and a line in `EXPECTED` of
+`.claude/qc/tests/test_qc_rules.py`. Renaming or removing a file a rule
+names fails `qc.py self-test` in CI until the rule follows.
+
 ## Which CI checks a diff actually triggers
 
 Knowing this prevents both false confidence and pointless waiting. This is the

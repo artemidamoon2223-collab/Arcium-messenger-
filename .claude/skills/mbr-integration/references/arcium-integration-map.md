@@ -36,7 +36,7 @@ wins.
 | ACK bound to an artifact | NET §5, §6 |
 | explicit states, recovery handles | `ChatEntryState`, `ChatSessionState` (`network/chat.rs`); S2-B2 §7 (`recover_session`, `RecoveryReport`) |
 | durability settings | `EncryptedStore::init`, pinned by the test `durability_configuration_is_pinned`; S2-B2 §8 |
-| persisted records | S2-B2 §2; identity and prekey records (`mobile-ffi/src/lib.rs`), contact cards (`mobile-ffi/src/contacts.rs`), history (`network/chat.rs`) |
+| persisted records | S2-B2 §2; identity and prekey records (`mobile-ffi/src/identity.rs`, `mobile-ffi/src/prekeys.rs`), contact cards (`mobile-ffi/src/contacts.rs`), history (`network/chat.rs`) |
 
 These are absent, or only assumed, by an owner decision or by design, and
 they are the easiest to overstate. Re-check each before relying on it:
@@ -67,7 +67,7 @@ grep -n "pub fn transaction\|pub fn commit\|pub fn rollback" crates/core-storage
 grep -n "Messenger" crates/mobile-ffi/src/lib.rs               # the app's sessions go through the durable layer
 grep -rn "SessionManager" crates/mobile-ffi/src                # empty = no in-memory session map in the app
 grep -rn '"[a-z-]*:v1/' crates/*/src                           # versioned record keys
-grep -n "const [A-Z_]*KEY: &str" crates/mobile-ffi/src/lib.rs  # identity and prekey records
+grep -n "const [A-Z_]*KEY: &str" crates/mobile-ffi/src/{identity,prekeys}.rs  # identity and prekey records
 grep -n "MAX_SKIP\|max_skipped\|fn trim_skipped\|MAX_PREV_CHAINS" crates/core-crypto/src/ratchet.rs
 grep -rni "CommitAnchor\|NullAnchor\|skip_age" crates           # empty = S6 and S7 not started
 ```

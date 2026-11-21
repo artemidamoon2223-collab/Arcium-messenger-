@@ -120,18 +120,19 @@ RULES = [
     ("crates/core-crypto/", {"CRYPTO"}),
     ("crates/core-storage/", {"DURABLE_STATE", "CRYPTO"}),
     ("crates/core-protocol/", {"DURABLE_STATE", "PROTOCOL"}),
-    # mobile-ffi: each file of the core beside its FFI surface, by what it holds
-    # (the X3DH entry points and wire formats, key material, stored records).
+    # mobile-ffi: the files of the core beside its FFI surface, by what they
+    # hold (the X3DH entry points and wire formats, key material, stored
+    # records, the contact card and its fingerprint).
     ("crates/mobile-ffi/src/lib.rs", {"CRYPTO", "PROTOCOL", "IDENTITY", "DURABLE_STATE"}),
     ("crates/mobile-ffi/src/identity.rs", {"IDENTITY", "CRYPTO", "DURABLE_STATE"}),
     ("crates/mobile-ffi/src/prekeys.rs", {"CRYPTO", "PROTOCOL", "DURABLE_STATE"}),
     ("crates/mobile-ffi/src/handshake.rs", {"CRYPTO", "PROTOCOL"}),
     ("crates/mobile-ffi/src/responder.rs", {"CRYPTO", "PROTOCOL", "DURABLE_STATE"}),
     ("crates/mobile-ffi/src/messaging_api.rs", {"PROTOCOL", "DURABLE_STATE"}),
-    ("crates/mobile-ffi/src/contacts.rs", {"IDENTITY", "DURABLE_STATE"}),
-    ("crates/mobile-ffi/src/network", {"NETWORK", "PROTOCOL"}),
-    ("crates/mobile-ffi/src/network/chat.rs", {"DURABLE_STATE"}),
-    ("crates/mobile-ffi/src/network/far_skip.rs", {"DURABLE_STATE"}),
+    ("crates/mobile-ffi/src/contacts.rs", {"IDENTITY", "CRYPTO", "PROTOCOL", "DURABLE_STATE"}),
+    # The network layer moves what the durable layer committed: outbox,
+    # receipts (ACK), the relay delete, the history and the far-skip record.
+    ("crates/mobile-ffi/src/network", {"NETWORK", "PROTOCOL", "DURABLE_STATE"}),
     ("crates/mobile-ffi/", {"FFI"}),
     ("crates/relay/", {"NETWORK", "PROTOCOL"}),
     ("crates/core-transport/", {"NETWORK"}),
@@ -139,11 +140,12 @@ RULES = [
     # opens the store, beside the lifecycle class every Android path has.
     ("android/app/src/main/kotlin/com/arcium/messenger/security/", {"IDENTITY", "CRYPTO"}),
     ("android/app/src/main/kotlin/com/arcium/messenger/ffi/", {"FFI"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt", {"CRYPTO", "IDENTITY"}),
     ("android/app/src/main/kotlin/com/arcium/messenger/data/IdentityRepository.kt", {"IDENTITY"}),
     ("android/app/src/main/kotlin/com/arcium/messenger/data/MessageRepository.kt", {"PROTOCOL", "IDENTITY"}),
     ("android/app/src/main/kotlin/com/arcium/messenger/messaging/", {"NETWORK"}),
-    ("android/app/src/main/kotlin/com/arcium/messenger/messaging/ContactCardText.kt", {"IDENTITY"}),
-    ("android/app/src/main/kotlin/com/arcium/messenger/startup/", {"CRYPTO", "DURABLE_STATE"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/messaging/ContactCardText.kt", {"IDENTITY", "PROTOCOL"}),
+    ("android/app/src/main/kotlin/com/arcium/messenger/startup/StoreStartup.kt", {"CRYPTO", "DURABLE_STATE"}),
     ("android/app/src/main/kotlin/com/arcium/messenger/ui/contacts/", {"IDENTITY"}),
     ("android/app/src/main/kotlin/com/arcium/messenger/ui/navigation/IdentityGate.kt", {"IDENTITY"}),
     ("android/app/src/main/kotlin/com/arcium/messenger/ui/onboarding/", {"IDENTITY"}),

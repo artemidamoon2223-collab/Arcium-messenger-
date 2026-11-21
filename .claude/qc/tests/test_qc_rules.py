@@ -1,10 +1,11 @@
 """Risk classification of this repository's own files (qc.py RULES).
 
 Pins the classes of the files that hold keys, wire formats, identities and
-stored records, so that narrowing a rule, or renaming or removing a pinned
-file, fails here instead of silently dropping a review or an owner gate.
-Code moved into a new file gets only its directory's classes: the new file
-needs a rule in qc.py and a line in EXPECTED. RulesTest reads the checkout
+stored records, and of one file under every rule, so that narrowing any rule,
+or renaming or removing a pinned file, fails here instead of silently
+dropping a review or an owner gate. Code moved into a new file gets only its
+directory's classes: the new file needs a rule in qc.py and a line in
+EXPECTED. RulesTest reads the checkout
 and writes nothing; GateTest runs qc.py in a throwaway repository, like the
 other QC tests.
 """
@@ -36,29 +37,32 @@ EXPECTED = {
     "crates/mobile-ffi/src/handshake.rs": {"FFI", "CRYPTO", "PROTOCOL"},
     "crates/mobile-ffi/src/responder.rs": {"FFI", "CRYPTO", "PROTOCOL", "DURABLE_STATE"},
     "crates/mobile-ffi/src/messaging_api.rs": {"FFI", "PROTOCOL", "DURABLE_STATE"},
-    "crates/mobile-ffi/src/contacts.rs": {"FFI", "IDENTITY", "DURABLE_STATE"},
+    "crates/mobile-ffi/src/contacts.rs": {"FFI", "IDENTITY", "CRYPTO", "PROTOCOL", "DURABLE_STATE"},
     "crates/mobile-ffi/src/error.rs": {"FFI"},
     "crates/mobile-ffi/src/plaintext.rs": {"FFI"},
-    "crates/mobile-ffi/src/network.rs": {"FFI", "NETWORK", "PROTOCOL"},
-    "crates/mobile-ffi/src/network/wire.rs": {"FFI", "NETWORK", "PROTOCOL"},
-    "crates/mobile-ffi/src/network/inbox.rs": {"FFI", "NETWORK", "PROTOCOL"},
+    "crates/mobile-ffi/src/network.rs": {"FFI", "NETWORK", "PROTOCOL", "DURABLE_STATE"},
+    "crates/mobile-ffi/src/network/wire.rs": {"FFI", "NETWORK", "PROTOCOL", "DURABLE_STATE"},
+    "crates/mobile-ffi/src/network/inbox.rs": {"FFI", "NETWORK", "PROTOCOL", "DURABLE_STATE"},
     "crates/mobile-ffi/src/network/chat.rs": {"FFI", "NETWORK", "PROTOCOL", "DURABLE_STATE"},
     "crates/mobile-ffi/src/network/far_skip.rs": {"FFI", "NETWORK", "PROTOCOL", "DURABLE_STATE"},
     "crates/core-crypto/src/x3dh.rs": {"CRYPTO"},
     "crates/core-protocol/src/messaging.rs": {"DURABLE_STATE", "PROTOCOL"},
     "crates/core-storage/src/lib.rs": {"DURABLE_STATE", "CRYPTO"},
     "crates/relay/src/server.rs": {"NETWORK", "PROTOCOL"},
+    "crates/relay/Cargo.toml": {"NETWORK", "PROTOCOL", "SUPPLY_CHAIN"},
+    "crates/core-transport/src/lib.rs": {"NETWORK"},
     KT + "security/MasterKeyProvider.kt": {"ANDROID_LIFECYCLE", "IDENTITY", "CRYPTO"},
-    KT + "ffi/ArciumCore.kt": {"ANDROID_LIFECYCLE", "FFI"},
+    KT + "ffi/ArciumCore.kt": {"ANDROID_LIFECYCLE", "FFI", "CRYPTO", "IDENTITY"},
+    KT + "ffi/Plaintext.kt": {"ANDROID_LIFECYCLE", "FFI"},
     KT + "data/IdentityRepository.kt": {"ANDROID_LIFECYCLE", "IDENTITY"},
     KT + "data/MessageRepository.kt": {"ANDROID_LIFECYCLE", "PROTOCOL", "IDENTITY"},
     KT + "messaging/RelayRules.kt": {"ANDROID_LIFECYCLE", "NETWORK"},
     KT + "messaging/RelaySettings.kt": {"ANDROID_LIFECYCLE", "NETWORK"},
     KT + "messaging/MessengerService.kt": {"ANDROID_LIFECYCLE", "NETWORK"},
     KT + "messaging/BackgroundReceiveService.kt": {"ANDROID_LIFECYCLE", "NETWORK"},
-    KT + "messaging/ContactCardText.kt": {"ANDROID_LIFECYCLE", "NETWORK", "IDENTITY"},
+    KT + "messaging/ContactCardText.kt": {"ANDROID_LIFECYCLE", "NETWORK", "IDENTITY", "PROTOCOL"},
     KT + "startup/StoreStartup.kt": {"ANDROID_LIFECYCLE", "CRYPTO", "DURABLE_STATE"},
-    KT + "startup/AppStartup.kt": {"ANDROID_LIFECYCLE", "CRYPTO", "DURABLE_STATE"},
+    KT + "startup/AppStartup.kt": {"ANDROID_LIFECYCLE"},
     KT + "ui/contacts/AddContactViewModel.kt": {"ANDROID_LIFECYCLE", "IDENTITY"},
     KT + "ui/contacts/AddContactScreen.kt": {"ANDROID_LIFECYCLE", "IDENTITY"},
     KT + "ui/navigation/IdentityGate.kt": {"ANDROID_LIFECYCLE", "IDENTITY"},
@@ -66,6 +70,13 @@ EXPECTED = {
     KT + "ui/theme/Theme.kt": {"ANDROID_LIFECYCLE"},
     "vendor/tor-dirmgr/src/lib.rs": {"SUPPLY_CHAIN"},
     "arcium-psi/programs/arcium-psi/src/lib.rs": {"PSI"},
+    "android/app/build.gradle.kts": {"ANDROID_LIFECYCLE", "SUPPLY_CHAIN"},
+    ".github/workflows/arcium-ci.yml": {"CI_INTEGRITY"},
+    ".cargo/audit.toml": {"SUPPLY_CHAIN"},
+    ".devcontainer/setup.sh": {"SUPPLY_CHAIN"},
+    "Cargo.lock": {"SUPPLY_CHAIN"},
+    "CLAUDE.md": {"AGENT_CONTROL"},
+    ".claude/qc/qc.py": {"AGENT_CONTROL"},
 }
 
 # Directories never part of the change set (qc.py TRUSTED_BUILD_DIRS and their kin).
@@ -85,9 +96,16 @@ class RulesTest(unittest.TestCase):
         wrong = {p: sorted(classes(p)) for p, want in EXPECTED.items() if classes(p) != want}
         self.assertEqual(wrong, {})
 
-    def test_crypto_and_protocol_code_reaches_an_owner_gate(self):
-        for p, want in EXPECTED.items():
-            self.assertLessEqual(want & {"CRYPTO", "PROTOCOL", "SUPPLY_CHAIN", "PSI"}, qc.OWNER_GATED, p)
+    def test_every_rule_has_a_pinned_file(self):
+        # So that dropping a class from any rule changes some pinned file's classes.
+        unpinned = [prefix for prefix, _ in qc.RULES
+                    if not any(p == prefix or p.startswith(prefix) for p in EXPECTED)]
+        self.assertEqual(unpinned, [])
+
+    def test_the_owner_gate_set_keeps_crypto_protocol_supply_chain_and_psi(self):
+        # The rules give the classes; this pins which of them stop a loop for the Owner.
+        self.assertLessEqual({"CRYPTO", "PROTOCOL", "SUPPLY_CHAIN", "PSI", "CI_INTEGRITY", "AGENT_CONTROL"},
+                             qc.OWNER_GATED)
 
     def test_vendored_code_is_supply_chain(self):
         for p in ("vendor/tor-dirmgr/src/storage/sqlite.rs", "vendor/tor-dirmgr/testdata/microdescs.txt",
@@ -153,7 +171,10 @@ class GateTest(unittest.TestCase):
         self.r.locked("t-hs-ok", [PASSING], owner_authorizes=["CRYPTO", "PROTOCOL"])
         self.r.write("crates/mobile-ffi/src/handshake.rs", "// v2\n")
         rc, line = self.r.qc("run", "t-hs-ok")
+        # The criteria pass; what is left is the two reviews, not the Owner.
+        self.assertIn("QC_STATE: NOT_VERIFIED", line)
         self.assertNotIn("ESCALATE_TO_OWNER", line)
+        self.assertIn("review", line)
 
     def test_a_prekey_record_change_loads_the_durable_state_skill(self):
         self.r.locked("t-pk", [PASSING])

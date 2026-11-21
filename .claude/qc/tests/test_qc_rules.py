@@ -266,6 +266,11 @@ class RulesTest(unittest.TestCase):
             # a whole file knows its comments: a `*` line outside one is code
             ("let x = a\n    * Sha256::digest(b);", "a.rs", {"CRYPTO"}),
             ("/**\n * Hkdf here\n */\nfn f() {}", "a.rs", set()),
+            # block comments nest in Rust and Kotlin, not in Java
+            ("/* a /* b */ Hkdf */\nfn f() {}", "a.rs", set()),
+            ("/* a /* b */ c */ let k = Hkdf::new();", "a.rs", {"CRYPTO"}),
+            ("/* a /* b */\n Cipher */\nfun f() {}", "a.kt", set()),
+            ("/* a /* b */ Cipher c = Cipher.getInstance(t);", "A.java", {"CRYPTO"}),
             ('char c = \'"\'; Cipher x = Cipher.getInstance(t);', "A.java", {"CRYPTO"}),
         ]
         for text, path, want in by_language:
@@ -504,6 +509,19 @@ class GateTest(unittest.TestCase):
         self.r.locked("t-pair", [PASSING])
         self.r.write("crates/mobile-ffi/src/helpers/k_tests.rs", "use hkdf::Hkdf;\n")
         self.assertEqual(self.classify("t-pair")["content_classes"], {"crates/mobile-ffi/src/helpers/k_tests.rs": ["CRYPTO"]})
+
+    def test_a_cfg_test_inside_a_nested_comment_does_not_make_test_code(self):
+        self.declare("/* outer /* inner */\n#[cfg(test)] */\nmod n_tests;\n")
+        self.r.locked("t-nest", [PASSING])
+        self.r.write("crates/mobile-ffi/src/n_tests.rs", "use hkdf::Hkdf;\n")
+        self.assertEqual(self.classify("t-nest")["content_classes"], {"crates/mobile-ffi/src/n_tests.rs": ["CRYPTO"]})
+
+    def test_a_crate_with_its_own_library_path_gets_no_exemption(self):
+        self.declare("#[cfg(test)]\nmod tests;\n", {"crates/mobile-ffi/Cargo.toml": '[package]\nname = "x"\n\n[lib]\npath = "src/real.rs"\n',
+                                                     "crates/mobile-ffi/src/tests/mod.rs": "mod k;\n"})
+        self.r.locked("t-libpath", [PASSING])
+        self.r.write("crates/mobile-ffi/src/tests/k.rs", "use hkdf::Hkdf;\n")
+        self.assertEqual(self.classify("t-libpath")["content_classes"], {"crates/mobile-ffi/src/tests/k.rs": ["CRYPTO"]})
 
     def test_a_module_a_second_crate_root_builds_is_scanned(self):
         self.declare("#[cfg(test)]\nmod tests;\n", {"crates/mobile-ffi/src/main.rs": "mod tests;\nfn main() {}\n",

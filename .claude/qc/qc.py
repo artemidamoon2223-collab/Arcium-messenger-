@@ -232,9 +232,8 @@ RUST_MOD_DECL_RE = re.compile(r"^\s*((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+
 CFG_TEST_RE = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 # code_lines reads a file left to right, by its language, and follows strings (with escapes), Rust
 # raw strings, Kotlin and Java `"""` strings, TypeScript `'…'` and `` `…` `` strings, the code of
-# Kotlin and TypeScript `${…}` templates and block comments, across lines. Not followed: nested Rust
-# block comments (the rest of the outer comment reads as code, which can only add a class) and
-# TypeScript regular-expression literals.
+# Kotlin and TypeScript `${…}` templates, and block comments (nested in Rust and Kotlin), across
+# lines. Not followed: TypeScript regular-expression literals.
 RAW_OPEN_RE = re.compile(r'b?r(#*)"')
 CHAR_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\\n])'")
 KDOC_LINE_RE = re.compile(r"\s*\*(\s|$)")
@@ -743,7 +742,8 @@ def code_lines(text, path="x.rs", doc_lines=False):
     (one line read on its own; a whole file knows where its comments are)."""
     lang = path.rsplit(".", 1)[-1]
     templates, ts = lang in ("kt", "kts"), lang == "ts"  # `${…}` in Kotlin strings; in TypeScript, backticks only
-    out, stack = [], []  # ["block"] | ["str", closer, escapes, templates] | ["tmpl", brace depth]
+    nested = lang in ("rs", "kt", "kts")  # their block comments nest
+    out, stack = [], []  # ["block", depth] | ["str", closer, escapes, templates] | ["tmpl", brace depth]
     for line in text.split("\n"):
         buf, i, n = [], 0, len(line)
         if doc_lines and not stack and KDOC_LINE_RE.match(line):
@@ -753,11 +753,18 @@ def code_lines(text, path="x.rs", doc_lines=False):
             top = stack[-1] if stack else None
             if top and top[0] == "block":
                 j = line.find("*/", i)
+                k = line.find("/*", i) if nested else -1
+                if 0 <= k < j or (j < 0 and k >= 0):
+                    top[1] += 1
+                    i = k + 2
+                    continue
                 if j < 0:
                     break
                 i = j + 2
-                stack.pop()
-                buf.append(" ")
+                top[1] -= 1
+                if top[1] == 0:
+                    stack.pop()
+                    buf.append(" ")
                 continue
             if top and top[0] == "str":
                 _, closer, escapes, tmpl = top
@@ -785,7 +792,7 @@ def code_lines(text, path="x.rs", doc_lines=False):
             if line.startswith("//", i):
                 break
             if line.startswith("/*", i):
-                stack.append(["block"])
+                stack.append(["block", 1])
                 i += 2
             elif line.startswith('"""', i):
                 stack.append(["str", '"""', False, templates])
@@ -843,8 +850,18 @@ def code_marker_classes(line, path="x.rs"):
 
 @functools.lru_cache(maxsize=None)
 def rust_tree_escapes(root, src):
-    """Whether any Rust file under the crate source directory `src` has #[path], cfg_attr or include! in code.
-    Cached within one `classify` (which clears it first, so a tree changed by a criterion is read again)."""
+    """Whether the crate of the source directory `src` may build a file under another module path: a
+    Rust file with #[path], cfg_attr or include! in code, or a [lib] or [[bin]] `path` in its Cargo.toml
+    outside src/bin/. Cached within one `classify` (which clears it first, so a tree changed by a
+    criterion is read again)."""
+    section = ""
+    for line in file_text(root, os.path.dirname(src) + "/Cargo.toml").splitlines():
+        s = line.split("#", 1)[0].strip()
+        if s.startswith("["):
+            section = s
+        m = re.match(r"path\s*=\s*[\"']([^\"']*)", s)
+        if m and section in ("[lib]", "[[bin]]") and not m.group(1).startswith("src/bin/"):
+            return True
     for d, _subdirs, files in os.walk(os.path.join(root, src)):
         for f in files:
             other = os.path.relpath(os.path.join(d, f), root)

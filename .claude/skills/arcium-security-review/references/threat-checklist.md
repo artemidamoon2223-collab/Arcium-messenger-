@@ -14,7 +14,10 @@ attack path described in `SKILL.md`, step 5.
 
 Where: `crates/core-crypto/src/` — `x3dh.rs`, `ratchet.rs`,
 `ratchet/checkpoint.rs`, `hybrid.rs`, `spk_id.rs`, `session_handle.rs`,
-`refusal_mac.rs`.
+`refusal_mac.rs`; in `crates/mobile-ffi/src/`, `handshake.rs` (the
+`ARCIUM_X3DH_FORMAT_V1` structures, the low-order check, refusals),
+`prekeys.rs` (the stored prekey record and rotation) and `responder.rs`
+(answering a first contact).
 
 - **Layer separation.** Messages use XChaCha20-Poly1305 and the Double Ratchet;
   PSI uses only RescueCipher (`CLAUDE.md`). Any use of `rescue` on the message
@@ -141,8 +144,8 @@ Where: `crates/core-protocol/src/` — `durable.rs`, `checkpoint.rs`,
 
 ## 3. Identity
 
-Where: `crates/mobile-ffi/src/contacts.rs`, `crates/core-crypto/src/x3dh.rs`,
-the Android contact-card and add-contact code. Specification:
+Where: `crates/mobile-ffi/src/contacts.rs`, `crates/mobile-ffi/src/identity.rs`,
+`crates/core-crypto/src/x3dh.rs`, the Android contact-card and add-contact code. Specification:
 `docs/NET-MESSAGING.md` §2, and §6a of the S2-B2 specification for removal.
 
 - **Contact-card binding.** A card names both identity keys (X25519 and

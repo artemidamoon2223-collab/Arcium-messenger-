@@ -6,7 +6,7 @@ layer only moves bytes that layer has already committed. It never encrypts,
 decrypts or advances a ratchet on its own.
 
 Code: `crates/relay` (relay, protocol, client), `crates/mobile-ffi/src/network.rs`
-(`NetworkMessenger`), `crates/mobile-ffi/src/contacts.rs` (contact cards).
+and `network/` (`NetworkMessenger`), `crates/mobile-ffi/src/contacts.rs` (contact cards).
 
 ## 1. Architecture
 

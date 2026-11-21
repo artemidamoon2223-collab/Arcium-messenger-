@@ -523,6 +523,22 @@ class GateTest(unittest.TestCase):
         self.r.write("crates/mobile-ffi/src/tests/k.rs", "use hkdf::Hkdf;\n")
         self.assertEqual(self.classify("t-libpath")["content_classes"], {"crates/mobile-ffi/src/tests/k.rs": ["CRYPTO"]})
 
+    def test_a_cfg_attr_without_path_keeps_the_exemption(self):
+        self.declare("#[cfg_attr(test, derive(Debug))]\nstruct S;\n#[cfg(test)]\nmod tests;\n",
+                     {"crates/mobile-ffi/src/tests/mod.rs": "mod k;\n"})
+        self.r.locked("t-attr", [PASSING])
+        self.r.write("crates/mobile-ffi/src/tests/k.rs", "use hkdf::Hkdf;\n")
+        self.assertEqual(self.classify("t-attr")["content_classes"], {})
+
+    def test_a_path_through_cfg_attr_or_from_another_crate_ends_the_exemption(self):
+        self.declare("#[cfg(test)]\nmod tests;\n", {"crates/mobile-ffi/src/tests/mod.rs": "mod k;\n",
+                                                     "crates/other/src/lib.rs": '#[path = "../../mobile-ffi/src/tests/k.rs"]\nmod k;\n'})
+        self.r.locked("t-xpath", [PASSING])
+        self.r.write("crates/mobile-ffi/src/tests/k.rs", "use hkdf::Hkdf;\n")
+        self.assertEqual(self.classify("t-xpath")["content_classes"], {"crates/mobile-ffi/src/tests/k.rs": ["CRYPTO"]})
+        self.r.write("crates/other/src/lib.rs", '#[cfg_attr(feature = "x", path = "a.rs")]\nmod a;\n')
+        self.assertEqual(self.classify("t-xpath")["content_classes"], {"crates/mobile-ffi/src/tests/k.rs": ["CRYPTO"]})
+
     def test_a_module_a_second_crate_root_builds_is_scanned(self):
         self.declare("#[cfg(test)]\nmod tests;\n", {"crates/mobile-ffi/src/main.rs": "mod tests;\nfn main() {}\n",
                                                      "crates/mobile-ffi/src/tests/mod.rs": "mod k;\n"})

@@ -227,7 +227,8 @@ TEST_SOURCE_DIR_RE = re.compile(r"^crates/[^/]+/(tests|benches)/|^android/[^/]+/
                                 r"^arcium-psi/tests/|^android/e2e/")
 RUST_TEST_NAME_RE = re.compile(r"/src/(.*/)?tests/|/src/(.*/)?(tests|\w+_tests?)\.rs$")
 # Code that makes the module tree differ from the files' names: no exemption in such a crate.
-RUST_TREE_ESCAPE_RE = re.compile(r"#!?\s*\[\s*(path\s*=|cfg_attr\b)|\binclude!\s*\(")
+RUST_TREE_ESCAPE_RE = re.compile(r"#!?\s*\[\s*(path\s*=|cfg_attr\s*\([^\]]*\bpath\s*=)|\binclude!\s*\(")
+RUST_PATH_ATTR_RE = re.compile(r"#!?\s*\[\s*(path\s*=|cfg_attr\s*\([^\]]*\bpath\s*=)")
 RUST_MOD_DECL_RE = re.compile(r"^\s*((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
 CFG_TEST_RE = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 # code_lines reads a file left to right, by its language, and follows strings (with escapes), Rust
@@ -851,9 +852,10 @@ def code_marker_classes(line, path="x.rs"):
 @functools.lru_cache(maxsize=None)
 def rust_tree_escapes(root, src):
     """Whether the crate of the source directory `src` may build a file under another module path: a
-    Rust file with #[path], cfg_attr or include! in code, or a [lib] or [[bin]] `path` in its Cargo.toml
-    outside src/bin/. Cached within one `classify` (which clears it first, so a tree changed by a
-    criterion is read again)."""
+    Rust file of the crate with #[path] (also through cfg_attr) or include! in code, a #[path] in code
+    in any other crate under crates/ (it may name a file here), or a [lib] or [[bin]] `path` in its
+    Cargo.toml outside src/bin/. Cached within one `classify` (which clears it first, so a tree
+    changed by a criterion is read again)."""
     section = ""
     for line in file_text(root, os.path.dirname(src) + "/Cargo.toml").splitlines():
         s = line.split("#", 1)[0].strip()
@@ -862,10 +864,14 @@ def rust_tree_escapes(root, src):
         m = re.match(r"path\s*=\s*[\"']([^\"']*)", s)
         if m and section in ("[lib]", "[[bin]]") and not m.group(1).startswith("src/bin/"):
             return True
-    for d, _subdirs, files in os.walk(os.path.join(root, src)):
+    for d, subdirs, files in os.walk(os.path.join(root, "crates")):
+        subdirs[:] = [s for s in subdirs if s != "target"]
         for f in files:
-            other = os.path.relpath(os.path.join(d, f), root)
-            if f.endswith(".rs") and any(RUST_TREE_ESCAPE_RE.search(c) for c in code_lines(file_text(root, other), other)):
+            other = os.path.relpath(os.path.join(d, f), root).replace(os.sep, "/")
+            if not f.endswith(".rs"):
+                continue
+            rx = RUST_TREE_ESCAPE_RE if other.startswith(src + "/") else RUST_PATH_ATTR_RE
+            if any(rx.search(c) for c in code_lines(file_text(root, other), other)):
                 return True
     return False
 
@@ -910,9 +916,7 @@ def rust_test_module(root, rel):
         found = rust_declarations(root, decl, mods[k]) if decl else []
         if not found:
             return False
-        if not all(found) and any(found):
-            return False  # declared twice, once outside a test build
-        tail_test |= all(found)
+        tail_test |= all(found)  # declared twice, once outside a test build, is not a test link
     roots = [r for r in (src + "/lib.rs", src + "/main.rs") if file_text(root, r)]
     firsts = [rust_declarations(root, r, mods[0]) for r in roots]
     if not any(firsts):

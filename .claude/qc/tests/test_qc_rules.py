@@ -153,6 +153,47 @@ class RulesTest(unittest.TestCase):
                     short[rel] = sorted(want - classes(rel))
         self.assertEqual(short, {})
 
+    def test_every_code_file_that_names_crypto_has_an_owner_gated_rule(self):
+        # The content markers only fall back for a change; what is committed needs a path rule.
+        ungated = {}
+        for d, subdirs, names in os.walk(REPO):
+            subdirs[:] = [s for s in subdirs if s not in SKIP_DIRS]
+            for name in names:
+                rel = os.path.relpath(os.path.join(d, name), REPO).replace(os.sep, "/")
+                if not qc.is_scanned_code(rel):
+                    continue
+                with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as f:
+                    found = set().union(*(qc.code_marker_classes(l) for l in f.read().splitlines()))
+                if found and not classes(rel) & qc.OWNER_GATED:
+                    ungated[rel] = sorted(found)
+        self.assertEqual(ungated, {}, "give each a path rule in qc.py RULES and a line in EXPECTED")
+
+    def test_markers_read_code_not_comments_or_strings(self):
+        cases = {
+            "use hkdf::Hkdf;": {"CRYPTO"},
+            "let k = StaticSecret::random_from_rng(OsRng);": {"CRYPTO"},
+            "val ks = KeyStore.getInstance(\"AndroidKeyStore\")": {"CRYPTO"},
+            "import javax.crypto.Cipher": {"CRYPTO"},
+            "const PROTOCOL_VERSION: u8 = 1;": {"PROTOCOL"},
+            "pub(crate) const CHAT_RECORD_V2: u8 = 2;": {"PROTOCOL"},
+            "/// Derived with Hkdf over the X3DH output.": set(),
+            "    * the `CONTACT_CARD_V1` text form": set(),
+            "let msg = \"Hmac check failed\";": set(),
+            "let url = \"https://relay\"; // signed with SigningKey": set(),
+            "val id = SecureRandom().nextBytes(b)": set(),
+        }
+        for line, want in cases.items():
+            self.assertEqual(qc.code_marker_classes(line), want, line)
+
+    def test_test_files_are_not_scanned(self):
+        for p in ("crates/mobile-ffi/src/tests/far_skip.rs", "crates/mobile-ffi/src/network/tests.rs",
+                  "crates/relay/src/v2_tests.rs", "crates/core-crypto/tests/x3dh_vectors.rs",
+                  KT.replace("src/main/", "src/test/") + "X.kt", "android/app/src/androidTest/A.kt",
+                  "android/e2e/two_devices.kt", "arcium-psi/tests/src/crypto.test.ts"):
+            self.assertFalse(qc.is_scanned_code(p), p)
+        for p in ("crates/mobile-ffi/src/kdf.rs", KT + "ui/chat/Contest.kt", "crates/relay/src/attest.rs"):
+            self.assertTrue(qc.is_scanned_code(p), p)
+
     def test_the_owner_gate_set_is_pinned(self):
         # The rules give the classes; this pins which of them stop a loop for the Owner.
         self.assertLessEqual({"CRYPTO", "PROTOCOL", "SUPPLY_CHAIN", "PSI", "CI_INTEGRITY", "AGENT_CONTROL"},
@@ -238,6 +279,44 @@ class GateTest(unittest.TestCase):
         self.r.write(KT + "startup/StoreStartup.kt", "// v2\n")
         self.r.write("vendor/tor-dirmgr/src/lib.rs", "// v2\n")
         self.assertEqual(self.classify("t-sv")["owner_gated"], ["CRYPTO", "SUPPLY_CHAIN"])
+
+    def test_crypto_code_in_a_new_file_is_owner_gated(self):
+        self.r.locked("t-new", [PASSING])
+        self.r.write("crates/mobile-ffi/src/kdf.rs", "//! Keys.\nuse hkdf::Hkdf;\nuse sha2::Sha256;\n")
+        out = self.classify("t-new")
+        self.assertEqual(out["content_classes"], {"crates/mobile-ffi/src/kdf.rs": ["CRYPTO"]})
+        self.assertEqual(out["paths"]["crates/mobile-ffi/src/kdf.rs"], ["CRYPTO", "FFI"])
+        self.assertEqual(out["owner_gated"], ["CRYPTO"])
+        rc, line = self.r.qc("run", "t-new")
+        self.assertIn("ESCALATE_TO_OWNER", line)
+        self.assertIn("owner-gated", line)
+
+    def test_a_wire_format_or_key_store_in_an_android_file_is_owner_gated(self):
+        self.r.write(KT + "ui/theme/Theme.kt", "package x\n")
+        self.r.git("add", "-A")
+        self.r.git("commit", "-qm", "theme")
+        self.r.base = self.r.git("rev-parse", "HEAD").strip()
+        self.r.locked("t-kt", [PASSING])
+        self.r.write(KT + "ui/theme/Theme.kt", "package x\nimport java.security.KeyStore\n")
+        self.r.write(KT + "ui/chat/ChatWire.kt", "package x\nconst val CHAT_FORMAT_V1 = 1\n")
+        out = self.classify("t-kt")
+        self.assertEqual(out["content_classes"], {KT + "ui/chat/ChatWire.kt": ["PROTOCOL"],
+                                                  KT + "ui/theme/Theme.kt": ["CRYPTO"]})
+        self.assertEqual(out["owner_gated"], ["CRYPTO", "PROTOCOL"])
+
+    def test_an_unclassified_file_with_crypto_code_loses_the_fallback_label(self):
+        self.r.locked("t-uncl", [PASSING])
+        self.r.write("tools/sign.rs", "use ed25519_dalek::SigningKey;\n")
+        self.assertEqual(self.classify("t-uncl")["paths"]["tools/sign.rs"], ["CRYPTO"])
+
+    def test_comments_tests_and_gated_files_add_no_content_class(self):
+        self.r.locked("t-quiet", [PASSING])
+        self.r.write("crates/mobile-ffi/src/notes.rs", "//! Uses Hkdf and Hmac, see x3dh.rs.\n/// StaticSecret\n")
+        self.r.write("crates/mobile-ffi/src/tests/k.rs", "let k = StaticSecret::random_from_rng(OsRng);\n")
+        self.r.write("crates/mobile-ffi/src/handshake.rs", "// v1\nuse hmac::Hmac;\n")
+        out = self.classify("t-quiet")
+        self.assertEqual(out["content_classes"], {})
+        self.assertEqual(out["owner_gated"], ["CRYPTO", "PROTOCOL"])  # handshake.rs, by its path rule
 
 
 if __name__ == "__main__":

@@ -115,7 +115,8 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # reported instead of silently unclassified. A new file gets only the rules
 # of its directory: one that holds keys, a wire format, an identity or a
 # stored record needs a rule of its own (and a line in
-# tests/test_qc_rules.py, which pins these classes).
+# tests/test_qc_rules.py, which pins these classes). Code that names a crypto
+# primitive or a wire-format version is also caught by its contents (below).
 RULES = [
     ("crates/core-crypto/", {"CRYPTO"}),
     ("crates/core-storage/", {"DURABLE_STATE", "CRYPTO"}),
@@ -167,6 +168,30 @@ CONTROL_RE = re.compile(r"^(\.mcp\.json|\.githooks/|\.pi/)|(^|/)(CLAUDE[^/]*\.md
 # Changing these needs a separate, explicit Owner instruction (CLAUDE.md).
 OWNER_GATED = {"CRYPTO", "PROTOCOL", "PSI", "CI_INTEGRITY", "SUPPLY_CHAIN", "AGENT_CONTROL"}
 SECURITY_CLASSES = OWNER_GATED | {"DURABLE_STATE", "IDENTITY", "NETWORK", "FFI", "ANDROID_LIFECYCLE"}
+
+# ── Classification by contents ───────────────────────────────────────────────
+# Code that names a cryptographic primitive, key type or key store, or a
+# wire-format version (comments and string literals are not code). A changed
+# code file that no path rule gates (a new file, or one of another area) is
+# CRYPTO or PROTOCOL by what its added code names: `classify` reports it under
+# "content_classes". Where a rule already gates the file, the rule decides.
+# Test files are left out (CLAUDE.md: tests are not crypto changes), and so is
+# randomness alone (SecureRandom, OsRng): it also makes plain ids.
+# tests/test_qc_rules.py requires an owner-gated rule for every code file in
+# the repository that names one, so these markers fall back only for a change
+# not yet committed to main.
+CRYPTO_CODE_RE = re.compile(
+    r"\b(StaticSecret|EphemeralSecret|ReusableSecret|SharedSecret|SigningKey|VerifyingKey|diffie_hellman|"
+    r"x25519_dalek|ed25519_dalek|curve25519_dalek|chacha20poly1305|XChaCha20Poly1305|ChaCha20Poly1305|"
+    r"aes_gcm|Aes(?:128|256)Gcm|Hkdf|hkdf|Hmac|hmac|ml_kem|MlKem\w*|sha2|Sha256|Sha512|blake[23]\w*|"
+    r"argon2|pbkdf2|scrypt|javax\.crypto|Cipher|KeyGenerator|KeyStore|KeyGenParameterSpec|MessageDigest|"
+    r"SecretKey\w*)\b")
+PROTOCOL_CODE_RE = re.compile(
+    r"\b[A-Z][A-Z0-9_]*_(?:FORMAT|RECORD|HANDSHAKE|CARD|REFUSAL|PROTOCOL)_V[0-9]+\b|\b(?:PROTOCOL_VERSION|CIPHER_SUITE)\b")
+CODE_EXTENSIONS = (".rs", ".kt", ".kts", ".java", ".ts")
+TEST_PATH_RE = re.compile(r"(^|/)(tests?|androidTest|e2e)/|(^|/)tests\.rs$|_tests?\.rs$|\.test\.ts$")
+STRING_LITERAL_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+TRAILING_COMMENT_RE = re.compile(r"//.*$")
 
 # Owner-only operations: a criterion may never run them.
 OWNER_ONLY_ARGV = [
@@ -666,9 +691,37 @@ def content_flags(root, base, paths=None):
     return flags
 
 
+def code_marker_classes(line):
+    """CRYPTO and/or PROTOCOL for one source line, from its code only."""
+    s = line.strip()
+    if s.startswith(("//", "/*", "*")):
+        return set()
+    code = TRAILING_COMMENT_RE.sub("", STRING_LITERAL_RE.sub('""', line))
+    return ({"CRYPTO"} if CRYPTO_CODE_RE.search(code) else set()) | \
+        ({"PROTOCOL"} if PROTOCOL_CODE_RE.search(code) else set())
+
+
+def is_scanned_code(rel):
+    return rel.endswith(CODE_EXTENSIONS) and not TEST_PATH_RE.search(rel)
+
+
+def content_classes(root, base, paths, per):
+    """Classes the added code of each changed, ungated code file names (CRYPTO_CODE_RE, PROTOCOL_CODE_RE)."""
+    scan = [p for p in paths if is_scanned_code(p) and not set(per[p]) & OWNER_GATED]
+    out = {}
+    for rel, line in added_lines(root, base, scan):
+        found = code_marker_classes(line)
+        if found:
+            out.setdefault(rel, set()).update(found)
+    return {p: sorted(c) for p, c in out.items()}
+
+
 def classify(root, base):
     paths = changed_paths(root, base)
     per = classify_paths(paths)
+    by_content = content_classes(root, base, paths, per) if paths else {}
+    for p, extra in by_content.items():
+        per[p] = sorted((set(per[p]) - {"UNCLASSIFIED", "DOCS"}) | set(extra))
     classes = sorted({c for v in per.values() for c in v})
     reviews = []
     if paths:
@@ -678,6 +731,7 @@ def classify(root, base):
     return {
         "base": base,
         "paths": per,
+        "content_classes": by_content,
         "classes": classes,
         "owner_gated": sorted(set(classes) & OWNER_GATED),
         "required_reviews": reviews,

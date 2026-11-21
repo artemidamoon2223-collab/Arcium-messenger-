@@ -25,8 +25,12 @@ A new source file that holds keys, a wire format, an identity or a stored
 record gets only its directory's QC classes (`.claude/qc/qc.py`, `RULES`):
 in `crates/mobile-ffi/src/` that is FFI alone, with no owner gate. Give it a
 rule of its own and a line in `EXPECTED` of
-`.claude/qc/tests/test_qc_rules.py`. Renaming or removing a file a rule
-names fails `qc.py self-test` in CI until the rule follows.
+`.claude/qc/tests/test_qc_rules.py`. CI's qc-unit job fails for a code
+file (not a test) whose code names a crypto primitive, key type, key store
+or wire-format version (`CRYPTO_CODE_RE`, `PROTOCOL_CODE_RE`) and that no
+owner-gated rule covers; until it has one, `qc.py classify` classes such a
+change by its contents. Renaming or removing a file a rule names fails
+`qc.py self-test` in CI until the rule follows.
 
 ## Which CI checks a diff actually triggers
 

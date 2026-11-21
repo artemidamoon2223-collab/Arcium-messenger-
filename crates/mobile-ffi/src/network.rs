@@ -50,7 +50,8 @@ use crate::{
     RefusalReason, SendResult,
 };
 use wire::{client_id, Envelope, Payload};
-pub(crate) use far_skip::*;
+pub(crate) use far_skip::far_wait_key;
+use far_skip::*;
 use mailbox::*;
 use refusals::*;
 

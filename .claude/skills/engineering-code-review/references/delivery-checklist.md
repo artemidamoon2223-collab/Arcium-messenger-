@@ -93,8 +93,9 @@ grep -nE "^  (push|pull_request|schedule|workflow_dispatch):|^    branches:|^   
 - **Rust:** next to the tests of the same code; follow the neighbours. Small
   unit tests sit in a `#[cfg(test)] mod tests` block at the end of the file
   they cover. Larger crates keep test files apart:
-  `crates/mobile-ffi/src/tests/*.rs` (declared in the `mod tests` block of
-  `crates/mobile-ffi/src/lib.rs`), `crates/core-protocol/src/messaging/tests/*.rs`
+  `crates/mobile-ffi/src/tests/*.rs` (declared in `src/tests/mod.rs`, the
+  `#[cfg(test)] mod tests;` of `crates/mobile-ffi/src/lib.rs`),
+  `crates/core-protocol/src/messaging/tests/*.rs`
   (declared in `messaging/tests.rs`, the `#[cfg(test)] mod tests;` of
   `messaging.rs`), and `crates/relay/src/v2_tests.rs`, a sibling file
   (`mod v2_tests;` in `relay/src/lib.rs`). Cargo integration tests are in

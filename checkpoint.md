@@ -16,6 +16,8 @@ Updated: 2026-11-21 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 - `main` = `256fed059062fd784227ccabd746a40b2b2a9622` (merge of PR #246, 2026-11-21)
 
 ## Done
+- 21 Nov (D-075; outside the repository, nothing here changed): SE-001, a skill-evolution prototype in `/var/se001` of that session's container. One candidate, new steps of one skill: validation 6/16 -> 10/16, sealed 5/24 -> 15/24 with no loss; an independent audit found the size overstated by a word-overlap check (strict recount 3/8 against 0/8 where the change acts). Not installed. Report and archive are with the Owner.
+- 21 Nov (D-074; outside the repository): SI-001, a four-role pilot (Generator, Verifier, Meta-Check, Coach) in `/var/si001`: development cases 7/12 -> 10/12, sealed 5/8 -> 4/8, INCONCLUSIVE, candidate not promoted.
 - 21 Nov (D-073): #245 tracker code locations of live rows after the split (`0b60dda`); #246 QC markers also by crypto words and algorithm constants, test code by place and build (`256fed0`).
 - 21 Nov (D-072): #244 QC classes a new or ungated code file by the crypto and wire-format names its added code uses (a language-aware reader); every marked code file needs an owner-gated rule, checked by qc-unit (`43a5ae1`).
 - 21 Nov (D-071): #243 QC risk rules classify the files that hold keys, wire formats, identities and records (mobile-ffi split files, Android identity/relay/store code, vendor/ as SUPPLY_CHAIN); test_qc_rules.py pins them (`e31a55a`).
@@ -31,32 +33,7 @@ Updated: 2026-11-21 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 - 19 Nov (D-063): #225 skills refresh (`cb46ed7`): threat-checklist conflict rule, test locations, mutation check, merging a PR that is behind, tracker-text check, worktree as disposable copy, CLAUDE.md pointer to repo-change-protocol; QC loop unchanged.
 - 19 Nov (D-062): #222 R-6 signed-prekey rotation (`553c3ba`): 7 days, and after a one-time-prekey change; previous key for one more period; V3 prekey record. #223 NET-MESSAGING qualifiers (`24c82c5`); #224 tracker R-6 PARTIAL and checklist (`d578295`).
 - 19 Nov (D-060, D-061): #217 option B (`1cca4b8`), #218 R-21 older chains (`d983e8e`), #219 H-6 spare slot (`d1d2cde`), #220 R-24 card check + R-22 prune (`8bac3f3`); tracker #221 (`b26a483`).
-- 18 Nov (D-059): #215 R-9 a V2 relay stores a SEND only from the envelope's authenticated sender (`c2acfb6`); #216 tracker R-9 OPEN, narrowed further (`38cc867`).
-- 18 Nov (D-058): #213 R-6 kept unrotated, one-time prekey replaced when an own session wins a simultaneous start (`9b95493`); #214 tracker R-6 ACCEPTED, one case fixed (`6d9c628`).
-- 18 Nov (D-057): #211 X-6 a handshake without a one-time prekey is never answered (`f452eb3`); #212 tracker X-6 FIXED, R-6 revisit due (`c8489d9`).
-- 18 Nov (D-056): #209 R-14 far skip up to 100,000 after a 10-minute wait (`7755efd`); #210 tracker R-14, R-20 PARTIAL (`88969c6`).
-- 18 Nov (D-055): #207 R-21 GONE notice for the current receiving chain (`6e00a7f`); #208 tracker R-21 PARTIAL (`b729891`).
-- 17 Nov (D-054): #205 R-22 `last_sent` pruned after every round (`3f0cf9f`); #206 tracker R-22 FIXED (`003af23`).
-- 17 Nov (D-053): #203 R-24 X3DH refuses low-order keys (`3767d94`); #204 tracker R-24 FIXED (`cf8d96e`).
-- 17 Nov (D-052): #202 test catches a weaker copy-room threshold (`1c5b2c1`).
-- 17 Nov (D-051): #199 R-25 one-pass eviction (`5061041`), #200 H-6 reserved capacity (`e4e2313`), #201 tracker R-25 FIXED, H-6 narrowed (`d52395e`).
-- 17 Nov (D-050): #197 `when_to_use` in review skills (`54be38a`), #198 tracker R-23 FIXED (`9d76423`).
-- 17 Nov (D-049): #196 R-23 fixed, `shift_remove` keeps skipped-key order (`b1257df`).
-- 17 Nov (D-048): shorter CLAUDE.md kept (trial of D-037 closed).
-- 17 Nov (D-047): branch protection on `main` requires 6 Arcium CI checks and up-to-date branches (Owner; screenshots).
-- 17 Nov (D-046): weekly retro; #195 three review/process rules in skills (`1e9e464`).
-- 16 Nov (D-045): #194 tracker R-23, R-24 (C004 NEW-1, NEW-2) (`546f5c2`); claude.ai project texts refreshed.
-- 16 Nov (D-044): #192 CLAUDE.md done-when / two attempts / fresh reviewer incl. CI (`c15cb0c`); #193 advisory CI check and merge/deploy guard hook (`b142ed7`).
-- 15 Nov (D-043): #191 tracker, H-7 OPEN — narrowed (`06c990c`).
-- 15 Nov (D-041): classification of the project; #188 `npm ci` (`d6bb4bb`), #189 H-7 partial (`14e77a0`), #190 tracker R-20 … R-22 and status words (`79be252`).
-- 15 Nov (D-040): #187 V2 relay in the two-device emulator job, neutral link banner (`3f104e9`).
-- 15 Nov (D-039): #185 docs aligned (`c97cfd2`), #186 shorter CLAUDE.md trial started (`6f3a5e6`), #178 relay design doc (`2f9327b`).
-- 14 Nov (D-035): relay #179 (`9c36cf0`), #180 (`9b3f54f`), #181 (`b41050d`), #182 (`bc0dc19`); instruction files #183 (`bd5dfed`); tracker #184 R-9 and R-14 narrowed, both still OPEN (`a68cea6`; 12 check runs success on head `df296ba`).
-- 14 Nov (D-021, D-023, D-025): #157–#166 merged; R-7 (b), R-10, R-17 fixed; delete contact (option C) merged.
-- 14 Nov (D-026): #167 R-16 (`6d6acea`; 508 passed on its head), #168 tracker R-16 fixed (`33f93e7`).
-- 14 Nov (D-031): #173 background receive (`d36a95e`), #175 R-19 off-chain circuit source (`fcabf55`), #174 option A for R-13 (`efd4c0e`), #176 CLAUDE.md circuit hash (`d764380`), #177 tracker (`41a0d8d`).
-- 14 Nov (D-030): #171 R-18 (a)(c) (`92ad8eb`), #172 tracker R-18 partial (`ea7c3fe`).
-- 14 Nov (D-028): #169 R-15 per-text cancel (`2cc79ff`; 515 passed locally), #170 tracker R-15 fixed (`4266537`).
+- 14 to 18 Nov (D-021 to D-059): PRs #157 to #216; each with its SHA is in `decisions.md`.
 
 ## Open PRs
 - None.
@@ -66,6 +43,7 @@ Updated: 2026-11-21 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
 - Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
+- Reliability System V1 (D-076): the Owner will build it in a new session as a new, separate project; this repository is read-only for that task. The proposals for this repository in D-074 and D-075 are not applied.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

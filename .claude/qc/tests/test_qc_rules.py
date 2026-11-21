@@ -1,9 +1,10 @@
 """Risk classification of this repository's own files (qc.py RULES).
 
 Pins the classes of the files that hold keys, wire formats, identities and
-stored records, and of one file under every rule, so that narrowing any rule,
-or renaming or removing a pinned file, fails here instead of silently
-dropping a review or an owner gate. Code moved into a new file gets only its
+stored records, of one file under every rule, and of every file under every
+directory rule, so that narrowing any rule (dropping a class, or cutting a
+directory rule down to fewer paths), or renaming or removing a pinned file,
+fails here instead of silently dropping a review or an owner gate. Code moved into a new file gets only its
 directory's classes: the new file needs a rule in qc.py and a line in
 EXPECTED. RulesTest reads the checkout
 and writes nothing; GateTest runs qc.py in a throwaway repository, like the
@@ -79,12 +80,48 @@ EXPECTED = {
     ".claude/qc/qc.py": {"AGENT_CONTROL"},
 }
 
+# directory rule -> the classes every file under it must get (at least).
+EXPECTED_DIRS = {
+    "crates/core-crypto/": {"CRYPTO"},
+    "crates/core-storage/": {"CRYPTO", "DURABLE_STATE"},
+    "crates/core-protocol/": {"DURABLE_STATE", "PROTOCOL"},
+    "crates/mobile-ffi/src/network": {"FFI", "NETWORK", "PROTOCOL", "DURABLE_STATE"},
+    "crates/mobile-ffi/": {"FFI"},
+    "crates/relay/": {"NETWORK", "PROTOCOL"},
+    "crates/core-transport/": {"NETWORK"},
+    KT + "security/": {"ANDROID_LIFECYCLE", "CRYPTO", "IDENTITY"},
+    KT + "ffi/": {"ANDROID_LIFECYCLE", "FFI"},
+    KT + "messaging/": {"ANDROID_LIFECYCLE", "NETWORK"},
+    KT + "ui/contacts/": {"ANDROID_LIFECYCLE", "IDENTITY"},
+    KT + "ui/onboarding/": {"ANDROID_LIFECYCLE", "IDENTITY"},
+    "android/": {"ANDROID_LIFECYCLE"},
+    "vendor/": {"SUPPLY_CHAIN"},
+    "arcium-psi/": {"PSI"},
+    ".github/": {"CI_INTEGRITY"},
+    ".cargo/": {"SUPPLY_CHAIN"},
+    ".devcontainer/": {"SUPPLY_CHAIN"},
+    ".claude/": {"AGENT_CONTROL"},
+}
+
 # Directories never part of the change set (qc.py TRUSTED_BUILD_DIRS and their kin).
 SKIP_DIRS = {".git", "target", "build", "node_modules", ".gradle"}
 
 
 def classes(path):
     return set(qc.classify_paths([path])[path])
+
+
+def files_under(prefix):
+    """Every file of the checkout whose path starts with `prefix` (build output skipped)."""
+    out = []
+    parent = prefix if prefix.endswith("/") else os.path.dirname(prefix) + "/"
+    for d, subdirs, names in os.walk(os.path.join(REPO, parent)):
+        subdirs[:] = [s for s in subdirs if s not in SKIP_DIRS]
+        for name in names:
+            rel = os.path.relpath(os.path.join(d, name), REPO).replace(os.sep, "/")
+            if rel.startswith(prefix):
+                out.append(rel)
+    return out
 
 
 class RulesTest(unittest.TestCase):
@@ -102,7 +139,21 @@ class RulesTest(unittest.TestCase):
                     if not any(p == prefix or p.startswith(prefix) for p in EXPECTED)]
         self.assertEqual(unpinned, [])
 
-    def test_the_owner_gate_set_keeps_crypto_protocol_supply_chain_and_psi(self):
+    def test_every_directory_rule_is_pinned(self):
+        dirs = [prefix for prefix, _ in qc.RULES if not os.path.isfile(os.path.join(REPO, prefix))]
+        self.assertEqual(sorted(dirs), sorted(EXPECTED_DIRS))
+
+    def test_every_file_under_a_directory_rule_gets_its_classes(self):
+        short = {}
+        for prefix, want in EXPECTED_DIRS.items():
+            found = files_under(prefix)
+            self.assertTrue(found, prefix)
+            for rel in found:
+                if not want <= classes(rel):
+                    short[rel] = sorted(want - classes(rel))
+        self.assertEqual(short, {})
+
+    def test_the_owner_gate_set_is_pinned(self):
         # The rules give the classes; this pins which of them stop a loop for the Owner.
         self.assertLessEqual({"CRYPTO", "PROTOCOL", "SUPPLY_CHAIN", "PSI", "CI_INTEGRITY", "AGENT_CONTROL"},
                              qc.OWNER_GATED)

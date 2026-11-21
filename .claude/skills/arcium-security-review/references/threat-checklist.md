@@ -195,7 +195,7 @@ Android contact-card and add-contact code. Specification:
   from the contact that does not decrypt under it authenticates as the
   first message under the recorded handshake (`beside_authenticates` in
   `NetworkMessenger::take_message`, reached from the `Message` arm of
-  `process`, `network.rs`), which needs the contact's identity secret or a
+  `process`, `network/inbox.rs`), which needs the contact's identity secret or a
   signed-prekey secret this device still holds. So a
   forged handshake alone raises nothing; a genuine handshake and first
   message replayed while the prekeys they name can still be answered can
@@ -214,8 +214,9 @@ Android contact-card and add-contact code. Specification:
 
 ## 4. Network
 
-Where: `crates/mobile-ffi/src/network.rs`, `network/wire.rs`,
-`network/chat.rs`, `crates/relay/`. Specification: `docs/NET-MESSAGING.md`.
+Where: `crates/mobile-ffi/src/network.rs` and, beside it in `network/`,
+`mailbox.rs`, `outbox.rs`, `inbox.rs`, `far_skip.rs`, `refusals.rs`,
+`wire.rs` and `chat.rs`; `crates/relay/`. Specification: `docs/NET-MESSAGING.md`.
 
 - **Receipts.** A text is delivered only when an authenticated receipt inside
   the ratchet names its exact message id. A forged or replayed receipt, one

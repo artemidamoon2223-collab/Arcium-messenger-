@@ -1,7 +1,7 @@
 //! A-2: envelopes a round leaves on the relay no longer hide the envelopes
 //! behind them. A round pages through the mailbox with FETCH_AFTER, in two
 //! bounded passes (handshakes, then everything else), and deletes only what it
-//! processed to completion. See `network.rs`, `NetworkMessenger::scan`.
+//! processed to completion. See `network/mailbox.rs`, `NetworkMessenger::scan`.
 //!
 //! The retained prefix is made of genuine envelopes: Carol's messages to Bob,
 //! whose handshake is held back, so Bob keeps them (no session yet). Every

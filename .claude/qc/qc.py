@@ -115,7 +115,8 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # reported instead of silently unclassified. A new file gets only the rules
 # of its directory: one that holds keys, a wire format, an identity or a
 # stored record needs a rule of its own (and a line in
-# tests/test_qc_rules.py, which pins these classes).
+# tests/test_qc_rules.py, which pins these classes). Code that names a crypto
+# primitive or a wire-format version is also caught by its contents (below).
 RULES = [
     ("crates/core-crypto/", {"CRYPTO"}),
     ("crates/core-storage/", {"DURABLE_STATE", "CRYPTO"}),
@@ -167,6 +168,45 @@ CONTROL_RE = re.compile(r"^(\.mcp\.json|\.githooks/|\.pi/)|(^|/)(CLAUDE[^/]*\.md
 # Changing these needs a separate, explicit Owner instruction (CLAUDE.md).
 OWNER_GATED = {"CRYPTO", "PROTOCOL", "PSI", "CI_INTEGRITY", "SUPPLY_CHAIN", "AGENT_CONTROL"}
 SECURITY_CLASSES = OWNER_GATED | {"DURABLE_STATE", "IDENTITY", "NETWORK", "FFI", "ANDROID_LIFECYCLE"}
+
+# ── Classification by contents ───────────────────────────────────────────────
+# Code that names this project's crypto or encrypted-store API, a cryptographic
+# primitive, key type, key store or secret-wiping type, or a wire-format
+# version (comments and string literals are not code). The markers are names:
+# a primitive under a name not listed here is not seen. A changed
+# code file that no path rule gates (a new file, or one of another area) is
+# CRYPTO or PROTOCOL by what its added code names: `classify` reports it under
+# "content_classes". Where a rule already gates the file, the rule decides.
+# Test files are left out (CLAUDE.md: tests are not crypto changes), and so is
+# randomness alone (SecureRandom, OsRng): it also makes plain ids.
+# tests/test_qc_rules.py requires an owner-gated rule for every code file in
+# the repository that names one, so these markers fall back only for a change
+# not yet committed to main.
+CRYPTO_CODE_RE = re.compile(
+    # crates and paths: this project's crypto and encrypted store, AEAD, KDF, MAC, hash, key agreement,
+    # constant time and secret wiping
+    r"\b(?:core_crypto|core_storage|aead|ring|subtle|zeroize|hkdf|hmac|sha2|sha3|chacha20poly1305|chacha20|poly1305|"
+    r"aes_gcm(?:_siv)?|x25519_dalek|ed25519_dalek|curve25519_dalek|ml_kem|blake[23]|argon2|pbkdf2|"
+    r"scrypt)::|\bjavax\.crypto\b|\b(?:Signature|Mac)\.getInstance\b|"
+    # types and functions
+    r"\b(?:StaticSecret|EphemeralSecret|ReusableSecret|SharedSecret|SigningKey|VerifyingKey|diffie_hellman|"
+    r"PrivateKeyDer|PrivatePkcs8KeyDer|DoubleRatchet|RescueCipher|EncryptedStore|Aead|AeadInPlace|KeyInit|"
+    r"XChaCha20Poly1305|ChaCha20Poly1305|Aes(?:128|256)Gcm\w*|Hkdf|Hmac\w*|Sha(?:224|256|384|512)\w*|"
+    r"Sha3_\w+|MlKem\w*|Blake[23]\w*|Zeroiz\w*|zeroize|ConstantTimeEq|ct_eq|Cipher|KeyGenerator|"
+    r"KeyPairGenerator|KeyStore|KeyGenParameterSpec|GCMParameterSpec|IvParameterSpec|MessageDigest|"
+    r"SecretKey\w*|MasterKey\w*|EncryptedSharedPreferences|EncryptedFile)\b")
+PROTOCOL_CODE_RE = re.compile(
+    r"\b[A-Z][A-Z0-9_]*_(?:FORMAT|RECORD|HANDSHAKE|CARD|REFUSAL|PROTOCOL)_V[0-9]+\b|\b(?:PROTOCOL_VERSION|CIPHER_SUITE)\b")
+CODE_EXTENSIONS = (".rs", ".kt", ".kts", ".java", ".ts")
+TEST_PATH_RE = re.compile(r"(^|/)(tests?|androidTest|e2e)/|(^|/)tests\.rs$|_tests?\.rs$|\.test\.ts$")
+# code_lines reads a file left to right, by its language, and follows strings (with escapes), Rust
+# raw strings, Kotlin and Java `"""` strings, TypeScript `'…'` and `` `…` `` strings, the code of
+# Kotlin and TypeScript `${…}` templates and block comments, across lines. Not followed: nested Rust
+# block comments (the rest of the outer comment reads as code, which can only add a class) and
+# TypeScript regular-expression literals.
+RAW_OPEN_RE = re.compile(r'b?r(#*)"')
+CHAR_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\\n])'")
+KDOC_LINE_RE = re.compile(r"\s*\*(\s|$)")
 
 # Owner-only operations: a criterion may never run them.
 OWNER_ONLY_ARGV = [
@@ -666,9 +706,127 @@ def content_flags(root, base, paths=None):
     return flags
 
 
+def code_lines(text, path="x.rs", doc_lines=False):
+    """Each line of `text` with its literals and comments left out; a literal or comment may span lines.
+    `path` gives the language. `doc_lines` drops a `* text` line read without its opening `/**`
+    (one line read on its own; a whole file knows where its comments are)."""
+    lang = path.rsplit(".", 1)[-1]
+    templates, ts = lang in ("kt", "kts"), lang == "ts"  # `${…}` in Kotlin strings; in TypeScript, backticks only
+    out, stack = [], []  # ["block"] | ["str", closer, escapes, templates] | ["tmpl", brace depth]
+    for line in text.split("\n"):
+        buf, i, n = [], 0, len(line)
+        if doc_lines and not stack and KDOC_LINE_RE.match(line):
+            out.append("")
+            continue
+        while i < n:
+            top = stack[-1] if stack else None
+            if top and top[0] == "block":
+                j = line.find("*/", i)
+                if j < 0:
+                    break
+                i = j + 2
+                stack.pop()
+                buf.append(" ")
+                continue
+            if top and top[0] == "str":
+                _, closer, escapes, tmpl = top
+                if escapes and line[i] == "\\":
+                    i += 2
+                elif tmpl and line.startswith("${", i):
+                    stack.append(["tmpl", 0])
+                    i += 2
+                elif line.startswith(closer, i):
+                    i += len(closer)
+                    while closer == '"""' and i < n and line[i] == '"':  # `""""` ends after its last quote
+                        i += 1
+                    stack.pop()
+                    buf.append('""')
+                else:
+                    i += 1
+                continue
+            c = line[i]
+            if top and top[0] == "tmpl" and c in "{}":
+                if c == "}" and top[1] == 0:
+                    stack.pop()
+                    i += 1
+                    continue
+                top[1] += 1 if c == "{" else -1
+            if line.startswith("//", i):
+                break
+            if line.startswith("/*", i):
+                stack.append(["block"])
+                i += 2
+            elif line.startswith('"""', i):
+                stack.append(["str", '"""', False, templates])
+                i += 3
+            elif lang == "rs" and c in "br" and not (i and (line[i - 1].isalnum() or line[i - 1] == "_")) \
+                    and RAW_OPEN_RE.match(line, i):
+                m = RAW_OPEN_RE.match(line, i)
+                stack.append(["str", '"' + m.group(1), False, False])
+                i = m.end()
+            elif c == '"':
+                stack.append(["str", '"', True, templates])
+                i += 1
+            elif ts and c in "'`":
+                stack.append(["str", c, True, c == "`"])
+                i += 1
+            elif c == "'" and not ts and CHAR_LITERAL_RE.match(line, i):
+                buf.append("''")
+                i = CHAR_LITERAL_RE.match(line, i).end()
+            else:
+                buf.append(c)
+                i += 1
+        out.append("".join(buf))
+    return out
+
+
+def marker_classes(code):
+    return ({"CRYPTO"} if CRYPTO_CODE_RE.search(code) else set()) | \
+        ({"PROTOCOL"} if PROTOCOL_CODE_RE.search(code) else set())
+
+
+def file_marker_classes(text, lines=None, path="x.rs"):
+    """CRYPTO and/or PROTOCOL named by the code of `text` (only the given 0-based lines, if any)."""
+    code = code_lines(text, path)
+    found = set()
+    for j in (range(len(code)) if lines is None else lines):
+        found |= marker_classes(code[j])
+    return found
+
+
+def code_marker_classes(line, path="x.rs"):
+    """CRYPTO and/or PROTOCOL for one source line read on its own."""
+    return marker_classes(code_lines(line, path, doc_lines=True)[0])
+
+
+def is_scanned_code(rel):
+    return rel.endswith(CODE_EXTENSIONS) and not TEST_PATH_RE.search(rel)
+
+
+def content_classes(root, base, paths, per):
+    """Classes the added code of each changed, ungated code file names (CRYPTO_CODE_RE, PROTOCOL_CODE_RE)."""
+    scan = [p for p in paths if is_scanned_code(p) and not set(per[p]) & OWNER_GATED]
+    base_tree = tree_entries(root, base) if scan else {}
+    out = {}
+    for rel in scan:
+        old = blob_text(root, base_tree[rel][1]).splitlines() if rel in base_tree and \
+            base_tree[rel][0] != "160000" else []
+        new = file_text(root, rel).splitlines()
+        added = [j for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+                 if tag in ("insert", "replace") for j in range(j1, j2)]
+        # The whole new file is read for its literals and comments; only the added lines count.
+        found = file_marker_classes("\n".join(new), added, rel) if added else set()
+        if found:
+            out[rel] = sorted(found)
+    return out
+
+
 def classify(root, base):
     paths = changed_paths(root, base)
     per = classify_paths(paths)
+    by_content = content_classes(root, base, paths, per) if paths else {}
+    for p, extra in by_content.items():
+        per[p] = sorted((set(per[p]) - {"UNCLASSIFIED", "DOCS"}) | set(extra))
     classes = sorted({c for v in per.values() for c in v})
     reviews = []
     if paths:
@@ -678,6 +836,7 @@ def classify(root, base):
     return {
         "base": base,
         "paths": per,
+        "content_classes": by_content,
         "classes": classes,
         "owner_gated": sorted(set(classes) & OWNER_GATED),
         "required_reviews": reviews,

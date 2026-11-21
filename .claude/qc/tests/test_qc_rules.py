@@ -169,21 +169,53 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(ungated, {}, "give each a path rule in qc.py RULES and a line in EXPECTED")
 
     def test_markers_read_code_not_comments_or_strings(self):
-        cases = {
-            "use hkdf::Hkdf;": {"CRYPTO"},
-            "let k = StaticSecret::random_from_rng(OsRng);": {"CRYPTO"},
-            "val ks = KeyStore.getInstance(\"AndroidKeyStore\")": {"CRYPTO"},
-            "import javax.crypto.Cipher": {"CRYPTO"},
-            "const PROTOCOL_VERSION: u8 = 1;": {"PROTOCOL"},
-            "pub(crate) const CHAT_RECORD_V2: u8 = 2;": {"PROTOCOL"},
-            "/// Derived with Hkdf over the X3DH output.": set(),
-            "    * the `CONTACT_CARD_V1` text form": set(),
-            "let msg = \"Hmac check failed\";": set(),
-            "let url = \"https://relay\"; // signed with SigningKey": set(),
-            "val id = SecureRandom().nextBytes(b)": set(),
-        }
-        for line, want in cases.items():
-            self.assertEqual(qc.code_marker_classes(line), want, line)
+        # One sample per marker, so dropping one from CRYPTO_CODE_RE or PROTOCOL_CODE_RE fails here.
+        crypto = [
+            "use core_crypto::ratchet::DoubleRatchet;", "use core_crypto::{x3dh, ratchet};",
+            "let r = DoubleRatchet::init_bob(k, s);", "use core_storage::EncryptedStore;",
+            "fn open(s: &EncryptedStore) {}", "let c = RescueCipher::new(k);", "use aead::{Aead, KeyInit};",
+            "impl AeadInPlace for X {}", "use zeroize::Zeroizing;", "buf.zeroize();", "#[derive(ZeroizeOnDrop)]",
+            "use subtle::ConstantTimeEq;", "if a.ct_eq(&b).into() {}", "use ring::signature;",
+            "let k = PrivateKeyDer::from(d);", "let k = PrivatePkcs8KeyDer::from(d);",
+            "let k = StaticSecret::random_from_rng(OsRng);", "let e = EphemeralSecret::random();",
+            "let r = ReusableSecret::random();", "let s: SharedSecret = a.diffie_hellman(&b);",
+            "let s = SigningKey::from_bytes(&b);", "let v = VerifyingKey::from_bytes(&b);",
+            "use x25519_dalek::PublicKey;", "use ed25519_dalek::Signer;", "use curve25519_dalek::edwards;",
+            "use chacha20poly1305::KeyInit;", "let c = XChaCha20Poly1305::new(k);", "let c = ChaCha20Poly1305::new(k);",
+            "use aes_gcm::Aes256Gcm;", "use aes_gcm_siv::Aes256GcmSiv;", "let c = Aes128Gcm::new(k);",
+            "use hkdf::Hkdf;", "let h = Hkdf::<Sha256>::new(None, ikm);", "use hmac::Mac;", "type M = HmacSha256;",
+            "use sha2::Digest;", "let d = Sha256::digest(x);", "let d = Sha512_256::digest(x);", "use sha3::Digest;",
+            "let d = Sha3_256::digest(x);", "use ml_kem::kem::Decapsulate;", "let k = MlKem768::generate(r);",
+            "use blake3::hash;", "let h = Blake2b512::new();", "use argon2::Argon2;", "use pbkdf2::pbkdf2_hmac;",
+            "use scrypt::Params;", "import javax.crypto.Cipher", "val c = Cipher.getInstance(t)",
+            "val g = KeyGenerator.getInstance(a)", "val g = KeyPairGenerator.getInstance(a)",
+            "val ks = KeyStore.getInstance(\"AndroidKeyStore\")", "val spec = KeyGenParameterSpec.Builder(a, p)",
+            "val p = GCMParameterSpec(128, iv)", "val p = IvParameterSpec(iv)", "val d = MessageDigest.getInstance(a)",
+            "val k: SecretKey = g.generateKey()", "val k = SecretKeySpec(b, a)", "val mk = MasterKey.Builder(ctx)",
+            "val s = Signature.getInstance(a)", "val m = Mac.getInstance(a)",
+            # code after a closed block comment, a deref, a char literal, raw and Kotlin strings
+            "/* x */ let k = Hkdf::new(None, ikm);", "*/ let k = Hkdf::new(None, ikm);",
+            "*out = Sha256::digest(b).into();",
+            # each literal form misread would swallow the code up to the next quote
+            "let q = '\"'; let k = Hkdf::new(None, ikm); let s = \"y\";",
+            'let r = r"x\\"; let k = Hkdf::new(None, ikm); let s = "y";',
+            'val s = """a"b"""; Cipher.getInstance(x)',
+        ]
+        protocol = ["const PROTOCOL_VERSION: u8 = 1;", "const CIPHER_SUITE: u8 = 1;",
+                    "pub(crate) const CHAT_RECORD_V2: u8 = 2;", "const X_FORMAT_V1: u8 = 1;",
+                    "const OPEN_HANDSHAKE_V3: usize = 84;", "const PEER_CARD_V1: u8 = 1;",
+                    "const NOTE_REFUSAL_V1: u8 = 1;", "const RELAY_PROTOCOL_V2: &str = x;"]
+        neither = ["/// Derived with Hkdf over the X3DH output.", "    * the `CONTACT_CARD_V1` text form",
+                   "* Hkdf in KDoc", "/* Hkdf */", "let msg = \"Hmac check failed\";", 'let s = r#"Hkdf"#;',
+                   'let s = r#"a "Hkdf" b"#;', 'val s = """Cipher"""', 'val s = """a "Cipher" b"""', "let url = \"https://relay\"; // signed with SigningKey",
+                   "val id = SecureRandom().nextBytes(b)", "let c = 'H';", "fn f<'a>(x: &'a str) {}",
+                   "let ciphertext = seal(x);", "val Ciphers = listOf()", "let ring_buffer = Ring::new();"]
+        for line in crypto:
+            self.assertEqual(qc.code_marker_classes(line), {"CRYPTO"}, line)
+        for line in protocol:
+            self.assertEqual(qc.code_marker_classes(line), {"PROTOCOL"}, line)
+        for line in neither:
+            self.assertEqual(qc.code_marker_classes(line), set(), line)
 
     def test_test_files_are_not_scanned(self):
         for p in ("crates/mobile-ffi/src/tests/far_skip.rs", "crates/mobile-ffi/src/network/tests.rs",
@@ -308,6 +340,17 @@ class GateTest(unittest.TestCase):
         self.r.locked("t-uncl", [PASSING])
         self.r.write("tools/sign.rs", "use ed25519_dalek::SigningKey;\n")
         self.assertEqual(self.classify("t-uncl")["paths"]["tools/sign.rs"], ["CRYPTO"])
+
+    def test_only_added_code_counts(self):
+        self.r.write("crates/mobile-ffi/src/util.rs", "use hkdf::Hkdf;\n")
+        self.r.git("add", "-A")
+        self.r.git("commit", "-qm", "util")
+        self.r.base = self.r.git("rev-parse", "HEAD").strip()
+        self.r.locked("t-added", [PASSING])
+        self.r.write("crates/mobile-ffi/src/util.rs", "use hkdf::Hkdf;\nfn plain() {}\n")
+        self.assertEqual(self.classify("t-added")["content_classes"], {})
+        self.r.write("crates/mobile-ffi/src/util.rs", "use hkdf::Hkdf;\nuse hmac::Hmac;\n")
+        self.assertEqual(self.classify("t-added")["content_classes"], {"crates/mobile-ffi/src/util.rs": ["CRYPTO"]})
 
     def test_comments_tests_and_gated_files_add_no_content_class(self):
         self.r.locked("t-quiet", [PASSING])

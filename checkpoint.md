@@ -13,9 +13,10 @@ Updated: 2026-11-21 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `5a32f0c994c6046d17e58fb3486fed98df088a9e` (merge of PR #242, 2026-11-21)
+- `main` = `e31a55aa105ddd083125d2d4f510d90e2e8bb923` (merge of PR #243, 2026-11-21)
 
 ## Done
+- 21 Nov (D-071): #243 QC risk rules classify the files that hold keys, wire formats, identities and records (mobile-ffi split files, Android identity/relay/store code, vendor/ as SUPPLY_CHAIN); test_qc_rules.py pins them (`e31a55a`).
 - 21 Nov (D-070, step 7 of D-067): #240 lib.rs tests to src/tests/mod.rs (`bfad8c0`); #241 lib.rs code into error.rs, identity.rs, prekeys.rs, handshake.rs, responder.rs (`ed0cad6`); #242 network.rs internals into network/far_skip.rs, inbox.rs, mailbox.rs, outbox.rs, refusals.rs, tests.rs (`5a32f0c`). Pure moves: same 307 test names, Kotlin byte-identical; lib.rs 3,462 → 763 lines, network.rs 2,480 → 959.
 - 20 Nov (D-069): #239 core-transport drops unused `anyhow`, `core-crypto`, `futures` (`8305ed6`); workspace and Android graphs unchanged.
 - 20 Nov (D-068): #236 tracker note F-15/D-008 and relay comment, core-transport not a mobile-ffi dependency (`1d26e28`); #237 net_limits cut-round test no longer timing-dependent (`761cf43`); #238 unused `log` dependency of mobile-ffi dropped (`b2c2760`).

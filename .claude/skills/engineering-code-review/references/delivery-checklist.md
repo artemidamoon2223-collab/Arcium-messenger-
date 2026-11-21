@@ -26,10 +26,13 @@ record gets only its directory's QC classes (`.claude/qc/qc.py`, `RULES`):
 in `crates/mobile-ffi/src/` that is FFI alone, with no owner gate. Give it a
 rule of its own and a line in `EXPECTED` of
 `.claude/qc/tests/test_qc_rules.py`. CI's qc-unit job fails for a code
-file (not a test) whose code names this project's crypto API, a crypto
-primitive, key type, key store or wire-format version (`CRYPTO_CODE_RE`,
-`PROTOCOL_CODE_RE`; names only, so not every crypto use) and that no
-owner-gated rule covers; until it has one, `qc.py classify` classes such a
+file (not test code by its build: a Cargo or Gradle test directory, or a Rust
+module declared under `#[cfg(test)]`) whose code names this project's crypto
+API, a crypto primitive, key type, key store or wire-format version, has an
+identifier made of a crypto word (`encrypt`, `nonce`, `secretKey`), or holds
+a constant of a standard algorithm, and that no owner-gated rule covers
+(`CRYPTO_CODE_RE`, `CRYPTO_WORDS`, `ALGORITHM_CONSTANT_RE`, `PROTOCOL_CODE_RE`;
+not every crypto use); until it has one, `qc.py classify` classes such a
 change by its contents. Renaming or removing a file a rule names fails
 `qc.py self-test` in CI until the rule follows.
 

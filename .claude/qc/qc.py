@@ -172,13 +172,18 @@ SECURITY_CLASSES = OWNER_GATED | {"DURABLE_STATE", "IDENTITY", "NETWORK", "FFI",
 # ── Classification by contents ───────────────────────────────────────────────
 # Code that names this project's crypto or encrypted-store API, a cryptographic
 # primitive, key type, key store or secret-wiping type, or a wire-format
-# version (comments and string literals are not code). The markers are names:
-# a primitive under a name not listed here is not seen. A changed
+# version (comments and string literals are not code); or that implements one
+# under another name: an identifier made of a crypto word (`encrypt`,
+# `decrypt_far`, `nonceBytes`, `secretKey`, CRYPTO_WORDS) or a constant of a
+# standard algorithm (the SHA-2, MD5 and ChaCha initial words, the AES S-box,
+# the Poly1305 clamp, a Keccak round constant: ALGORITHM_CONSTANT_RE). Code
+# that does crypto under none of these names is not seen. A changed
 # code file that no path rule gates (a new file, or one of another area) is
 # CRYPTO or PROTOCOL by what its added code names: `classify` reports it under
 # "content_classes". Where a rule already gates the file, the rule decides.
-# Test files are left out (CLAUDE.md: tests are not crypto changes), and so is
-# randomness alone (SecureRandom, OsRng): it also makes plain ids.
+# Test code is left out (CLAUDE.md: tests are not crypto changes), as its
+# build decides, not its name (is_test_code), and so is randomness alone
+# (SecureRandom, OsRng): it also makes plain ids.
 # tests/test_qc_rules.py requires an owner-gated rule for every code file in
 # the repository that names one, so these markers fall back only for a change
 # not yet committed to main.
@@ -197,8 +202,26 @@ CRYPTO_CODE_RE = re.compile(
     r"SecretKey\w*|MasterKey\w*|EncryptedSharedPreferences|EncryptedFile)\b")
 PROTOCOL_CODE_RE = re.compile(
     r"\b[A-Z][A-Z0-9_]*_(?:FORMAT|RECORD|HANDSHAKE|CARD|REFUSAL|PROTOCOL)_V[0-9]+\b|\b(?:PROTOCOL_VERSION|CIPHER_SUITE)\b")
+# One word of an identifier (snake_case and camelCase parts), or two in a row.
+CRYPTO_WORDS = {"encrypt", "decrypt", "ciphertext", "nonce", "keypair", "keystream", "kdf", "aead", "hmac",
+                "keygen", "rekey"}
+CRYPTO_WORD_PAIRS = {("private", "key"), ("secret", "key"), ("derive", "key"), ("key", "pair"),
+                     ("shared", "secret"), ("signing", "key"), ("verifying", "key"), ("root", "key"),
+                     ("chain", "key"), ("message", "key")}
+ALGORITHM_CONSTANT_RE = re.compile(
+    r"(?i)\b0x(?:6a09e667|bb67ae85|428a2f98|61707865|3320646e|79622d32|6b206574|67452301|efcdab89|"
+    r"0ffffffc0fffffff|0ffffffc0ffffffc|800000000000808a|8000000080008000)|"
+    r"\b0x63\s*,\s*0x7c\s*,\s*0x77\s*,\s*0x7b\b")
+IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+IDENT_PART_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|[A-Z]+|\d+")
+HEX_LITERAL_RE = re.compile(r"0[xX][0-9a-fA-F_]+")
 CODE_EXTENSIONS = (".rs", ".kt", ".kts", ".java", ".ts")
-TEST_PATH_RE = re.compile(r"(^|/)(tests?|androidTest|e2e)/|(^|/)tests\.rs$|_tests?\.rs$|\.test\.ts$")
+# Directories that their build compiles only for tests, or never into the app: Cargo's tests/ and
+# benches/ of a crate, Gradle's test source sets, the PSI test suite and the emulator scripts. A Rust
+# file under src/ is test code only when its module is declared under `#[cfg(test)]` (is_test_code).
+TEST_SOURCE_DIR_RE = re.compile(r"^crates/[^/]+/(tests|benches)/|(^|/)src/(test|androidTest)([A-Z][A-Za-z]*)?/|"
+                                r"^arcium-psi/tests/|^android/e2e/")
+RUST_MOD_DECL_RE = re.compile(r"^\s*((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
 # code_lines reads a file left to right, by its language, and follows strings (with escapes), Rust
 # raw strings, Kotlin and Java `"""` strings, TypeScript `'…'` and `` `…` `` strings, the code of
 # Kotlin and TypeScript `${…}` templates and block comments, across lines. Not followed: nested Rust
@@ -780,9 +803,20 @@ def code_lines(text, path="x.rs", doc_lines=False):
     return out
 
 
+def crypto_word(code):
+    """The first identifier in `code` made of a crypto word (CRYPTO_WORDS, CRYPTO_WORD_PAIRS), or None."""
+    for m in IDENT_RE.finditer(code):
+        parts = [s.lower() for piece in m.group(0).split("_") for s in IDENT_PART_RE.findall(piece)]
+        if any(s in CRYPTO_WORDS or s[:-1] in CRYPTO_WORDS and s.endswith("s") for s in parts) \
+                or any(pair in CRYPTO_WORD_PAIRS for pair in zip(parts, parts[1:])):
+            return m.group(0)
+    return None
+
+
 def marker_classes(code):
-    return ({"CRYPTO"} if CRYPTO_CODE_RE.search(code) else set()) | \
-        ({"PROTOCOL"} if PROTOCOL_CODE_RE.search(code) else set())
+    hexed = HEX_LITERAL_RE.sub(lambda m: m.group(0).replace("_", ""), code)
+    crypto = CRYPTO_CODE_RE.search(code) or ALGORITHM_CONSTANT_RE.search(hexed) or crypto_word(code)
+    return ({"CRYPTO"} if crypto else set()) | ({"PROTOCOL"} if PROTOCOL_CODE_RE.search(code) else set())
 
 
 def file_marker_classes(text, lines=None, path="x.rs"):
@@ -799,13 +833,60 @@ def code_marker_classes(line, path="x.rs"):
     return marker_classes(code_lines(line, path, doc_lines=True)[0])
 
 
-def is_scanned_code(rel):
-    return rel.endswith(CODE_EXTENSIONS) and not TEST_PATH_RE.search(rel)
+def rust_test_module(root, rel):
+    """Whether the Rust file `rel` under a crate's src/ is compiled for tests only: its module, or one
+    of its parents, is declared `#[cfg(test)] mod name;`, and no `#[path]` in the crate names it.
+    A file found in no declaration (or only through `#[path]`) is not test code."""
+    head, sep, rest = rel.partition("/src/")
+    if not sep or not rest.endswith(".rs"):
+        return False
+    src = head + "/src"
+    mods = rest[:-3].split("/")
+    if mods[-1] == "mod":
+        mods = mods[:-1]
+    if not mods or mods in (["lib"], ["main"]):
+        return False
+    name = os.path.basename(rel)
+    for d, _subdirs, files in os.walk(os.path.join(root, src)):
+        for f in files:
+            if f.endswith(".rs") and re.search(r"#\s*\[\s*path\s*=[^\]]*" + re.escape(name), file_text(
+                    root, os.path.relpath(os.path.join(d, f), root))):
+                return False
+    under_test = False
+    for k, mod in enumerate(mods):  # every link of the chain must be declared, one of them #[cfg(test)]
+        parent = "/".join(mods[:k])
+        decls = [src + "/lib.rs", src + "/main.rs"] if not parent else \
+            [src + "/" + parent + ".rs", src + "/" + parent + "/mod.rs"]
+        text = next((file_text(root, d) for d in decls if file_text(root, d)), "")
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            m = RUST_MOD_DECL_RE.match(line)
+            if not m or m.group(2) != mod:
+                continue
+            attrs = [m.group(1)]
+            j = i - 1
+            while j >= 0 and lines[j].strip().startswith(("#[", "//")):
+                attrs.append(lines[j])
+                j -= 1
+            under_test |= any(re.search(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]", a) for a in attrs)
+            break
+        else:
+            return False
+    return under_test
+
+
+def is_test_code(root, rel):
+    """Test code by its build: a test source directory, or a Rust module declared under `#[cfg(test)]`."""
+    return bool(TEST_SOURCE_DIR_RE.search(rel)) or (rel.endswith(".rs") and rust_test_module(root, rel))
+
+
+def is_scanned_code(root, rel):
+    return rel.endswith(CODE_EXTENSIONS) and not is_test_code(root, rel)
 
 
 def content_classes(root, base, paths, per):
     """Classes the added code of each changed, ungated code file names (CRYPTO_CODE_RE, PROTOCOL_CODE_RE)."""
-    scan = [p for p in paths if is_scanned_code(p) and not set(per[p]) & OWNER_GATED]
+    scan = [p for p in paths if is_scanned_code(root, p) and not set(per[p]) & OWNER_GATED]
     base_tree = tree_entries(root, base) if scan else {}
     out = {}
     for rel in scan:

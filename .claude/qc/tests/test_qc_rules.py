@@ -163,7 +163,7 @@ class RulesTest(unittest.TestCase):
                 if not qc.is_scanned_code(rel):
                     continue
                 with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as f:
-                    found = set().union(*(qc.code_marker_classes(l) for l in f.read().splitlines()))
+                    found = qc.file_marker_classes(f.read())
                 if found and not classes(rel) & qc.OWNER_GATED:
                     ungated[rel] = sorted(found)
         self.assertEqual(ungated, {}, "give each a path rule in qc.py RULES and a line in EXPECTED")
@@ -171,7 +171,9 @@ class RulesTest(unittest.TestCase):
     def test_markers_read_code_not_comments_or_strings(self):
         # One sample per marker, so dropping one from CRYPTO_CODE_RE or PROTOCOL_CODE_RE fails here.
         crypto = [
-            "use core_crypto::ratchet::DoubleRatchet;", "use core_crypto::{x3dh, ratchet};",
+            "use core_crypto::ratchet::DoubleRatchet;", "use core_crypto::{x3dh, ratchet};", "impl KeyInit for X {}",
+            "use chacha20::ChaCha20;", "use poly1305::Poly1305;", "val p = EncryptedSharedPreferences.create(a)",
+            "val f = EncryptedFile.Builder(c, file, k, s)",
             "let r = DoubleRatchet::init_bob(k, s);", "use core_storage::EncryptedStore;",
             "fn open(s: &EncryptedStore) {}", "let c = RescueCipher::new(k);", "use aead::{Aead, KeyInit};",
             "impl AeadInPlace for X {}", "use zeroize::Zeroizing;", "buf.zeroize();", "#[derive(ZeroizeOnDrop)]",
@@ -199,7 +201,8 @@ class RulesTest(unittest.TestCase):
             # each literal form misread would swallow the code up to the next quote
             "let q = '\"'; let k = Hkdf::new(None, ikm); let s = \"y\";",
             'let r = r"x\\"; let k = Hkdf::new(None, ikm); let s = "y";',
-            'val s = """a"b"""; Cipher.getInstance(x)',
+            'val s = """a"b"""; Cipher.getInstance(x)', 'let b = br##"x"##; let k = Hkdf::new(None, i);',
+            'RandomAccessFile(f, "r"); val md = MessageDigest.getInstance("SHA-256")',
         ]
         protocol = ["const PROTOCOL_VERSION: u8 = 1;", "const CIPHER_SUITE: u8 = 1;",
                     "pub(crate) const CHAT_RECORD_V2: u8 = 2;", "const X_FORMAT_V1: u8 = 1;",
@@ -209,13 +212,29 @@ class RulesTest(unittest.TestCase):
                    "* Hkdf in KDoc", "/* Hkdf */", "let msg = \"Hmac check failed\";", 'let s = r#"Hkdf"#;',
                    'let s = r#"a "Hkdf" b"#;', 'val s = """Cipher"""', 'val s = """a "Cipher" b"""', "let url = \"https://relay\"; // signed with SigningKey",
                    "val id = SecureRandom().nextBytes(b)", "let c = 'H';", "fn f<'a>(x: &'a str) {}",
-                   "let ciphertext = seal(x);", "val Ciphers = listOf()", "let ring_buffer = Ring::new();"]
+                   "let msg = \"say \\\"Hkdf\\\" now\";", "let ciphertext = seal(x);", "val Ciphers = listOf()", "let ring_buffer = Ring::new();"]
         for line in crypto:
             self.assertEqual(qc.code_marker_classes(line), {"CRYPTO"}, line)
         for line in protocol:
             self.assertEqual(qc.code_marker_classes(line), {"PROTOCOL"}, line)
         for line in neither:
             self.assertEqual(qc.code_marker_classes(line), set(), line)
+
+    def test_literals_and_comments_are_followed_across_lines(self):
+        cases = {
+            # code after the line that closes a multi-line string
+            'let s = "line one\nline text"; let _ = hkdf::Hkdf::<sha2::Sha256>::new(None, i); let _ = "x";': {"CRYPTO"},
+            'val s = """\n  text\n""".trimIndent() + Cipher.getInstance("AES")': {"CRYPTO"},
+            'let r = r#"a\nb"#; let k = Hkdf::new(None, i);': {"CRYPTO"},
+            # names inside a multi-line string or block comment
+            'let s = "a\nHkdf b";\nfn f() {}': set(),
+            '/*\nHkdf here\nand Cipher\n*/\nfn f() {}': set(),
+            'val s = """\n Cipher.getInstance(x)\n"""': set(),
+        }
+        for text, want in cases.items():
+            self.assertEqual(qc.file_marker_classes(text), want, text)
+        self.assertEqual(qc.file_marker_classes('let s = "a\nb"; use hkdf::Hkdf;\nfn f() {}', [0]), set())
+        self.assertEqual(qc.file_marker_classes('let s = "a\nb"; use hkdf::Hkdf;\nfn f() {}', [1]), {"CRYPTO"})
 
     def test_test_files_are_not_scanned(self):
         for p in ("crates/mobile-ffi/src/tests/far_skip.rs", "crates/mobile-ffi/src/network/tests.rs",
@@ -351,6 +370,12 @@ class GateTest(unittest.TestCase):
         self.assertEqual(self.classify("t-added")["content_classes"], {})
         self.r.write("crates/mobile-ffi/src/util.rs", "use hkdf::Hkdf;\nuse hmac::Hmac;\n")
         self.assertEqual(self.classify("t-added")["content_classes"], {"crates/mobile-ffi/src/util.rs": ["CRYPTO"]})
+
+    def test_an_added_line_is_read_in_the_context_of_its_file(self):
+        self.r.locked("t-ctx", [PASSING])
+        self.r.write("crates/mobile-ffi/src/text.rs", 'pub const S: &str = "a\nHkdf b";\nfn f() {}\n')
+        self.r.write("crates/mobile-ffi/src/text2.rs", 'pub const S: &str = "a\nb"; use hkdf::Hkdf;\n')
+        self.assertEqual(self.classify("t-ctx")["content_classes"], {"crates/mobile-ffi/src/text2.rs": ["CRYPTO"]})
 
     def test_comments_tests_and_gated_files_add_no_content_class(self):
         self.r.locked("t-quiet", [PASSING])

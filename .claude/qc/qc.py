@@ -185,7 +185,7 @@ SECURITY_CLASSES = OWNER_GATED | {"DURABLE_STATE", "IDENTITY", "NETWORK", "FFI",
 CRYPTO_CODE_RE = re.compile(
     # crates and paths: this project's crypto and encrypted store, AEAD, KDF, MAC, hash, key agreement,
     # constant time and secret wiping
-    r"\b(?:core_crypto|core_storage|aead|ring|subtle|zeroize|hkdf|hmac|sha2|sha3|chacha20poly1305|"
+    r"\b(?:core_crypto|core_storage|aead|ring|subtle|zeroize|hkdf|hmac|sha2|sha3|chacha20poly1305|chacha20|poly1305|"
     r"aes_gcm(?:_siv)?|x25519_dalek|ed25519_dalek|curve25519_dalek|ml_kem|blake[23]|argon2|pbkdf2|"
     r"scrypt)::|\bjavax\.crypto\b|\b(?:Signature|Mac)\.getInstance\b|"
     # types and functions
@@ -194,18 +194,17 @@ CRYPTO_CODE_RE = re.compile(
     r"XChaCha20Poly1305|ChaCha20Poly1305|Aes(?:128|256)Gcm\w*|Hkdf|Hmac\w*|Sha(?:224|256|384|512)\w*|"
     r"Sha3_\w+|MlKem\w*|Blake[23]\w*|Zeroiz\w*|zeroize|ConstantTimeEq|ct_eq|Cipher|KeyGenerator|"
     r"KeyPairGenerator|KeyStore|KeyGenParameterSpec|GCMParameterSpec|IvParameterSpec|MessageDigest|"
-    r"SecretKey\w*|MasterKey\w*)\b")
+    r"SecretKey\w*|MasterKey\w*|EncryptedSharedPreferences|EncryptedFile)\b")
 PROTOCOL_CODE_RE = re.compile(
     r"\b[A-Z][A-Z0-9_]*_(?:FORMAT|RECORD|HANDSHAKE|CARD|REFUSAL|PROTOCOL)_V[0-9]+\b|\b(?:PROTOCOL_VERSION|CIPHER_SUITE)\b")
 CODE_EXTENSIONS = (".rs", ".kt", ".kts", ".java", ".ts")
 TEST_PATH_RE = re.compile(r"(^|/)(tests?|androidTest|e2e)/|(^|/)tests\.rs$|_tests?\.rs$|\.test\.ts$")
-# One line at a time: a literal or a block comment that spans lines is read as code (stricter, not laxer).
+# code_lines reads a file left to right and follows a string, raw string or block comment across
+# lines. Not followed: string templates (`"${…}"`, read as string) and nested Rust block comments
+# (the rest of the outer comment reads as code, which can only add a class).
+RAW_OPEN_RE = re.compile(r'b?r(#*)"')
 CHAR_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\\n])'")
-RAW_STRING_RE = re.compile(r'\bb?r(#*)".*?"\1')
-TRIPLE_STRING_RE = re.compile(r'""".*?"""')
-STRING_LITERAL_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"')
-BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/")
-TRAILING_COMMENT_RE = re.compile(r"//.*$")
+KDOC_LINE_RE = re.compile(r"\s*\*(\s|$)")
 
 # Owner-only operations: a criterion may never run them.
 OWNER_ONLY_ARGV = [
@@ -705,25 +704,69 @@ def content_flags(root, base, paths=None):
     return flags
 
 
-def code_part(line):
-    """The line without its literals and comments (`*out = …` is code, `* text` a comment line)."""
-    x = line
-    for rx in (CHAR_LITERAL_RE, RAW_STRING_RE, TRIPLE_STRING_RE, STRING_LITERAL_RE):
-        x = rx.sub('""', x)
-    x = BLOCK_COMMENT_RE.sub(" ", x)
-    s = x.strip()
-    if s.startswith("*/"):
-        x = s[2:]
-    elif s.startswith(("//", "/*")) or re.match(r"\*(\s|$)", s):
-        return ""
-    return TRAILING_COMMENT_RE.sub("", x)
+def code_lines(text):
+    """Each line of `text` with its literals and comments left out; a literal or comment may span lines."""
+    out, state = [], None  # None, "block", or (closing delimiter, backslash escapes)
+    for line in text.split("\n"):
+        buf, i, n = [], 0, len(line)
+        if state is None and KDOC_LINE_RE.match(line):  # `* text` of a doc comment read without its opening
+            out.append("")
+            continue
+        while i < n:
+            if state == "block":
+                j = line.find("*/", i)
+                if j < 0:
+                    break
+                i, state = j + 2, None
+                buf.append(" ")
+            elif state is not None:
+                closer, escapes = state
+                j = i
+                while j < n and not line.startswith(closer, j):
+                    j += 2 if escapes and line[j] == "\\" else 1
+                if j >= n:
+                    break
+                i, state = j + len(closer), None
+                buf.append('""')
+            elif line.startswith("//", i):
+                break
+            elif line.startswith("/*", i):
+                i, state = i + 2, "block"
+            elif line.startswith('"""', i):
+                i, state = i + 3, ('"""', False)
+            elif line[i] in "br" and not (i and (line[i - 1].isalnum() or line[i - 1] == "_")) \
+                    and RAW_OPEN_RE.match(line, i):
+                m = RAW_OPEN_RE.match(line, i)
+                i, state = m.end(), ('"' + m.group(1), False)
+            elif line[i] == '"':
+                i, state = i + 1, ('"', True)
+            elif line[i] == "'" and CHAR_LITERAL_RE.match(line, i):
+                buf.append("''")
+                i = CHAR_LITERAL_RE.match(line, i).end()
+            else:
+                buf.append(line[i])
+                i += 1
+        out.append("".join(buf))
+    return out
+
+
+def marker_classes(code):
+    return ({"CRYPTO"} if CRYPTO_CODE_RE.search(code) else set()) | \
+        ({"PROTOCOL"} if PROTOCOL_CODE_RE.search(code) else set())
+
+
+def file_marker_classes(text, lines=None):
+    """CRYPTO and/or PROTOCOL named by the code of `text` (only the given 0-based lines, if any)."""
+    code = code_lines(text)
+    found = set()
+    for j in (range(len(code)) if lines is None else lines):
+        found |= marker_classes(code[j])
+    return found
 
 
 def code_marker_classes(line):
-    """CRYPTO and/or PROTOCOL for one source line, from its code only."""
-    code = code_part(line)
-    return ({"CRYPTO"} if CRYPTO_CODE_RE.search(code) else set()) | \
-        ({"PROTOCOL"} if PROTOCOL_CODE_RE.search(code) else set())
+    """CRYPTO and/or PROTOCOL for one source line read on its own."""
+    return marker_classes(code_lines(line)[0])
 
 
 def is_scanned_code(rel):
@@ -733,12 +776,19 @@ def is_scanned_code(rel):
 def content_classes(root, base, paths, per):
     """Classes the added code of each changed, ungated code file names (CRYPTO_CODE_RE, PROTOCOL_CODE_RE)."""
     scan = [p for p in paths if is_scanned_code(p) and not set(per[p]) & OWNER_GATED]
+    base_tree = tree_entries(root, base) if scan else {}
     out = {}
-    for rel, line in added_lines(root, base, scan):
-        found = code_marker_classes(line)
+    for rel in scan:
+        old = blob_text(root, base_tree[rel][1]).splitlines() if rel in base_tree and \
+            base_tree[rel][0] != "160000" else []
+        new = file_text(root, rel).splitlines()
+        added = [j for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+                 if tag in ("insert", "replace") for j in range(j1, j2)]
+        # The whole new file is read for its literals and comments; only the added lines count.
+        found = file_marker_classes("\n".join(new), added) if added else set()
         if found:
-            out.setdefault(rel, set()).update(found)
-    return {p: sorted(c) for p, c in out.items()}
+            out[rel] = sorted(found)
+    return out
 
 
 def classify(root, base):

@@ -26,8 +26,9 @@ record gets only its directory's QC classes (`.claude/qc/qc.py`, `RULES`):
 in `crates/mobile-ffi/src/` that is FFI alone, with no owner gate. Give it a
 rule of its own and a line in `EXPECTED` of
 `.claude/qc/tests/test_qc_rules.py`. CI's qc-unit job fails for a code
-file (not test code by its build: a Cargo or Gradle test directory, or a Rust
-module declared under `#[cfg(test)]`) whose code names this project's crypto
+file (not test code, which needs both a test place or name and a build that
+compiles it for tests only: a Cargo or Gradle test directory, or a Rust test
+module declared under `#[cfg(test)]` in code) whose code names this project's crypto
 API, a crypto primitive, key type, key store or wire-format version, has an
 identifier made of a crypto word (`encrypt`, `nonce`, `secretKey`), or holds
 a constant of a standard algorithm, and that no owner-gated rule covers

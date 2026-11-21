@@ -89,6 +89,7 @@ changes its hash and escalates, by design.
 import contextlib
 import difflib
 import fcntl
+import functools
 import hashlib
 import hmac
 import json
@@ -181,8 +182,8 @@ SECURITY_CLASSES = OWNER_GATED | {"DURABLE_STATE", "IDENTITY", "NETWORK", "FFI",
 # code file that no path rule gates (a new file, or one of another area) is
 # CRYPTO or PROTOCOL by what its added code names: `classify` reports it under
 # "content_classes". Where a rule already gates the file, the rule decides.
-# Test code is left out (CLAUDE.md: tests are not crypto changes), as its
-# build decides, not its name (is_test_code), and so is randomness alone
+# Test code is left out (CLAUDE.md: tests are not crypto changes) when its
+# name and its build both say so (is_test_code), and so is randomness alone
 # (SecureRandom, OsRng): it also makes plain ids.
 # tests/test_qc_rules.py requires an owner-gated rule for every code file in
 # the repository that names one, so these markers fall back only for a change
@@ -204,24 +205,31 @@ PROTOCOL_CODE_RE = re.compile(
     r"\b[A-Z][A-Z0-9_]*_(?:FORMAT|RECORD|HANDSHAKE|CARD|REFUSAL|PROTOCOL)_V[0-9]+\b|\b(?:PROTOCOL_VERSION|CIPHER_SUITE)\b")
 # One word of an identifier (snake_case and camelCase parts), or two in a row.
 CRYPTO_WORDS = {"encrypt", "decrypt", "ciphertext", "nonce", "keypair", "keystream", "kdf", "aead", "hmac",
-                "keygen", "rekey"}
+                "keygen", "rekey", "hkdf", "aesgcm"}
 CRYPTO_WORD_PAIRS = {("private", "key"), ("secret", "key"), ("derive", "key"), ("key", "pair"),
                      ("shared", "secret"), ("signing", "key"), ("verifying", "key"), ("root", "key"),
-                     ("chain", "key"), ("message", "key")}
+                     ("chain", "key"), ("message", "key"), ("cipher", "text"), ("key", "stream"),
+                     ("key", "gen"), ("mac", "key")}
 ALGORITHM_CONSTANT_RE = re.compile(
     r"(?i)\b0x(?:6a09e667|bb67ae85|428a2f98|61707865|3320646e|79622d32|6b206574|67452301|efcdab89|"
     r"0ffffffc0fffffff|0ffffffc0ffffffc|800000000000808a|8000000080008000)|"
     r"\b0x63\s*,\s*0x7c\s*,\s*0x77\s*,\s*0x7b\b")
-IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+IDENT_RE = re.compile(r"(?<![0-9A-Za-z_])[A-Za-z_][A-Za-z0-9_]*")  # not the `xAEAD` of `0xAEAD`
 IDENT_PART_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|[A-Z]+|\d+")
 HEX_LITERAL_RE = re.compile(r"0[xX][0-9a-fA-F_]+")
 CODE_EXTENSIONS = (".rs", ".kt", ".kts", ".java", ".ts")
-# Directories that their build compiles only for tests, or never into the app: Cargo's tests/ and
-# benches/ of a crate, Gradle's test source sets, the PSI test suite and the emulator scripts. A Rust
-# file under src/ is test code only when its module is declared under `#[cfg(test)]` (is_test_code).
-TEST_SOURCE_DIR_RE = re.compile(r"^crates/[^/]+/(tests|benches)/|(^|/)src/(test|androidTest)([A-Z][A-Za-z]*)?/|"
+# Test code needs both a place or name that says so and a build that compiles it for tests only, so
+# that neither alone can hide product code (is_test_code). Places: Cargo's tests/ and benches/ of a
+# crate; Gradle's test source sets of the Android app; the PSI test suite; the emulator scripts. A Rust
+# file under src/ needs a test name (a tests/ directory, tests.rs, *_test.rs, *_tests.rs) and a
+# module chain declared in code, every link, with one link `#[cfg(test)]` (rust_test_module).
+TEST_SOURCE_DIR_RE = re.compile(r"^crates/[^/]+/(tests|benches)/|^android/[^/]+/src/(test|androidTest)([A-Z][A-Za-z]*)?/|"
                                 r"^arcium-psi/tests/|^android/e2e/")
+RUST_TEST_NAME_RE = re.compile(r"/src/(.*/)?tests/|/src/(.*/)?(tests|\w+_tests?)\.rs$")
+# Code that makes the module tree differ from the files' names: no exemption in such a crate.
+RUST_TREE_ESCAPE_RE = re.compile(r"#!?\s*\[\s*(path\s*=|cfg_attr\b)|\binclude!\s*\(")
 RUST_MOD_DECL_RE = re.compile(r"^\s*((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
+CFG_TEST_RE = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 # code_lines reads a file left to right, by its language, and follows strings (with escapes), Rust
 # raw strings, Kotlin and Java `"""` strings, TypeScript `'…'` and `` `…` `` strings, the code of
 # Kotlin and TypeScript `${…}` templates and block comments, across lines. Not followed: nested Rust
@@ -833,10 +841,39 @@ def code_marker_classes(line, path="x.rs"):
     return marker_classes(code_lines(line, path, doc_lines=True)[0])
 
 
+@functools.lru_cache(maxsize=None)
+def rust_tree_escapes(root, src):
+    """Whether any Rust file under the crate source directory `src` has #[path], cfg_attr or include! in code.
+    Cached within one `classify` (which clears it first, so a tree changed by a criterion is read again)."""
+    for d, _subdirs, files in os.walk(os.path.join(root, src)):
+        for f in files:
+            other = os.path.relpath(os.path.join(d, f), root)
+            if f.endswith(".rs") and any(RUST_TREE_ESCAPE_RE.search(c) for c in code_lines(file_text(root, other), other)):
+                return True
+    return False
+
+
+def rust_declarations(root, rel, name):
+    """For each top-level `mod name;` in the code of `rel` (comments and strings left out, inline
+    module blocks skipped): whether `#[cfg(test)]` is among its attributes."""
+    code = code_lines(file_text(root, rel), rel)
+    found, depth = [], 0
+    for i, line in enumerate(code):
+        m = RUST_MOD_DECL_RE.match(line) if depth == 0 else None
+        if m and m.group(2) == name:
+            attrs, j = [m.group(1)], i - 1
+            while j >= 0 and (not code[j].strip() or code[j].strip().startswith("#[")):
+                attrs.append(code[j])
+                j -= 1
+            found.append(any(CFG_TEST_RE.search(a) for a in attrs))
+        depth += line.count("{") - line.count("}")
+    return found
+
+
 def rust_test_module(root, rel):
-    """Whether the Rust file `rel` under a crate's src/ is compiled for tests only: its module, or one
-    of its parents, is declared `#[cfg(test)] mod name;`, and no `#[path]` in the crate names it.
-    A file found in no declaration (or only through `#[path]`) is not test code."""
+    """Whether the Rust file `rel` under a crate's src/ is compiled for tests only: every link of its
+    module chain is declared in code, and in every crate root that declares its first link one link
+    is `#[cfg(test)]`. No exemption in a crate whose code has `#[path]`, `cfg_attr` or `include!`."""
     head, sep, rest = rel.partition("/src/")
     if not sep or not rest.endswith(".rs"):
         return False
@@ -844,40 +881,38 @@ def rust_test_module(root, rel):
     mods = rest[:-3].split("/")
     if mods[-1] == "mod":
         mods = mods[:-1]
-    if not mods or mods in (["lib"], ["main"]):
+    if not mods or mods in (["lib"], ["main"]) or mods[0] == "bin":
         return False
-    name = os.path.basename(rel)
-    for d, _subdirs, files in os.walk(os.path.join(root, src)):
-        for f in files:
-            if f.endswith(".rs") and re.search(r"#\s*\[\s*path\s*=[^\]]*" + re.escape(name), file_text(
-                    root, os.path.relpath(os.path.join(d, f), root))):
-                return False
-    under_test = False
-    for k, mod in enumerate(mods):  # every link of the chain must be declared, one of them #[cfg(test)]
+    if rust_tree_escapes(root, src):
+        return False
+    tail_test = False
+    for k in range(1, len(mods)):  # links below the crate root: declared in src/<parent>.rs or …/mod.rs
         parent = "/".join(mods[:k])
-        decls = [src + "/lib.rs", src + "/main.rs"] if not parent else \
-            [src + "/" + parent + ".rs", src + "/" + parent + "/mod.rs"]
-        text = next((file_text(root, d) for d in decls if file_text(root, d)), "")
-        lines = text.splitlines()
-        for i, line in enumerate(lines):
-            m = RUST_MOD_DECL_RE.match(line)
-            if not m or m.group(2) != mod:
-                continue
-            attrs = [m.group(1)]
-            j = i - 1
-            while j >= 0 and lines[j].strip().startswith(("#[", "//")):
-                attrs.append(lines[j])
-                j -= 1
-            under_test |= any(re.search(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]", a) for a in attrs)
-            break
-        else:
+        decl = next((f for f in (src + "/" + parent + ".rs", src + "/" + parent + "/mod.rs")
+                     if file_text(root, f)), None)
+        found = rust_declarations(root, decl, mods[k]) if decl else []
+        if not found:
             return False
-    return under_test
+        if not all(found) and any(found):
+            return False  # declared twice, once outside a test build
+        tail_test |= all(found)
+    roots = [r for r in (src + "/lib.rs", src + "/main.rs") if file_text(root, r)]
+    firsts = [rust_declarations(root, r, mods[0]) for r in roots]
+    if not any(firsts):
+        return False
+    return all(tail_test or all(f) for f in firsts if f)
 
 
 def is_test_code(root, rel):
-    """Test code by its build: a test source directory, or a Rust module declared under `#[cfg(test)]`."""
-    return bool(TEST_SOURCE_DIR_RE.search(rel)) or (rel.endswith(".rs") and rust_test_module(root, rel))
+    """Test code by place and build together (TEST_SOURCE_DIR_RE; for Rust under src/, RUST_TEST_NAME_RE
+    and rust_test_module). A Cargo test or bench file pulled into the library is caught by the escape
+    check of its crate."""
+    if rel.startswith("crates/") and rel.endswith(".rs"):
+        crate = "/".join(rel.split("/")[:2])
+        if TEST_SOURCE_DIR_RE.search(rel):
+            return not rust_tree_escapes(root, crate + "/src")
+        return bool(RUST_TEST_NAME_RE.search(rel)) and rust_test_module(root, rel)
+    return bool(TEST_SOURCE_DIR_RE.search(rel))
 
 
 def is_scanned_code(root, rel):
@@ -885,7 +920,8 @@ def is_scanned_code(root, rel):
 
 
 def content_classes(root, base, paths, per):
-    """Classes the added code of each changed, ungated code file names (CRYPTO_CODE_RE, PROTOCOL_CODE_RE)."""
+    """Classes the added code of each changed, ungated code file that is not test code names
+    (CRYPTO_CODE_RE, CRYPTO_WORDS, ALGORITHM_CONSTANT_RE, PROTOCOL_CODE_RE)."""
     scan = [p for p in paths if is_scanned_code(root, p) and not set(per[p]) & OWNER_GATED]
     base_tree = tree_entries(root, base) if scan else {}
     out = {}
@@ -903,6 +939,7 @@ def content_classes(root, base, paths, per):
 
 
 def classify(root, base):
+    rust_tree_escapes.cache_clear()
     paths = changed_paths(root, base)
     per = classify_paths(paths)
     by_content = content_classes(root, base, paths, per) if paths else {}

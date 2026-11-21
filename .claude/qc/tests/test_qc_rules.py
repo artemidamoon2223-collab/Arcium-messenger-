@@ -276,8 +276,7 @@ class RulesTest(unittest.TestCase):
     def test_test_code_is_known_by_its_build_not_its_name(self):
         test_code = ["crates/mobile-ffi/src/tests/far_skip.rs", "crates/mobile-ffi/src/tests/mod.rs",
                      "crates/mobile-ffi/src/network/tests.rs", "crates/relay/src/v2_tests.rs",
-                     "crates/core-protocol/src/messaging/tests/crash.rs", "crates/core-crypto/src/ratchet/golden.rs",
-                     "crates/core-crypto/tests/feature_graph.rs"]
+                     "crates/core-protocol/src/messaging/tests/crash.rs", "crates/core-crypto/tests/feature_graph.rs"]
         for p in test_code:  # every one of these is in the checkout and declared #[cfg(test)] or a Cargo test
             self.assertTrue(os.path.isfile(os.path.join(REPO, p)), p)
             self.assertTrue(qc.is_test_code(REPO, p), p)
@@ -288,9 +287,36 @@ class RulesTest(unittest.TestCase):
             self.assertTrue(qc.is_test_code(REPO, p), p)
         for p in ("crates/mobile-ffi/src/lib.rs", "crates/mobile-ffi/src/network.rs", "crates/mobile-ffi/src/kdf.rs",
                   "crates/mobile-ffi/src/crypto_tests.rs", "crates/mobile-ffi/src/tests/new_unlisted.rs",
-                  KT + "ui/chat/ChatTest.kt", "crates/relay/src/attest.rs"):
+                  KT + "ui/chat/ChatTest.kt", "crates/relay/src/attest.rs",
+                  # a test-only module without a test name, and a Rust src/test/ that is not a Gradle source set
+                  "crates/core-crypto/src/ratchet/golden.rs", "crates/core-transport/src/test/x.rs"):
             self.assertFalse(qc.is_test_code(REPO, p), p)
             self.assertTrue(qc.is_scanned_code(REPO, p), p)
+
+    def test_every_crypto_word_pair_and_constant_is_found(self):
+        words = {"encrypt", "decrypt", "ciphertext", "nonce", "keypair", "keystream", "kdf", "aead", "hmac",
+                 "keygen", "rekey", "hkdf", "aesgcm"}
+        pairs = {("private", "key"), ("secret", "key"), ("derive", "key"), ("key", "pair"), ("shared", "secret"),
+                 ("signing", "key"), ("verifying", "key"), ("root", "key"), ("chain", "key"), ("message", "key"),
+                 ("cipher", "text"), ("key", "stream"), ("key", "gen"), ("mac", "key")}
+        self.assertEqual(qc.CRYPTO_WORDS, words)
+        self.assertEqual(qc.CRYPTO_WORD_PAIRS, pairs)
+        for w in sorted(words):
+            for line in ("let %s_x = 1;" % w, "val x%s = 1" % w.capitalize(), "let %ss = v;" % w):
+                self.assertEqual(qc.code_marker_classes(line), {"CRYPTO"}, line)
+        for a, b in sorted(pairs):
+            for line in ("let %s_%s = 1;" % (a, b), "val %s%s = 1" % (a, b.capitalize())):
+                self.assertEqual(qc.code_marker_classes(line), {"CRYPTO"}, line)
+        constants = ["0x6a09e667", "0xbb67ae85", "0x428a2f98", "0x61707865", "0x3320646e", "0x79622d32", "0x6b206574",
+                     "0x67452301", "0xefcdab89", "0x0ffffffc0fffffff", "0x0ffffffc0ffffffc", "0x800000000000808a",
+                     "0x8000000080008000"]
+        for c in constants:
+            for line in ("const C: u64 = %s;" % c, "const C: u64 = %s;" % c.upper().replace("X", "x"),
+                         "const C: u64 = 0x%s_%s;" % (c[2:6], c[6:])):
+                self.assertEqual(qc.code_marker_classes(line), {"CRYPTO"}, line)
+        self.assertEqual(qc.code_marker_classes("const SBOX: [u8; 4] = [0x63, 0x7c, 0x77, 0x7b];"), {"CRYPTO"})
+        for line in ("const C: u32 = 0x6a09e666;", "let c = [0x63, 0x7c, 0x77];", "let v = 0xAEAD;", "let k = 0xDEADBEEF;"):
+            self.assertEqual(qc.code_marker_classes(line), set(), line)
 
     def test_the_owner_gate_set_is_pinned(self):
         # The rules give the classes; this pins which of them stop a loop for the Owner.
@@ -457,6 +483,40 @@ class GateTest(unittest.TestCase):
         self.r.locked("t-path", [PASSING])
         self.r.write("crates/mobile-ffi/src/tests/k.rs", "let k = StaticSecret::random_from_rng(OsRng);\n")
         self.assertEqual(self.classify("t-path")["content_classes"], {"crates/mobile-ffi/src/tests/k.rs": ["CRYPTO"]})
+
+    def test_a_cfg_test_in_a_comment_or_an_inline_block_does_not_make_test_code(self):
+        self.declare("/// Not a #[cfg(test)] helper\nmod mix_tests;\nmod outer {\n    #[cfg(test)]\n    mod k_tests;\n}\n")
+        self.r.locked("t-comment", [PASSING])
+        self.r.write("crates/mobile-ffi/src/mix_tests.rs", "use hkdf::Hkdf;\n")
+        self.r.write("crates/mobile-ffi/src/k_tests.rs", "use hkdf::Hkdf;\n")
+        self.assertEqual(self.classify("t-comment")["content_classes"],
+                         {"crates/mobile-ffi/src/k_tests.rs": ["CRYPTO"], "crates/mobile-ffi/src/mix_tests.rs": ["CRYPTO"]})
+
+    def test_a_cfg_test_inside_a_string_does_not_make_test_code(self):
+        self.declare('const S: &str = "\n#[cfg(test)]";\nmod s_tests;\n')
+        self.r.locked("t-str", [PASSING])
+        self.r.write("crates/mobile-ffi/src/s_tests.rs", "use hkdf::Hkdf;\n")
+        self.assertEqual(self.classify("t-str")["content_classes"], {"crates/mobile-ffi/src/s_tests.rs": ["CRYPTO"]})
+
+    def test_a_module_also_declared_outside_test_builds_is_scanned(self):
+        self.declare("mod helpers;\n", {"crates/mobile-ffi/src/helpers.rs":
+                                         "#[cfg(test)]\nmod k_tests;\n#[cfg(not(test))]\nmod k_tests;\n"})
+        self.r.locked("t-pair", [PASSING])
+        self.r.write("crates/mobile-ffi/src/helpers/k_tests.rs", "use hkdf::Hkdf;\n")
+        self.assertEqual(self.classify("t-pair")["content_classes"], {"crates/mobile-ffi/src/helpers/k_tests.rs": ["CRYPTO"]})
+
+    def test_a_module_a_second_crate_root_builds_is_scanned(self):
+        self.declare("#[cfg(test)]\nmod tests;\n", {"crates/mobile-ffi/src/main.rs": "mod tests;\nfn main() {}\n",
+                                                     "crates/mobile-ffi/src/tests/mod.rs": "mod k;\n"})
+        self.r.locked("t-main", [PASSING])
+        self.r.write("crates/mobile-ffi/src/tests/k.rs", "use hkdf::Hkdf;\n")
+        self.assertEqual(self.classify("t-main")["content_classes"], {"crates/mobile-ffi/src/tests/k.rs": ["CRYPTO"]})
+
+    def test_a_cargo_test_file_included_into_the_library_is_scanned(self):
+        self.declare('include!("../tests/t.rs");\n')
+        self.r.locked("t-incl", [PASSING])
+        self.r.write("crates/mobile-ffi/tests/t.rs", "use hkdf::Hkdf;\n")
+        self.assertEqual(self.classify("t-incl")["content_classes"], {"crates/mobile-ffi/tests/t.rs": ["CRYPTO"]})
 
     def test_a_hand_written_cipher_is_owner_gated(self):
         self.r.locked("t-hand", [PASSING])

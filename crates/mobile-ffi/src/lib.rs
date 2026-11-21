@@ -28,7 +28,6 @@ mod plaintext;
 pub use messaging_api::{IncomingMessage, OutgoingMessage, ReceiveResult, RecoveryReport, SendResult};
 pub use plaintext::{PlaintextBytes, PlaintextText};
 
-
 mod error;
 mod handshake;
 mod identity;
@@ -40,6 +39,7 @@ pub(crate) use handshake::*;
 pub(crate) use identity::*;
 pub(crate) use prekeys::*;
 pub(crate) use responder::*;
+
 // ── ArciumCore ────────────────────────────────────────────────────────────────
 /// The encrypted store and the durable messaging state machine over it.
 ///
@@ -355,6 +355,7 @@ impl ArciumCore {
             .map_err(|e| CoreError::messaging(session_id, e))
     }
 }
+
 // Plain (non-exported) impl block: helpers here are NOT visible to UniFFI,
 // unlike methods inside the `#[uniffi::export] impl ArciumCore` block above,
 // where export applies to every method regardless of Rust-level visibility.

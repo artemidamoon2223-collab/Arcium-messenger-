@@ -60,7 +60,6 @@ impl Identity {
     }
 }
 
-
 pub(crate) const IDENTITY_KEY: &str = "identity/v1";
 /// The Ed25519 signing secret, then the X25519 secret.
 pub(crate) const IDENTITY_RECORD_LEN: usize = 64;

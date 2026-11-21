@@ -163,7 +163,7 @@ class RulesTest(unittest.TestCase):
                 if not qc.is_scanned_code(rel):
                     continue
                 with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as f:
-                    found = qc.file_marker_classes(f.read())
+                    found = qc.file_marker_classes(f.read(), path=rel)
                 if found and not classes(rel) & qc.OWNER_GATED:
                     ungated[rel] = sorted(found)
         self.assertEqual(ungated, {}, "give each a path rule in qc.py RULES and a line in EXPECTED")
@@ -233,6 +233,29 @@ class RulesTest(unittest.TestCase):
         }
         for text, want in cases.items():
             self.assertEqual(qc.file_marker_classes(text), want, text)
+        by_language = [
+            # a Kotlin raw string that ends in a quote, and the code of `${…}` templates with strings inside
+            ('val s = """say "hi""""\nval k = KeyStore.getInstance(x)', "a.kt", {"CRYPTO"}),
+            ('val p = "${glob("src/*")}"\nval c = Cipher.getInstance(t)', "a.kt", {"CRYPTO"}),
+            ('val u = "${host("https://x")}"; val c = Cipher.getInstance(t)', "a.kt", {"CRYPTO"}),
+            ("val q = \"${'\"'}\"; val c = Cipher.getInstance(t)", "a.kt", {"CRYPTO"}),
+            ('val s = "${Cipher.getInstance(t)}"', "a.kt", {"CRYPTO"}),
+            ('val s = "Cipher $x"', "a.kt", set()),
+            ('val s = "${x.map { "Cipher" }}"', "a.kt", set()),
+            ('val s = "${x.let { it }.also { Cipher.getInstance(t) }}"', "a.kt", {"CRYPTO"}),
+            # TypeScript quotes and template literals
+            ("const p = 'src/*'; const s: SigningKey = k;", "a.ts", {"CRYPTO"}),
+            ('const t = `say "hi`; const s: SigningKey = k;', "a.ts", {"CRYPTO"}),
+            ("const m = 'Hkdf';", "a.ts", set()),
+            ("const m = `a ${'Hkdf'} b`;", "a.ts", set()),
+            ("const m = `a ${new Hkdf(x)} b`;", "a.ts", {"CRYPTO"}),
+            # a whole file knows its comments: a `*` line outside one is code
+            ("let x = a\n    * Sha256::digest(b);", "a.rs", {"CRYPTO"}),
+            ("/**\n * Hkdf here\n */\nfn f() {}", "a.rs", set()),
+            ('char c = \'"\'; Cipher x = Cipher.getInstance(t);', "A.java", {"CRYPTO"}),
+        ]
+        for text, path, want in by_language:
+            self.assertEqual(qc.file_marker_classes(text, path=path), want, (path, text))
         self.assertEqual(qc.file_marker_classes('let s = "a\nb"; use hkdf::Hkdf;\nfn f() {}', [0]), set())
         self.assertEqual(qc.file_marker_classes('let s = "a\nb"; use hkdf::Hkdf;\nfn f() {}', [1]), {"CRYPTO"})
 
@@ -354,6 +377,11 @@ class GateTest(unittest.TestCase):
         self.assertEqual(out["content_classes"], {KT + "ui/chat/ChatWire.kt": ["PROTOCOL"],
                                                   KT + "ui/theme/Theme.kt": ["CRYPTO"]})
         self.assertEqual(out["owner_gated"], ["CRYPTO", "PROTOCOL"])
+
+    def test_a_kotlin_file_is_read_as_kotlin(self):
+        self.r.locked("t-ktlang", [PASSING])
+        self.r.write(KT + "ui/chat/Paths.kt", 'val p = "${glob("src/*")}"\nval c = Cipher.getInstance(t)\n')
+        self.assertEqual(self.classify("t-ktlang")["content_classes"], {KT + "ui/chat/Paths.kt": ["CRYPTO"]})
 
     def test_an_unclassified_file_with_crypto_code_loses_the_fallback_label(self):
         self.r.locked("t-uncl", [PASSING])

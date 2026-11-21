@@ -199,9 +199,11 @@ PROTOCOL_CODE_RE = re.compile(
     r"\b[A-Z][A-Z0-9_]*_(?:FORMAT|RECORD|HANDSHAKE|CARD|REFUSAL|PROTOCOL)_V[0-9]+\b|\b(?:PROTOCOL_VERSION|CIPHER_SUITE)\b")
 CODE_EXTENSIONS = (".rs", ".kt", ".kts", ".java", ".ts")
 TEST_PATH_RE = re.compile(r"(^|/)(tests?|androidTest|e2e)/|(^|/)tests\.rs$|_tests?\.rs$|\.test\.ts$")
-# code_lines reads a file left to right and follows a string, raw string or block comment across
-# lines. Not followed: string templates (`"${…}"`, read as string) and nested Rust block comments
-# (the rest of the outer comment reads as code, which can only add a class).
+# code_lines reads a file left to right, by its language, and follows strings (with escapes), Rust
+# raw strings, Kotlin and Java `"""` strings, TypeScript `'…'` and `` `…` `` strings, the code of
+# Kotlin and TypeScript `${…}` templates and block comments, across lines. Not followed: nested Rust
+# block comments (the rest of the outer comment reads as code, which can only add a class) and
+# TypeScript regular-expression literals.
 RAW_OPEN_RE = re.compile(r'b?r(#*)"')
 CHAR_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\\n])'")
 KDOC_LINE_RE = re.compile(r"\s*\*(\s|$)")
@@ -704,47 +706,75 @@ def content_flags(root, base, paths=None):
     return flags
 
 
-def code_lines(text):
-    """Each line of `text` with its literals and comments left out; a literal or comment may span lines."""
-    out, state = [], None  # None, "block", or (closing delimiter, backslash escapes)
+def code_lines(text, path="x.rs", doc_lines=False):
+    """Each line of `text` with its literals and comments left out; a literal or comment may span lines.
+    `path` gives the language. `doc_lines` drops a `* text` line read without its opening `/**`
+    (one line read on its own; a whole file knows where its comments are)."""
+    lang = path.rsplit(".", 1)[-1]
+    templates, ts = lang in ("kt", "kts", "ts"), lang == "ts"
+    out, stack = [], []  # ["block"] | ["str", closer, escapes, templates] | ["tmpl", brace depth]
     for line in text.split("\n"):
         buf, i, n = [], 0, len(line)
-        if state is None and KDOC_LINE_RE.match(line):  # `* text` of a doc comment read without its opening
+        if doc_lines and not stack and KDOC_LINE_RE.match(line):
             out.append("")
             continue
         while i < n:
-            if state == "block":
+            top = stack[-1] if stack else None
+            if top and top[0] == "block":
                 j = line.find("*/", i)
                 if j < 0:
                     break
-                i, state = j + 2, None
+                i = j + 2
+                stack.pop()
                 buf.append(" ")
-            elif state is not None:
-                closer, escapes = state
-                j = i
-                while j < n and not line.startswith(closer, j):
-                    j += 2 if escapes and line[j] == "\\" else 1
-                if j >= n:
-                    break
-                i, state = j + len(closer), None
-                buf.append('""')
-            elif line.startswith("//", i):
+                continue
+            if top and top[0] == "str":
+                _, closer, escapes, tmpl = top
+                if escapes and line[i] == "\\":
+                    i += 2
+                elif tmpl and line.startswith("${", i):
+                    stack.append(["tmpl", 0])
+                    i += 2
+                elif line.startswith(closer, i):
+                    i += len(closer)
+                    while closer == '"""' and i < n and line[i] == '"':  # `""""` ends after its last quote
+                        i += 1
+                    stack.pop()
+                    buf.append('""')
+                else:
+                    i += 1
+                continue
+            c = line[i]
+            if top and top[0] == "tmpl" and c in "{}":
+                if c == "}" and top[1] == 0:
+                    stack.pop()
+                    i += 1
+                    continue
+                top[1] += 1 if c == "{" else -1
+            if line.startswith("//", i):
                 break
-            elif line.startswith("/*", i):
-                i, state = i + 2, "block"
+            if line.startswith("/*", i):
+                stack.append(["block"])
+                i += 2
             elif line.startswith('"""', i):
-                i, state = i + 3, ('"""', False)
-            elif line[i] in "br" and not (i and (line[i - 1].isalnum() or line[i - 1] == "_")) \
+                stack.append(["str", '"""', False, templates])
+                i += 3
+            elif lang == "rs" and c in "br" and not (i and (line[i - 1].isalnum() or line[i - 1] == "_")) \
                     and RAW_OPEN_RE.match(line, i):
                 m = RAW_OPEN_RE.match(line, i)
-                i, state = m.end(), ('"' + m.group(1), False)
-            elif line[i] == '"':
-                i, state = i + 1, ('"', True)
-            elif line[i] == "'" and CHAR_LITERAL_RE.match(line, i):
+                stack.append(["str", '"' + m.group(1), False, False])
+                i = m.end()
+            elif c == '"':
+                stack.append(["str", '"', True, templates])
+                i += 1
+            elif ts and c in "'`":
+                stack.append(["str", c, True, c == "`"])
+                i += 1
+            elif c == "'" and not ts and CHAR_LITERAL_RE.match(line, i):
                 buf.append("''")
                 i = CHAR_LITERAL_RE.match(line, i).end()
             else:
-                buf.append(line[i])
+                buf.append(c)
                 i += 1
         out.append("".join(buf))
     return out
@@ -755,18 +785,18 @@ def marker_classes(code):
         ({"PROTOCOL"} if PROTOCOL_CODE_RE.search(code) else set())
 
 
-def file_marker_classes(text, lines=None):
+def file_marker_classes(text, lines=None, path="x.rs"):
     """CRYPTO and/or PROTOCOL named by the code of `text` (only the given 0-based lines, if any)."""
-    code = code_lines(text)
+    code = code_lines(text, path)
     found = set()
     for j in (range(len(code)) if lines is None else lines):
         found |= marker_classes(code[j])
     return found
 
 
-def code_marker_classes(line):
+def code_marker_classes(line, path="x.rs"):
     """CRYPTO and/or PROTOCOL for one source line read on its own."""
-    return marker_classes(code_lines(line)[0])
+    return marker_classes(code_lines(line, path, doc_lines=True)[0])
 
 
 def is_scanned_code(rel):
@@ -785,7 +815,7 @@ def content_classes(root, base, paths, per):
         added = [j for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
                  if tag in ("insert", "replace") for j in range(j1, j2)]
         # The whole new file is read for its literals and comments; only the added lines count.
-        found = file_marker_classes("\n".join(new), added) if added else set()
+        found = file_marker_classes("\n".join(new), added, rel) if added else set()
         if found:
             out[rel] = sorted(found)
     return out

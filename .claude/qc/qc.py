@@ -852,9 +852,9 @@ def code_marker_classes(line, path="x.rs"):
 @functools.lru_cache(maxsize=None)
 def rust_tree_escapes(root, src):
     """Whether the crate of the source directory `src` may build a file under another module path: a
-    Rust file of the crate with #[path] (also through cfg_attr) or include! in code, a #[path] in code
-    in any other crate under crates/ (it may name a file here), or a [lib] or [[bin]] `path` in its
-    Cargo.toml outside src/bin/. Cached within one `classify` (which clears it first, so a tree
+    Rust file of the crate with #[path] (also through cfg_attr) or include! in code, a #[path] in the
+    code of any crate's src/ under crates/ (it may name a file here), or a [lib] or [[bin]] `path` in
+    its Cargo.toml other than src/lib.rs, src/main.rs or one under src/bin/. Cached within one `classify` (which clears it first, so a tree
     changed by a criterion is read again)."""
     section = ""
     for line in file_text(root, os.path.dirname(src) + "/Cargo.toml").splitlines():
@@ -862,13 +862,15 @@ def rust_tree_escapes(root, src):
         if s.startswith("["):
             section = s
         m = re.match(r"path\s*=\s*[\"']([^\"']*)", s)
-        if m and section in ("[lib]", "[[bin]]") and not m.group(1).startswith("src/bin/"):
+        if m and section in ("[lib]", "[[bin]]") and not (m.group(1).startswith("src/bin/")
+                                                          or m.group(1) in ("src/lib.rs", "src/main.rs")):
             return True
     for d, subdirs, files in os.walk(os.path.join(root, "crates")):
         subdirs[:] = [s for s in subdirs if s != "target"]
         for f in files:
             other = os.path.relpath(os.path.join(d, f), root).replace(os.sep, "/")
-            if not f.endswith(".rs"):
+            # Another crate's tests/ and benches/ build no library: a #[path] there names no file of the app.
+            if not f.endswith(".rs") or not re.match(r"crates/[^/]+/src/", other):
                 continue
             rx = RUST_TREE_ESCAPE_RE if other.startswith(src + "/") else RUST_PATH_ATTR_RE
             if any(rx.search(c) for c in code_lines(file_text(root, other), other)):

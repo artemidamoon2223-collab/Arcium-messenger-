@@ -516,6 +516,14 @@ class GateTest(unittest.TestCase):
         self.r.write("crates/mobile-ffi/src/n_tests.rs", "use hkdf::Hkdf;\n")
         self.assertEqual(self.classify("t-nest")["content_classes"], {"crates/mobile-ffi/src/n_tests.rs": ["CRYPTO"]})
 
+    def test_a_path_in_a_test_directory_or_a_default_library_path_keeps_the_exemption(self):
+        self.declare("#[cfg(test)]\nmod tests;\n", {"crates/mobile-ffi/src/tests/mod.rs": "mod k;\n",
+                                                     "crates/mobile-ffi/Cargo.toml": '[package]\nname = "x"\n\n[lib]\npath = "src/lib.rs"\n',
+                                                     "crates/other/tests/t.rs": '#[path = "common/mod.rs"]\nmod common;\n'})
+        self.r.locked("t-keep", [PASSING])
+        self.r.write("crates/mobile-ffi/src/tests/k.rs", "use hkdf::Hkdf;\n")
+        self.assertEqual(self.classify("t-keep")["content_classes"], {})
+
     def test_a_crate_with_its_own_library_path_gets_no_exemption(self):
         self.declare("#[cfg(test)]\nmod tests;\n", {"crates/mobile-ffi/Cargo.toml": '[package]\nname = "x"\n\n[lib]\npath = "src/real.rs"\n',
                                                      "crates/mobile-ffi/src/tests/mod.rs": "mod k;\n"})

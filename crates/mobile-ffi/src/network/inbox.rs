@@ -442,6 +442,7 @@ impl NetworkMessenger {
                         report.delivered += 1;
                     }
                 }
+                crash_point("receipt_applied");
                 self.core
                     .acknowledge_incoming(handle, id.to_vec())
                     .map(|_| ())
@@ -462,6 +463,7 @@ impl NetworkMessenger {
                         self.core.abandon_outgoing(handle, gone.to_vec())?;
                     }
                 }
+                crash_point("gone_applied");
                 self.core
                     .acknowledge_incoming(handle, id.to_vec())
                     .map(|_| ())

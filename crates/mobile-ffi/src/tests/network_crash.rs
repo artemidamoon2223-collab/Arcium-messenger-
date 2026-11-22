@@ -182,6 +182,110 @@ fn a_sender_killed_while_taking_a_receipt_applies_it_after_restart() {
     relay.stop();
 }
 
+/// The sender dies inside `settle`, after applying the recipient's receipt
+/// and before acknowledging the receipt message itself. The delivery is
+/// already stored; the receipt is still in the inbox (and still on the
+/// relay, from which it comes again as a duplicate), and the next round
+/// settles it without counting the delivery a second time.
+#[cfg(unix)]
+#[test]
+fn a_sender_killed_between_applying_a_receipt_and_acknowledging_it_applies_it_once() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    alice.send(&bob, "m", "confirm me");
+    alice.sync();
+    bob.sync();
+    run_child(&alice, &addr, "sync", Some("receipt_applied"), &bob.pk);
+
+    let alice = alice.restart(&addr);
+    let handle = local_session_handle(bob.pk.clone()).unwrap();
+    assert_eq!(
+        alice.undelivered(&bob),
+        0,
+        "the receipt was applied before the death"
+    );
+    assert_eq!(
+        alice.core.pending_committed(handle).unwrap().len(),
+        1,
+        "the receipt message itself is still in the inbox"
+    );
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(r.delivered, 0, "the delivery is not counted twice: {r:?}");
+    assert_eq!(alice.undelivered(&bob), 0);
+    assert!(
+        alice.core.pending_committed(handle).unwrap().is_empty(),
+        "the receipt was settled from the inbox"
+    );
+    relay.stop();
+}
+
+/// The sender dies inside `settle`, after abandoning the text a GONE message
+/// names and before acknowledging the GONE message itself (R-21). The text
+/// is already abandoned; the GONE message is still in the inbox (and still
+/// on the relay, from which it comes again as a duplicate), and the next
+/// round settles it. That text 0 is not abandoned a second time is not
+/// asserted here: it follows from `settle` abandoning only what is pending.
+#[cfg(unix)]
+#[test]
+fn a_sender_killed_between_applying_a_gone_message_and_acknowledging_it_settles_it_after_restart() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let to_bob = local_session_handle(bob.pk.clone()).unwrap();
+    let to_alice = local_session_handle(alice.pk.clone()).unwrap();
+
+    // As in `beyond_recall`: Alice commits 2,101 texts in one sending chain
+    // and Bob reads three of them, which evicts the key of text 0.
+    let ids: Vec<Vec<u8>> = (0..2101)
+        .map(|i| alice.send(&bob, &format!("g{i}"), "x"))
+        .collect();
+    let pending = alice.core.pending_outgoing(to_bob).unwrap();
+    for i in [900, 1800, 2100] {
+        let wire = &pending
+            .iter()
+            .find(|m| m.message_id == ids[i])
+            .expect("pending")
+            .wire;
+        bob.core.receive_committed(to_alice, wire).unwrap();
+    }
+    for id in &ids[1..] {
+        alice.core.abandon_outgoing(to_bob, id.clone()).unwrap();
+    }
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    // Text 0 reaches Bob late; he cannot read it and names it.
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(alice.undelivered(&bob), 1);
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.dropped, r.published), (1, 1), "{r:?}");
+
+    run_child(&alice, &addr, "sync", Some("gone_applied"), &bob.pk);
+
+    let alice = alice.restart(&addr);
+    assert_eq!(
+        alice.undelivered(&bob),
+        0,
+        "text 0 was abandoned before the death"
+    );
+    assert_eq!(
+        alice.core.pending_committed(to_bob).unwrap().len(),
+        1,
+        "the GONE message itself is still in the inbox"
+    );
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(alice.undelivered(&bob), 0);
+    assert!(
+        alice.core.pending_committed(to_bob).unwrap().is_empty(),
+        "the GONE message was settled from the inbox"
+    );
+    relay.stop();
+}
+
 /// Every chat round of `devices`, in turn, `n` times; no errors allowed.
 fn chat_rounds(devices: &[&Device], n: usize) {
     for _ in 0..n {

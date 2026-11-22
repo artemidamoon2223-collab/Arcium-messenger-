@@ -174,7 +174,7 @@ impl Side {
 }
 
 /// The storage failure `error` carries, if it reports one.
-fn storage_failure(error: &MessagingError) -> Option<&StorageError> {
+pub(super) fn storage_failure(error: &MessagingError) -> Option<&StorageError> {
     match error {
         MessagingError::Store(e)
         | MessagingError::NotCommitted(e)

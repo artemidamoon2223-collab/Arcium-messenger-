@@ -188,6 +188,7 @@ impl NetworkMessenger {
                     m.client_message_id.first(),
                     Some(&client_id::RECEIPT) | Some(&client_id::GONE)
                 ) {
+                    crash_point("receipt_published");
                     self.core.acknowledge_outgoing(*handle, m.message_id)?;
                 }
             }

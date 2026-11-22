@@ -470,3 +470,8 @@ D-081 · 2026-11-22 · OWNER · DONE
 - What: on the Owner's instruction "Мёрдж #247 и #248" (session `013Fd9w25yw1w75yseYxbKXy`) both PRs were merged with normal merge commits, each pinned to its head: #247 (head `d34eb7a`) as `74aece2eac5b794f0fe763e48bd427bf0c1ca27f`, then #248 (head `48fd19f`) as `cb3e5b347e6b98f150ea5b0b5390991c0bee935f`. Before each merge all 9 check runs on the head were success. #248 was merged on its checks against base `256fed0`; it touches other files than #247.
 - Verified on freshly fetched `main` @ `cb3e5b3`: the diff from `256fed0` is the four files of the two PRs (+118 −4).
 - Stage 0 of the plan (D-080) is closed. Next step: 1.1.
+
+D-082 · 2026-11-22 · OWNER · DONE
+- What: plan step 1.1 (D-080). PR #249 (head `316da2b`): one test-only crash point `open_receipted` in `settle()` (`crates/mobile-ffi/src/network/inbox.rs`) and one process-kill test (`tests/network_crash.rs`) for a death between committing the receipt for an OPEN message and acknowledging it. Mutation check: with the two steps swapped the test fails. Reviewed by a fresh-context agent with both review skills: no blocking finding; one LOW point (the comment's "comes again as a duplicate" is not asserted) left as is and stated in the PR.
+- Merged on the Owner's instruction "Мерж 249" (session `013Fd9w25yw1w75yseYxbKXy`) with a normal merge commit pinned to the head, after all 9 check runs on it were success: `c3f1c1b49188ce05210e030775d4c3c65d0d53c9`. Verified on freshly fetched `main`: the diff from `cb3e5b3` is the two files of the PR (+60).
+- Next step: 1.2.

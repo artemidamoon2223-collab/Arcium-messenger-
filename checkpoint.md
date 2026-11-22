@@ -13,10 +13,11 @@ Updated: 2026-11-22 UTC, by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKX
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `cb3e5b347e6b98f150ea5b0b5390991c0bee935f` (merge of PR #248, 2026-11-22)
+- `main` = `c3f1c1b49188ce05210e030775d4c3c65d0d53c9` (merge of PR #249, 2026-11-22)
 
 ## Done
-- 22 Nov (D-078, D-081): #247 (comments of `artifact_committed`) merged as `74aece2`, #248 (kill tests between the two steps of `settle()`) merged as `cb3e5b3`; `main` = `cb3e5b3`. The push run of CI on that commit was not read when this was written. Report `ARCIUM-RELIABILITY-ARCHITECTURE-001.md` is with the Owner (roadmap only).
+- 22 Nov (D-082): plan step 1.1, #249 (kill test between receipting an OPEN message and acknowledging it) merged as `c3f1c1b`.
+- 22 Nov (D-078, D-081): #247 (comments of `artifact_committed`) merged as `74aece2`, #248 (kill tests between the two steps of `settle()`) merged as `cb3e5b3`; then `main` was `cb3e5b3`. The push run of CI on that commit was not read when this was written. Report `ARCIUM-RELIABILITY-ARCHITECTURE-001.md` is with the Owner (roadmap only).
 - 21 to 22 Nov (D-077; outside the repository): Reliability System V1 built and used read-only on `256fed0`: audit pass 1 and a four-role diagnostic of durable state, no confirmed defect. Its V1.1 candidate is PENDING_OWNER_APPROVAL. Archives and hashes are in D-077; copies are on the Owner's Google Drive.
 - 21 Nov (D-075, D-074; outside the repository): SE-001 and SI-001 prototypes; not installed.
 - 21 Nov (D-070 to D-073): #240 to #246 (lib.rs/network.rs split, QC risk rules, tracker code locations); `main` = `256fed0`.
@@ -34,7 +35,7 @@ Updated: 2026-11-22 UTC, by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKX
 - Reliability plan (D-080, approved 22 Nov): stage 0 is closed (D-081); stages 2.1 and 3.1 each need a separate Owner decision.
 
 ## Reliability plan (D-080, approved by the Owner, strictly in order)
-Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Next step: 1.1. Details: D-080.
+Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Step 1.1 done (D-082). Next step: 1.2. Details: D-080.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

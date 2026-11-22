@@ -24,7 +24,7 @@ Updated: 2026-11-22 UTC, by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKX
 
 ## Open PRs
 - #247 (draft): comments only; all 9 check runs success on `d34eb7a`. Waits for the Owner's merge instruction.
-- #248 (draft): two test-only crash points and two kill tests; opened 22 Nov, re-check its CI.
+- #248 (draft): two test-only crash points and two kill tests; all 9 check runs success on `48fd19f`. Waits for the Owner's merge instruction.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -33,7 +33,10 @@ Updated: 2026-11-22 UTC, by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKX
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 - Merge instructions for #247 and #248 (each needs the Owner naming the PR).
 - Reliability System V1.1 candidate (D-077): approval only through the permission prompt in the candidate's own folder (a computer with Claude Code, or a session opened on a repository that holds the candidate). Nothing of it is installed here.
-- Next step of the reliability roadmap (D-078): the Owner chooses; kill tests for OPEN handling, receipt publish and the far pass are still missing.
+- Reliability plan (D-080, approved 22 Nov): stage 0 waits for the two merge instructions; stages 2.1 and 3.1 each need a separate Owner decision.
+
+## Reliability plan (D-080, approved by the Owner, strictly in order)
+Stage 0: merge #247, then #248 (each on the Owner's instruction) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Next step: 1.1, after stage 0 is closed. Details: D-080.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

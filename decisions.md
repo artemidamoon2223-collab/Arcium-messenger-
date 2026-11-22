@@ -453,3 +453,15 @@ D-079 · 2026-11-22 · CORRECTION · DONE
 - What: the first description of PR #247 listed `cargo fmt --all -- --check` with exit 0. The command's output had not been read; its exit code is 1 on `main` @ `256fed0` and on both PR heads, with the same 678 hunks (the tree is not rustfmt-clean and no workflow runs rustfmt). The description was corrected in place.
 - Note (AGENT): record an exit code only from output that was read. `cargo fmt --check` is not a usable gate in this repository as it stands.
 - Evidence: PR #247 description, "Correction (2026-11-22)".
+
+D-080 · 2026-11-22 · OWNER · ACTIVE
+- What: the Owner approved a reliability work plan ("Утверждаю этот план", session `013Fd9w25yw1w75yseYxbKXy`), to be followed strictly in order. One step is one draft PR with one check; the next step starts only after the Owner's decision on the previous one.
+- Step rules: write "Готово, когда: command → output line" before starting; every new test passes a mutation check; network, key and storage code is reviewed by a fresh-context agent; the Owner merges by naming the PR; a test that fails on correct code is a finding: stop and report, do not adjust the test.
+- Stage 0: 0.1 merge #247; 0.2 merge #248. Each still needs the Owner's instruction naming the PR; approving the plan is not that instruction.
+- Stage 1 (tests only): 1.1 kill test inside OPEN handling; 1.2 kill between the relay accepting a receipt and `acknowledge_outgoing`; 1.3 kill in the far-skip pass; 1.4 tracker update as a separate PR after 1.1 to 1.3 are merged.
+- Stage 2 (storage): 2.1 test-only fault-injection layer for storage writes (needs a separate Owner decision); 2.2 fault tests; 2.3 random operation sequences against a simple model; 2.4 two OS processes on one database.
+- Stage 3 (Android, production code): 3.1 fsync of the master-key blob and its directory with a kill test (needs a separate Owner decision); 3.2 power-loss experiment on a physical phone (needs a phone).
+- Stage 4: 4.1 the four unexamined rollback cases as characterization tests; D-009 is not changed.
+- Stage 5: Owner decisions before a release: attacker scope; keep D-009 or a hardware-backed commitment; whether a second process is allowed.
+- Separate lines that do not block this plan: the Reliability System V1.1 approval (D-077); relay server, phones, signing key.
+- Evidence: the Owner's message approving the plan, and the plan text in the same session.

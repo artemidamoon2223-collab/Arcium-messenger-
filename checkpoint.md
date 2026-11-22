@@ -13,30 +13,28 @@ Updated: 2026-11-22 UTC, by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKX
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `256fed059062fd784227ccabd746a40b2b2a9622` (merge of PR #246, 2026-11-21)
+- `main` = `cb3e5b347e6b98f150ea5b0b5390991c0bee935f` (merge of PR #248, 2026-11-22)
 
 ## Done
-- 22 Nov (D-078): draft PR #247 (comments of `artifact_committed`, head `d34eb7a`) and draft PR #248 (kill tests between the two steps of `settle()`, head `48fd19f`). Neither is merged. Report `ARCIUM-RELIABILITY-ARCHITECTURE-001.md` is with the Owner (roadmap only).
+- 22 Nov (D-078, D-081): #247 (comments of `artifact_committed`) merged as `74aece2`, #248 (kill tests between the two steps of `settle()`) merged as `cb3e5b3`; `main` = `cb3e5b3`. The push run of CI on that commit was not read when this was written. Report `ARCIUM-RELIABILITY-ARCHITECTURE-001.md` is with the Owner (roadmap only).
 - 21 to 22 Nov (D-077; outside the repository): Reliability System V1 built and used read-only on `256fed0`: audit pass 1 and a four-role diagnostic of durable state, no confirmed defect. Its V1.1 candidate is PENDING_OWNER_APPROVAL. Archives and hashes are in D-077; copies are on the Owner's Google Drive.
 - 21 Nov (D-075, D-074; outside the repository): SE-001 and SI-001 prototypes; not installed.
 - 21 Nov (D-070 to D-073): #240 to #246 (lib.rs/network.rs split, QC risk rules, tracker code locations); `main` = `256fed0`.
 - 14 to 20 Nov (D-021 to D-069): PRs #157 to #239; each with its SHA is in `decisions.md`.
 
 ## Open PRs
-- #247 (draft): comments only; all 9 check runs success on `d34eb7a`. Waits for the Owner's merge instruction.
-- #248 (draft): two test-only crash points and two kill tests; all 9 check runs success on `48fd19f`. Waits for the Owner's merge instruction.
+- None from this plan.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
 - Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
-- Merge instructions for #247 and #248 (each needs the Owner naming the PR).
 - Reliability System V1.1 candidate (D-077): approval only through the permission prompt in the candidate's own folder (a computer with Claude Code, or a session opened on a repository that holds the candidate). Nothing of it is installed here.
-- Reliability plan (D-080, approved 22 Nov): stage 0 waits for the two merge instructions; stages 2.1 and 3.1 each need a separate Owner decision.
+- Reliability plan (D-080, approved 22 Nov): stage 0 is closed (D-081); stages 2.1 and 3.1 each need a separate Owner decision.
 
 ## Reliability plan (D-080, approved by the Owner, strictly in order)
-Stage 0: merge #247, then #248 (each on the Owner's instruction) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Next step: 1.1, after stage 0 is closed. Details: D-080.
+Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Next step: 1.1. Details: D-080.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

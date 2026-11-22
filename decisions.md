@@ -465,3 +465,8 @@ D-080 · 2026-11-22 · OWNER · ACTIVE
 - Stage 5: Owner decisions before a release: attacker scope; keep D-009 or a hardware-backed commitment; whether a second process is allowed.
 - Separate lines that do not block this plan: the Reliability System V1.1 approval (D-077); relay server, phones, signing key.
 - Evidence: the Owner's message approving the plan, and the plan text in the same session.
+
+D-081 · 2026-11-22 · OWNER · DONE
+- What: on the Owner's instruction "Мёрдж #247 и #248" (session `013Fd9w25yw1w75yseYxbKXy`) both PRs were merged with normal merge commits, each pinned to its head: #247 (head `d34eb7a`) as `74aece2eac5b794f0fe763e48bd427bf0c1ca27f`, then #248 (head `48fd19f`) as `cb3e5b347e6b98f150ea5b0b5390991c0bee935f`. Before each merge all 9 check runs on the head were success. #248 was merged on its checks against base `256fed0`; it touches other files than #247.
+- Verified on freshly fetched `main` @ `cb3e5b3`: the diff from `256fed0` is the four files of the two PRs (+118 −4).
+- Stage 0 of the plan (D-080) is closed. Next step: 1.1.

@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-21 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoHR)
+Updated: 2026-11-22 UTC, by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
 
 ## Resume procedure
 1. The SessionStart hook prints both files. Manual fallback: `git fetch origin continuity && git show origin/continuity:checkpoint.md`, then `…:decisions.md`.
@@ -16,34 +16,24 @@ Updated: 2026-11-21 UTC, by a Claude Code cloud session (013Fd9vyhG9UhoZ9sPkysoH
 - `main` = `256fed059062fd784227ccabd746a40b2b2a9622` (merge of PR #246, 2026-11-21)
 
 ## Done
-- 21 Nov (D-075; outside the repository, nothing here changed): SE-001, a skill-evolution prototype in `/var/se001` of that session's container. One candidate, new steps of one skill: validation 6/16 -> 10/16, sealed 5/24 -> 15/24 with no loss; an independent audit found the size overstated by a word-overlap check (strict recount 3/8 against 0/8 where the change acts). Not installed. Report and archive are with the Owner.
-- 21 Nov (D-074; outside the repository): SI-001, a four-role pilot (Generator, Verifier, Meta-Check, Coach) in `/var/si001`: development cases 7/12 -> 10/12, sealed 5/8 -> 4/8, INCONCLUSIVE, candidate not promoted.
-- 21 Nov (D-073): #245 tracker code locations of live rows after the split (`0b60dda`); #246 QC markers also by crypto words and algorithm constants, test code by place and build (`256fed0`).
-- 21 Nov (D-072): #244 QC classes a new or ungated code file by the crypto and wire-format names its added code uses (a language-aware reader); every marked code file needs an owner-gated rule, checked by qc-unit (`43a5ae1`).
-- 21 Nov (D-071): #243 QC risk rules classify the files that hold keys, wire formats, identities and records (mobile-ffi split files, Android identity/relay/store code, vendor/ as SUPPLY_CHAIN); test_qc_rules.py pins them (`e31a55a`).
-- 21 Nov (D-070, step 7 of D-067): #240 lib.rs tests to src/tests/mod.rs (`bfad8c0`); #241 lib.rs code into error.rs, identity.rs, prekeys.rs, handshake.rs, responder.rs (`ed0cad6`); #242 network.rs internals into network/far_skip.rs, inbox.rs, mailbox.rs, outbox.rs, refusals.rs, tests.rs (`5a32f0c`). Pure moves: same 307 test names, Kotlin byte-identical; lib.rs 3,462 → 763 lines, network.rs 2,480 → 959.
-- 20 Nov (D-069): #239 core-transport drops unused `anyhow`, `core-crypto`, `futures` (`8305ed6`); workspace and Android graphs unchanged.
-- 20 Nov (D-068): #236 tracker note F-15/D-008 and relay comment, core-transport not a mobile-ffi dependency (`1d26e28`); #237 net_limits cut-round test no longer timing-dependent (`761cf43`); #238 unused `log` dependency of mobile-ffi dropped (`b2c2760`).
-- 20 Nov (D-067 step 4): #235 hot-crate opt-level in test builds, CI test stores in memory (`6dd93b2`). With the warm cache: core-rust 11:25 → 6:28, tests step 7:09 → 2:45, clippy 59 s → 4 s; Android bridge build step 9:23 → 1:59.
-- 20 Nov (D-067 steps 2, 3, 5): #233 CI `push` on `main` only (`f8b58b8`); #234 cargo cache in CI, saved on main only, cargo-audit not cached (`00ca884`); cloud environment "Arcium-messenger" with a prefetch setup script.
-- 20 Nov (D-067 step 1): #232 drops the unused `core-transport` from `mobile-ffi` (`a777c87`): Android graph 390 → 131 packages, bridge build 9:23 → 5:23, `.so` smaller (TLS 1.2 code gone).
-- 20 Nov (D-066): #230 R-21 beyond 32 chains, a message of a forgotten chain named on its second arrival (`7b6677f`); the one local test failure was a stale mutant binary, not a flake. Tracker #231 R-21 PARTIAL narrowed further, R-14 and R-9 notes (`ec6e00e`).
-- 19 Nov (D-064, D-065): tracker #228 R-21, R-14, R-20 PARTIAL narrowed, R-9 note (`9c49e59`); #229 skills: reference links, the stored far-skip wait in the threat checklist, the relay design doc in the repo map (`0c9cdfd`).
-- 19 Nov (D-064): #226 R-21 remembers 32 earlier receiving chains (`b476035`); #227 R-14/R-20 far-skip wait kept in the store across restarts (`2a6074f`); R-9 keep/delete change deferred by the Owner.
-- 19 Nov (D-063): #225 skills refresh (`cb46ed7`): threat-checklist conflict rule, test locations, mutation check, merging a PR that is behind, tracker-text check, worktree as disposable copy, CLAUDE.md pointer to repo-change-protocol; QC loop unchanged.
-- 19 Nov (D-062): #222 R-6 signed-prekey rotation (`553c3ba`): 7 days, and after a one-time-prekey change; previous key for one more period; V3 prekey record. #223 NET-MESSAGING qualifiers (`24c82c5`); #224 tracker R-6 PARTIAL and checklist (`d578295`).
-- 19 Nov (D-060, D-061): #217 option B (`1cca4b8`), #218 R-21 older chains (`d983e8e`), #219 H-6 spare slot (`d1d2cde`), #220 R-24 card check + R-22 prune (`8bac3f3`); tracker #221 (`b26a483`).
-- 14 to 18 Nov (D-021 to D-059): PRs #157 to #216; each with its SHA is in `decisions.md`.
+- 22 Nov (D-078): draft PR #247 (comments of `artifact_committed`, head `d34eb7a`) and draft PR #248 (kill tests between the two steps of `settle()`, head `48fd19f`). Neither is merged. Report `ARCIUM-RELIABILITY-ARCHITECTURE-001.md` is with the Owner (roadmap only).
+- 21 to 22 Nov (D-077; outside the repository): Reliability System V1 built and used read-only on `256fed0`: audit pass 1 and a four-role diagnostic of durable state, no confirmed defect. Its V1.1 candidate is PENDING_OWNER_APPROVAL. Archives and hashes are in D-077; copies are on the Owner's Google Drive.
+- 21 Nov (D-075, D-074; outside the repository): SE-001 and SI-001 prototypes; not installed.
+- 21 Nov (D-070 to D-073): #240 to #246 (lib.rs/network.rs split, QC risk rules, tracker code locations); `main` = `256fed0`.
+- 14 to 20 Nov (D-021 to D-069): PRs #157 to #239; each with its SHA is in `decisions.md`.
 
 ## Open PRs
-- None.
+- #247 (draft): comments only; all 9 check runs success on `d34eb7a`. Waits for the Owner's merge instruction.
+- #248 (draft): two test-only crash points and two kill tests; opened 22 Nov, re-check its CI.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
 - Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
-- Reliability System V1 (D-076): the Owner will build it in a new session as a new, separate project; this repository is read-only for that task. The proposals for this repository in D-074 and D-075 are not applied.
+- Merge instructions for #247 and #248 (each needs the Owner naming the PR).
+- Reliability System V1.1 candidate (D-077): approval only through the permission prompt in the candidate's own folder (a computer with Claude Code, or a session opened on a repository that holds the candidate). Nothing of it is installed here.
+- Next step of the reliability roadmap (D-078): the Owner chooses; kill tests for OPEN handling, receipt publish and the far pass are still missing.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

@@ -432,6 +432,7 @@ impl NetworkMessenger {
             Some(Payload::Text(_)) => self.receipt(handle, &id32, 0).map(|_| ()),
             Some(Payload::Open) => {
                 self.receipt(handle, &id32, 0)?;
+                crash_point("open_receipted");
                 self.core
                     .acknowledge_incoming(handle, id.to_vec())
                     .map(|_| ())

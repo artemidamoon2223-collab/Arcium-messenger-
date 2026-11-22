@@ -13,13 +13,13 @@ use super::*;
 const CHILD_ENV: &str = "ARCIUM_MSG_CHILD";
 const DIR_ENV: &str = "ARCIUM_MSG_DIR";
 
-struct Fixture {
-    dir: PathBuf,
-    alice_pk: [u8; 32],
-    bob_pk: [u8; 32],
+pub(super) struct Fixture {
+    pub(super) dir: PathBuf,
+    pub(super) alice_pk: [u8; 32],
+    pub(super) bob_pk: [u8; 32],
 }
 
-fn fixture(dir: &Path) -> Fixture {
+pub(super) fn fixture(dir: &Path) -> Fixture {
     let p = setup(
         EncryptedStore::open(dir.join("a.db"), KEY).unwrap(),
         EncryptedStore::open(dir.join("b.db"), KEY).unwrap(),
@@ -33,7 +33,7 @@ fn fixture(dir: &Path) -> Fixture {
 }
 
 impl Fixture {
-    fn peers(&self) -> Peers {
+    pub(super) fn peers(&self) -> Peers {
         Peers {
             a: EncryptedStore::open(self.dir.join("a.db"), KEY).unwrap(),
             b: EncryptedStore::open(self.dir.join("b.db"), KEY).unwrap(),

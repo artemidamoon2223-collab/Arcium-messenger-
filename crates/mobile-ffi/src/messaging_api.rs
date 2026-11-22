@@ -145,8 +145,12 @@ pub enum ReceiveResult {
 pub struct RecoveryReport {
     pub attempted_generation: u64,
     pub stored_generation: u64,
-    /// Whether, as the store reads now, the unresolved operation took effect
-    /// (its outbox / inbox / session record exists).
+    /// Whether, as the store reads now, a record exists under one of the
+    /// keys the unresolved operation writes (such as its outbox / inbox /
+    /// session record). This is what the store holds, not who wrote it:
+    /// another instance on the same database may have committed a record
+    /// under the same key, so `true` does not prove that the unresolved
+    /// operation itself took effect.
     pub artifact_committed: bool,
 }
 

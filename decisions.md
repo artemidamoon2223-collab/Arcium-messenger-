@@ -496,3 +496,9 @@ D-085 · 2026-11-22 · OWNER · DONE
 D-086 · 2026-11-22 · OWNER · ACTIVE
 - What: the Owner approved plan step 2.1 ("Делай 2.1", same session): a test-only fault-injection layer in `crates/core-storage`. Design stated to the Owner before starting: behind a cargo feature that only tests enable; a build for Android with the feature on must not compile; a check that the feature is not in the normal dependency graph; no change to the stored format or to encryption.
 - Owner preference (same day): end each message with the Owner's next step in plain words, with the exact text to type (for example "Мёрдж #N"), or say that nothing is needed and when the next message will come.
+
+D-087 · 2026-11-22 · AGENT · ACTIVE
+- What: plan step 2.1 (approved in D-086) is in draft PR #253, head `3b9f6b8`, base `main` @ `b7a9181`: `crates/core-storage` only (+786, nothing removed). `src/fault.rs` (scripted failures of store operations, per thread), nine hooks in `src/lib.rs`, the feature `fault-injection` (off by default), 20 tests of the layer and 2 of where the feature is enabled (`tests/feature_graph.rs`), and a `compile_error!` for Android with the feature on. With the feature off the store is unchanged.
+- Evidence in the PR: test and clippy result lines; the fault string is absent from `libarcium_core.so` without the feature and present with it; both guards checked both ways; nine mutations; a fresh-context review (nothing blocking; its SHOULD-FIX, a guard without an identity, applied with a test).
+- Limits stated in the PR: the layer returns errors and breaks nothing; the Android guard was checked by its logic only (no Android toolchain here); only Android is guarded; nothing outside `core-storage` uses the layer yet (step 2.2).
+- Not merged: waits for CI and for the Owner naming the PR.

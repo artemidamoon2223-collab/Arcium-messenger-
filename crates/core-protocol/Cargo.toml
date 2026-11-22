@@ -11,6 +11,12 @@ zeroize.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+# The store with its test-only fault layer (`core-storage/src/fault.rs`), for
+# `src/messaging/tests/store_faults.rs`. A dev-dependency's features count
+# only in a Cargo call that builds this crate's tests (examples or benches);
+# in such a call every crate built gets the store with the layer. What
+# enables it where: `core-storage/tests/feature_graph.rs`.
+core-storage = { path = "../core-storage", features = ["fault-injection"] }
 tempfile = "3"
 x25519-dalek.workspace = true
 rand_core.workspace = true

@@ -35,6 +35,12 @@ fn net_crash_child() {
         "sync" => {
             device.sync();
         }
+        // A round that tries a far skip as soon as a far message arrives
+        // (tracker R-14): the wait is a setting of the process.
+        "far_sync" => {
+            device.net.set_far_skip_wait(std::time::Duration::ZERO);
+            device.sync();
+        }
         "chat_send" => {
             let peer = std::fs::read(dir.join("peer")).unwrap();
             let text = format!(

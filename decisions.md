@@ -525,3 +525,8 @@ D-091 · 2026-11-22 · AGENT · ACTIVE
 - Evidence in the PR: result lines; nine mutations of the messaging code, each failing the test; a fresh-context review that checked the model against the code step by step (no error in the model; two SHOULD-FIX and four LOW points applied).
 - Not covered, stated in the PR: whether the model is right beyond that review; session creation and removal, `receive_far`, `forget_peer`, the confirm hook, `mobile-ffi`; several connections on one store and a store reopened from its file (step 2.4); real I/O failures.
 - Not merged: waits for CI and for the Owner naming the PR. Next after it: 2.4 (two OS processes on one database).
+
+D-092 · 2026-11-22 · OWNER · DONE
+- What: plan step 2.3 merged. PR #255 (head `50efb93`), the model-based test described in D-091, on the Owner's instruction "Мерж255" (session `013Fd9w25yw1w75yseYxbKXy`). Normal merge commit pinned to the head, after all 9 check runs on it were success, each on its first attempt: `feccfe6d5a76bb4691e731345c09957546a140f1`. Verified on freshly fetched `main`: the diff from `afc5338` is the three files of the PR (+899 −1).
+- Result of the step: no disagreement with the model in 64 sequences; no defect found. Tests only.
+- Next step: 2.4 (two OS processes on one database; tests only).

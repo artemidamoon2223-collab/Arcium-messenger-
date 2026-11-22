@@ -537,3 +537,9 @@ D-093 · 2026-11-22 · AGENT · ACTIVE
 - Noted in the PR and not changed: the comment at `crates/core-protocol/src/messaging.rs:650-655` says a message accepted by another instance meanwhile shows up as a side conflict; the new test shows it arriving as a predecessor conflict first. The branch was not examined further. A possible separate task.
 - Not covered, stated in the PR: a phone's file system; `mobile-ffi`, whose network layer keeps state in memory a second process would not share; more than two processes; a lock held past the busy timeout.
 - Not merged: waits for CI and for the Owner naming the PR. After it stage 2 is closed; stage 3.1 (fsync of the Android master-key blob, production code) needs a separate Owner decision.
+
+D-094 · 2026-11-22 · OWNER · DONE
+- What: plan step 2.4 merged. PR #256 (head `e3dda8b`), the two-process tests described in D-093, on the Owner's instruction (session `013Fd9w25yw1w75yseYxbKXy`): asked for "Мёрдж #256", the Owner answered "256"; the merge call was then declined at the permission prompt, nothing was merged and the PR was put back to draft; asked whether that was meant, the Owner answered "Мерж" while #256 was the only open PR, and the second call was allowed. Normal merge commit pinned to the head, after all 9 check runs on it were success, each on its first attempt: `5404c71a3750586935f185f7a78a1678cd0ebcc8`. Verified on freshly fetched `main`: the diff from `feccfe6` is the three files of the PR (+549 −6).
+- Stage 2 of the plan (D-080) is closed: 2.1 #253, 2.2 #254, 2.3 #255, 2.4 #256. No defect of the messaging layer was found in it; what each step does not show is in its PR.
+- Open note from D-093, not acted on: the comment at `crates/core-protocol/src/messaging.rs:650-655`.
+- Next step: 3.1 (fsync of the Android master-key blob and its directory; production code). It needs a separate Owner decision, asked for as "Делай 3.1" and not given. Nothing of stage 3 is started.

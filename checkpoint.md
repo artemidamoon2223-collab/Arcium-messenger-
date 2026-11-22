@@ -16,9 +16,10 @@ End each message with the Owner's next step in plain words and the exact text to
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `feccfe6d5a76bb4691e731345c09957546a140f1` (merge of PR #255, 2026-11-22)
+- `main` = `5404c71a3750586935f185f7a78a1678cd0ebcc8` (merge of PR #256, 2026-11-22)
 
 ## Done
+- 22 Nov (D-093, D-094): plan step 2.4, #256 (two OS processes on one database commit each session generation once; tests only) merged as `5404c71`. Stage 2 closed.
 - 22 Nov (D-091, D-092): plan step 2.3, #255 (64 seeded random sequences of messaging operations against a model, with storage faults; no disagreement; tests only) merged as `feccfe6`.
 - 22 Nov (D-089, D-090): plan step 2.2, #254 (a sweep that fails every store operation of eight messaging operations in turn; no counterexample; tests only) merged as `afc5338`.
 - 22 Nov (D-087, D-088): plan step 2.1, #253 (storage fault-injection layer behind the test-only feature `fault-injection`) merged as `0ff4794`.
@@ -33,7 +34,7 @@ End each message with the Owner's next step in plain words and the exact text to
 - 14 to 20 Nov (D-021 to D-069): PRs #157 to #239; each with its SHA is in `decisions.md`.
 
 ## Open PRs
-- #256 (draft, head `e3dda8b`): plan step 2.4, two OS processes on one database, tests only (D-093). Waits for CI and the Owner's merge instruction.
+- None from this plan.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -41,10 +42,11 @@ End each message with the Owner's next step in plain words and the exact text to
 - Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 - Reliability System V1.1 candidate (D-077): approval only through the permission prompt in the candidate's own folder (a computer with Claude Code, or a session opened on a repository that holds the candidate). Nothing of it is installed here.
-- Reliability plan (D-080, approved 22 Nov): stages 0 and 1 and step 2.1 are closed; 3.1 needs a separate Owner decision.
+- Reliability plan (D-080, approved 22 Nov): stages 0, 1 and 2 are closed. Step 3.1 (fsync of the Android master-key blob; production code) needs the Owner's decision: asked as "Делай 3.1", not given yet.
+- A possible small task (D-093): the comment at `crates/core-protocol/src/messaging.rs:650-655` does not match what the two-process test shows.
 
 ## Reliability plan (D-080, approved by the Owner, strictly in order)
-Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 done (D-090). Step 2.3 done (D-092). Step 2.4 in draft PR #256 (D-093). After its merge stage 2 is closed; 3.1 needs a separate Owner decision. Details: D-080.
+Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 done (D-090). Step 2.3 done (D-092). Step 2.4 done (D-094): stage 2 closed. Next step: 3.1, which needs a separate Owner decision (asked, not given). Details: D-080.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

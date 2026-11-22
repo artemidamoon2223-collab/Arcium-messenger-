@@ -16,9 +16,10 @@ End each message with the Owner's next step in plain words and the exact text to
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `0ff4794c34616ad64c684e287058e6b5f8056e21` (merge of PR #253, 2026-11-22)
+- `main` = `afc5338e713cf71db4445bc043a01faf2d00144e` (merge of PR #254, 2026-11-22)
 
 ## Done
+- 22 Nov (D-089, D-090): plan step 2.2, #254 (a sweep that fails every store operation of eight messaging operations in turn; no counterexample; tests only) merged as `afc5338`.
 - 22 Nov (D-087, D-088): plan step 2.1, #253 (storage fault-injection layer behind the test-only feature `fault-injection`) merged as `0ff4794`.
 - 22 Nov (D-085): plan step 1.4, #252 (tracker section on the process-kill tests, no status change) merged as `b7a9181`. Stage 1 closed.
 - 22 Nov (D-084): plan step 1.3, #251 (kill test in the far pass, tests only) merged as `4ad3337`.
@@ -31,7 +32,7 @@ End each message with the Owner's next step in plain words and the exact text to
 - 14 to 20 Nov (D-021 to D-069): PRs #157 to #239; each with its SHA is in `decisions.md`.
 
 ## Open PRs
-- #254 (draft, head `016fd92`): plan step 2.2, the store-fault sweep over eight messaging operations, tests only (D-089). Waits for CI and the Owner's merge instruction.
+- None from this plan.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -42,7 +43,7 @@ End each message with the Owner's next step in plain words and the exact text to
 - Reliability plan (D-080, approved 22 Nov): stages 0 and 1 and step 2.1 are closed; 3.1 needs a separate Owner decision.
 
 ## Reliability plan (D-080, approved by the Owner, strictly in order)
-Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 in draft PR #254 (D-089). Next after its merge: 2.3 (random operation sequences against a simple model). Details: D-080.
+Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 done (D-090). Next step: 2.3 (random operation sequences against a simple model; tests only). Details: D-080.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

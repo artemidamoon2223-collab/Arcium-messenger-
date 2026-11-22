@@ -514,3 +514,8 @@ D-089 · 2026-11-22 · AGENT · ACTIVE
 - Evidence in the PR: result lines; seven mutations of the messaging code, each failing the sweep; the fault string absent from `libarcium_core.so`; the feature-graph check; a fresh-context review (nothing blocking; three SHOULD-FIX applied, one of them a gap that let a mutation pass).
 - Not covered, stated in the PR: `accept_first_message`, the provisional and beside handshake records, `receive_far`, session removal and `forget_peer`; the confirm hook `mobile-ffi` installs; everything in `mobile-ffi`; real I/O failures.
 - Not merged: waits for CI and for the Owner naming the PR. Next after it: 2.3 (random operation sequences against a simple model).
+
+D-090 · 2026-11-22 · OWNER · DONE
+- What: plan step 2.2 merged. PR #254 (head `016fd92`), the store-fault sweep described in D-089, on the Owner's instruction "Мэрш 254." (session `013Fd9w25yw1w75yseYxbKXy`). Normal merge commit pinned to the head, after all 9 check runs on it were success, each on its first attempt: `afc5338e713cf71db4445bc043a01faf2d00144e`. Verified on freshly fetched `main`: the diff from `0ff4794` is the three files of the PR (+710).
+- Result of the step: no counterexample in 158 failed runs over eight messaging operations; no defect found. Tests only.
+- Next step: 2.3 (random operation sequences against a simple model; tests only).

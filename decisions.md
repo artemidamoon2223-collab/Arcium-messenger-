@@ -487,3 +487,12 @@ D-084 · 2026-11-22 · OWNER · DONE
 - Merged on the Owner's instruction (session `013Fd9w25yw1w75yseYxbKXy`): asked for "Мёрдж #251", the Owner answered "Мерж" while #251 was the only open PR. Normal merge commit pinned to the head, after all 9 check runs on it were success: `4ad3337655fa14db7d652a4bc90d7b6767dd4905`. Verified on freshly fetched `main`: the diff from `031da1c` is the two test files of the PR (+68).
 - Known gap, stated in the PR: no death between the far skip's commit and the delete of the stored wait is tested (a known residual of R-14/R-20).
 - Next step: 1.4 (tracker update, a separate PR).
+
+D-085 · 2026-11-22 · OWNER · DONE
+- What: plan step 1.4 (D-080). PR #252 (head `bb068d5`): `docs/SECURITY-FINDINGS.md` only, a section "Update 2026-11-22: process-kill tests inside a round", one header line and two dated notes (R-14, R-21). No status changed. A fresh-context agent checked every claim and `path:line` against `4ad3337`: no factual error; one omission and eight wording points, all applied before the commit.
+- Merged on the Owner's instruction (session `013Fd9w25yw1w75yseYxbKXy`): asked for "Мёрдж #252", the Owner answered "Мерж" while #252 was the only open PR. Normal merge commit pinned to the head, after all 6 check runs on it were success: `b7a91810108511db391e120d5825b75ef40dc6d2`. Verified on freshly fetched `main`: the diff from `4ad3337` is that one file (+64 −2).
+- Stage 1 of the plan is closed.
+
+D-086 · 2026-11-22 · OWNER · ACTIVE
+- What: the Owner approved plan step 2.1 ("Делай 2.1", same session): a test-only fault-injection layer in `crates/core-storage`. Design stated to the Owner before starting: behind a cargo feature that only tests enable; a build for Android with the feature on must not compile; a check that the feature is not in the normal dependency graph; no change to the stored format or to encryption.
+- Owner preference (same day): end each message with the Owner's next step in plain words, with the exact text to type (for example "Мёрдж #N"), or say that nothing is needed and when the next message will come.

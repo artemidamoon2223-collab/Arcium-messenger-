@@ -13,5 +13,12 @@ rand_core.workspace = true
 zeroize.workspace = true
 thiserror.workspace = true
 
+[features]
+# Test aid: scripted failures of store operations (`src/fault.rs`). Only a
+# `[dev-dependencies]` entry may enable it. `tests/feature_graph.rs` checks
+# that no normal or build dependency in the workspace does, and a build for
+# Android with it on does not compile (`src/lib.rs`).
+fault-injection = []
+
 [dev-dependencies]
 tempfile = "3"

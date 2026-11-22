@@ -32,6 +32,16 @@ use std::path::Path;
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
+/// Scripted failures of store operations, for tests. Not part of a build
+/// that does not ask for it: see the module.
+#[cfg(any(test, feature = "fault-injection"))]
+pub mod fault;
+
+// The fault layer is for tests on the build host. A library built for a
+// device must not contain it, whatever enabled the feature.
+#[cfg(all(feature = "fault-injection", target_os = "android"))]
+compile_error!("core-storage's `fault-injection` feature must not be enabled in a build for Android");
+
 const NONCE_SIZE: usize = 24;
 const NAME_HASH_LEN: usize = 32;
 
@@ -127,16 +137,22 @@ impl EncryptedStore {
 
     pub fn put(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
         self.ensure_no_open_transaction()?;
+        #[cfg(any(test, feature = "fault-injection"))]
+        fault::before(fault::Op::Put)?;
         put_row(&self.conn, &self.keys, key, value)
     }
 
     pub fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
         self.ensure_no_open_transaction()?;
+        #[cfg(any(test, feature = "fault-injection"))]
+        fault::before(fault::Op::Get)?;
         get_row(&self.conn, &self.keys, key)
     }
 
     pub fn delete(&self, key: &str) -> Result<(), StorageError> {
         self.ensure_no_open_transaction()?;
+        #[cfg(any(test, feature = "fault-injection"))]
+        fault::before(fault::Op::Delete)?;
         delete_row(&self.conn, &self.keys, key)
     }
 
@@ -223,6 +239,8 @@ impl EncryptedStore {
     /// any other kind of SQLite failure.
     pub fn transaction(&mut self) -> Result<StoreTransaction<'_>, StorageError> {
         self.ensure_no_open_transaction()?;
+        #[cfg(any(test, feature = "fault-injection"))]
+        fault::before(fault::Op::Begin)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -240,6 +258,8 @@ impl EncryptedStore {
     /// same convention `namespace_of` uses when writing.
     pub fn list_keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
         self.ensure_no_open_transaction()?;
+        #[cfg(any(test, feature = "fault-injection"))]
+        fault::before(fault::Op::List)?;
         let ns_hash = self.keys.key_name_hash(prefix);
         let mut stmt = self
             .conn
@@ -497,6 +517,8 @@ impl StoreTransaction<'_> {
     /// Inserts `key`, or replaces its value if it already exists.
     pub fn put(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
         self.ensure_active()?;
+        #[cfg(any(test, feature = "fault-injection"))]
+        fault::before_in_transaction(fault::Op::Put, &self.tx)?;
         put_row(&self.tx, self.keys, key, value)
     }
 
@@ -504,6 +526,8 @@ impl StoreTransaction<'_> {
     /// earlier in the same transaction.
     pub fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
         self.ensure_active()?;
+        #[cfg(any(test, feature = "fault-injection"))]
+        fault::before_in_transaction(fault::Op::Get, &self.tx)?;
         get_row(&self.tx, self.keys, key)
     }
 
@@ -511,6 +535,8 @@ impl StoreTransaction<'_> {
     /// with [`EncryptedStore::delete`].
     pub fn delete(&self, key: &str) -> Result<(), StorageError> {
         self.ensure_active()?;
+        #[cfg(any(test, feature = "fault-injection"))]
+        fault::before_in_transaction(fault::Op::Delete, &self.tx)?;
         delete_row(&self.tx, self.keys, key)
     }
 
@@ -565,6 +591,14 @@ impl StoreTransaction<'_> {
     /// loss, and it cannot tell whether the whole database file was replaced
     /// by an older copy.
     pub fn commit(self) -> Result<(), StorageError> {
+        #[cfg(any(test, feature = "fault-injection"))]
+        if let Some(commit_first) = fault::at_commit() {
+            if commit_first {
+                self.tx.commit()?;
+            }
+            // Not committed: rolled back as the transaction is dropped here.
+            return Err(fault::injected());
+        }
         self.tx.commit()?;
         Ok(())
     }
@@ -587,6 +621,9 @@ impl StoreTransaction<'_> {
 
 #[cfg(test)]
 mod golden;
+
+#[cfg(test)]
+mod fault_tests;
 
 #[cfg(test)]
 mod tests {

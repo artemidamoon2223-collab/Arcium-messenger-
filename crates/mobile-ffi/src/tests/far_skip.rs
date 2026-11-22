@@ -101,6 +101,68 @@ fn a_gap_of_more_than_max_skip_in_one_chain_is_crossed() {
     relay.stop();
 }
 
+/// The recipient dies in the far pass of a round: after the far skip
+/// committed the message (`after_accept`), and after its receipt was
+/// committed too (`after_settle`). The message was deleted from the relay in
+/// the message pass, so on the recipient's side only its store holds it (the
+/// sender still has it pending, and sends it again). Each time the restarted
+/// device shows the text once, the next rounds commit or send the receipt,
+/// and the sender ends with the text delivered.
+#[cfg(unix)]
+#[test]
+fn a_recipient_killed_in_the_far_pass_keeps_the_message_and_confirms_it() {
+    for point in ["after_accept", "after_settle"] {
+        let relay = start_relay();
+        let addr = relay.addr().to_string();
+        let (alice, bob) = connected(&addr);
+        settle(&[&alice, &bob]);
+        let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+        let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+        let (ids, wires) = texts_in_one_chain(&alice, &bob);
+        for id in &ids[..GAP] {
+            bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+        }
+        let id: [u8; 32] = ids[GAP].as_slice().try_into().unwrap();
+        let text = format!("t{GAP}");
+        inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+
+        super::network_crash::run_child(&alice, &addr, "far_sync", Some(point), &bob.pk);
+
+        let alice = alice.restart(&addr);
+        assert_eq!(
+            alice.texts(&bob),
+            vec![text.clone()],
+            "{point}: the far skip committed the message before the death"
+        );
+        assert!(
+            stored_messages(&relay, &alice).is_empty(),
+            "{point}: and the relay no longer holds it"
+        );
+        assert_eq!(far_record(&alice, to_bob), None, "{point}: the wait was deleted");
+        // A round that ended would have published the receipt: the child
+        // died before that, so the crash point fired.
+        assert!(
+            stored_messages(&relay, &bob).is_empty(),
+            "{point}: the round did not reach its last publish"
+        );
+        // The receipt tells the two points apart.
+        let receipts = alice.core.pending_outgoing(to_bob).unwrap();
+        if point == "after_accept" {
+            assert!(receipts.is_empty(), "{point}: no receipt yet: {}", receipts.len());
+        } else {
+            assert_eq!(receipts.len(), 1, "{point}: the receipt is committed, not sent");
+            assert_eq!(receipts[0].client_message_id, client_id::receipt(&id, 0), "{point}");
+        }
+
+        settle(&[&alice, &bob]);
+        assert_eq!(alice.accepted_total(), 0, "{point}: nothing accepted twice");
+        assert_eq!(alice.texts(&bob), vec![text], "{point}: shown once");
+        assert_eq!(bob.undelivered(&alice), 0, "{point}: delivered");
+        assert!(alice.core.pending_outgoing(to_bob).unwrap().is_empty(), "{point}");
+        relay.stop();
+    }
+}
+
 /// A far skip may derive up to `MAX_FAR_SKIP` keys per chain before the
 /// message authenticates, so a session gets one try per round. A forged far
 /// message ahead of the genuine one takes it; the genuine one is then

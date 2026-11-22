@@ -34,7 +34,8 @@ End each message with the Owner's next step in plain words and the exact text to
 - 14 to 20 Nov (D-021 to D-069): PRs #157 to #239; each with its SHA is in `decisions.md`.
 
 ## Open PRs
-- None from this plan.
+- #257 (draft, head `c9bb0a3`): plan step 3.1, fsync of the Android master-key blob before its key is used, with tests and a kill scenario (D-095). All 9 checks success on that head. Waits for the Owner naming it for a merge.
+- Scratch branch `ccr-ee7f440a-77ozc8-key-fsync-mutations` (no PR): the mutation checks of #257; not for merging, can be deleted by the Owner.
 
 ## Waiting for the Owner
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
@@ -42,11 +43,13 @@ End each message with the Owner's next step in plain words and the exact text to
 - Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 - Reliability System V1.1 candidate (D-077): approval only through the permission prompt in the candidate's own folder (a computer with Claude Code, or a session opened on a repository that holds the candidate). Nothing of it is installed here.
-- Reliability plan (D-080, approved 22 Nov): stages 0, 1 and 2 are closed. Step 3.1 (fsync of the Android master-key blob; production code) needs the Owner's decision: asked as "Делай 3.1", not given yet.
+- Reliability plan (D-080, approved 22 Nov): stages 0, 1 and 2 are closed. Step 3.1 is PR #257 (D-095), asked for as "Мёрдж #257". Step 3.2 needs a physical phone.
+- A choice in #257 to revisit before a release (D-095): a directory that cannot be synced blocks first start.
+- A tracked `__pycache__` file in `android/e2e` (D-095): a possible small cleanup task.
 - A possible small task (D-093): the comment at `crates/core-protocol/src/messaging.rs:650-655` does not match what the two-process test shows.
 
 ## Reliability plan (D-080, approved by the Owner, strictly in order)
-Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 done (D-090). Step 2.3 done (D-092). Step 2.4 done (D-094): stage 2 closed. Next step: 3.1, which needs a separate Owner decision (asked, not given). Details: D-080.
+Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 done (D-090). Step 2.3 done (D-092). Step 2.4 done (D-094): stage 2 closed. Step 3.1 is draft PR #257 (D-095), not merged. Next: the Owner's decision on #257; then 3.2 (needs a phone) or stage 4. Details: D-080.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

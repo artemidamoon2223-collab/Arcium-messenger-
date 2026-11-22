@@ -481,3 +481,9 @@ D-083 · 2026-11-22 · OWNER · DONE
 - Merged on the Owner's instruction (session `013Fd9w25yw1w75yseYxbKXy`): asked for "Мёрдж #250", the Owner answered "Мерж" while #250 was the only open PR. Normal merge commit pinned to the head, after all 9 check runs on it were success: `031da1caab82fdff150cb0e69f6d5d647f3682bb`. Verified on freshly fetched `main`: the diff from `c3f1c1b` is the two files of the PR (+71).
 - Known gap, stated in the PR: the crash point also fires for a GONE message; no kill test covers a GONE message in that window.
 - Next step: 1.3.
+
+D-084 · 2026-11-22 · OWNER · DONE
+- What: plan step 1.3 (D-080). PR #251 (head `a6548e8`), tests only: a child scenario `far_sync` (`tests/network_crash.rs`) and one process-kill test (`tests/far_skip.rs`) at the two existing crash points of `far_pass`, `after_accept` and `after_settle`. Three mutation checks fail the test (no `settle` in `far_pass`; no `settle_inbox` at the start of a round; a crash point that never fires). Reviewed by a fresh-context agent with both review skills: no blocking finding; its SHOULD-FIX (at `after_accept` the first version passed even if the crash point never fired) was applied before the commit.
+- Merged on the Owner's instruction (session `013Fd9w25yw1w75yseYxbKXy`): asked for "Мёрдж #251", the Owner answered "Мерж" while #251 was the only open PR. Normal merge commit pinned to the head, after all 9 check runs on it were success: `4ad3337655fa14db7d652a4bc90d7b6767dd4905`. Verified on freshly fetched `main`: the diff from `031da1c` is the two test files of the PR (+68).
+- Known gap, stated in the PR: no death between the far skip's commit and the delete of the stored wait is tested (a known residual of R-14/R-20).
+- Next step: 1.4 (tracker update, a separate PR).

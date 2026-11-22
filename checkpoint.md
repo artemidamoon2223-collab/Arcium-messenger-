@@ -13,9 +13,10 @@ Updated: 2026-11-22 UTC, by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKX
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `031da1caab82fdff150cb0e69f6d5d647f3682bb` (merge of PR #250, 2026-11-22)
+- `main` = `4ad3337655fa14db7d652a4bc90d7b6767dd4905` (merge of PR #251, 2026-11-22)
 
 ## Done
+- 22 Nov (D-084): plan step 1.3, #251 (kill test in the far pass, tests only) merged as `4ad3337`.
 - 22 Nov (D-083): plan step 1.2, #250 (kill test between the relay accepting a receipt and the receipt leaving the outbox) merged as `031da1c`.
 - 22 Nov (D-082): plan step 1.1, #249 (kill test between receipting an OPEN message and acknowledging it) merged as `c3f1c1b`.
 - 22 Nov (D-078, D-081): #247 (comments of `artifact_committed`) merged as `74aece2`, #248 (kill tests between the two steps of `settle()`) merged as `cb3e5b3`; then `main` was `cb3e5b3`. The push run of CI on that commit was not read when this was written. Report `ARCIUM-RELIABILITY-ARCHITECTURE-001.md` is with the Owner (roadmap only).
@@ -36,7 +37,7 @@ Updated: 2026-11-22 UTC, by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKX
 - Reliability plan (D-080, approved 22 Nov): stage 0 is closed (D-081); stages 2.1 and 3.1 each need a separate Owner decision.
 
 ## Reliability plan (D-080, approved by the Owner, strictly in order)
-Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Steps 1.1 (D-082) and 1.2 (D-083) done. Next step: 1.3. Details: D-080.
+Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Steps 1.1 (D-082), 1.2 (D-083) and 1.3 (D-084) done. Next step: 1.4. Details: D-080.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

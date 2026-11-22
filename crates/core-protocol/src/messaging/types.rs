@@ -182,8 +182,12 @@ pub struct Recovery {
     pub attempted_generation: u64,
     /// The generation the store holds now.
     pub stored_generation: u64,
-    /// Whether the store holds that transition's outbox or inbox record, i.e.
-    /// whether, as read now, the transition took effect.
+    /// Whether the store, as read now, holds a record under one of the keys
+    /// that transition writes (such as its session, outbox or inbox record).
+    /// This is what the store holds, not who wrote it: with more than one
+    /// instance on the database, another instance may have committed a
+    /// record under the same key (for example the same logical message), so
+    /// `true` does not prove that the unresolved commit itself took effect.
     pub artifact_committed: bool,
 }
 

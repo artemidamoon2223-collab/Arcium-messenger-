@@ -3,6 +3,8 @@ package com.arcium.messenger.security
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.system.Os
+import android.system.OsConstants
 import java.io.File
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -27,10 +29,12 @@ sealed interface MasterKeyResult {
     data object MissingForExistingStore : MasterKeyResult
 
     /**
-     * A wrapped master key exists but cannot be used: the blob is malformed or
-     * does not decrypt, or the Keystore wrapping key is missing or refuses to
-     * work. [reason] names the cause and carries no key material. Nothing was
-     * created, replaced or deleted.
+     * No usable master key; [reason] names the cause and carries no key
+     * material. Either a wrapped master key exists but cannot be used (the blob
+     * is malformed or does not decrypt, or the Keystore wrapping key is missing
+     * or refuses to work), and then nothing was created, replaced or deleted.
+     * Or a key for a store that does not exist yet could not be created or
+     * could not be forced to disk, and then that key was not handed out.
      */
     data class Unavailable(val reason: String) : MasterKeyResult
 }
@@ -52,6 +56,11 @@ class MasterKeyUnavailableException(val result: MasterKeyResult) :
  * reported, never repaired: replacing the key would orphan the existing
  * encrypted database (records are found under a master-key-derived name, so
  * the store would read as empty and onboarding would create a new identity).
+ *
+ * The key for a store that does not exist yet is returned only after its blob
+ * and the blob's directory entry were forced to disk (`fsync`). The store is
+ * created with that key right after and syncs its own writes, so without this
+ * order a power loss could keep the store and lose the only key that opens it.
  */
 object MasterKeyProvider {
 
@@ -73,11 +82,19 @@ object MasterKeyProvider {
      *
      * [alias] is the Keystore alias of the wrapping key; tests pass their own.
      */
-    fun load(dir: File, store: File, alias: String = KEYSTORE_ALIAS): MasterKeyResult {
+    fun load(dir: File, store: File, alias: String = KEYSTORE_ALIAS): MasterKeyResult =
+        load(dir, store, alias, ::syncToDisk)
+
+    /**
+     * [load] with the operation that forces one file or directory to disk.
+     * The app always uses [syncToDisk]; tests pass their own to see when it is
+     * called, to make it fail, or to stop the process inside it.
+     */
+    internal fun load(dir: File, store: File, alias: String, sync: (File) -> Unit): MasterKeyResult {
         val blobFile = File(dir, BLOB_FILE_NAME)
         if (!blobFile.exists()) {
             if (storeExists(store)) return MasterKeyResult.MissingForExistingStore
-            return create(dir, blobFile, alias)
+            return create(dir, blobFile, alias, sync)
         }
         val found: SecretKey? = try {
             existingWrapKey(alias)
@@ -86,10 +103,43 @@ object MasterKeyProvider {
         }
         val wrapKey = found
             ?: return MasterKeyResult.Unavailable("the wrapping key is missing from the Keystore")
-        return try {
-            MasterKeyResult.Available(unwrap(blobFile.readBytes(), wrapKey))
+        val masterKey = try {
+            unwrap(blobFile.readBytes(), wrapKey)
         } catch (e: Exception) {
-            MasterKeyResult.Unavailable("the wrapped master key could not be read (${e.javaClass.simpleName})")
+            return MasterKeyResult.Unavailable("the wrapped master key could not be read (${e.javaClass.simpleName})")
+        }
+        // A blob without a store: the process that wrote the blob may have
+        // died before the blob was on disk, and the caller creates the store
+        // next, so the blob goes to disk first. A blob with a store is not
+        // synced: that store was created after this step, or by a version
+        // without it, and a sync that fails must not keep an existing store
+        // closed.
+        if (!storeExists(store)) {
+            try {
+                sync(blobFile)
+                sync(dir)
+            } catch (t: Throwable) {
+                masterKey.fill(0)
+                if (t !is Exception) throw t
+                return MasterKeyResult.Unavailable(
+                    "the wrapped master key could not be forced to disk (${t.javaClass.simpleName})"
+                )
+            }
+        }
+        return MasterKeyResult.Available(masterKey)
+    }
+
+    /**
+     * Returns once the file or directory at [path] is on stable storage, as
+     * far as `fsync` promises that. For a directory this covers its entries:
+     * a file created in it, or renamed into it, keeps its name.
+     */
+    internal fun syncToDisk(path: File) {
+        val fd = Os.open(path.path, OsConstants.O_RDONLY, 0)
+        try {
+            Os.fsync(fd)
+        } finally {
+            Os.close(fd)
         }
     }
 
@@ -111,7 +161,7 @@ object MasterKeyProvider {
     private fun storeExists(store: File): Boolean =
         store.exists() || File(store.path + "-journal").exists()
 
-    private fun create(dir: File, blobFile: File, alias: String): MasterKeyResult {
+    private fun create(dir: File, blobFile: File, alias: String, sync: (File) -> Unit): MasterKeyResult {
         // The array is allocated outside the cleanup boundary because the JVM
         // zero-initializes it; the boundary starts at the first point where it
         // can hold secret bytes, which is nextBytes() below.
@@ -121,9 +171,15 @@ object MasterKeyProvider {
             SecureRandom().nextBytes(masterKey)
             // Write via temp file + rename so a crash mid-write cannot leave a
             // truncated blob that would permanently lock the database out.
+            // The file is synced before it gets the blob's name, so that
+            // after a power loss the name does not lead to a file without its
+            // contents; the directory is synced after, so that the name is on
+            // disk before the key is returned.
             val tmp = File(dir, "$BLOB_FILE_NAME.tmp")
             tmp.writeBytes(wrap(masterKey, wrapKey))
+            sync(tmp)
             check(tmp.renameTo(blobFile)) { "failed to persist wrapped master key" }
+            sync(dir)
         } catch (t: Throwable) {
             // Best-effort scrub on every failure, errors included: the caller
             // never receives the key on this path. Deliberately not a finally

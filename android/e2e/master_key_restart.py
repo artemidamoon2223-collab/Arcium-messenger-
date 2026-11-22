@@ -19,6 +19,18 @@ Scenario:
      the store must be left byte for byte as they were;
   5. the original blob is put back: the same identity opens again.
 
+Then, three times, a first run that dies while it creates the master key
+(MasterKeyKillTest; each time in its own directory under `files`, with its own
+Keystore alias, apart from the app's key and store):
+  6. the process kills itself once the temporary blob is written;
+  7. the same, once the blob has its name;
+  8. the same, once the key was returned and before a store exists.
+After each death the driver reads which files were left; the next run must end
+with a store that the key on disk opens, keeping a blob that already had its
+name; a third run must open the same identity through the app's start-up path.
+A killed process loses nothing the kernel already holds, so none of this shows
+what reaches the disk when power is lost.
+
 Every step runs even if an earlier one failed, so a run on unfixed code
 records what each case does there; the exit status is non-zero if any check
 failed. All output goes to stdout and --out.
@@ -39,6 +51,8 @@ from emulator_guard import require_emulators
 APP = "com.arcium.messenger"
 RUNNER = f"{APP}.test/androidx.test.runner.AndroidJUnitRunner"
 CLASS = f"{APP}.e2e.MasterKeyRestartTest"
+KILL_CLASS = f"{APP}.e2e.MasterKeyKillTest"
+KILL_POINTS = ("written", "renamed", "returned")
 DATA_CODE = "42"
 RESULT = {"0": "passed", "-1": "error", "-2": "failure", "-3": "ignored", "-4": "assumption failure"}
 DB = "files/arcium.db"
@@ -91,11 +105,15 @@ class Driver:
         if not ok:
             self.failures.append(what)
 
-    def step(self, method, **args):
-        """Runs one test method in a new app process; returns (passed, data)."""
+    def step(self, method, cls=CLASS, killed=False, **args):
+        """Runs one test method in a new app process; returns (passed, data).
+
+        With killed=True the method must kill its own process instead: the
+        step passes only if the run crashed and reported no test result.
+        """
         self.n += 1
         extras = " ".join(f"-e {k} {shlex.quote(v)}" for k, v in args.items())
-        command = f"am instrument -r -w -e class {CLASS}#{method} {extras} {RUNNER}"
+        command = f"am instrument -r -w -e class {cls}#{method} {extras} {RUNNER}"
         started = time.time()
         proc = subprocess.run(["adb", "-s", self.serial, "shell", command],
                               capture_output=True, text=True, timeout=600)
@@ -115,8 +133,11 @@ class Driver:
                 elif code != "1":
                     results.append((status.get("test", "?"), RESULT.get(code, f"code {code}")))
                 status = {}
-        passed = results == [(method, "passed")] and any(l.startswith("INSTRUMENTATION_CODE: -1") for l in lines)
         crashed = any("shortMsg=Process crashed" in l or "INSTRUMENTATION_RESULT: shortMsg" in l for l in lines)
+        if killed:
+            passed = crashed and not results
+        else:
+            passed = results == [(method, "passed")] and any(l.startswith("INSTRUMENTATION_CODE: -1") for l in lines)
         print(f"  step {self.n}: {method}: {results or 'no result'}"
               f"{' (process crashed)' if crashed else ''} ({time.time() - started:.0f} s) -> "
               f"{'OK' if passed else 'FAILED'}")
@@ -186,6 +207,33 @@ def main():
     print("5. The original blob is put back")
     d.run_as(f"cp {SAVED} {BLOB} && chmod 600 {BLOB}")
     d.step("anIntactRestartOpensTheSameIdentity", expectedIdentity=identity)
+
+    for number, point in enumerate(KILL_POINTS, start=6):
+        print(f"{number}. A first run is killed while it creates the key: {point}")
+        base = f"files/master-key-kill-test/{point}"
+        blob, tmp, db = f"{base}/master_key.blob", f"{base}/master_key.blob.tmp", f"{base}/arcium.db"
+        named = point != "written"
+        d.step("theProcessDiesWhileCreatingTheKey", KILL_CLASS, killed=True, point=point)
+        d.check(d.app_file(f"{base}/killed-at") == point.encode(), f"the process reached the kill point '{point}'")
+        blob_left = d.digest(blob)
+        print("  left: blob", blob_left, "| tmp", d.digest(tmp), "| db", d.digest(db))
+        d.check((blob_left != "absent") == named, f"the blob {'has' if named else 'does not have'} its name")
+        d.check((d.digest(tmp) != "absent") == (not named),
+                f"the temporary blob {'is gone' if named else 'is still there'}")
+        d.check(d.digest(db) == "absent", "no store exists yet")
+
+        _, data = d.step("theNextRunCreatesTheStoreWithTheKeyOnDisk", KILL_CLASS, point=point)
+        created = data.get("identity", "")
+        blob_now = d.digest(blob)
+        print("  next: blob", blob_now, "| tmp", d.digest(tmp), "| db", d.digest(db))
+        d.check(len(created) == 64, f"the next run created an identity ({created or 'none'})")
+        d.check(blob_now != "absent" and d.digest(db) != "absent" and d.digest(tmp) == "absent",
+                "a blob and a store exist, and no temporary blob")
+        if named:
+            d.check(blob_now == blob_left, "the blob the dead process left is byte for byte unchanged")
+
+        d.step("aLaterRunOpensTheSameIdentity", KILL_CLASS, point=point, expectedIdentity=created)
+        d.check(d.digest(blob) == blob_now, "the later run left the blob byte for byte unchanged")
 
     print("  files:\n    " + d.files().replace("\n", "\n    "))
     line = f"MASTER-KEY RESTART steps={d.n} failures={len(d.failures)}"

@@ -763,3 +763,4 @@ mod crash;
 mod first_contact;
 mod legacy;
 mod lifecycle;
+mod store_faults;

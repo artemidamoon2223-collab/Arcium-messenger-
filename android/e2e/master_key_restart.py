@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """D-007 through real app restarts on one emulator, driven from the host.
 
-Each step is one `am instrument` run of one MasterKeyRestartTest method, so
-each starts a new app process: `ArciumApp.onCreate` runs, then `MainActivity`.
+Each step is one `am instrument` run of one test method, so each starts a new
+app process and `ArciumApp.onCreate` runs in it; steps 1 to 5
+(MasterKeyRestartTest) then start `MainActivity`.
 After every step the app is force-stopped and checked to be gone. Between
 steps the driver works on the app's own files from the host with `run-as`
 (the debug APK is debuggable): it hashes `files/arcium.db` and

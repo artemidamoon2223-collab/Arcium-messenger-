@@ -1,5 +1,8 @@
 package com.arcium.messenger.security
 
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
@@ -12,6 +15,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -215,10 +219,54 @@ class MasterKeyProviderInstrumentationTest {
     @Test
     fun aBlobWithAStoreIsReturnedWithoutASync() {
         val first = available()
-        store.writeBytes(byteArrayOf(1, 2, 3))
-        // An existing store must open even where a sync would fail.
-        assertArrayEquals(first, key(MasterKeyProvider.load(dir, store, alias, recording(failAt = 1))))
-        assertEquals(emptyList<Sync>(), syncs)
+        // A store file, or its journal alone, is a store. It must open even
+        // where a sync would fail.
+        for (present in listOf(store, File(store.path + "-journal"))) {
+            present.writeBytes(byteArrayOf(1, 2, 3))
+            assertArrayEquals(first, key(MasterKeyProvider.load(dir, store, alias, recording(failAt = 1))))
+            assertEquals(emptyList<Sync>(), syncs)
+            check(present.delete())
+        }
+    }
+
+    @Test
+    fun anErrorThrownInsideASyncReachesTheCaller() {
+        class Stop : Error()
+        // On a first run, and then for a blob without a store.
+        repeat(2) {
+            try {
+                MasterKeyProvider.load(dir, store, alias) { throw Stop() }
+                fail("the error must not become a result")
+            } catch (expected: Stop) {
+            }
+            available()
+        }
+    }
+
+    // ── The load the app uses, with the real sync ───────────────────────────
+
+    @Test
+    fun theAppsOwnLoadReturnsNoKeyUntilItsDirectoryCanBeSynced() {
+        // Without its read bit a directory still takes new files and renames,
+        // but cannot be opened, which a sync of it needs. So only the real
+        // sync, called by the load the app uses, can fail here.
+        check(dir.setReadable(false))
+        try {
+            assertEquals(
+                MasterKeyResult.Unavailable("a new master key could not be stored (ErrnoException)"),
+                load(),
+            )
+            assertTrue("the blob was renamed before the directory sync failed", blob.isFile)
+            assertEquals(
+                MasterKeyResult.Unavailable("the wrapped master key could not be forced to disk (ErrnoException)"),
+                load(),
+            )
+        } finally {
+            check(dir.setReadable(true))
+        }
+        val left = blob.readBytes()
+        available()
+        assertArrayEquals("the blob must not be replaced", left, blob.readBytes())
     }
 
     @Test
@@ -228,5 +276,24 @@ class MasterKeyProviderInstrumentationTest {
         MasterKeyProvider.syncToDisk(dir)
         val missing = runCatching { MasterKeyProvider.syncToDisk(File(dir, "absent")) }
         assertTrue("a missing path must be an error", missing.isFailure)
+    }
+
+    @Test
+    fun theRealSyncPassesWhatItOpenedToFsync() {
+        // A named pipe can be opened but not synced: fsync answers EINVAL for
+        // it. That error can only come from fsync on the opened descriptor.
+        val pipe = File(dir, "pipe")
+        Os.mkfifo(pipe.path, OsConstants.S_IRUSR or OsConstants.S_IWUSR)
+        // Held open for reading and writing, so that opening the pipe for
+        // reading does not wait for a writer.
+        val held = Os.open(pipe.path, OsConstants.O_RDWR, 0)
+        try {
+            MasterKeyProvider.syncToDisk(pipe)
+            fail("the sync of a pipe must fail")
+        } catch (e: ErrnoException) {
+            assertEquals(OsConstants.EINVAL, e.errno)
+        } finally {
+            Os.close(held)
+        }
     }
 }

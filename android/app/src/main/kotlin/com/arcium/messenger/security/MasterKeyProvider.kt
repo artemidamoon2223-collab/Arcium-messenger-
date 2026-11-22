@@ -60,7 +60,10 @@ class MasterKeyUnavailableException(val result: MasterKeyResult) :
  * The key for a store that does not exist yet is returned only after its blob
  * and the blob's directory entry were forced to disk (`fsync`). The store is
  * created with that key right after and syncs its own writes, so without this
- * order a power loss could keep the store and lose the only key that opens it.
+ * order a power loss could keep the store and lose the blob that opens it. A
+ * sync that fails is not skipped: no key is returned, on that run and on every
+ * later one, until a sync succeeds. The wrapping key is outside this: how the
+ * Keystore keeps it across a power loss is not in this code's hands.
  */
 object MasterKeyProvider {
 

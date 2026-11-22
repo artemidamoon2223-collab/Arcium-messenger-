@@ -345,6 +345,76 @@ fn a_recipient_killed_between_receipting_an_open_message_and_acknowledging_it_co
     relay.stop();
 }
 
+/// The recipient dies while publishing, after the relay accepted its receipt
+/// for a text and before the receipt left the outbox. The receipt is on the
+/// relay, so the sender has its delivery; it is also still in the outbox, so
+/// the restarted recipient publishes it a second time. In that round the
+/// sender's text also reaches the recipient from the relay, as a duplicate,
+/// which it answers with a later receipt (`receipt_again`). The sender gets
+/// both: the repeated receipt is a duplicate and changes nothing, and the
+/// later one is accepted without counting the delivery again.
+#[cfg(unix)]
+#[test]
+fn a_recipient_killed_between_the_relay_accepting_a_receipt_and_dropping_it_from_the_outbox_sends_it_again() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    let to_bob = local_session_handle(bob.pk.clone()).unwrap();
+    let to_alice = local_session_handle(alice.pk.clone()).unwrap();
+    // Bob accepts the text without a round, so that its receipt is committed
+    // and published by one and the same round: the child's.
+    let id: [u8; 32] = alice.send(&bob, "m", "confirm me").as_slice().try_into().unwrap();
+    let wire = alice
+        .core
+        .pending_outgoing(to_bob)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.message_id == id)
+        .expect("pending")
+        .wire;
+    bob.core.receive_committed(to_alice, &wire).unwrap();
+
+    run_child(&bob, &addr, "sync", Some("receipt_published"), &alice.pk);
+
+    let bob = bob.restart(&addr);
+    let receipt = client_id::receipt(&id, 0);
+    let pending = bob.core.pending_outgoing(to_alice).unwrap();
+    assert_eq!(pending.len(), 1, "the receipt is still in the outbox");
+    assert_eq!(pending[0].client_message_id, receipt);
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(r.delivered, 1, "the relay had accepted the receipt: {r:?}");
+    assert_eq!(alice.undelivered(&bob), 0);
+
+    let r = bob.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(
+        (r.duplicates, r.published),
+        (1, 2),
+        "the receipt again, and a later one for the text that came again: {r:?}"
+    );
+    assert!(
+        bob.core
+            .pending_outgoing(to_alice)
+            .unwrap()
+            .iter()
+            .all(|m| m.client_message_id != receipt),
+        "and this time it left the outbox"
+    );
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(
+        (r.duplicates, r.accepted, r.delivered),
+        (1, 1, 0),
+        "the delivery is not counted twice: {r:?}"
+    );
+    settle(&[&bob, &alice]);
+    assert_eq!(bob.texts(&alice), vec!["confirm me"]);
+    assert_eq!(alice.undelivered(&bob), 0);
+    assert!(bob.core.pending_outgoing(to_alice).unwrap().is_empty());
+    relay.stop();
+}
+
 /// Every chat round of `devices`, in turn, `n` times; no errors allowed.
 fn chat_rounds(devices: &[&Device], n: usize) {
     for _ in 0..n {

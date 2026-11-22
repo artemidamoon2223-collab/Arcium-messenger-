@@ -7,6 +7,7 @@
 
 use super::net_harness::*;
 use super::*;
+use crate::network::wire::client_id;
 
 const CHILD_ENV: &str = "ARCIUM_NET_CHILD";
 const DIR_ENV: &str = "ARCIUM_NET_DIR";
@@ -282,6 +283,64 @@ fn a_sender_killed_between_applying_a_gone_message_and_acknowledging_it_settles_
     assert!(
         alice.core.pending_committed(to_bob).unwrap().is_empty(),
         "the GONE message was settled from the inbox"
+    );
+    relay.stop();
+}
+
+/// The recipient dies inside `settle`, after committing its receipt for the
+/// initiator's OPEN message and before acknowledging the OPEN message itself.
+/// The session and the receipt are already stored; the OPEN message is still
+/// in the inbox (and still on the relay, from which it comes again as a
+/// duplicate). The next rounds settle it, and the initiator ends with its
+/// OPEN message confirmed. The other order would lose the confirmation: an
+/// OPEN acknowledged without a receipt is never answered again
+/// (`receipt_again` answers only what was answered when it was accepted).
+#[cfg(unix)]
+#[test]
+fn a_recipient_killed_between_receipting_an_open_message_and_acknowledging_it_confirms_it_after_restart() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = (Device::new(&addr, 1), Device::new(&addr, 2));
+    alice.knows(&bob);
+    bob.knows(&alice);
+    bob.net.publish_prekeys().unwrap();
+    alice.net.start_session(bob.pk.clone()).unwrap();
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    let to_bob = local_session_handle(bob.pk.clone()).unwrap();
+    let to_alice = local_session_handle(alice.pk.clone()).unwrap();
+    let open = alice.core.pending_outgoing(to_bob).unwrap();
+    assert_eq!(open.len(), 1, "Alice's OPEN message waits for its receipt");
+    let open_id: [u8; 32] = open[0].message_id.as_slice().try_into().unwrap();
+
+    run_child(&bob, &addr, "sync", Some("open_receipted"), &alice.pk);
+
+    let bob = bob.restart(&addr);
+    assert!(
+        bob.core.has_session(to_alice).unwrap(),
+        "the session was created before the death"
+    );
+    let receipts = bob.core.pending_outgoing(to_alice).unwrap();
+    assert_eq!(receipts.len(), 1, "one receipt was committed before the death");
+    assert_eq!(
+        receipts[0].client_message_id,
+        client_id::receipt(&open_id, 0),
+        "and it answers the OPEN message"
+    );
+    assert_eq!(
+        bob.core.pending_committed(to_alice).unwrap().len(),
+        1,
+        "the OPEN message itself is still in the inbox"
+    );
+    settle(&[&bob, &alice]);
+    assert_eq!(bob.accepted_total(), 0, "nothing accepted twice");
+    assert!(
+        bob.core.pending_committed(to_alice).unwrap().is_empty(),
+        "the OPEN message was settled from the inbox"
+    );
+    assert!(
+        alice.core.pending_outgoing(to_bob).unwrap().is_empty(),
+        "Alice's OPEN message is confirmed"
     );
     relay.stop();
 }

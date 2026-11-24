@@ -616,3 +616,8 @@ D-104 · 2026-11-24 · AGENT · ACTIVE
 - An explicit `CryptoProvider::install_default` was tried and removed (untested call site; the process-wide choice belongs to the app; the QC tool flagged it as crypto code in a NETWORK-only crate). To do at app wiring: the app installs the provider before arti creates its runtime.
 - Review: fresh-context agent, both skills, on all three commits: no blocking or attack-path finding; findings applied. Not merged: waits for the Owner's acceptance of sha2 0.11.1 and a merge instruction naming #262.
 - Scratch branches the Owner can delete: `ccr-ee7f440a-77ozc8-tor-size-arti`, `ccr-ee7f440a-77ozc8-tor-size-base`, `ccr-ee7f440a-77ozc8-key-fsync-mutations`.
+
+D-105 · 2026-11-24 · OWNER · DONE
+- What: Tor plan step 2.1 merged. The Owner accepted sha2 0.11.1 in the app and named the PR: "ША-2 принимаю. Мерши 262." (session `013Fd9w25yw1w75yseYxbKXy`). PR #262 (head `c5960b3`, three commits), normal merge commit pinned to the head after all 9 check runs on it were success: `c73bbbe419c88169eb113fea7c83032e0553b2ae`. Verified on freshly fetched `main`: parents `b1f6a37` and `c5960b3`, tree equal to the head's, 30 files +3558 −2069.
+- Before the acceptance, sha2 0.11.0 (main) was run on emulated arm64 too: core-crypto 136 passed, sha2's own 14 passed, the same as 0.11.1; 0.11.1's only fix is "Loading of round constants in AArch64 backends to satisfy the Stacked Borrows model". So no hash a phone computes changes (QEMU, not real silicon).
+- Next: main's push CI run (cold cache) to be read; then a tracker PR for rows made stale (RUSTSEC-2025-0009 "stays", sha2 0.11.0 in A-3.5/H-9); then Tor plan step 3.1 (connector seam in the relay client).

@@ -3,6 +3,11 @@
 //! `RELAY_PROTOCOL_V2` over TLS 1.3 with the relay's pinned key
 //! ([`Connection::connect_v2`]) and mailbox authentication
 //! ([`Connection::authenticate`]). The operations are the same on both.
+//!
+//! Both run over plain TCP ([`TcpConnector`]) unless the caller passes
+//! another [`Connector`] ([`Connection::connect_with`],
+//! [`Connection::connect_v2_with`]); the protocol and TLS above the stream
+//! are the same whichever opened it.
 
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -65,12 +70,12 @@ struct Session {
     exporter: Zeroizing<[u8; AUTH_LEN]>,
 }
 
-/// The TCP stream: every read and write waits at most for what is left of
+/// The stream: every read and write waits at most for what is left of
 /// `deadline` (and at most `idle`), and fails with `TimedOut` once nothing is
 /// left. Under TLS this bounds every socket read and write rustls makes, so a
 /// relay that trickles TLS records cannot hold a request open either.
 struct Socket {
-    tcp: TcpStream,
+    stream: Box<dyn RelayStream>,
     /// Bound of every single read and write.
     idle: Duration,
     /// End of the current request (or of the V2 handshake).
@@ -90,20 +95,20 @@ impl Socket {
 impl Read for Socket {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let wait = self.remaining()?;
-        self.tcp.set_read_timeout(Some(wait))?;
-        self.tcp.read(buf)
+        self.stream.set_read_timeout(Some(wait))?;
+        self.stream.read(buf)
     }
 }
 
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let wait = self.remaining()?;
-        self.tcp.set_write_timeout(Some(wait))?;
-        self.tcp.write(buf)
+        self.stream.set_write_timeout(Some(wait))?;
+        self.stream.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.tcp.flush()
+        self.stream.flush()
     }
 }
 
@@ -146,19 +151,61 @@ impl Write for Transport {
     }
 }
 
-/// A TCP connection to `addr` with every read and write bounded by
-/// `timeout`, and a first deadline [`REQUEST_DEADLINE`] from now.
-fn tcp(addr: &str, timeout: Duration) -> Result<Socket, ClientError> {
-    let target = addr
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address"))?;
-    let tcp = TcpStream::connect_timeout(&target, timeout)?;
-    tcp.set_read_timeout(Some(timeout))?;
-    tcp.set_write_timeout(Some(timeout))?;
-    tcp.set_nodelay(true)?;
+/// The byte stream a [`Connection`] runs on, as a [`Connector`] opens it.
+/// Before every read the connection sets the read timeout, and before every
+/// write the write timeout, to what is left of the current deadline (at most
+/// the connection's `timeout`); a read or write that runs out of that time
+/// must fail, or the deadline does not hold.
+pub trait RelayStream: Read + Write + Send {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()>;
+    fn set_write_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()>;
+}
+
+impl RelayStream for TcpStream {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        TcpStream::set_read_timeout(self, timeout)
+    }
+
+    fn set_write_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        TcpStream::set_write_timeout(self, timeout)
+    }
+}
+
+/// Opens the stream to a relay. `addr` is `host:port` as the caller gave it
+/// (for V2, [`RelayAddress::socket_addr`]), not resolved: a connector that
+/// must not resolve a name on this device, such as one that reaches an
+/// onion address over Tor, passes it on as it is. `timeout` is the
+/// connection's timeout. An error here is [`ClientError::Network`].
+pub trait Connector {
+    fn connect(&self, addr: &str, timeout: Duration) -> io::Result<Box<dyn RelayStream>>;
+}
+
+/// Plain TCP, the connector of [`Connection::connect`] and
+/// [`Connection::connect_v2`]: resolves `addr` on this device, connects to
+/// its first address within `timeout`, bounds every read and write by
+/// `timeout`, and turns off Nagle's algorithm.
+pub struct TcpConnector;
+
+impl Connector for TcpConnector {
+    fn connect(&self, addr: &str, timeout: Duration) -> io::Result<Box<dyn RelayStream>> {
+        let target = addr
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address"))?;
+        let tcp = TcpStream::connect_timeout(&target, timeout)?;
+        tcp.set_read_timeout(Some(timeout))?;
+        tcp.set_write_timeout(Some(timeout))?;
+        tcp.set_nodelay(true)?;
+        Ok(Box::new(tcp))
+    }
+}
+
+/// The stream `connector` opens to `addr`, with every read and write bounded
+/// by `timeout`, and a first deadline [`REQUEST_DEADLINE`] from now.
+fn open(connector: &dyn Connector, addr: &str, timeout: Duration) -> Result<Socket, ClientError> {
+    let stream = connector.connect(addr, timeout)?;
     Ok(Socket {
-        tcp,
+        stream,
         idle: timeout,
         deadline: Instant::now() + REQUEST_DEADLINE,
     })
@@ -181,8 +228,17 @@ impl Connection {
     /// for development and tests only. Every read and write times out after
     /// `timeout`, and every request as a whole after [`REQUEST_DEADLINE`].
     pub fn connect(addr: &str, timeout: Duration) -> Result<Self, ClientError> {
+        Self::connect_with(&TcpConnector, addr, timeout)
+    }
+
+    /// As [`Self::connect`], over the stream `connector` opens to `addr`.
+    pub fn connect_with(
+        connector: &dyn Connector,
+        addr: &str,
+        timeout: Duration,
+    ) -> Result<Self, ClientError> {
         Ok(Self {
-            transport: Transport::Plain(tcp(addr, timeout)?),
+            transport: Transport::Plain(open(connector, addr, timeout)?),
             request_deadline: REQUEST_DEADLINE,
             session: None,
         })
@@ -195,7 +251,18 @@ impl Connection {
     /// as a whole, after [`REQUEST_DEADLINE`]. A handshake failure, a wrong
     /// key included, is [`ClientError::Tls`].
     pub fn connect_v2(addr: &RelayAddress, timeout: Duration) -> Result<Self, ClientError> {
-        let socket = tcp(&addr.socket_addr(), timeout)?;
+        Self::connect_v2_with(&TcpConnector, addr, timeout)
+    }
+
+    /// As [`Self::connect_v2`], over the stream `connector` opens to
+    /// [`RelayAddress::socket_addr`]. The TLS handshake, the pinned key and
+    /// HELLO are the same whichever connector opened the stream.
+    pub fn connect_v2_with(
+        connector: &dyn Connector,
+        addr: &RelayAddress,
+        timeout: Duration,
+    ) -> Result<Self, ClientError> {
+        let socket = open(connector, &addr.socket_addr(), timeout)?;
         let config = crate::tls::client_config(*addr.tls_pin()).map_err(ClientError::Tls)?;
         let conn = ClientConnection::new(config, crate::tls::server_name()).map_err(ClientError::Tls)?;
         let mut stream = StreamOwned::new(conn, socket);
@@ -467,5 +534,160 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ClientError::Auth(_)), "{err:?}");
         assert!(!called, "the DH closure was not used");
+    }
+
+    // Connectors ——————————————————————————————————————————————————————————
+
+    /// A connector that records each address and timeout it is given, then
+    /// opens a plain TCP stream (`open`) or refuses.
+    struct Recording {
+        calls: std::sync::Mutex<Vec<(String, Duration)>>,
+        open: bool,
+    }
+
+    impl Recording {
+        fn new(open: bool) -> Self {
+            Self { calls: Default::default(), open }
+        }
+
+        fn calls(&self) -> Vec<(String, Duration)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl Connector for Recording {
+        fn connect(&self, addr: &str, timeout: Duration) -> io::Result<Box<dyn RelayStream>> {
+            self.calls.lock().unwrap().push((addr.to_string(), timeout));
+            if self.open {
+                TcpConnector.connect(addr, timeout)
+            } else {
+                Err(io::Error::new(io::ErrorKind::ConnectionRefused, "refused by the test connector"))
+            }
+        }
+    }
+
+    /// The connector is given the address as the caller wrote it, an onion
+    /// name included, with the connection's timeout: the client resolves
+    /// nothing itself. A connector's error is a network error.
+    #[test]
+    fn a_connector_gets_the_address_as_given_and_its_error_is_a_network_error() {
+        let timeout = Duration::from_millis(700);
+        let refusing = Recording::new(false);
+        let Err(err) = Connection::connect_with(&refusing, "relayexample.onion:443", timeout) else {
+            panic!("the refusing connector gave a connection");
+        };
+        assert!(matches!(err, ClientError::Network(_)), "{err:?}");
+        let keys = crate::auth::RelayKeys::generate().unwrap();
+        let addr = keys.address("relayexample.onion", 8443).unwrap();
+        let Err(err) = Connection::connect_v2_with(&refusing, &addr, timeout) else {
+            panic!("the refusing connector gave a connection");
+        };
+        assert!(matches!(err, ClientError::Network(_)), "{err:?}");
+        assert_eq!(
+            refusing.calls(),
+            [
+                ("relayexample.onion:443".to_string(), timeout),
+                ("relayexample.onion:8443".to_string(), timeout),
+            ]
+        );
+    }
+
+    /// A V2 connection makes its TLS handshake, reads HELLO and sends its
+    /// requests over the stream its connector opened.
+    #[test]
+    fn a_v2_connection_runs_over_the_stream_its_connector_opens() {
+        use crate::server::{serve_v2, RelayConfig};
+        let keys = crate::auth::RelayKeys::generate().unwrap();
+        let relay =
+            serve_v2(TcpListener::bind("127.0.0.1:0").unwrap(), RelayConfig::default(), &keys).unwrap();
+        let addr = keys.address("127.0.0.1", relay.addr().port()).unwrap();
+        let recording = Recording::new(true);
+        let mut conn = Connection::connect_v2_with(&recording, &addr, Duration::from_secs(5)).unwrap();
+        assert_eq!(conn.get_bundle([1; 32]).unwrap(), None);
+        assert_eq!(recording.calls(), [(addr.socket_addr(), Duration::from_secs(5))]);
+    }
+
+    type Events = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Option<Duration>)>>>;
+
+    /// A stream that is not a socket: every write is taken whole, reads
+    /// return `reply`, and every call is recorded in order.
+    struct Scripted {
+        reply: io::Cursor<Vec<u8>>,
+        events: Events,
+    }
+
+    impl Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.events.lock().unwrap().push(("read", None));
+            self.reply.read(buf)
+        }
+    }
+
+    impl Write for Scripted {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.events.lock().unwrap().push(("write", None));
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl RelayStream for Scripted {
+        fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+            self.events.lock().unwrap().push(("set_read_timeout", timeout));
+            Ok(())
+        }
+
+        fn set_write_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+            self.events.lock().unwrap().push(("set_write_timeout", timeout));
+            Ok(())
+        }
+    }
+
+    struct ScriptedConnector {
+        reply: Vec<u8>,
+        events: Events,
+    }
+
+    impl Connector for ScriptedConnector {
+        fn connect(&self, _addr: &str, _timeout: Duration) -> io::Result<Box<dyn RelayStream>> {
+            Ok(Box::new(Scripted {
+                reply: io::Cursor::new(self.reply.clone()),
+                events: std::sync::Arc::clone(&self.events),
+            }))
+        }
+    }
+
+    /// A connection runs over any stream its connector opens, not only a
+    /// socket, and bounds every read and write on it: each comes right after
+    /// the matching timeout was set, to a time that is not zero and not
+    /// longer than the connection's timeout.
+    #[test]
+    fn a_connection_bounds_each_read_and_write_on_a_connectors_stream() {
+        let events = Events::default();
+        // One frame: length 1, status 1 (NOT_FOUND).
+        let connector = ScriptedConnector {
+            reply: vec![0, 0, 0, 1, 1],
+            events: std::sync::Arc::clone(&events),
+        };
+        let timeout = Duration::from_millis(800);
+        let mut conn = Connection::connect_with(&connector, "scripted.invalid:1", timeout).unwrap();
+        assert_eq!(conn.get_bundle([1; 32]).unwrap(), None);
+        let events = events.lock().unwrap().clone();
+        for (i, (call, _)) in events.iter().enumerate() {
+            let setter = match *call {
+                "read" => "set_read_timeout",
+                "write" => "set_write_timeout",
+                _ => continue,
+            };
+            let (before, set) = events[..i].last().copied().expect("a timeout first");
+            assert_eq!(before, setter, "{events:?}");
+            let set = set.expect("a bound, not none");
+            assert!(!set.is_zero() && set <= timeout, "{events:?}");
+        }
+        assert!(events.iter().any(|(c, _)| *c == "read"), "{events:?}");
+        assert!(events.iter().any(|(c, _)| *c == "write"), "{events:?}");
     }
 }

@@ -637,6 +637,33 @@ mod tests {
         k
     }
 
+    // ── Rollback (the Owner's decision D-009) ─────────────────────────────────
+
+    /// A record written back with an earlier ciphertext of its own reads as
+    /// that earlier value, with no error: a value authenticates under its key
+    /// name only, with no version or counter. v1 does not resist this
+    /// (D-009, docs/S2-B2-DURABLE-MESSAGING.md section 8). The rollback tests
+    /// of the messaging and network layers write a record's earlier plaintext
+    /// back through the store instead, which reads the same.
+    #[test]
+    fn a_record_written_back_with_its_earlier_ciphertext_reads_as_its_earlier_value() {
+        let store = EncryptedStore::open_in_memory(random_key()).unwrap();
+        let row = |store: &EncryptedStore| -> Vec<u8> {
+            store.conn.query_row("SELECT v FROM kv", [], |r| r.get(0)).unwrap()
+        };
+        store.put("session:v1/peer", b"earlier").unwrap();
+        let earlier = row(&store);
+        store.put("session:v1/peer", b"later").unwrap();
+        assert_ne!(row(&store), earlier);
+        assert_eq!(store.get("session:v1/peer").unwrap(), b"later");
+
+        store
+            .conn
+            .execute("UPDATE kv SET v = ?1", params![earlier])
+            .unwrap();
+        assert_eq!(store.get("session:v1/peer").unwrap(), b"earlier");
+    }
+
     // ── Secret lifetime: every derived key is held by an owner that wipes it ──
 
     fn is_wiping<T: zeroize::ZeroizeOnDrop>(_: &T) {}

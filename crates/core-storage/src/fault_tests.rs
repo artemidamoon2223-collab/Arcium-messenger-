@@ -49,7 +49,8 @@ fn an_operation_of_another_kind_does_not_fire_the_fault() {
     assert_eq!(s.get("a").unwrap(), b"1", "the delete did not run");
 }
 
-/// An operation counts when it is asked for, whatever it returns.
+/// An operation counts once the store's own check of the transaction state
+/// has let it through, whatever it then returns.
 #[test]
 fn an_operation_that_fails_by_itself_still_counts() {
     let s = store();

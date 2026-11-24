@@ -764,5 +764,6 @@ mod first_contact;
 mod legacy;
 mod lifecycle;
 mod random_sequences;
+mod rollback;
 mod store_faults;
 mod two_processes;

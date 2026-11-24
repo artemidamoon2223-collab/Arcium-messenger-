@@ -573,3 +573,7 @@ D-098 · 2026-11-24 · OWNER · ACTIVE
   3. one process only on the app's database; not enforced (the offered lock was not chosen).
 - Recorded in draft PR #259 (`docs/S2-B2-DURABLE-MESSAGING.md` section 8, "Release decisions"; head `1118c2c` after a fact check's five corrections). Not merged: waits for the Owner naming it.
 - With this the plan's stages 0 to 2 and 4 are closed and stage 5's decisions are taken; step 3.2 (power loss on a physical phone) remains and needs a phone.
+
+D-099 · 2026-11-24 · OWNER · DONE
+- What: PR #259 (head `1118c2c`), the record of the Stage 5 decisions (D-098) in `docs/S2-B2-DURABLE-MESSAGING.md`, merged on the Owner's instruction "Мерж 259", given while CI was running; merged once all 6 check runs on the head were success, each on its first attempt: normal merge commit `cf4f819dfbb643051bda1b0b674ebfe3510281ce`, pinned to the head. Verified on freshly fetched `main`: parents `4b03ed5` and `1118c2c`, tree equal to the head's, one file +57 −3.
+- The reliability plan (D-080) is done except step 3.2 (power loss on a physical phone), which needs a phone.

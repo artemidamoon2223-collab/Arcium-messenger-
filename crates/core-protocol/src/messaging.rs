@@ -647,12 +647,19 @@ impl Messenger {
                 generation,
                 plaintext,
             })),
-            // Accepted (and possibly acknowledged) by another instance
-            // between the check above and this commit: its inbox (0) or
-            // seen (1) record exists. A handshake recorded beside the session
-            // meanwhile (2), or a record a side write of `on_confirm` read
-            // that changed meanwhile (2 or 3 and after), is a plain
-            // conflict; repeating the receive reads them again.
+            // The message's inbox (0) or seen (1) record was written between
+            // the check above and this commit, while the session record
+            // stayed the one loaded: it is reported as the duplicate it now
+            // is. Another instance that accepted the message meanwhile does
+            // not get here: its commit moved the session record, which is
+            // checked first, so this commit fails with
+            // `Conflict(GenerationMismatch)` (the last arm), and the next
+            // receive finds the duplicate before it stages anything (test
+            // `two_processes_receiving_one_message_accept_it_once`). A
+            // handshake recorded beside the session meanwhile (2), or a
+            // record a side write of `on_confirm` read that changed
+            // meanwhile (2 or 3 and after), is a plain conflict; repeating
+            // the receive reads them again.
             Err(CommitError::SideConflict {
                 index: 0 | 1,
                 conflict: Conflict::RecordExists,

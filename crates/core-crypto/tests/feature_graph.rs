@@ -13,7 +13,7 @@
 //!
 //! What it does not show: that the libraries wipe everything (they do not),
 //! or anything about other versions of these crates that unrelated
-//! dependencies (`tor-*`, `ed25519-dalek`, `ssh-key`) bring in.
+//! dependencies (`tor-*`, `ed25519-dalek`, `ssh-key-fork-arti`) bring in.
 
 use std::process::Command;
 

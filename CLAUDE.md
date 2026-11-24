@@ -171,9 +171,10 @@ cd arcium-psi/tests && npx mocha --require ts-node/register 'src/crypto.test.ts'
   и записи в `main`; это страховка, а не замена правилу.
 - Состав required status checks на `main` доступными инструментами не читается;
   не выводи его по косвенным признакам.
-- RUSTSEC-2025-0009 (ring 0.16) и RUSTSEC-2023-0071 (rsa 0.9): ignore в
-  `.cargo/audit.toml` снимать, только когда upstream выпустит исправление;
-  пересмотреть на security-аудите (как и RUSTSEC-2026-0387).
+- RUSTSEC-2023-0071 (rsa 0.9): ignore в `.cargo/audit.toml` снимать, только
+  когда upstream выпустит исправление; пересмотреть на security-аудите (как и
+  RUSTSEC-2026-0387) и перед тем, как Tor войдёт в приложение (тогда rsa попадёт
+  в Android-библиотеку).
 - RUSTSEC-2026-0387 (crypto-bigint 0.5): ignore действует только вместе с guard
   `.github/scripts/check_rustsec_2026_0387.py`; снять оба, когда crypto-bigint
   0.5 уйдёт из `Cargo.lock`.

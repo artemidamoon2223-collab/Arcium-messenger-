@@ -103,9 +103,10 @@ mod test {
     #![allow(clippy::print_stdout)]
     #![allow(clippy::single_char_pattern)]
     #![allow(clippy::unwrap_used)]
-    #![allow(clippy::unchecked_duration_subtraction)]
+    #![allow(clippy::unchecked_time_subtraction)]
     #![allow(clippy::useless_vec)]
     #![allow(clippy::needless_pass_by_value)]
+    #![allow(clippy::string_slice)] // See arti#2571
     //! <!-- @@ end test lint list maintained by maint/add_warning @@ -->
     use super::*;
     #[test]
@@ -126,11 +127,12 @@ mod test {
         val.clear();
         assert_eq!(val.get(), None);
 
-        assert!(val
-            .mutate(|v| {
+        assert!(
+            val.mutate(|v| {
                 v.push(99);
                 Ok(())
             })
-            .is_err());
+            .is_err()
+        );
     }
 }

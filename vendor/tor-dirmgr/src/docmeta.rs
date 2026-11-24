@@ -113,7 +113,7 @@ impl AuthCertMeta {
 
     /// Construct a new AuthCertMeta from a certificate.
     pub(crate) fn from_authcert(cert: &AuthCert) -> Self {
-        AuthCertMeta::new(*cert.key_ids(), cert.published(), cert.expires())
+        AuthCertMeta::new(cert.key_ids(), cert.published(), cert.expires())
     }
 
     /// Return the key IDs for this certificate
@@ -141,9 +141,10 @@ mod test {
     #![allow(clippy::print_stdout)]
     #![allow(clippy::single_char_pattern)]
     #![allow(clippy::unwrap_used)]
-    #![allow(clippy::unchecked_duration_subtraction)]
+    #![allow(clippy::unchecked_time_subtraction)]
     #![allow(clippy::useless_vec)]
     #![allow(clippy::needless_pass_by_value)]
+    #![allow(clippy::string_slice)] // See arti#2571
     //! <!-- @@ end test lint list maintained by maint/add_warning @@ -->
     use super::*;
 

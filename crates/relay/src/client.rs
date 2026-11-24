@@ -156,6 +156,16 @@ impl Write for Transport {
 /// write the write timeout, to what is left of the current deadline (at most
 /// the connection's `timeout`); a read or write that runs out of that time
 /// must fail, or the deadline does not hold.
+///
+/// The connection sets no timeout before a flush, which follows the writes
+/// of a frame (and rustls's writes). A stream that holds written bytes until
+/// a flush must finish that flush, or fail, within the write timeout set
+/// last, counted from when it was set; a flush that waits longer can
+/// stretch the request past its deadline.
+///
+/// A timeout of `Some(Duration::ZERO)` reaches the stream only when the
+/// connection's `timeout` is zero. It never means "no timeout": refuse it
+/// with an error or fail at once (`TcpStream` refuses it).
 pub trait RelayStream: Read + Write + Send {
     fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()>;
     fn set_write_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()>;
@@ -174,8 +184,14 @@ impl RelayStream for TcpStream {
 /// Opens the stream to a relay. `addr` is `host:port` as the caller gave it
 /// (for V2, [`RelayAddress::socket_addr`]), not resolved: a connector that
 /// must not resolve a name on this device, such as one that reaches an
-/// onion address over Tor, passes it on as it is. `timeout` is the
-/// connection's timeout. An error here is [`ClientError::Network`].
+/// onion address over Tor, passes it on as it is. An error here is
+/// [`ClientError::Network`].
+///
+/// `timeout` is the connection's timeout. The client sets no deadline on
+/// `connect` and starts the first one only after it returns, so a connector
+/// should return, with a stream or an error, within `timeout`.
+/// [`TcpConnector`] does not fully: its name lookup has no bound (tracker
+/// R-4).
 pub trait Connector {
     fn connect(&self, addr: &str, timeout: Duration) -> io::Result<Box<dyn RelayStream>>;
 }
@@ -183,7 +199,8 @@ pub trait Connector {
 /// Plain TCP, the connector of [`Connection::connect`] and
 /// [`Connection::connect_v2`]: resolves `addr` on this device, connects to
 /// its first address within `timeout`, bounds every read and write by
-/// `timeout`, and turns off Nagle's algorithm.
+/// `timeout`, and turns off Nagle's algorithm. It hands the host name to
+/// this device's resolver, so it is not for an onion address.
 pub struct TcpConnector;
 
 impl Connector for TcpConnector {
@@ -539,19 +556,31 @@ mod tests {
     // Connectors ——————————————————————————————————————————————————————————
 
     /// A connector that records each address and timeout it is given, then
-    /// opens a plain TCP stream (`open`) or refuses.
+    /// opens a plain TCP stream (`open`), counting the bytes read and
+    /// written through it, or refuses.
     struct Recording {
         calls: std::sync::Mutex<Vec<(String, Duration)>>,
         open: bool,
+        bytes: std::sync::Arc<[std::sync::atomic::AtomicUsize; 2]>,
     }
 
     impl Recording {
         fn new(open: bool) -> Self {
-            Self { calls: Default::default(), open }
+            Self {
+                calls: Default::default(),
+                open,
+                bytes: Default::default(),
+            }
         }
 
         fn calls(&self) -> Vec<(String, Duration)> {
             self.calls.lock().unwrap().clone()
+        }
+
+        /// Bytes read and written through the streams it opened.
+        fn bytes(&self) -> (usize, usize) {
+            use std::sync::atomic::Ordering::SeqCst;
+            (self.bytes[0].load(SeqCst), self.bytes[1].load(SeqCst))
         }
     }
 
@@ -559,16 +588,56 @@ mod tests {
         fn connect(&self, addr: &str, timeout: Duration) -> io::Result<Box<dyn RelayStream>> {
             self.calls.lock().unwrap().push((addr.to_string(), timeout));
             if self.open {
-                TcpConnector.connect(addr, timeout)
+                Ok(Box::new(Counting {
+                    inner: TcpConnector.connect(addr, timeout)?,
+                    bytes: std::sync::Arc::clone(&self.bytes),
+                }))
             } else {
                 Err(io::Error::new(io::ErrorKind::ConnectionRefused, "refused by the test connector"))
             }
         }
     }
 
-    /// The connector is given the address as the caller wrote it, an onion
-    /// name included, with the connection's timeout: the client resolves
-    /// nothing itself. A connector's error is a network error.
+    /// A stream that passes everything to `inner` and counts the bytes read
+    /// (`bytes[0]`) and written (`bytes[1]`).
+    struct Counting {
+        inner: Box<dyn RelayStream>,
+        bytes: std::sync::Arc<[std::sync::atomic::AtomicUsize; 2]>,
+    }
+
+    impl Read for Counting {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.bytes[0].fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+            Ok(n)
+        }
+    }
+
+    impl Write for Counting {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let n = self.inner.write(buf)?;
+            self.bytes[1].fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    impl RelayStream for Counting {
+        fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+            self.inner.set_read_timeout(timeout)
+        }
+
+        fn set_write_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+            self.inner.set_write_timeout(timeout)
+        }
+    }
+
+    /// The connector is given exactly the address string the caller wrote,
+    /// an onion name included, and the connection's timeout. A connector's
+    /// error is a network error.
     #[test]
     fn a_connector_gets_the_address_as_given_and_its_error_is_a_network_error() {
         let timeout = Duration::from_millis(700);
@@ -593,7 +662,7 @@ mod tests {
     }
 
     /// A V2 connection makes its TLS handshake, reads HELLO and sends its
-    /// requests over the stream its connector opened.
+    /// requests over the stream its connector opened, and over no other.
     #[test]
     fn a_v2_connection_runs_over_the_stream_its_connector_opens() {
         use crate::server::{serve_v2, RelayConfig};
@@ -603,7 +672,11 @@ mod tests {
         let addr = keys.address("127.0.0.1", relay.addr().port()).unwrap();
         let recording = Recording::new(true);
         let mut conn = Connection::connect_v2_with(&recording, &addr, Duration::from_secs(5)).unwrap();
+        let before = recording.bytes();
+        assert!(before.0 > 0 && before.1 > 0, "the handshake and HELLO went through it: {before:?}");
         assert_eq!(conn.get_bundle([1; 32]).unwrap(), None);
+        let after = recording.bytes();
+        assert!(after.0 > before.0 && after.1 > before.1, "the request went through it: {after:?}");
         assert_eq!(recording.calls(), [(addr.socket_addr(), Duration::from_secs(5))]);
     }
 
@@ -630,6 +703,7 @@ mod tests {
         }
 
         fn flush(&mut self) -> io::Result<()> {
+            self.events.lock().unwrap().push(("flush", None));
             Ok(())
         }
     }
@@ -663,7 +737,8 @@ mod tests {
     /// A connection runs over any stream its connector opens, not only a
     /// socket, and bounds every read and write on it: each comes right after
     /// the matching timeout was set, to a time that is not zero and not
-    /// longer than the connection's timeout.
+    /// longer than the connection's timeout. The request is flushed after
+    /// its writes and before the answer is read.
     #[test]
     fn a_connection_bounds_each_read_and_write_on_a_connectors_stream() {
         let events = Events::default();
@@ -687,7 +762,11 @@ mod tests {
             let set = set.expect("a bound, not none");
             assert!(!set.is_zero() && set <= timeout, "{events:?}");
         }
-        assert!(events.iter().any(|(c, _)| *c == "read"), "{events:?}");
-        assert!(events.iter().any(|(c, _)| *c == "write"), "{events:?}");
+        let first_read = events.iter().position(|(c, _)| *c == "read").expect("a read");
+        let last_write = events[..first_read].iter().rposition(|(c, _)| *c == "write").expect("a write");
+        assert!(
+            events[last_write..first_read].iter().any(|(c, _)| *c == "flush"),
+            "{events:?}"
+        );
     }
 }

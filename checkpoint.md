@@ -16,9 +16,10 @@ End each message with the Owner's next step in plain words and the exact text to
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `5aaf7c5b0e5b5044b2e1a55aabb852efa2c0d27d` (merge of PR #257, 2026-11-24)
+- `main` = `4b03ed5174ad970296c5d9544d5d0d5ea4a067b4` (merge of PR #258, 2026-11-24)
 
 ## Done
+- 24 Nov (D-097): plan step 4.1, #258 (characterization tests of the four rollback cases D-009 left unexamined; tests only) merged as `4b03ed5`. Stage 4 closed.
 - 24 Nov (D-095, D-096): plan step 3.1, #257 (fsync of the Android master-key blob before its key is used; tests and a kill scenario) merged as `5aaf7c5`.
 - 22 Nov (D-093, D-094): plan step 2.4, #256 (two OS processes on one database commit each session generation once; tests only) merged as `5404c71`. Stage 2 closed.
 - 22 Nov (D-091, D-092): plan step 2.3, #255 (64 seeded random sequences of messaging operations against a model, with storage faults; no disagreement; tests only) merged as `feccfe6`.
@@ -44,13 +45,13 @@ End each message with the Owner's next step in plain words and the exact text to
 - Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 - Reliability System V1.1 candidate (D-077): approval only through the permission prompt in the candidate's own folder (a computer with Claude Code, or a session opened on a repository that holds the candidate). Nothing of it is installed here.
-- Reliability plan (D-080, approved 22 Nov): stages 0, 1 and 2 are closed. Step 3.1 merged (D-096). Next: 3.2 (needs a physical phone) or stage 4; the Owner's choice.
+- Reliability plan (D-080, approved 22 Nov): stages 0, 1 and 2 are closed. Step 3.1 merged (D-096); stage 4 closed (D-097). Left: 3.2 (needs a physical phone) and Stage 5 (Owner decisions before a release).
 - A choice in #257 to revisit before a release (D-095): a directory that cannot be synced blocks first start.
 - A tracked `__pycache__` file in `android/e2e` (D-095): a possible small cleanup task.
 - A possible small task (D-093): the comment at `crates/core-protocol/src/messaging.rs:650-655` does not match what the two-process test shows.
 
 ## Reliability plan (D-080, approved by the Owner, strictly in order)
-Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 done (D-090). Step 2.3 done (D-092). Step 2.4 done (D-094): stage 2 closed. Step 3.1 done (D-096). Next: 3.2 (needs a phone) or stage 4, the Owner's choice. Details: D-080.
+Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 done (D-090). Step 2.3 done (D-092). Step 2.4 done (D-094): stage 2 closed. Step 3.1 done (D-096). Step 4.1 done (D-097): stage 4 closed. Left: 3.2 (needs a phone), Stage 5 (Owner decisions). Details: D-080.
 
 ## Next work (D-036 order; supersedes the D-014 line)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`) — needs the server.

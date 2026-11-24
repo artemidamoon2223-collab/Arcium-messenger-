@@ -653,7 +653,7 @@ impl Messenger {
             // is. Another instance that accepted the message meanwhile does
             // not get here: its commit moved the session record, which is
             // checked first, so this commit fails with
-            // `Conflict(GenerationMismatch)` (the last arm), and the next
+            // `Conflict(GenerationMismatch)` (the `Err(e)` arm below), and the next
             // receive finds the duplicate before it stages anything (test
             // `two_processes_receiving_one_message_accept_it_once`). A
             // handshake recorded beside the session meanwhile (2), or a

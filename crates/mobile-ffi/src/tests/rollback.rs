@@ -136,9 +136,11 @@ fn a_delivered_text_put_back_in_the_outbox_is_sent_again_until_a_new_receipt_con
 /// round answers it again: a second receipt message, which Alice accepts
 /// and which confirms nothing new. Once Bob has read the text, the rollback
 /// shows nothing by itself; but a message he no longer has a receipt record
-/// for is never answered again. With Alice's outbox record of the text also
-/// put back, she sends it every round, Bob reports a duplicate every round,
-/// and the text stays undelivered for her, in every later minute too.
+/// for is not answered again (`receipt_again` stops at the missing record
+/// before it reads the minute). With Alice's outbox record of the text put
+/// back, which is also what she holds if Bob's receipt never reached her,
+/// she sends it every round, Bob reports a duplicate every round, and the
+/// text stays undelivered for her in each of the three later minutes tried.
 #[test]
 fn a_receipt_send_id_rolled_back_answers_again_while_unread_and_never_once_read() {
     let relay = start_relay();
@@ -175,7 +177,9 @@ fn a_receipt_send_id_rolled_back_answers_again_while_unread_and_never_once_read(
     assert!(record(&bob, &key).is_none());
 
     write_back(&alice, &text_key, &pending);
-    for minute in MINUTE..MINUTE + 3 {
+    // From the next minute on: this minute's later receipt was already
+    // spent while the devices settled, so a round in it shows nothing.
+    for minute in MINUTE + 1..MINUTE + 4 {
         for d in [&alice, &bob] {
             d.net.set_minute(Some(minute));
         }

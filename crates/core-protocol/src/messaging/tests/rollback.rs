@@ -58,13 +58,19 @@ fn duplicate(r: Result<Received, MessagingError>) -> Option<IncomingMessage> {
 // ── Across a DH-ratchet step ────────────────────────────────────────────────
 
 /// Alice's session record goes back to before she took Bob's first message,
-/// which carried his new ratchet key, and so to before her own DH step.
-/// From then on neither side can read the other: every message either way
-/// fails to decrypt, until the session is replaced. No chain position is
-/// used twice: Alice's next message takes the next position of her old
-/// chain, which no message of hers had used.
+/// which carried his new ratchet key, and so to before her own DH step; Bob
+/// has since taken a message on the chain that step began, so his own
+/// chain now comes from Alice's ratchet key of after the step, which the
+/// rollback took from her. In this state every message tried, two each way,
+/// fails to decrypt, and a refused message commits nothing on either side.
+/// Alice's next message takes position 1 of her old chain, which no message
+/// of hers had used, only because she sent nothing more on that chain after
+/// the moment rolled back to. (D-009's own experiment shows the case where
+/// she had: a position used again, with its message key.) The next test is
+/// a rollback across a step the peer has not yet answered, which the
+/// session survives.
 #[test]
-fn a_sender_session_rolled_back_across_a_dh_step_can_no_longer_talk_to_its_peer() {
+fn a_sender_session_rolled_back_across_a_dh_step_its_peer_has_used_can_no_longer_talk_to_it() {
     let mut p = memory_peers();
     let a1 = p.alice_sends(b"a1");
     accepted(p.bob_receives(&a1.wire).unwrap());
@@ -93,6 +99,7 @@ fn a_sender_session_rolled_back_across_a_dh_step_can_no_longer_talk_to_its_peer(
     // b1 is still in Alice's inbox: it is a duplicate and moves nothing.
     assert!(duplicate(p.alice_receives(&b1.wire)).is_some());
 
+    let bob_before = generation(&mut p.b, p.bob_pk, BOB_HANDLE);
     // Alice sends on her old chain again, at its next position.
     let a3 = p.alice_sends(b"a3");
     assert_eq!(a3.generation, 2);
@@ -102,15 +109,18 @@ fn a_sender_session_rolled_back_across_a_dh_step_can_no_longer_talk_to_its_peer(
     // which the rollback took from her.
     let b2 = p.bob_sends(b"b2");
     refused(p.alice_receives(&b2.wire));
-    // And it stays so.
+    // And again.
     let a4 = p.alice_sends(b"a4");
+    assert_eq!((header(&a4).dh, header(&a4).n), (header(&a1).dh, 2));
     refused(p.bob_receives(&a4.wire));
     let b3 = p.bob_sends(b"b3");
     refused(p.alice_receives(&b3.wire));
 
     // A refused message commits nothing: Alice's two sends are her only
-    // commits since the rollback, and both wait in her outbox.
+    // commits since the rollback, and both wait in her outbox; Bob's only
+    // commits are his own two sends.
     assert_eq!(generation(&mut p.a, p.alice_pk, ALICE_HANDLE), 3);
+    assert_eq!(generation(&mut p.b, p.bob_pk, BOB_HANDLE), bob_before + 2);
     let pending: Vec<_> =
         p.am.pending_outgoing(&p.a, ALICE_HANDLE)
             .unwrap()
@@ -120,13 +130,66 @@ fn a_sender_session_rolled_back_across_a_dh_step_can_no_longer_talk_to_its_peer(
     assert_eq!(pending, vec![a3.message_id, a4.message_id]);
 }
 
+/// Bob's session record goes back to before he took a2, the first message on
+/// Alice's chain after her DH step, which he had acknowledged; he had sent
+/// nothing on the chain his own step began. The rollback passes unnoticed:
+/// a2 is refused as a duplicate by its `seen:` record, Bob's next message
+/// goes out on his old chain and Alice takes it, and Alice's next message
+/// makes Bob step again and is taken. But the restored state can derive
+/// a2's message key again: with the `seen:` record of a2 also gone, a2 is
+/// accepted a second time.
+#[test]
+fn a_receiver_session_rolled_back_across_a_dh_step_it_had_not_answered_goes_on_unnoticed() {
+    let mut p = memory_peers();
+    let a1 = p.alice_sends(b"a1");
+    accepted(p.bob_receives(&a1.wire).unwrap());
+    let b1 = p.bob_sends(b"b1");
+    accepted(p.alice_receives(&b1.wire).unwrap());
+    let a2 = p.alice_sends(b"a2");
+    assert_ne!(
+        header(&a2).dh,
+        header(&a1).dh,
+        "a2 starts Alice's new chain"
+    );
+    let key = session_storage_key(&p.alice_pk);
+    let before_step = record(&p.b, &key);
+    let got = accepted(p.bob_receives(&a2.wire).unwrap());
+    assert!(p
+        .bm
+        .acknowledge_incoming(&mut p.b, BOB_HANDLE, &got.message_id)
+        .unwrap());
+
+    write_back(&p.b, &key, &before_step);
+    assert!(duplicate(p.bob_receives(&a2.wire)).is_none());
+    let b2 = p.bob_sends(b"b2");
+    assert_eq!(header(&b2).dh, header(&b1).dh, "Bob's old chain");
+    assert_eq!(
+        *accepted(p.alice_receives(&b2.wire).unwrap()).plaintext,
+        b"b2"
+    );
+    let a3 = p.alice_sends(b"a3");
+    assert_eq!(
+        *accepted(p.bob_receives(&a3.wire).unwrap()).plaintext,
+        b"a3"
+    );
+    let b3 = p.bob_sends(b"b3");
+    assert_eq!(
+        *accepted(p.alice_receives(&b3.wire).unwrap()).plaintext,
+        b"b3"
+    );
+
+    write_back(&p.b, &seen_key(&p.alice_pk, &got.message_id), &None);
+    let again = accepted(p.bob_receives(&a2.wire).unwrap());
+    assert_eq!(*again.plaintext, b"a2", "a2 is shown to Bob a second time");
+}
+
 // ── The receiver's records ──────────────────────────────────────────────────
 
 /// Bob's session record goes back to before he took m1, which he had
 /// acknowledged. His `seen:` record of m1 still refuses m1 as a duplicate,
-/// and the next message is taken as usual. But the restored state holds
-/// m1's message key again (as a skipped key, once m2 moved the chain past
-/// it): with the `seen:` record also gone, m1 is accepted a second time.
+/// and the next message is taken as usual. But the restored state can derive
+/// m1's message key again (taking m2 keeps it as a skipped key): with the
+/// `seen:` record also gone, m1 is accepted a second time.
 #[test]
 fn a_receiver_session_rolled_back_past_an_acknowledged_message_is_held_by_its_seen_record_alone() {
     let mut p = memory_peers();

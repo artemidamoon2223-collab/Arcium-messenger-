@@ -644,3 +644,7 @@ D-109 · 2026-11-24 · AGENT · ACTIVE
 - Evidence: workspace tests exit 0 (core-transport 9 → 23; 136, 169, 64, 313, 65 unchanged); core-transport alone 23 passed; clippy `--all-targets -D warnings` exit 0; QC 199 tests OK. 12 mutations each caught (timing tests run on their own thread and fail after 10 s instead of hanging). Offline only; nothing touches the Tor network.
 - Review: fresh-context agent, both skills: no blocking finding; SHOULD-FIX (a stream outliving its connector panicked, reproduced) and four LOW fixed; re-check found all closed.
 - Left for 4.1: wrapper runs relay's Scripted ordering test over TorStream; a Tor-suited connect/IO timeout (Android default 10 s); never fall back to TCP after a Tor error; stream isolation (auth and anonymous connections share an exit); provider install, exit(1), size, rsa, T3. Bootstrap branch itself and Android fs permissions not verified. Tracker PR after merge: F-15(b) status; R-4's DNS anchor now `TcpConnector::connect`.
+
+D-110 · 2026-11-24 · OWNER · DONE
+- What: Tor plan step 3.2 merged. The Owner named the PR: "265, а потом трекер." (session `013Fd9w25yw1w75yseYxbKXy`). PR #265 (head `9724da9`, two commits, 9/9 check runs success on that head), marked ready, merged as a normal merge commit pinned to the head: `e690168457c54907a0757739bea1a71f4a4a2849`. Verified on freshly fetched `main`: parents `3840efc` and `9724da9`, tree equal to the head's.
+- Started: the tracker PR for F-15(b) and the R-4 anchor, on the same message.

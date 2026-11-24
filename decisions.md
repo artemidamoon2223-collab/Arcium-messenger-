@@ -648,3 +648,9 @@ D-109 · 2026-11-24 · AGENT · ACTIVE
 D-110 · 2026-11-24 · OWNER · DONE
 - What: Tor plan step 3.2 merged. The Owner named the PR: "265, а потом трекер." (session `013Fd9w25yw1w75yseYxbKXy`). PR #265 (head `9724da9`, two commits, 9/9 check runs success on that head), marked ready, merged as a normal merge commit pinned to the head: `e690168457c54907a0757739bea1a71f4a4a2849`. Verified on freshly fetched `main`: parents `3840efc` and `9724da9`, tree equal to the head's.
 - Started: the tracker PR for F-15(b) and the R-4 anchor, on the same message.
+
+D-111 · 2026-11-24 · AGENT · ACTIVE
+- What: the tracker PR for #264/#265 is draft PR #266 (branch `ccr-ee7f440a-77ozc8-tracker-tor`, head `4b2a29a`, `docs/SECURITY-FINDINGS.md` only). New section "Update 2026-11-24: Tor connector in core-transport" at `e690168`: F-15(b) FIXED in PR #265 ((a) and NEEDS-HOME unchanged; status per part); D-008 and R-4 notes; dated notes on every row or section that said F-15(b) still holds; a header line.
+- Fact check (§9): fresh-context agent, two errors, three qualifiers, six wording points, all applied; it found nothing made stale by #264/#265 without a note.
+- CI on `main` @ `e690168`: Arcium CI, Native Bridge, two-device success; Android Instrumentation attempt 1 failed before any test (the runner could not install the emulator package, "Error reading Zip content"), one re-run succeeded.
+- The Owner asked whether the "four-level check" runs: answered that the Reliability System V1 four-role system is not installed here (V1.1 still PENDING_OWNER_APPROVAL), and listed the per-change checks actually done (own tests, mutations, fresh-context review or fact check, CI); offered an optional meta-check for sensitive changes ("Добавь мета-проверку"), not started.

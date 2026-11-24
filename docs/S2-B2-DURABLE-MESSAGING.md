@@ -20,7 +20,8 @@ Only local persistence and the order of local operations change.
   generation this operation loaded". Two `ArciumCore` instances, two threads or
   two processes on one database therefore cannot both advance from one
   generation: the second commit is a `Conflict`, writes nothing and releases
-  nothing.
+  nothing. (The application itself uses one process only: section 8,
+  "Release decisions".)
 - The store holds the only copy of the state. A process that dies loses nothing
   that was committed and nothing that was released.
 
@@ -574,6 +575,8 @@ already consumed that position. Nothing here prevents that.
 **Decision (Owner):** v1 resists neither whole-file nor single-record
 rollback. An attacker who can write the application's storage is outside the
 v1 threat model. This is to be decided again before a production release.
+(Decided again on 2026-11-24, before release: kept. See "Release decisions"
+below.)
 
 Why it is a decision and not a gap in the crash model: crash consistency
 (sections 3 and 7) holds. Each stored value authenticates under its own key
@@ -600,12 +603,54 @@ tests that were not committed. The store was closed, one earlier row of the
   ratchet change. The receiver reports a duplicate; the next new send is
   normal.
 
-Not examined: rollback across a DH-ratchet step, receiver-side records, the
-`sendid:` record, and network-layer receipts.
+Not examined in that experiment: rollback across a DH-ratchet step,
+receiver-side records, the `sendid:` record, and network-layer receipts.
+These four are characterized since by committed tests (PR #258, `main` @
+`4b03ed5`): `core-protocol` `messaging::tests::rollback`, `mobile-ffi`
+`tests::rollback`, and in `core-storage` the test
+`a_record_written_back_with_its_earlier_ciphertext_reads_as_its_earlier_value`.
+They record today's behaviour, not a requirement. In short: a sender's
+session rolled back across a DH step the peer has used breaks the session
+both ways, and across a step the peer has not answered goes on unnoticed;
+after a receiver's session is rolled back, its `seen:` records alone keep a
+replay out; a rolled-back `sendid:` record turns a repeated send into a
+second message, and an abandoned send can read as acknowledged; in the
+network layer, once a text is read, a rolled-back receipt `sendid:` record
+leaves a text sent again unanswered, so it stays undelivered for its sender.
 
 When this is revisited, a fix must state which of the two rollbacks it
 resists and against which attacker, and add the experiments above as tests
 that fail before it and pass after it.
+
+### Release decisions (Owner, 2026-11-24)
+
+Taken before a production release, as the decision above required, with the
+characterization tests above as evidence ("Этап 5: 1А, 2А, 3А"):
+
+1. **Attacker scope (v1):** the protection is against the network, the relay
+   and anyone who can write to a mailbox. An attacker who can read or write
+   the application's private files on the device, which on Android needs
+   root, a system compromise or physical forensic access, is outside the v1
+   threat model. The app keeps no backup of its data: `allowBackup` is off
+   and every domain is excluded from cloud backup and device transfer
+   (`android/app/src/main/AndroidManifest.xml`,
+   `android/app/src/main/res/xml/data_extraction_rules.xml`), so restoring
+   an older copy from a backup is not a path.
+2. **Rollback (D-009):** kept for v1. No rollback resistance, neither
+   whole-file nor single-record; no hardware-backed commitment and no
+   external witness. The consequences listed above are accepted for an
+   attacker of the kind excluded in point 1. A later change to this states
+   which rollback it resists and against which attacker, and turns the
+   characterization tests into tests that fail before it and pass after it.
+3. **One process:** the application opens its database from one process
+   only. A second process on the same database is not supported. Today the
+   app runs one process (its background service declares no separate
+   process). The messaging layer stays consistent with two (section 1; the
+   tests of `core-protocol` `messaging::tests::two_processes`), but the
+   network layer keeps part of its state in memory, which another process
+   would not share, and that was never tested with two. Nothing enforces
+   this rule yet; a lock that refuses a second process was offered and not
+   chosen.
 
 Retention: `seen:` and `sendid:` records are kept for the life of the session
 and beyond, including across its removal (about 40 bytes of payload plus the store's per-row overhead per

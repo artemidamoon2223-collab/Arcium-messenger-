@@ -1,10 +1,15 @@
-use arti_client::{TorClient, TorClientConfig};
+use arti_client::config::TorClientConfigBuilder;
+use arti_client::{TorClient, TorClientBuilder, TorClientConfig};
 use std::fmt::Display;
 use std::future::Future;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tor_rtcompat::PreferredRuntime;
+
+mod connector;
+pub use connector::{TorConnector, TorStream};
 
 /// Longest time [`TorTransport::new`] waits for Tor to bootstrap before it
 /// returns [`TransportError::Bootstrap`].
@@ -37,11 +42,10 @@ impl TorTransport {
     }
 
     async fn new_within(
-        _state_dir: &std::path::Path,
+        state_dir: &std::path::Path,
         bound: Duration,
     ) -> Result<Self, TransportError> {
-        let config = TorClientConfig::default();
-        let client = bootstrap_within(bound, TorClient::create_bootstrapped(config)).await?;
+        let client = bootstrap_within(bound, builder(state_dir)?.create_bootstrapped()).await?;
         Ok(Self {
             client,
             onion_address: "TODO.onion".to_string(),
@@ -51,6 +55,18 @@ impl TorTransport {
     pub fn onion_address(&self) -> &str {
         &self.onion_address
     }
+}
+
+/// A Tor client builder whose client keeps its state under `state_dir/state`
+/// and its cache under `state_dir/cache`. Before, `state_dir` was ignored and
+/// arti used its default directories under `$HOME` (F-15(b)). Must be called
+/// inside a tokio runtime: the client runs on the current one.
+fn builder(state_dir: &Path) -> Result<TorClientBuilder<PreferredRuntime>, TransportError> {
+    let config: TorClientConfig =
+        TorClientConfigBuilder::from_directories(state_dir.join("state"), state_dir.join("cache"))
+            .build()
+            .map_err(|e| TransportError::Bootstrap(format!("configuration: {e}")))?;
+    Ok(TorClient::builder().config(config))
 }
 
 /// Runs a bootstrap future for at most `bound`. A timeout and an error from
@@ -68,11 +84,6 @@ async fn bootstrap_within<T, E: Display>(
             bound.as_secs_f64()
         ))),
     }
-}
-
-#[allow(dead_code)]
-pub struct TorStream {
-    inner: arti_client::DataStream,
 }
 
 #[cfg(test)]
@@ -182,9 +193,25 @@ mod tests {
         );
     }
 
+    /// The client keeps its state and cache under the directory it is given
+    /// (F-15(b)), not in arti's default directories under `$HOME`. Creating
+    /// it writes both (its state lock and key store, its directory cache);
+    /// offline, nothing is bootstrapped.
+    #[tokio::test]
+    async fn the_client_keeps_its_state_and_cache_under_the_given_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = builder(dir.path())
+            .unwrap()
+            .bootstrap_behavior(arti_client::BootstrapBehavior::Manual)
+            .create_unbootstrapped();
+        assert!(client.is_ok(), "{:?}", client.err());
+        assert!(dir.path().join("state/state/state.lock").is_file(), "no state lock under the directory");
+        assert!(dir.path().join("cache/dir.lock").is_file(), "no cache lock under the directory");
+    }
+
     // TorTransport::new ——————————————————————————————————————————————————————
-    // Uses the network and writes arti's default cache and state directories
-    // under $HOME; run manually with: cargo test -- --ignored
+    // Uses the network and writes arti's cache and state under the temporary
+    // directory it is given; run manually with: cargo test -- --ignored
     // Without a reachable Tor network it must return a Bootstrap error within
     // the bound it was given (before D-008 it did not return at all).
 

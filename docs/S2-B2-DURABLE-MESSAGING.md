@@ -609,14 +609,17 @@ These four are characterized since by committed tests (PR #258, `main` @
 `4b03ed5`): `core-protocol` `messaging::tests::rollback`, `mobile-ffi`
 `tests::rollback`, and in `core-storage` the test
 `a_record_written_back_with_its_earlier_ciphertext_reads_as_its_earlier_value`.
-They record today's behaviour, not a requirement. In short: a sender's
-session rolled back across a DH step the peer has used breaks the session
-both ways, and across a step the peer has not answered goes on unnoticed;
-after a receiver's session is rolled back, its `seen:` records alone keep a
-replay out; a rolled-back `sendid:` record turns a repeated send into a
-second message, and an abandoned send can read as acknowledged; in the
-network layer, once a text is read, a rolled-back receipt `sendid:` record
-leaves a text sent again unanswered, so it stays undelivered for its sender.
+They record today's behaviour, not a requirement, in the sequences they
+run. In short: a sender's session rolled back across a DH step the peer has
+used fails to decrypt every message tried, two each way; a receiver's
+session rolled back across a DH step it had not answered goes on unnoticed,
+with messages flowing both ways; after a receiver's session is rolled back,
+its `seen:` records alone keep a replay out; a rolled-back `sendid:` record
+turns a repeated send into a second message, and an abandoned send can read
+as acknowledged; in the network layer, once a text is read and its receipt
+`sendid:` record is rolled back, the text sent again (the sender's outbox
+record put back, as when the receipt never reached the sender) is not
+answered, and stayed undelivered in the three minutes tried.
 
 When this is revisited, a fix must state which of the two rollbacks it
 resists and against which attacker, and add the experiments above as tests
@@ -643,14 +646,20 @@ characterization tests above as evidence ("Этап 5: 1А, 2А, 3А"):
    which rollback it resists and against which attacker, and turns the
    characterization tests into tests that fail before it and pass after it.
 3. **One process:** the application opens its database from one process
-   only. A second process on the same database is not supported. Today the
-   app runs one process (its background service declares no separate
-   process). The messaging layer stays consistent with two (section 1; the
-   tests of `core-protocol` `messaging::tests::two_processes`), but the
-   network layer keeps part of its state in memory, which another process
-   would not share, and that was never tested with two. Nothing enforces
-   this rule yet; a lock that refuses a second process was offered and not
-   chosen.
+   only. A second process on the same database is not supported. A release
+   build runs one process today: its manifest declares no `android:process`
+   (`android/app/src/main/AndroidManifest.xml`). A debug build adds a
+   provider in a process of its own for the crash tests
+   (`android/app/src/debug/AndroidManifest.xml`), absent from release
+   builds. The messaging layer stays consistent with two processes
+   (section 1; `core-protocol` `messaging::tests::two_processes`), and two
+   instances on one database create and rotate the prekey record once
+   (`mobile-ffi` `two_instances_create_prekeys_once_and_rotate_once`). But
+   the network layer keeps part of its state in memory
+   (`crates/mobile-ffi/src/network.rs`, the fields marked "in memory
+   only"), which another process would not share, and its sync rounds were
+   never tested with two. Nothing enforces this rule yet; a lock that
+   refuses a second process was offered and not chosen.
 
 Retention: `seen:` and `sendid:` records are kept for the life of the session
 and beyond, including across its removal (about 40 bytes of payload plus the store's per-row overhead per

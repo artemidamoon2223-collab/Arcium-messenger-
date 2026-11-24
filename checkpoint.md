@@ -38,7 +38,7 @@ End each message with the Owner's next step in plain words and the exact text to
 - 14 to 20 Nov (D-021 to D-069): PRs #157 to #239; each with its SHA is in `decisions.md`.
 
 ## Open PRs
-- None from this plan.
+- #262 (draft, head `c5960b3`): Tor plan step 2.1, arti 0.48 in core-transport (D-104). All 9 checks success. Waits for the Owner: accept sha2 0.11.1 in the app, then a merge instruction naming it.
 - Scratch branch `ccr-ee7f440a-77ozc8-key-fsync-mutations` (no PR): the mutation checks of #257; not for merging, can be deleted by the Owner.
 
 ## Waiting for the Owner
@@ -49,7 +49,7 @@ End each message with the Owner's next step in plain words and the exact text to
 - Reliability System V1.1 candidate (D-077): approval only through the permission prompt in the candidate's own folder (a computer with Claude Code, or a session opened on a repository that holds the candidate). Nothing of it is installed here.
 - Reliability plan (D-080, approved 22 Nov): stages 0, 1 and 2 are closed. Step 3.1 merged (D-096); stage 4 closed (D-097). Stage 5 decided and recorded (D-098, D-099). Left: 3.2 (needs a physical phone).
 - A choice in #257 to revisit before a release (D-095): a directory that cannot be synced blocks first start.
-- Tor plan approved (D-102: T1A, T2A, T4A; T3 asked again, Б or В). Step 1.1 done (D-103); step 2.1 (arti upgrade) waits for the Owner, with a TLS provider choice (ring or aws-lc-rs) and the exit(1) policy question.
+- Tor plan approved (D-102: T1A, T2A, T4A; T3 = В by template, reconfirm before 4.1). Step 1.1 done (D-103). Step 2.1 is PR #262 (D-104): ring chosen; sha2 0.11.1 acceptance and merge pending. Open for 4.1: exit(1) policy, app size, rsa in the app, provider install in the app.
 
 ## Reliability plan (D-080, approved by the Owner, strictly in order)
 Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 done (D-090). Step 2.3 done (D-092). Step 2.4 done (D-094): stage 2 closed. Step 3.1 done (D-096). Step 4.1 done (D-097): stage 4 closed. Stage 5 decided and recorded (D-098, D-099). Left: 3.2 (needs a phone). Details: D-080.

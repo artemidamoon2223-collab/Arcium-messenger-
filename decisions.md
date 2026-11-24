@@ -565,3 +565,11 @@ D-097 · 2026-11-24 · OWNER · DONE
 - What the tests record (characterization, D-009 unchanged): a sender's session rolled back across a DH step the peer has used breaks the session both ways; across a step the peer has not answered it goes on unnoticed and the message that began the chain is held off by its `seen:` record alone; a receiver's session rollback leaves replay protection to `seen:` alone; a rolled-back `sendid:` turns a repeated send into a second message, and an abandoned send can read as acknowledged; in the network layer, once a text is read, a rolled-back receipt `sendid:` means a text sent again is never answered and stays undelivered for its sender.
 - Evidence: sandbox `cargo test --workspace --locked` 0 failed (`core-protocol` 169, `core-storage` 64, `mobile-ffi` 313 passed); clippy clean; nine production mutations each failed at least one new test. Independent fresh-context review: no defect; its SHOULD-FIX (DH-step claims too wide; a variant where the rollback goes unnoticed) was applied in the second commit, which a separate agent did not review.
 - Next by the plan: 3.2 (needs a physical phone) and Stage 5 (Owner decisions before a release: attacker scope; keep D-009 or a hardware-backed commitment; whether a second process is allowed). The facts above feed the D-009 decision.
+
+D-098 · 2026-11-24 · OWNER · ACTIVE
+- What: Stage 5 of the reliability plan (D-080). Asked with a brief of options, costs and recommendations, the Owner answered "Этап 5: 1А, 2А, 3А" (session `013Fd9w25yw1w75yseYxbKXy`):
+  1. attacker scope for v1: the network, the relay and mailbox writers; an attacker who can read or write the app's private files (root, system compromise, forensic access) is outside v1;
+  2. D-009 kept: no rollback resistance, no hardware-backed commitment, no external witness;
+  3. one process only on the app's database; not enforced (the offered lock was not chosen).
+- Recorded in draft PR #259 (`docs/S2-B2-DURABLE-MESSAGING.md` section 8, "Release decisions"; head `1118c2c` after a fact check's five corrections). Not merged: waits for the Owner naming it.
+- With this the plan's stages 0 to 2 and 4 are closed and stage 5's decisions are taken; step 3.2 (power loss on a physical phone) remains and needs a phone.

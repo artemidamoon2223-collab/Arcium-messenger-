@@ -7,49 +7,60 @@
 //! [`TorStream`] have exactly that shape over arti's async `DataStream`.
 //!
 //! This crate does not depend on `relay`: the app joins the two with a thin
-//! wrapper. A `relay` dependency would bring relay's rustls `ring` feature
-//! into this crate's own build, and CI's `cargo test -p core-transport` step
-//! would then no longer show that this crate turns `ring` on itself.
+//! wrapper. A transport crate should not pull in the relay server and its
+//! SQLite build; and relay's rustls `ring` feature would join this crate's
+//! own build, so CI's `cargo test -p core-transport` step would no longer
+//! show that this crate turns `ring` on itself.
 
 use std::future::Future;
 use std::io::{self, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arti_client::DataStream;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::runtime::{Handle, Runtime};
+use tokio::runtime::Runtime;
 
-use crate::{TorTransport, TransportError, BOOTSTRAP_TIMEOUT};
+use crate::{Start, TorTransport, TransportError, BOOTSTRAP_TIMEOUT};
 
-/// Opens streams over Tor. It owns the tokio runtime its Tor client was
-/// created on. Every method blocks the calling thread, and none may be called
-/// from inside an async context (tokio panics there).
+/// Opens streams over Tor, on a multi-thread tokio runtime its Tor client
+/// runs on. Every stream it opens shares that runtime, so after the
+/// connector is dropped a stream's calls stay bounded and end with a result
+/// or an error, not a panic (tested with a stand-in stream; whether arti's
+/// stream still carries data without its client is not tested). Every
+/// method blocks the calling thread, and none may be called from inside an
+/// async context (tokio panics there); the last owner of the runtime must
+/// not drop it there either.
 pub struct TorConnector {
-    // Declared before `runtime`, so it is dropped before the runtime its
-    // tasks run on.
     transport: TorTransport,
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
 }
 
 impl TorConnector {
     /// Bootstraps a Tor client that keeps its state under `state_dir`,
     /// giving up after [`BOOTSTRAP_TIMEOUT`].
     pub fn bootstrap(state_dir: &Path) -> Result<Self, TransportError> {
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-        let transport = runtime.block_on(TorTransport::new_within(state_dir, BOOTSTRAP_TIMEOUT))?;
+        Self::start(state_dir, Start::Bootstrap(BOOTSTRAP_TIMEOUT))
+    }
+
+    fn start(state_dir: &Path, start: Start) -> Result<Self, TransportError> {
+        let runtime = Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().build()?);
+        let transport = runtime.block_on(TorTransport::create(state_dir, start))?;
         Ok(Self { transport, runtime })
     }
 
-    /// Opens a stream to `addr`, `host:port` as written: a DNS name, an IP
-    /// address or an onion name. No name is looked up on this device; Tor
+    /// Opens a stream to `addr`, `host:port` as written: a DNS name, a public
+    /// IP address or an onion name. No name is looked up on this device; Tor
     /// does it (an exit relay for a DNS name, the onion service protocol for
-    /// an onion name). Returns, with a stream or an error, within `timeout`;
-    /// a timeout is `TimedOut`, a zero `timeout` is refused with
-    /// `InvalidInput`, and arti's errors are `Other`.
+    /// an onion name). A local or private address (`localhost`, `127.0.0.1`,
+    /// `10.0.2.2`, `[::1]`, ...) is refused by arti at once, before anything
+    /// is sent: Tor exits refuse those. Returns, with a stream or an error,
+    /// within `timeout`; a timeout is `TimedOut`, a zero `timeout` is refused
+    /// with `InvalidInput`, and arti's errors are `Other`.
     pub fn connect(&self, addr: &str, timeout: Duration) -> io::Result<TorStream> {
         let client = &self.transport.client;
-        open(self.runtime.handle(), timeout, async {
+        open(&self.runtime, timeout, async {
             client.connect(addr).await.map_err(io::Error::other)
         })
     }
@@ -57,13 +68,13 @@ impl TorConnector {
 
 /// Runs `connecting` for at most `timeout` and wraps the stream it opens.
 fn open<S>(
-    runtime: &Handle,
+    runtime: &Arc<Runtime>,
     timeout: Duration,
     connecting: impl Future<Output = io::Result<S>>,
 ) -> io::Result<TorStream<S>> {
     let timeout = checked(Some(timeout))?;
     let inner = runtime.block_on(within(timeout, connecting))?;
-    Ok(TorStream::new(runtime.clone(), inner))
+    Ok(TorStream::new(Arc::clone(runtime), inner))
 }
 
 /// A stream over Tor with the blocking interface the relay client uses:
@@ -80,9 +91,17 @@ fn open<S>(
 ///   `InvalidInput`, as `TcpStream` refuses it.
 /// - After a timeout the stream's state is unknown; the relay client drops
 ///   the connection on any error.
+///
+/// Every method blocks the calling thread and may not be called from inside
+/// an async context. A stream dropped after its connector may hold the last
+/// share of the runtime: dropping it then shuts the runtime down, which
+/// blocks the dropping thread until the runtime's threads stop and panics
+/// inside an async context. `S` is arti's stream; the parameter exists for
+/// tests.
 pub struct TorStream<S = DataStream> {
-    runtime: Handle,
+    // Declared before `runtime`: dropped while the runtime still runs.
     inner: S,
+    runtime: Arc<Runtime>,
     read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
     /// When the write timeout set last runs out: the bound of a flush.
@@ -90,10 +109,10 @@ pub struct TorStream<S = DataStream> {
 }
 
 impl<S> TorStream<S> {
-    fn new(runtime: Handle, inner: S) -> Self {
+    fn new(runtime: Arc<Runtime>, inner: S) -> Self {
         Self {
-            runtime,
             inner,
+            runtime,
             read_timeout: None,
             write_timeout: None,
             flush_deadline: None,
@@ -107,7 +126,8 @@ impl<S> TorStream<S> {
 
     pub fn set_write_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
         self.write_timeout = checked(timeout)?;
-        self.flush_deadline = self.write_timeout.map(|t| Instant::now() + t);
+        // A timeout too long to add to now bounds no flush, as `None`.
+        self.flush_deadline = self.write_timeout.and_then(|t| Instant::now().checked_add(t));
         Ok(())
     }
 }
@@ -166,8 +186,8 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
-    fn runtime() -> Runtime {
-        tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
+    fn runtime() -> Arc<Runtime> {
+        Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap())
     }
 
     fn timed_out<T: std::fmt::Debug>(r: io::Result<T>) -> bool {
@@ -205,7 +225,7 @@ mod tests {
             far.read_exact(&mut buf).await.unwrap();
             far.write_all(&buf).await.unwrap();
         });
-        let mut s = TorStream::new(rt.handle().clone(), near);
+        let mut s = TorStream::new(Arc::clone(&rt), near);
         let (back, _) = bounded(move || {
             s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             s.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -223,7 +243,7 @@ mod tests {
     fn a_read_fails_at_the_read_timeout() {
         let rt = runtime();
         let (near, _far) = tokio::io::duplex(64);
-        let mut s = TorStream::new(rt.handle().clone(), near);
+        let mut s = TorStream::new(Arc::clone(&rt), near);
         s.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
         let (r, took) = bounded(move || s.read(&mut [0u8; 8]));
         assert!(timed_out(r));
@@ -236,7 +256,7 @@ mod tests {
     fn a_write_fails_at_the_write_timeout() {
         let rt = runtime();
         let (near, _far) = tokio::io::duplex(8);
-        let mut s = TorStream::new(rt.handle().clone(), near);
+        let mut s = TorStream::new(Arc::clone(&rt), near);
         s.set_write_timeout(Some(Duration::from_millis(200))).unwrap();
         let (r, took) = bounded(move || s.write_all(&[0u8; 64]));
         assert!(timed_out(r));
@@ -266,7 +286,7 @@ mod tests {
     #[test]
     fn a_flush_fails_when_the_write_timeout_set_last_runs_out() {
         let rt = runtime();
-        let mut s = TorStream::new(rt.handle().clone(), StalledFlush);
+        let mut s = TorStream::new(Arc::clone(&rt), StalledFlush);
         let set = Instant::now();
         s.set_write_timeout(Some(Duration::from_millis(400))).unwrap();
         s.write_all(b"frame").unwrap();
@@ -283,14 +303,14 @@ mod tests {
     fn a_zero_timeout_is_refused() {
         let rt = runtime();
         let (near, _far) = tokio::io::duplex(8);
-        let mut s = TorStream::new(rt.handle().clone(), near);
+        let mut s = TorStream::new(Arc::clone(&rt), near);
         for r in [
             s.set_read_timeout(Some(Duration::ZERO)),
             s.set_write_timeout(Some(Duration::ZERO)),
         ] {
             assert_eq!(r.unwrap_err().kind(), io::ErrorKind::InvalidInput);
         }
-        let r = open(rt.handle(), Duration::ZERO, async { Ok(()) });
+        let r = open(&rt, Duration::ZERO, async { Ok(()) });
         assert_eq!(r.err().map(|e| e.kind()), Some(io::ErrorKind::InvalidInput));
     }
 
@@ -299,32 +319,20 @@ mod tests {
     #[test]
     fn a_connect_returns_within_its_timeout() {
         let rt = runtime();
-        let handle = rt.handle().clone();
+        let shared = Arc::clone(&rt);
         let (r, took) = bounded(move || {
-            open(&handle, Duration::from_millis(200), std::future::pending::<io::Result<()>>()).map(|_| ())
+            open(&shared, Duration::from_millis(200), std::future::pending::<io::Result<()>>()).map(|_| ())
         });
         assert!(timed_out(r));
         assert!(took >= Duration::from_millis(180) && took < Duration::from_secs(2), "took {took:?}");
         let (near, _far) = tokio::io::duplex(8);
-        assert!(open(rt.handle(), Duration::from_secs(2), async { Ok(near) }).is_ok());
+        assert!(open(&rt, Duration::from_secs(2), async { Ok(near) }).is_ok());
     }
 
-    /// A connector over a client that has not bootstrapped: offline, no
-    /// network is touched.
+    /// A connector made as `bootstrap` makes one, over a client that never
+    /// bootstraps: offline, no network is touched.
     fn unbootstrapped(state_dir: &Path) -> TorConnector {
-        let runtime = runtime();
-        let client = runtime.block_on(async {
-            crate::builder(state_dir)
-                .unwrap()
-                .bootstrap_behavior(arti_client::BootstrapBehavior::Manual)
-                .create_unbootstrapped()
-                .unwrap()
-        });
-        let transport = TorTransport {
-            client,
-            onion_address: String::new(),
-        };
-        TorConnector { transport, runtime }
+        TorConnector::start(state_dir, Start::Unbootstrapped).unwrap()
     }
 
     /// arti's error comes back as an `io::Error` at once. Here: a client that
@@ -337,6 +345,66 @@ mod tests {
         let err = connector.connect("relay.example.com:443", Duration::from_secs(5)).err().unwrap();
         assert_eq!(err.kind(), io::ErrorKind::Other, "{err}");
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// The connector's runtime runs tasks while no call is blocking on it:
+    /// arti's circuit and channel tasks must run between requests. On a
+    /// current-thread runtime they would run only inside a call.
+    #[test]
+    fn background_tasks_run_between_calls() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let dir = tempfile::tempdir().unwrap();
+        let connector = unbootstrapped(dir.path());
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&ran);
+        connector.runtime.spawn(async move { flag.store(true, SeqCst) });
+        let started = Instant::now();
+        while !ran.load(SeqCst) && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ran.load(SeqCst), "a task did not run while no call was blocking");
+    }
+
+    /// A local or private address is refused at once, before anything is
+    /// sent (arti's `allow_local_addrs` is off). The text is arti's: it tells
+    /// this refusal apart from the one above.
+    #[test]
+    fn a_local_address_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let connector = unbootstrapped(dir.path());
+        for addr in ["127.0.0.1:7700", "10.0.2.2:7700", "localhost:7700", "[::1]:7700"] {
+            let started = Instant::now();
+            let err = connector.connect(addr, Duration::from_secs(5)).err().unwrap();
+            assert_eq!(err.kind(), io::ErrorKind::Other, "{addr}: {err}");
+            assert!(err.to_string().contains("allow_local_addrs"), "{addr}: {err}");
+            assert!(started.elapsed() < Duration::from_secs(2), "{addr}");
+        }
+    }
+
+    /// A stream keeps the runtime it runs on: with every other owner of the
+    /// runtime gone (the connector dropped), a read is still bounded and
+    /// fails with an error, not a panic.
+    #[test]
+    fn a_stream_outlives_its_connector() {
+        let rt = runtime();
+        let (near, _far) = tokio::io::duplex(8);
+        let mut s = TorStream::new(Arc::clone(&rt), near);
+        drop(rt);
+        s.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let (r, _) = bounded(move || s.read(&mut [0u8; 8]));
+        assert!(timed_out(r));
+    }
+
+    /// A write timeout too long to add to now is accepted, as `TcpStream`
+    /// accepts it, and bounds no flush.
+    #[test]
+    fn the_longest_write_timeout_is_accepted() {
+        let rt = runtime();
+        let (near, _far) = tokio::io::duplex(8);
+        let mut s = TorStream::new(Arc::clone(&rt), near);
+        s.set_write_timeout(Some(Duration::MAX)).unwrap();
+        let (r, _) = bounded(move || s.flush());
+        r.unwrap();
     }
 
     /// Every form of `host:port` a relay connection string gives (a lowercase

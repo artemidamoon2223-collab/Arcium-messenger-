@@ -8,3 +8,5 @@ Cargo.lock
 android/.gradle/
 # openlore analysis artifacts (run locally, not for VCS)
 .openlore/
+# Python bytecode caches, written when a script or test is run.
+__pycache__/

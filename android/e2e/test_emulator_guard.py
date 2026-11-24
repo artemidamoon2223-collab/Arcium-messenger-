@@ -93,6 +93,30 @@ FAKE_ADB = textwrap.dedent(r'''
             data["identity"] = "ab" * 32
         if method == "anIntactRestartOpensTheSameIdentity":
             data["identity"] = "ab" * 32
+        # MasterKeyKillTest, in files/master-key-kill-test/<point>.
+        point = re.search(r"-e point (\w+)", cmd)
+        base = "files/master-key-kill-test/" + point.group(1) if point else ""
+        if method == "theProcessDiesWhileCreatingTheKey" and not os.environ.get("FAKE_ADB_KILL_SURVIVES"):
+            named = point.group(1) != "written"
+            files[base + "/killed-at"] = point.group(1)
+            files[base + ("/master_key.blob" if named else "/master_key.blob.tmp")] = "blob left at " + point.group(1)
+            save()
+            print(f"INSTRUMENTATION_STATUS: test={method}\nINSTRUMENTATION_STATUS_CODE: 1")
+            print("INSTRUMENTATION_RESULT: shortMsg=Process crashed.\nINSTRUMENTATION_CODE: 0")
+            sys.exit(0)
+        if method == "theProcessDiesWhileCreatingTheKey":
+            # The kill did not happen: the test method fails instead.
+            print(f"INSTRUMENTATION_STATUS: test={method}\nINSTRUMENTATION_STATUS_CODE: 1")
+            print(f"INSTRUMENTATION_STATUS: test={method}\nINSTRUMENTATION_STATUS_CODE: -2")
+            print("INSTRUMENTATION_RESULT: stream=FAILURES\nINSTRUMENTATION_CODE: -1")
+            sys.exit(0)
+        if method == "theNextRunCreatesTheStoreWithTheKeyOnDisk":
+            files.pop(base + "/master_key.blob.tmp", None)
+            files.setdefault(base + "/master_key.blob", "blob created by the next run")
+            files[base + "/arcium.db"] = "db"; save()
+            data["identity"] = "cd" * 32
+        if method == "aLaterRunOpensTheSameIdentity":
+            data["identity"] = "cd" * 32
         for k, v in data.items():
             print(f"INSTRUMENTATION_STATUS: {k}={v}")
         print("INSTRUMENTATION_STATUS_CODE: 42")
@@ -181,11 +205,20 @@ class GuardTest(unittest.TestCase):
         h = Harness({"emulator-5554": "emulator"})
         r = h.run("master_key_restart.py", "--serial", "emulator-5554")
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
-        self.assertIn("MASTER-KEY RESTART steps=5 failures=0", r.stdout)
+        self.assertIn("MASTER-KEY RESTART steps=14 failures=0", r.stdout)
         args = [" ".join(c["args"]) for c in h.calls()]
         self.assertTrue(any("pm clear" in a for a in args))
         first_mutation = next(i for i, a in enumerate(args) if not a.startswith(READ_ONLY))
         self.assertTrue(any(a == "get-state" for a in args[:first_mutation]), "verification comes first")
+
+    def test_restart_driver_fails_a_kill_step_whose_process_survives(self):
+        h = Harness({"emulator-5554": "emulator"})
+        h.env["FAKE_ADB_KILL_SURVIVES"] = "1"
+        r = h.run("master_key_restart.py", "--serial", "emulator-5554")
+        self.assertNotEqual(0, r.returncode, r.stdout + r.stderr)
+        for point in ("written", "renamed", "returned"):
+            self.assertIn(f"failed: the process reached the kill point '{point}'", r.stdout)
+        self.assertEqual(3, r.stdout.count("failed: step theProcessDiesWhileCreatingTheKey"), r.stdout)
 
     # A query that fails or hangs refuses the target even when the other
     # QEMU property already answered "1" (the gap in 8a20d66: the failed

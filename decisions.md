@@ -554,3 +554,8 @@ D-095 · 2026-11-22 · AGENT · ACTIVE
 - Method, for the next Android step: no Android SDK or emulator exists in the sandbox (`dl.google.com` is not reachable, no KVM). Kotlin can be type-checked there for typos with a throwaway Gradle project (Kotlin JVM plugin, `org.robolectric:android-all` from Maven Central, stand-ins for `androidx.test` and the UniFFI bindings). Mutation checks of emulator tests run as `workflow_dispatch` on a scratch branch; started thirteen at once, one hit HTTP 429.
 - Noticed, not changed: `android/e2e/__pycache__/emulator_guard.cpython-313.pyc` is tracked in the repository.
 - Next: the Owner's decision on #257 (merge needs an instruction naming it). After it: 3.2 needs a physical phone; stage 4 (rollback characterization tests) does not.
+
+D-096 · 2026-11-24 · OWNER · DONE
+- What: plan step 3.1 merged. PR #257 (head `c9bb0a3`), described in D-095, on the Owner's instruction "Давай, Мерш 257." (session `013Fd9w25yw1w75yseYxbKXy`). Normal merge commit pinned to the head, after all 9 check runs on it were success, each on its first attempt: `5aaf7c5b0e5b5044b2e1a55aabb852efa2c0d27d`. Verified on freshly fetched `main`: parents `5404c71` and `c9bb0a3`; its tree equals the PR head's; the diff from `5404c71` is the six files of the PR (+486 −21).
+- Step 3.1 of the plan (D-080) is done. Next by the plan: 3.2 (power-loss experiment on a physical phone, needs a phone); stage 4 (rollback characterization tests) does not need one. Which comes next is the Owner's choice.
+- Still open from D-095: the strict directory-sync choice, to revisit before a release; the scratch branch `ccr-ee7f440a-77ozc8-key-fsync-mutations` (the Owner can delete it); the tracked `__pycache__` file.

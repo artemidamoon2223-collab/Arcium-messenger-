@@ -82,10 +82,13 @@ jobs:
       # core-storage's tests/feature_graph.rs reads the dependency graph
       # offline for every target (`cargo tree --offline --target all`), which
       # needs every package of Cargo.lock downloaded, also those built only on
-      # other platforms. A cache restored for this exact Cargo.lock has them
-      # (the RUSTSEC-2026-0387 guard below fetched them when main saved it);
-      # a changed Cargo.lock starts cold, and the build below fetches only
-      # what the host needs. So fetch every locked package first.
+      # other platforms. A cache restored for this exact key has them (the
+      # RUSTSEC-2026-0387 guard below fetched them when main saved it); any
+      # cache miss starts cold (a changed Cargo.lock or root Cargo.toml, a new
+      # stable rustc, an evicted entry), and the build below fetches only what
+      # the host needs. Main saves its cache only after every step passed, so
+      # a miss there would not heal by itself. So fetch every locked package
+      # first.
       - name: Fetch every locked dependency (all targets)
         run: cargo fetch --locked
       # --locked: the tracked Cargo.lock is the dependency graph (H-10). Cargo
@@ -100,6 +103,15 @@ jobs:
         env:
           TMPDIR: /dev/shm
         run: cargo test --workspace --locked
+      # core-transport alone: the workspace run above builds it with the
+      # features other crates turn on, so relay's rustls `ring` feature hides
+      # whether core-transport's own Cargo.toml turns on a TLS provider. Its
+      # test a_tor_client_can_be_created_from_this_crate_alone fails when run
+      # this way if that line goes.
+      - name: core-transport tests on its own features
+        env:
+          TMPDIR: /dev/shm
+        run: cargo test --locked -p core-transport
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --locked -- -D warnings
       # .cargo/audit.toml ignores RUSTSEC-2026-0387 only while crypto-bigint

@@ -28,8 +28,10 @@ checksum crates.io records), with one line changed in `Cargo.toml`:
 No source file changed. Built alone with that line, `tor-dirmgr` resolves
 `rusqlite` 0.41.1 and `libsqlite3-sys` 0.39.1, and `cargo test` passes its
 own tests (`test result: ok. 45 passed; 0 failed`, default features,
-2026-11-24). `Cargo.toml.orig` and `Cargo.lock` are the upstream originals
-and still name the old range; cargo does not read them here.
+2026-11-24). `Cargo.toml.orig` is the upstream original and still names the
+old range; cargo does not read it. The crate's own `Cargo.lock` is not
+committed (the root `.gitignore` excludes every `Cargo.lock` but the root
+one).
 
 How it is wired: the root `Cargo.toml` has `[patch.crates-io] tor-dirmgr =
 { path = "vendor/tor-dirmgr" }` and excludes this directory from the
@@ -45,8 +47,13 @@ Consequences:
 To verify the copy:
 
 ```bash
-mkdir /tmp/td && tar -xzf ~/.cargo/registry/cache/*/tor-dirmgr-0.48.0.crate -C /tmp/td
-diff -ru /tmp/td/tor-dirmgr-0.48.0 vendor/tor-dirmgr   # the one line above
+# cargo never downloads a crate that [patch] replaces, so fetch it directly
+mkdir /tmp/td && cd /tmp/td
+curl -sSLo tor-dirmgr-0.48.0.crate https://static.crates.io/crates/tor-dirmgr/0.48.0/download
+echo "86f7ac56b491b26a6f2b73f0f16fa7a0c66b507163e0f0ed850334b86169b326  tor-dirmgr-0.48.0.crate" | sha256sum -c -
+tar -xzf tor-dirmgr-0.48.0.crate
+cd - && diff -ru /tmp/td/tor-dirmgr-0.48.0 vendor/tor-dirmgr
+# prints the one line above, and "Only in ...: Cargo.lock" (not committed)
 ```
 
 To remove: when an arti release accepts `rusqlite` >= 0.41, upgrade

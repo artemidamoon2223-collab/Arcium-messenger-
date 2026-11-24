@@ -15,8 +15,9 @@ ignore = [
     #   turned on by tor-key-forge).
     # Impact: none on the message path — our message crypto uses XChaCha20-Poly1305 +
     #   X25519; rsa is never called there. core-transport is not a mobile-ffi dependency,
-    #   so the app does not contain rsa today; wiring Tor into the app (Tor plan step 4.1)
-    #   puts it in the Android library, and this entry must be reviewed again then.
+    #   so the app does not contain rsa today; wiring Tor into the app (mobile-ffi
+    #   depending on core-transport) puts it in the Android library, and this entry must
+    #   be reviewed again then.
     # Fix: no patched version available upstream as of 2026-11-24. REVISIT AT SECURITY AUDIT.
     # Tracked: https://rustsec.org/advisories/RUSTSEC-2023-0071
     # Added: 2026-06-07

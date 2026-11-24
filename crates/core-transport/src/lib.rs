@@ -178,7 +178,7 @@ mod tests {
         assert!(client.is_ok(), "{:?}", client.err());
         assert!(
             rustls::crypto::CryptoProvider::get_default().is_some(),
-            "creating the client picked a process-level provider"
+            "creating the client installed no process-level provider"
         );
     }
 

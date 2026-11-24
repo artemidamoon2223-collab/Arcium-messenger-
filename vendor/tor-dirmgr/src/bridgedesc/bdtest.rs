@@ -9,28 +9,28 @@
 #![allow(clippy::print_stdout)]
 #![allow(clippy::single_char_pattern)]
 #![allow(clippy::unwrap_used)]
-#![allow(clippy::unchecked_duration_subtraction)]
+#![allow(clippy::unchecked_time_subtraction)]
 #![allow(clippy::useless_vec)]
 #![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::string_slice)] // See arti#2571
 //! <!-- @@ end test lint list maintained by maint/add_warning @@ -->
 
 use std::future::Future;
 use std::iter;
-use std::ops::Bound;
 use std::time::UNIX_EPOCH;
 
+use futures::Stream;
 use futures::select_biased;
 use futures::stream::FusedStream;
-use futures::Stream;
-use itertools::{chain, Itertools};
+use itertools::{Itertools, chain};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use tracing_test::traced_test;
 
 use tor_linkspec::HasAddrs;
 use tor_rtcompat::SleepProvider;
-use tor_rtmock::simple_time::SimpleMockTimeProvider;
 use tor_rtmock::MockRuntime;
+use tor_rtmock::simple_time::SimpleMockTimeProvider;
 
 use super::*;
 
@@ -38,13 +38,13 @@ const EXAMPLE_DESCRIPTOR: &str = include_str!("../../testdata/routerdesc1.txt");
 const EXAMPLE_PORT: u16 = 9001;
 
 fn example_validity() -> (SystemTime, SystemTime) {
-    let (_, (t, u)) = RouterDesc::parse(EXAMPLE_DESCRIPTOR)
+    let (t, u) = RouterDesc::parse(EXAMPLE_DESCRIPTOR)
         .unwrap()
         .dangerously_assume_wellsigned()
-        .dangerously_into_parts();
+        .bounds_start_end();
     let ret = |tb| match tb {
-        Bound::Included(t) | Bound::Excluded(t) => t,
-        _ => panic!(),
+        Some(t) => t,
+        None => panic!("Time range does not have a starting bound"),
     };
     (ret(t), ret(u))
 }
@@ -102,7 +102,7 @@ impl mockable::MockableAPI<R> for Mock {
         eprintln!("#{} {:?}", mstate.download_calls, bridge);
         let addr = bridge
             .addrs()
-            .first()
+            .next()
             .ok_or(TE("bridge has no error", RT::Never))?;
         let doc = mstate
             .docs
@@ -218,7 +218,7 @@ where
             .and_then(|()| bdm.mgr.lock_only().running.is_empty().then_some(()))
     })
     .await;
-    bdm.set_bridges(&[bridge.clone()]);
+    bdm.set_bridges(std::slice::from_ref(bridge));
 }
 
 fn bad_bridge(i: usize) -> BridgeKey {
@@ -243,7 +243,7 @@ fn success() -> Result<(), anyhow::Error> {
 
         let hold = mock.mstate.lock().await;
 
-        bdm.set_bridges(&[bridge.clone()]);
+        bdm.set_bridges(std::slice::from_ref(&bridge));
         bdm.check_consistency(Some([&bridge]));
 
         drop(hold);
@@ -399,7 +399,7 @@ fn cache() -> Result<(), anyhow::Error> {
 
         eprintln!("----- test that a downloaded descriptor goes into the cache -----");
 
-        bdm.set_bridges(&[bridge.clone()]);
+        bdm.set_bridges(std::slice::from_ref(&bridge));
         stream_drain_until(3, &mut events, || async { in_results(Some(Ok(()))) }).await;
 
         mock.expect_download_calls(1).await;
@@ -482,7 +482,7 @@ fn dormant() -> Result<(), anyhow::Error> {
 
         eprintln!("----- become dormant, but request a bridge -----");
         bdm.set_dormancy(Dormant);
-        bdm.set_bridges(&[bridge.clone()]);
+        bdm.set_bridges(std::slice::from_ref(&bridge));
 
         // Drive all tasks until we are idle
         runtime.progress_until_stalled().await;
@@ -595,7 +595,7 @@ fn process_doc() -> Result<(), anyhow::Error> {
             Err("Descriptor is outside its validity time"),
         );
 
-        // TODO ideally we would test the `ops::Bound::Unbounded` case in process_download's
+        // TODO ideally we would test the unbounded case in process_download's
         // expiry time handling, but that would require making a document with unbounded
         // validity time.  Even if that is possible, I don't think we have code in-tree to
         // make signed test documents.

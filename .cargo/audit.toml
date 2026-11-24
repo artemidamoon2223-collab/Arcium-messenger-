@@ -1,43 +1,45 @@
 # cargo-audit configuration for Arcium Messenger.
 #
 # Advisories below are in transitive dependencies we do not control (arti/Tor stack).
-# The first two ignores were reviewed on 2026-06-07; each entry carries its own
-# Added date. REVISIT AT NEXT SECURITY AUDIT.
+# Each entry carries its own Added date; provenance was re-checked against arti 0.48
+# on 2026-11-24. REVISIT AT NEXT SECURITY AUDIT.
+#
+# RUSTSEC-2025-0009 (ring 0.16) was ignored here until 2026-11-24: with arti 0.48,
+# ring 0.16 (via x509-signature) left Cargo.lock; only ring 0.17.14 remains.
 
 [advisories]
 ignore = [
-    # RUSTSEC-2025-0009 — ring 0.16.x, AES panic under overflow-checked builds.
-    # Provenance: ring 0.16.20 via arti-client → x509-signature → tor-rtcompat.
-    # Impact: panic only when overflow-checks = true; our release profile has no such flag
-    #   (Cargo.toml [profile.release]: opt-level=3, lto=true — no overflow-checks).
-    # Fix: blocked on arti upgrading to ring >= 0.17.12. REVISIT AT SECURITY AUDIT.
-    # Tracked: https://rustsec.org/advisories/RUSTSEC-2025-0009
-    # Added: 2026-06-07
-    "RUSTSEC-2025-0009",
-
     # RUSTSEC-2023-0071 — rsa 0.9.x, Marvin timing side-channel attack.
-    # Provenance: rsa 0.9.10 via arti-client → tor-llcrypto (Tor stack only).
-    # Impact: none — our message crypto uses XChaCha20-Poly1305 + X25519; rsa is
-    #   never called on the message path. Only reachable through Tor's TLS layer.
-    # Fix: no patched version available upstream as of 2026-06-07. REVISIT AT SECURITY AUDIT.
+    # Provenance: rsa 0.9.10, a direct dependency of three arti 0.48 crates (Tor stack
+    #   only): tor-llcrypto, tor-key-forge, and ssh-key-fork-arti (its "rsa" feature,
+    #   turned on by tor-key-forge).
+    # Impact: none on the message path — our message crypto uses XChaCha20-Poly1305 +
+    #   X25519; rsa is never called there. core-transport is not a mobile-ffi dependency,
+    #   so the app does not contain rsa today; wiring Tor into the app (mobile-ffi
+    #   depending on core-transport) puts it in the Android library, and this entry must
+    #   be reviewed again then.
+    # Fix: no patched version available upstream as of 2026-11-24. REVISIT AT SECURITY AUDIT.
     # Tracked: https://rustsec.org/advisories/RUSTSEC-2023-0071
     # Added: 2026-06-07
     "RUSTSEC-2023-0071",
 
     # RUSTSEC-2026-0387 — crypto-bigint < 0.7.6, timing variability in operations meant
     #   to be constant-time (subtraction, division, Montgomery multiplication, ...).
-    # Provenance: crypto-bigint 0.5.5 via arti-client → tor-keymgr 0.21 → ssh-key 0.6.7
-    #   → optional p256/p384/p521 0.13 → elliptic-curve 0.13.8. Cargo.lock lists optional
-    #   dependencies even when no feature turns them on; this one never is.
-    # Impact: none while the guard below passes — ssh-key is built with {std, alloc, ecdsa,
-    #   rand_core} only, so elliptic-curve and crypto-bigint are not compiled for Linux or
-    #   Android (Android Native Bridge CI job 124353595128 compiled neither).
+    # Provenance: crypto-bigint 0.5.5 via arti-client 0.48 → tor-keymgr / tor-key-forge →
+    #   ssh-key-fork-arti 0.6.7 (arti's fork of ssh-key) → optional p256/p384/p521 0.13 →
+    #   elliptic-curve 0.13.8. Cargo.lock lists optional dependencies even when no feature
+    #   turns them on; this one never is.
+    # Impact: none while the guard below passes — ssh-key-fork-arti is built with {std,
+    #   alloc, ecdsa, rand_core, rsa} only (its rsa feature uses num-bigint-dig, not
+    #   crypto-bigint), so elliptic-curve and crypto-bigint are not compiled for Linux or
+    #   Android. Under arti 0.21 the same held for ssh-key 0.6.7 (Android Native Bridge CI
+    #   job 124353595128 compiled neither).
     # Guard: .github/scripts/check_rustsec_2026_0387.py runs before cargo audit in
     #   arcium-ci.yml core-rust and fails if crypto-bigint enters the build graph for any
     #   checked target or feature mode, if a cargo command fails, or if Cargo.lock stops
     #   listing exactly crypto-bigint 0.5.5. This ignore is valid only together with it.
-    # Fix: no patched 0.5.x; >= 0.7.6 needs ssh-key 0.7 (release candidates only) and an
-    #   arti that adopts it. REMOVE this entry and the guard when crypto-bigint 0.5 leaves
+    # Fix: no patched 0.5.x; >= 0.7.6 needs an ssh-key 0.7 line (release candidates only)
+    #   and an arti that adopts it. REMOVE this entry and the guard when crypto-bigint 0.5 leaves
     #   Cargo.lock (the guard then fails, by design). REVISIT AT SECURITY AUDIT.
     # Tracked: https://rustsec.org/advisories/RUSTSEC-2026-0387
     # Added: 2026-10-31 (Owner task C006)

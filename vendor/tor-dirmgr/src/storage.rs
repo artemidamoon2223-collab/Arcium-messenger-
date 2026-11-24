@@ -8,7 +8,7 @@
 
 use tor_netdoc::doc::authcert::AuthCertKeyIds;
 use tor_netdoc::doc::microdesc::MdDigest;
-use tor_netdoc::doc::netstatus::ConsensusFlavor;
+use tor_netdoc::doc::netstatus::{ConsensusFlavor, ProtoStatuses};
 
 #[cfg(feature = "routerdesc")]
 use tor_netdoc::doc::routerdesc::RdDigest;
@@ -106,7 +106,7 @@ impl InputString {
         // we got with `validated`
 
         match self {
-            InputString::Utf8(s) => Ok(&s[..]),
+            InputString::Utf8(s) => Ok(s.as_ref()),
             InputString::UncheckedBytes { bytes, validated } => {
                 if *validated.borrow() {
                     unsafe { Ok(std::str::from_utf8_unchecked(&bytes[..])) }
@@ -335,6 +335,16 @@ pub(crate) trait Store: Send + 'static {
     // Nothing uses this yet; removal is handled from `expire_all`.
     #[allow(dead_code)] // see also allow on DELETE_BRIDGEDESC
     fn delete_bridgedesc(&mut self, bridge: &BridgeConfig) -> Result<()>;
+
+    /// Try to update our cached protocol recommendations to those listed in `protocols`.
+    fn update_protocol_recommendations(
+        &mut self,
+        valid_after: SystemTime,
+        protocols: &ProtoStatuses,
+    ) -> Result<()>;
+
+    /// Return our most recent cached protocol recommendations.
+    fn cached_protocol_recommendations(&self) -> Result<Option<(SystemTime, ProtoStatuses)>>;
 }
 
 /// Value in the bridge descriptor cache
@@ -359,9 +369,10 @@ mod test {
     #![allow(clippy::print_stdout)]
     #![allow(clippy::single_char_pattern)]
     #![allow(clippy::unwrap_used)]
-    #![allow(clippy::unchecked_duration_subtraction)]
+    #![allow(clippy::unchecked_time_subtraction)]
     #![allow(clippy::useless_vec)]
     #![allow(clippy::needless_pass_by_value)]
+    #![allow(clippy::string_slice)] // See arti#2571
     //! <!-- @@ end test lint list maintained by maint/add_warning @@ -->
     use super::*;
     use tempfile::tempdir;

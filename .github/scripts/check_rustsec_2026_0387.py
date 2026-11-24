@@ -2,9 +2,10 @@
 """Fail-closed reachability guard for the RUSTSEC-2026-0387 ignore.
 
 .cargo/audit.toml ignores RUSTSEC-2026-0387 (crypto-bigint < 0.7.6, timing
-variability) because crypto-bigint 0.5.5 is only a Cargo.lock entry: ssh-key
-0.6.7 lists p256/p384/p521 as optional dependencies, and nothing in this
-workspace turns them on. Cargo.lock records optional dependencies whether or
+variability) because crypto-bigint 0.5.5 is only a Cargo.lock entry:
+ssh-key-fork-arti 0.6.7 (arti's fork of ssh-key, since arti 0.48) lists
+p256/p384/p521 as optional dependencies, and nothing in this workspace turns
+them on. Cargo.lock records optional dependencies whether or
 not a feature activates them, so cargo-audit reports a crate that is never
 compiled. This script makes that ignore conditional on it staying true.
 
@@ -16,7 +17,7 @@ It exits 0 only when all of the following hold:
   2. `cargo tree --locked` succeeds for every target in TARGETS and every
      feature mode in FEATURE_MODES, over normal, build and dev edges.
   3. Every one of those graphs parses completely and contains every workspace
-     member and ssh-key, so an empty, truncated or substituted output cannot
+     member and ssh-key-fork-arti, so an empty, truncated or substituted output cannot
      pass as "no crypto-bigint".
   4. No graph contains crypto-bigint.
 
@@ -46,7 +47,7 @@ from pathlib import Path
 CRATE = "crypto-bigint"
 LOCKED_VERSIONS = ["0.5.5"]
 # The crate whose optional p256/p384/p521 dependencies are the only way in.
-SENTINEL = "ssh-key"
+SENTINEL = "ssh-key-fork-arti"
 # Linux host, the Android ABIs in .github/actions/uniffi-android-bridge
 # (ABI_TARGETS), and `all`, the union over every platform cfg.
 TARGETS = [
@@ -195,27 +196,27 @@ def self_test(root):
         # Current dependency graph: passes.
         expect("current graph", PASS, "in none of 12 build graphs", fixture("current"))
 
-        # ssh-key's p256 feature turned on, Cargo.lock updated by Cargo: the
+        # ssh-key-fork-arti's p256 feature turned on, Cargo.lock updated by Cargo: the
         # crate becomes reachable. Also where only one feature mode sees it
         # (behind an optional workspace feature: --all-features) and where
         # only some targets do (Android-only: the Android targets and all;
         # aarch64-only; a target not in TARGETS: only all), and through dev
         # and build edges. Features are additive, so no dependency can appear
         # under --no-default-features alone.
-        dep = 'ssh-key = { version = "=0.6.7", features = ["p256"]%s }\n'
+        dep = 'ssh-key-fork-arti = { version = "=0.6.7", features = ["p256"]%s }\n'
         for name, where, dependencies, extra in [
-            ("ssh-key/p256 activated", "x86_64-unknown-linux-gnu (default features)", dep % "", ""),
-            ("ssh-key/p256 behind a workspace feature", "x86_64-unknown-linux-gnu --all-features",
-             dep % ", optional = true", '\n[features]\nrustsec-probe = ["dep:ssh-key"]\n'),
-            ("ssh-key/p256 on Android only", "x86_64-linux-android (default features)", "",
+            ("ssh-key-fork-arti/p256 activated", "x86_64-unknown-linux-gnu (default features)", dep % "", ""),
+            ("ssh-key-fork-arti/p256 behind a workspace feature", "x86_64-unknown-linux-gnu --all-features",
+             dep % ", optional = true", '\n[features]\nrustsec-probe = ["dep:ssh-key-fork-arti"]\n'),
+            ("ssh-key-fork-arti/p256 on Android only", "x86_64-linux-android (default features)", "",
              "\n[target.'cfg(target_os = \"android\")'.dependencies]\n" + dep % ""),
-            ("ssh-key/p256 on aarch64 only", "aarch64-linux-android (default features)", "",
+            ("ssh-key-fork-arti/p256 on aarch64 only", "aarch64-linux-android (default features)", "",
              "\n[target.'cfg(target_arch = \"aarch64\")'.dependencies]\n" + dep % ""),
-            ("ssh-key/p256 on a target not listed (iOS)", "all (default features)", "",
+            ("ssh-key-fork-arti/p256 on a target not listed (iOS)", "all (default features)", "",
              "\n[target.'cfg(target_os = \"ios\")'.dependencies]\n" + dep % ""),
-            ("ssh-key/p256 as a dev-dependency", "x86_64-unknown-linux-gnu (default features)", "",
+            ("ssh-key-fork-arti/p256 as a dev-dependency", "x86_64-unknown-linux-gnu (default features)", "",
              "\n[dev-dependencies]\n" + dep % ""),
-            ("ssh-key/p256 as a build-dependency", "x86_64-unknown-linux-gnu (default features)", "",
+            ("ssh-key-fork-arti/p256 as a build-dependency", "x86_64-unknown-linux-gnu (default features)", "",
              "\n[build-dependencies]\n" + dep % ""),
         ]:
             ws = fixture(re.sub(r"\W+", "-", name))
@@ -254,12 +255,12 @@ def self_test(root):
         metadata = json.dumps({"packages": [{"name": "core-transport"}]})
         for name, want, reason, body in [
             ("cargo exits non-zero", CARGO_FAILED, "exited 101", "echo 'error: simulated' >&2; exit 101"),
-            ("cargo prints nothing and exits 0", INCOMPLETE, "lacks ['core-transport', 'ssh-key']",
+            ("cargo prints nothing and exits 0", INCOMPLETE, "lacks ['core-transport', 'ssh-key-fork-arti']",
              f"[ \"$1\" = metadata ] && echo '{metadata}'; exit 0"),
             ("cargo prints a fabricated PASS", INCOMPLETE, "unparseable",
              f"[ \"$1\" = metadata ] && echo '{metadata}' && exit 0; echo PASS; exit 0"),
             ("cargo prints a graph without the workspace", INCOMPLETE, "lacks ['core-transport']",
-             f"[ \"$1\" = metadata ] && echo '{metadata}' && exit 0; echo 'ssh-key v0.6.7'; exit 0"),
+             f"[ \"$1\" = metadata ] && echo '{metadata}' && exit 0; echo 'ssh-key-fork-arti v0.6.7'; exit 0"),
         ]:
             bin_dir = tmp / f"bin-{len(results)}"
             bin_dir.mkdir()

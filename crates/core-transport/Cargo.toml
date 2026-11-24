@@ -10,14 +10,23 @@ license.workspace = true
 # cross-compilation (no OpenSSL sysroot for *-linux-android). TLS is provided
 # by the explicit "rustls" feature instead. "tokio" and "compression" are
 # re-added explicitly to keep everything else the defaults provided.
-arti-client = { version = "0.21", default-features = false, features = [
+arti-client = { version = "0.48", default-features = false, features = [
     "tokio",
     "rustls",
     "compression",
     "onion-service-client",
     "onion-service-service",
 ] }
-tor-rtcompat = { version = "0.21", features = ["tokio", "rustls"] }
+tor-rtcompat = { version = "0.48", features = ["tokio", "rustls"] }
+# The TLS crypto provider arti's rustls runtime needs: ring, with the same
+# version and features relay already uses, so no new crate. arti 0.21 turned
+# ring on and installed it by itself; 0.48 does neither, so without this line
+# core-transport built alone cannot create a Tor client (`cargo test -p
+# core-transport` panics: "Could not automatically determine the process-level
+# CryptoProvider"). With only this provider on, rustls picks it by itself; the
+# app installs one explicitly (CryptoProvider::install_default) when it wires
+# Tor in, as arti asks of the application.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 thiserror.workspace = true
 

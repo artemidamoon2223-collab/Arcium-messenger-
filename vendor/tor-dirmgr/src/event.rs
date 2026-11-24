@@ -9,15 +9,15 @@ use std::{
     marker::PhantomData,
     pin::Pin,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     task::Poll,
     time::SystemTime,
 };
 
 use educe::Educe;
-use futures::{stream::Stream, Future, StreamExt};
+use futures::{Future, StreamExt, stream::Stream};
 use itertools::chain;
 use paste::paste;
 use time::OffsetDateTime;
@@ -58,7 +58,7 @@ pub(crate) trait FlagEvent: Sized {
 ///  * `$ty` must implement [`strum::EnumCount`] [`strum::IntoEnumIterator`]
 ///
 ///  * `$ty` type must implement [`Into<u16>`] and [`TryFrom<u16>`]
-///     (for example using the `num_enum` crate).
+///    (for example using the `num_enum` crate).
 ///
 ///  * The discriminants must be densely allocated.
 ///    This will be done automatically by the compiler
@@ -159,7 +159,7 @@ pub(crate) struct FlagListener<F> {
     /// change in the flag's count, even if that count has changed by more than
     /// 1.
     my_counts: Vec<usize>,
-    /// An an `EventListener` that will be notified when events are published,
+    /// An `EventListener` that will be notified when events are published,
     /// or when the final publisher is dropped.
     ///
     /// We must always have one of these available _before_ we check any counts
@@ -335,7 +335,7 @@ struct StatusEntry {
 
 /// The status for a single directory.
 #[derive(Clone, Debug, Default, derive_more::Display)]
-#[display(fmt = "{0}", progress)]
+#[display("{0}", progress)]
 pub(crate) struct DirStatus {
     /// How much of the directory do we currently have?
     progress: DirProgress,
@@ -418,7 +418,7 @@ pub enum DirBlockage {
     /// This might indicate that there's a problem with information propagating
     /// through the Tor network, or it might indicate that a bogus consensus or
     /// a bad clock has tricked us into asking for something that nobody has.
-    #[display(fmt = "Can't make progress.")]
+    #[display("Can't make progress.")]
     Stalled,
     /// We've gotten a lot of errors without making forward progress on our
     /// bootstrap attempt.
@@ -427,7 +427,7 @@ pub enum DirBlockage {
     /// there's something buggy with our ability to handle directory responses.
     /// It might also indicate a malfunction on our directory guards, or a bug
     /// on our retry logic.
-    #[display(fmt = "Too many errors without making progress.")]
+    #[display("Too many errors without making progress.")]
     TooManyErrors,
     /// We've reset our bootstrap attempt a lot of times.
     ///
@@ -435,7 +435,7 @@ pub enum DirBlockage {
     /// other reasons above, or that we keep getting served a consensus which
     /// turns out, upon trying to fetch certificates, not to be usable.  It can
     /// also indicate a bug in our retry logic.
-    #[display(fmt = "Had to reset bootstrapping too many times.")]
+    #[display("Had to reset bootstrapping too many times.")]
     TooManyResets,
 }
 
@@ -444,16 +444,19 @@ impl fmt::Display for DirProgress {
         /// Format this time in a format useful for displaying
         /// lifetime boundaries.
         fn fmt_time(t: SystemTime) -> String {
-            use once_cell::sync::Lazy;
+            use std::sync::LazyLock;
             /// Formatter object for lifetime boundaries.
             ///
             /// We use "YYYY-MM-DD HH:MM:SS UTC" here, since we never have
             /// sub-second times here, and using non-UTC offsets is confusing
             /// in this context.
-            static FORMAT: Lazy<Vec<time::format_description::FormatItem>> = Lazy::new(|| {
-                time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second] UTC")
+            static FORMAT: LazyLock<time::format_description::FormatDescriptionV3> =
+                LazyLock::new(|| {
+                    time::format_description::parse_borrowed::<3>(
+                        "[year]-[month]-[day] [hour]:[minute]:[second] UTC",
+                    )
                     .expect("Invalid time format")
-            });
+                });
             OffsetDateTime::from(t)
                 .format(&FORMAT)
                 .unwrap_or_else(|_| "(could not format)".into())
@@ -826,9 +829,10 @@ mod test {
     #![allow(clippy::print_stdout)]
     #![allow(clippy::single_char_pattern)]
     #![allow(clippy::unwrap_used)]
-    #![allow(clippy::unchecked_duration_subtraction)]
+    #![allow(clippy::unchecked_time_subtraction)]
     #![allow(clippy::useless_vec)]
     #![allow(clippy::needless_pass_by_value)]
+    #![allow(clippy::string_slice)] // See arti#2571
     //! <!-- @@ end test lint list maintained by maint/add_warning @@ -->
     use std::time::Duration;
 
@@ -836,6 +840,7 @@ mod test {
     use float_eq::assert_float_eq;
     use futures::stream::StreamExt;
     use tor_rtcompat::test_with_all_runtimes;
+    use web_time_compat::SystemTimeExt;
 
     #[test]
     fn subscribe_and_publish() {
@@ -962,7 +967,7 @@ mod test {
 
     #[test]
     fn dir_status_basics() {
-        let now = SystemTime::now();
+        let now = SystemTime::get();
         let hour = Duration::new(3600, 0);
 
         let nothing = DirStatus {
@@ -1105,7 +1110,8 @@ mod test {
             },
         });
 
-        assert_eq!(bs.to_string(),
+        assert_eq!(
+            bs.to_string(),
             "directory is usable, fresh until 2022-01-17 12:00:00 UTC, and valid until 2022-01-17 14:00:00 UTC; next directory is fetching microdescriptors (5/40)"
         );
 

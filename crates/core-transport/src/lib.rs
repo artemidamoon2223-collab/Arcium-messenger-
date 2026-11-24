@@ -43,7 +43,7 @@ impl TorTransport {
         let config = TorClientConfig::default();
         let client = bootstrap_within(bound, TorClient::create_bootstrapped(config)).await?;
         Ok(Self {
-            client: Arc::new(client),
+            client,
             onion_address: "TODO.onion".to_string(),
         })
     }
@@ -153,6 +153,33 @@ mod tests {
     async fn bootstrap_within_returns_a_finished_bootstrap() {
         let result = bootstrap_within(Duration::from_secs(5), async { Ok::<_, String>(7) }).await;
         assert!(matches!(result, Ok(7)));
+    }
+
+    // TLS crypto provider ————————————————————————————————————————————————————
+
+    /// A Tor client, and with it arti's rustls runtime, can be created with
+    /// what this crate itself brings. arti 0.48 installs no TLS crypto
+    /// provider; rustls picks one from its crate features when exactly one is
+    /// on, and this crate's Cargo.toml turns on `ring`. Run alone (`cargo test
+    /// -p core-transport`), no other crate supplies one, so this fails if that
+    /// line goes; with all workspace crates it would also fail if a second
+    /// provider (`aws_lc_rs`) were turned on. Offline: the client is created
+    /// without bootstrapping, in its own directories.
+    #[tokio::test]
+    async fn a_tor_client_can_be_created_from_this_crate_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = arti_client::config::TorClientConfigBuilder::from_directories(
+            dir.path().join("state"),
+            dir.path().join("cache"),
+        )
+        .build()
+        .unwrap();
+        let client = TorClient::builder().config(config).create_unbootstrapped();
+        assert!(client.is_ok(), "{:?}", client.err());
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_some(),
+            "creating the client installed no process-level provider"
+        );
     }
 
     // TorTransport::new ——————————————————————————————————————————————————————

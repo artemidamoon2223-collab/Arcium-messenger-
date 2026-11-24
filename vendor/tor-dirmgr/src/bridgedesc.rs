@@ -5,32 +5,30 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::fmt::{self, Debug, Display};
 use std::num::NonZeroU8;
-use std::ops;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use derive_more::{Deref, DerefMut};
 use educe::Educe;
+use futures::FutureExt;
 use futures::future;
 use futures::select;
 use futures::stream::{BoxStream, StreamExt};
-use futures::task::{SpawnError, SpawnExt as _};
-use futures::FutureExt;
-use tracing::{debug, error, info, trace};
+use futures::task::SpawnError;
+use tracing::{debug, info, trace};
 
 use safelog::sensitive;
 use tor_basic_utils::retry::RetryDelay;
-use tor_basic_utils::BinaryHeapExt as _;
-use tor_checkable::{SelfSigned, Timebound};
+use tor_checkable::{SelfSigned, TimeBound};
 use tor_circmgr::CircMgr;
-use tor_error::{error_report, internal, ErrorKind, HasKind};
 use tor_error::{AbsRetryTime, HasRetryTime, RetryTime};
+use tor_error::{ErrorKind, HasKind, error_report, internal};
 use tor_guardmgr::bridge::{BridgeConfig, BridgeDesc};
 use tor_guardmgr::bridge::{BridgeDescError, BridgeDescEvent, BridgeDescList, BridgeDescProvider};
 use tor_netdoc::doc::routerdesc::RouterDesc;
-use tor_rtcompat::Runtime;
+use tor_rtcompat::{Runtime, SpawnExt as _};
+use web_time_compat::{Duration, Instant, SystemTime};
 
 use crate::event::FlagPublisher;
 use crate::storage::CachedBridgeDescriptor;
@@ -206,8 +204,8 @@ impl<R: Runtime> mockable::MockableAPI<R> for () {
         _if_modified_since: Option<SystemTime>,
     ) -> Result<Option<String>, Error> {
         // TODO actually support _if_modified_since
-        let circuit = circmgr.get_or_launch_dir_specific(bridge).await?;
-        let mut stream = circuit
+        let tunnel = circmgr.get_or_launch_dir_specific(bridge).await?;
+        let mut stream = tunnel
             .begin_dir_stream()
             .await
             .map_err(Error::StreamFailed)?;
@@ -373,7 +371,7 @@ impl Debug for State {
         ) -> fmt::Result {
             writeln!(f, "  {}:", name)?;
             for b in schedule {
-                fmt_bridge(f, &b.bridge, &format_args!("{} {:?}", summary, &b.when))?;
+                fmt_bridge(f, &b.bridge, &format_args!("{} {:?}", summary, b.when))?;
             }
             Ok(())
         }
@@ -635,7 +633,7 @@ impl<R: Runtime, M: Mockable<R>> BridgeDescProvider for BridgeDescMgr<R, M> {
             schedule: &mut BinaryHeap<RefetchEntry<TT, RD>>,
             was_state: &str,
         ) {
-            schedule.retain_ext(|b| note_found_keep_p(new_bridges, &b.bridge, was_state));
+            schedule.retain(|b| note_found_keep_p(new_bridges, &b.bridge, was_state));
         }
 
         let mut state = self.mgr.lock_then_process();
@@ -963,7 +961,7 @@ impl<R: Runtime, M: Mockable<R>> StateGuard<'_, R, M> {
                 let retry = err.retry_time();
                 // We retry at least as early as
                 let now = self.mgr.runtime.now();
-                let retry = retry.absolute(now, || retry_delay.next_delay(&mut rand::thread_rng()));
+                let retry = retry.absolute(now, || retry_delay.next_delay(&mut rand::rng()));
                 // Retry at least as early as max_refetch.  That way if a bridge is
                 // misconfigured we will see it be fixed eventually.
                 let retry = {
@@ -1142,12 +1140,13 @@ fn process_document<R: Runtime>(
     let desc = desc.check_signature().map_err(Arc::new)?;
 
     let now = runtime.wallclock();
-    desc.is_valid_at(&now)?;
+    desc.check_valid_at(&now)?;
 
     // Justification that use of "dangerously" is correct:
     // 1. We have checked this just above, so it is valid now.
     // 2. We are extracting the timeout and implement our own refetch logic using expires.
-    let (desc, (_, expires)) = desc.dangerously_into_parts();
+    let (desc, expires) = desc.dangerously_into_parts();
+    let expires = expires.end();
 
     // Our refetch schedule, and enforcement of descriptor expiry, is somewhat approximate.
     // The following situations can result in a nominally-expired descriptor being used:
@@ -1169,11 +1168,11 @@ fn process_document<R: Runtime>(
     // connect to the bridge itself.  In particular, we don't want to completely trust
     // bridges to control our retry logic.
     let refetch = match expires {
-        ops::Bound::Included(expires) | ops::Bound::Excluded(expires) => expires
+        Some(expires) => expires
             .checked_sub(config.prefetch)
             .ok_or(Error::ExtremeValidityTime)?,
 
-        ops::Bound::Unbounded => now
+        None => now
             .checked_add(config.max_refetch)
             .ok_or(Error::ExtremeValidityTime)?,
     };
@@ -1325,7 +1324,7 @@ pub enum Error {
 
     /// Couldn't establish a directory stream to the bridge
     #[error("Failed to establish directory stream")]
-    StreamFailed(#[source] tor_proto::Error),
+    StreamFailed(#[source] tor_circmgr::Error),
 
     /// Directory request failed
     #[error("Directory request failed")]
@@ -1574,12 +1573,12 @@ impl State {
         // (Will not cope if spawn ever failed, since that violates the invariant.)
         for (b, where_) in &tracked.tracked {
             match where_ {
-                None => panic!("missing {}", &b),
+                None => panic!("missing {}", b),
                 Some(Where::Schedule {
                     sch_name,
                     found_in_current,
                 }) => {
-                    assert!(found_in_current, "not-Schedule {} {}", &b, sch_name);
+                    assert!(found_in_current, "not-Schedule {} {}", b, sch_name);
                 }
                 _ => {}
             }

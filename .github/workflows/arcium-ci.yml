@@ -79,6 +79,15 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ steps.cargo-cache.outputs.key }}
+      # core-storage's tests/feature_graph.rs reads the dependency graph
+      # offline for every target (`cargo tree --offline --target all`), which
+      # needs every package of Cargo.lock downloaded, also those built only on
+      # other platforms. A cache restored for this exact Cargo.lock has them
+      # (the RUSTSEC-2026-0387 guard below fetched them when main saved it);
+      # a changed Cargo.lock starts cold, and the build below fetches only
+      # what the host needs. So fetch every locked package first.
+      - name: Fetch every locked dependency (all targets)
+        run: cargo fetch --locked
       # --locked: the tracked Cargo.lock is the dependency graph (H-10). Cargo
       # fails instead of resolving anew if it is missing or out of date.
       # The tests' temporary stores live in memory (/dev/shm): the store syncs

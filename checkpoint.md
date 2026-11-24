@@ -16,9 +16,10 @@ End each message with the Owner's next step in plain words and the exact text to
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `cf4f819dfbb643051bda1b0b674ebfe3510281ce` (merge of PR #259, 2026-11-24)
+- `main` = `b1f6a37a85c22bc2eaa7f19306fcaafff71d247e` (merge of PR #261, 2026-11-24)
 
 ## Done
+- 24 Nov (D-100): cleanups #260 (tracked `__pycache__` file removed, ignored) merged as `4dcffc3`, #261 (receive side-conflict comment) merged as `b1f6a37`.
 - 24 Nov (D-098, D-099): Stage 5 decisions (1А attacker scope, 2А D-009 kept, 3А one process) recorded in `docs/S2-B2-DURABLE-MESSAGING.md`, #259 merged as `cf4f819`.
 - 24 Nov (D-097): plan step 4.1, #258 (characterization tests of the four rollback cases D-009 left unexamined; tests only) merged as `4b03ed5`. Stage 4 closed.
 - 24 Nov (D-095, D-096): plan step 3.1, #257 (fsync of the Android master-key blob before its key is used; tests and a kill scenario) merged as `5aaf7c5`.
@@ -48,8 +49,7 @@ End each message with the Owner's next step in plain words and the exact text to
 - Reliability System V1.1 candidate (D-077): approval only through the permission prompt in the candidate's own folder (a computer with Claude Code, or a session opened on a repository that holds the candidate). Nothing of it is installed here.
 - Reliability plan (D-080, approved 22 Nov): stages 0, 1 and 2 are closed. Step 3.1 merged (D-096); stage 4 closed (D-097). Stage 5 decided and recorded (D-098, D-099). Left: 3.2 (needs a physical phone).
 - A choice in #257 to revisit before a release (D-095): a directory that cannot be synced blocks first start.
-- A tracked `__pycache__` file in `android/e2e` (D-095): a possible small cleanup task.
-- A possible small task (D-093): the comment at `crates/core-protocol/src/messaging.rs:650-655` does not match what the two-process test shows.
+- Tor plan (D-101, proposed, not approved): answer with T1, T2, T3, T4 and approval. Recommended T1A, T2A, T3C, T4A.
 
 ## Reliability plan (D-080, approved by the Owner, strictly in order)
 Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 done (D-090). Step 2.3 done (D-092). Step 2.4 done (D-094): stage 2 closed. Step 3.1 done (D-096). Step 4.1 done (D-097): stage 4 closed. Stage 5 decided and recorded (D-098, D-099). Left: 3.2 (needs a phone). Details: D-080.

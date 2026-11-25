@@ -831,3 +831,6 @@ D-148 · 2026-11-25 · OWNER · ACTIVE
 
 D-149 · 2026-11-25 · OWNER · ACTIVE
 - What: the Owner refined D-148 (1): the "memory dump" of this Builder chat is made later, when the work reaches testing Arcium Messenger; the new Builder chat may be named "Arcium 1.1".
+
+D-150 · 2026-11-25 · OWNER · ACTIVE
+- What: before the handoff to "Arcium 1.1" (D-149), the Owner plans to run `/skill-doctor` to see which skills work and which to remove, so the new chat starts clean for testing Arcium. Builder notes for that step (from this session's own notices, not a full audit): several plugin servers fail to connect here (Asana, Atlassian, Linear, Notion, PagerDuty, Forge, Telegram; Datadog needs sign-in), and some loaded skills are unrelated to Arcium (Forge/Atlassian, Slack); the reliability-system skills and agents load here only because that repository is attached to this session, so "Arcium 1.1" should attach Arcium-messenger- only.

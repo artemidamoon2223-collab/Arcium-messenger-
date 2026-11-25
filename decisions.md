@@ -828,3 +828,6 @@ D-147 · 2026-11-25 · OWNER · ACTIVE
 D-148 · 2026-11-25 · OWNER · ACTIVE
 - What: the Owner set two later tasks, to start once the review process works (session `013Fd9w25yw1w75yseYxbKXy`): (1) a "memory dump" of this Builder chat ("Arcium 1"): a complete handoff of its state, rules and open threads, so a new Builder chat can continue without it; (2) set up the Claude Duet bot so that it reports to the Owner how the process goes and keeps a whiteboard with diagrams of the process up to date.
 - State at that moment: the pilot's step 1 (`./rs snapshot-pr 267 …`) succeeded (output: ledger_seq 32, diff_sha256 3190275c…8a4a, remote_main 4f290cb); step 2 (`sh audit/review_pass.sh 267 …`, paid, cap $10) was started by the Owner in the pilot chat `session_013Fd9w4GPpUfmT4BoqFz8E7` and runs in the background.
+
+D-149 · 2026-11-25 · OWNER · ACTIVE
+- What: the Owner refined D-148 (1): the "memory dump" of this Builder chat is made later, when the work reaches testing Arcium Messenger; the new Builder chat may be named "Arcium 1.1".

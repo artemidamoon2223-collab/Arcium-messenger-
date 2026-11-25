@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-25 UTC (after D-158), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
+Updated: 2026-11-25 UTC (after D-159), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
 
 ## How to write to the Owner (D-086)
 End each message with the Owner's next step in plain words and the exact text to type, or say that nothing is needed.
@@ -50,7 +50,7 @@ End each message with the Owner's next step in plain words and the exact text to
 - Scratch branches: none left (D-145).
 
 ## Waiting for the Owner
-- Later (D-148, D-149): when the work reaches testing Arcium Messenger, a full "memory dump" (handoff) of this Builder chat for a new chat "Arcium 1.1" (before it: `/skill-doctor` and a skills/plugins cleanup, D-150; the new chat attaches Arcium only); once the review process works, Claude Duet bot that reports progress and keeps a whiteboard with process diagrams. Before that setup starts, remind the Owner to switch on Fable 5.2 for the architecture session (D-154); Duet's own account of its abilities and the Builder's design notes are in D-157.
+- Later (D-148, D-149): when the work reaches testing Arcium Messenger, a full "memory dump" (handoff) of this Builder chat for a new chat "Arcium 1.1" (before it: `/skill-doctor` and a skills/plugins cleanup, D-150; the new chat attaches Arcium only); once the review process works, Claude Duet bot that reports progress and keeps a whiteboard with process diagrams. Before that setup starts, remind the Owner to switch on Fable 5.2 for the architecture session (D-154); Duet's own account of its abilities and the Builder's design notes are in D-157; Duet's free $500/week allowance until 2026-12-31 (the Owner's information) is in D-159.
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
 - Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it.
 - Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.

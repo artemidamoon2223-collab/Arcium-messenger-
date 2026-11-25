@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-24 UTC (after D-111), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
+Updated: 2026-11-25 UTC (after D-119), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
 
 ## How to write to the Owner (D-086)
 End each message with the Owner's next step in plain words and the exact text to type, or say that nothing is needed.
@@ -16,9 +16,11 @@ End each message with the Owner's next step in plain words and the exact text to
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `e690168457c54907a0757739bea1a71f4a4a2849` (merge of PR #265, 2026-11-24)
+- `main` = `4f290cb18b1dec740bd895234671ddd6a14c22b8` (merge of PR #266, 2026-11-25)
 
 ## Done
+- 25 Nov (D-119): tracker #266 (F-15(b) FIXED; D-008, R-4 notes) merged as `4f290cb`.
+- 24 to 25 Nov (D-112 to D-118, outside Arcium): Reliability System V1.1 imported unchanged into private `reliability-system` (`f3dafac`, PENDING_OWNER_APPROVAL); Reviewer chat verified it; V1.2-review adaptation planned and being built by a separate Developer chat; two-chat scheme with Claude Duet as console (D-118).
 - 24 Nov (D-109, D-110): Tor step 3.2, #265 (Tor connector in core-transport; F-15(b) fixed in code) merged as `e690168`.
 - 24 Nov (D-106 to D-108): tracker #263 merged as `49bd0bd`; Tor step 3.1 #264 (relay client connector seam) merged as `3840efc`.
 - 24 Nov (D-104, D-105): Tor plan step 2.1, #262 (arti 0.48 in core-transport; sha2 0.11.1 accepted) merged as `c73bbbe`.
@@ -41,7 +43,8 @@ End each message with the Owner's next step in plain words and the exact text to
 - 14 to 20 Nov (D-021 to D-069): PRs #157 to #239; each with its SHA is in `decisions.md`.
 
 ## Open PRs
-- #266 (draft): tracker, F-15(b) FIXED, D-008 and R-4 notes (D-111), head `4b2a29a`. Waits for the Owner's merge instruction naming it.
+- Arcium: none.
+- reliability-system: the V1.2-review candidate (branch `candidate/v1.2-review`, draft PR) is being built by the Developer chat `session_013Fd9vysSaYU1WbmJWrbF5z`; it signals CANDIDATE-READY to the Builder.
 - Scratch branches the Owner can delete (no PR, not for merging): `ccr-ee7f440a-77ozc8-key-fsync-mutations`, `ccr-ee7f440a-77ozc8-tor-size-arti`, `ccr-ee7f440a-77ozc8-tor-size-base`, `ccr-ee7f440a-77ozc8-mutations`.
 
 ## Waiting for the Owner
@@ -52,7 +55,7 @@ End each message with the Owner's next step in plain words and the exact text to
 - Reliability System V1.1 candidate (D-077): approval only through the permission prompt in the candidate's own folder (a computer with Claude Code, or a session opened on a repository that holds the candidate). Nothing of it is installed here.
 - Reliability plan (D-080, approved 22 Nov): stages 0, 1 and 2 are closed. Step 3.1 merged (D-096); stage 4 closed (D-097). Stage 5 decided and recorded (D-098, D-099). Left: 3.2 (needs a physical phone).
 - A choice in #257 to revisit before a release (D-095): a directory that cannot be synced blocks first start.
-- Tor plan approved (D-102: T1A, T2A, T4A; T3 = В by template, reconfirm before 4.1). Step 1.1 done (D-103). Step 2.1 merged (D-105). Tracker #263 and step 3.1 #264 merged (D-108). Step 3.2 merged (D-110). Tracker PR #266 open (D-111); then 4.1 (needs the Owner's decisions: T3, exit(1) policy, app size). Open for 4.1: exit(1) policy, app size, rsa in the app, provider install in the app, never TcpConnector for onion.
+- Tor plan approved (D-102: T1A, T2A, T4A; T3 = В by template, reconfirm before 4.1). Step 1.1 done (D-103). Step 2.1 merged (D-105). Tracker #263 and step 3.1 #264 merged (D-108). Step 3.2 merged (D-110). Tracker #266 merged (D-119); next 4.1 (needs the Owner's decisions: T3, exit(1) policy, app size). Open for 4.1: exit(1) policy, app size, rsa in the app, provider install in the app, never TcpConnector for onion.
 
 ## Reliability plan (D-080, approved by the Owner, strictly in order)
 Stage 0: done (D-081) → Stage 1: kill tests 1.1 OPEN handling, 1.2 receipt publish to `acknowledge_outgoing`, 1.3 far-skip pass, 1.4 tracker → Stage 2: storage fault injection (2.1 to 2.4) → Stage 3: Android master-key fsync (3.1), phone power-loss test (3.2) → Stage 4: rollback characterization tests → Stage 5: Owner decisions before a release. Stage 1 done (D-082 to D-085). Step 2.1 done (D-088). Step 2.2 done (D-090). Step 2.3 done (D-092). Step 2.4 done (D-094): stage 2 closed. Step 3.1 done (D-096). Step 4.1 done (D-097): stage 4 closed. Stage 5 decided and recorded (D-098, D-099). Left: 3.2 (needs a phone). Details: D-080.

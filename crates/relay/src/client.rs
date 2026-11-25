@@ -70,10 +70,10 @@ struct Session {
     exporter: Zeroizing<[u8; AUTH_LEN]>,
 }
 
-/// The stream: every read and write waits at most for what is left of
+/// The stream: every read, write and flush waits at most for what is left of
 /// `deadline` (and at most `idle`), and fails with `TimedOut` once nothing is
-/// left. Under TLS this bounds every socket read and write rustls makes, so a
-/// relay that trickles TLS records cannot hold a request open either.
+/// left. Under TLS this bounds every socket read, write and flush rustls makes,
+/// so a relay that trickles TLS records cannot hold a request open either.
 struct Socket {
     stream: Box<dyn RelayStream>,
     /// Bound of every single read and write.
@@ -108,6 +108,8 @@ impl Write for Socket {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        let wait = self.remaining()?;
+        self.stream.set_write_timeout(Some(wait))?;
         self.stream.flush()
     }
 }
@@ -153,15 +155,11 @@ impl Write for Transport {
 
 /// The byte stream a [`Connection`] runs on, as a [`Connector`] opens it.
 /// Before every read the connection sets the read timeout, and before every
-/// write the write timeout, to what is left of the current deadline (at most
-/// the connection's `timeout`); a read or write that runs out of that time
-/// must fail, or the deadline does not hold.
-///
-/// The connection sets no timeout before a flush, which follows the writes
-/// of a frame (and rustls's writes). A stream that holds written bytes until
-/// a flush must finish that flush, or fail, within the write timeout set
-/// last, counted from when it was set; a flush that waits longer can
-/// stretch the request past its deadline.
+/// write and every flush the write timeout, to what is left of the current
+/// deadline (at most the connection's `timeout`); a read, write or flush that
+/// runs out of that time must fail, or the deadline does not hold. A stream
+/// that holds written bytes until a flush must finish that flush, or fail,
+/// within the write timeout set just before it.
 ///
 /// A timeout of `Some(Duration::ZERO)` reaches the stream only when the
 /// connection's `timeout` is zero. It never means "no timeout": refuse it
@@ -735,10 +733,10 @@ mod tests {
     }
 
     /// A connection runs over any stream its connector opens, not only a
-    /// socket, and bounds every read and write on it: each comes right after
-    /// the matching timeout was set, to a time that is not zero and not
-    /// longer than the connection's timeout. The request is flushed after
-    /// its writes and before the answer is read.
+    /// socket, and bounds every read, write and flush on it: each comes right
+    /// after the matching timeout was set (the write timeout for a flush), to
+    /// a time that is not zero and not longer than the connection's timeout.
+    /// The request is flushed after its writes and before the answer is read.
     #[test]
     fn a_connection_bounds_each_read_and_write_on_a_connectors_stream() {
         let events = Events::default();
@@ -754,7 +752,7 @@ mod tests {
         for (i, (call, _)) in events.iter().enumerate() {
             let setter = match *call {
                 "read" => "set_read_timeout",
-                "write" => "set_write_timeout",
+                "write" | "flush" => "set_write_timeout",
                 _ => continue,
             };
             let (before, set) = events[..i].last().copied().expect("a timeout first");

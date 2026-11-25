@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-25 UTC (after D-151), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
+Updated: 2026-11-25 UTC (after D-152), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
 
 ## How to write to the Owner (D-086)
 End each message with the Owner's next step in plain words and the exact text to type, or say that nothing is needed.
@@ -44,7 +44,7 @@ End each message with the Owner's next step in plain words and the exact text to
 - 14 to 20 Nov (D-021 to D-069): PRs #157 to #239; each with its SHA is in `decisions.md`.
 
 ## Open PRs
-- Arcium: #267, draft, DO NOT MERGE: replay of #264 for the review-system pilot (D-147); close after the pilot.
+- Arcium: none (#267, the pilot replay, closed unmerged, D-152; its branch `ccr-ee7f440a-77ozc8-pilot-replay-264` for the Owner to delete).
 - reliability-system: PR #1 merged (D-143) as `70c287e`; main runs V1.2-review with the Owner's baseline (`./rs status` OK). Open: none. Its leftover branches were deleted by the Owner (D-145).
 - Scratch branches: none left (D-145).
 

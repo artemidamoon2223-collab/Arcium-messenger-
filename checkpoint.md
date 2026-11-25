@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-25 UTC (after D-159), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
+Updated: 2026-11-25 UTC (after D-160), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
 
 ## How to write to the Owner (D-086)
 End each message with the Owner's next step in plain words and the exact text to type, or say that nothing is needed.
@@ -16,9 +16,10 @@ End each message with the Owner's next step in plain words and the exact text to
 4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10).
 
 ## Baseline (re-verify)
-- `main` = `fb34ebaae0931a9b25b1194b4d1fbb2a9d13b326` (merge of PR #268, 2026-11-25)
+- `main` = `fa377227c8ce9d8aa70b19653f007707dd0c4c53` (merge of PR #269, 2026-11-25)
 
 ## Done
+- 25 Nov (D-158, D-160): tracker #269 (R-4 note after #268, no status change) merged as `fa37722`.
 - 25 Nov (D-153 to D-156): #268 (flush bounded by the request deadline, R267-1) merged as `fb34eba`: the first change through the full chain (Arcium 1, fresh agent, Arcium 2 with the Reliability System, CI, the Owner).
 - 25 Nov (D-112 to D-143, outside Arcium): Reliability System V1.2-review built in five rounds by separate Developer chats, reviewed by separate Reviewer chats, approved by the Owner (`./rs baseline`, D-142) and merged into reliability-system main as `70c287e` (D-143).
 - 25 Nov (D-119): tracker #266 (F-15(b) FIXED; D-008, R-4 notes) merged as `4f290cb`.
@@ -45,7 +46,8 @@ End each message with the Owner's next step in plain words and the exact text to
 - 14 to 20 Nov (D-021 to D-069): PRs #157 to #239; each with its SHA is in `decisions.md`.
 
 ## Open PRs
-- Arcium: #269 (draft) tracker note for #268 (R-4 note, no status change), head `f3431dc` (D-158). Branches for the Owner to delete: `ccr-ee7f440a-77ozc8-pilot-replay-264`, `ccr-ee7f440a-77ozc8-flush-deadline`.
+- Arcium: none open (D-160). Branches for the Owner to delete: `ccr-ee7f440a-77ozc8-pilot-replay-264`, `ccr-ee7f440a-77ozc8-flush-deadline`, `ccr-ee7f440a-77ozc8-tracker-flush`.
+- Optional follow-ups, not started (D-160): Arcium 2 nits N-1 to N-3 on #268 (D-155); `audit/usage.py` double count in reliability-system (D-151, D-152).
 - reliability-system: PR #1 merged (D-143) as `70c287e`; main runs V1.2-review with the Owner's baseline (`./rs status` OK). Open: none. Its leftover branches were deleted by the Owner (D-145).
 - Scratch branches: none left (D-145).
 

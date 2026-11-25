@@ -33,7 +33,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **Process-kill tests noted 2026-11-22 against `main` @ `4ad3337`** (PRs #247–#251; see "Update 2026-11-22: process-kill tests inside a round"): five more places in a network round (six crash points) have a test that kills the process there, with notes on R-14 and R-21, and #247 corrected two doc comments; no status changed and no earlier row was changed beyond a dated note.
 **arti 0.48 in core-transport noted 2026-11-24 against `main` @ `c73bbbe`** (PR #262; see "Update 2026-11-24: arti 0.48 in core-transport"): F-15, D-008, A-3.5, H-9 and the 2026-11-20 "Not a row" paragraph noted (PR #262 removed the RUSTSEC-2025-0009 ignore); no status changed and no earlier row was changed beyond a dated note.
 **F-15(b) recorded as fixed 2026-11-24 against `main` @ `e690168`** (PRs #264, #265; see "Update 2026-11-24: Tor connector in core-transport"): the Tor client uses the directory it is given; D-008 and R-4 noted, with notes on the rows and sections that said F-15(b) still holds; no earlier row was changed beyond a dated note.
-**R-4 noted 2026-11-25 against `main` @ `fb34eba`** (PR #268; see "Update 2026-11-25: flush bounded by the request deadline"): the relay client bounds a flush by the request deadline in code; no status changed and no earlier row was changed beyond a dated note.
+**R-4 noted 2026-11-25 against `main` @ `fb34eba`** (PR #268; see "Update 2026-11-25: flush bounded by the request deadline"): the relay client sets the write timeout before every flush to what is left of the request deadline; no status changed and no earlier row was changed beyond a dated note.
 
 ## What this file is — and is not
 
@@ -1699,8 +1699,8 @@ it was set. The contract now says that before every write and every flush the co
 to what is left of the deadline (`:156-162`). The `idle` field and `REQUEST_DEADLINE` docs say a flush is bounded
 too (`:79`, `:53-55`). The plain path reaches `Socket::flush` through `Transport::flush` (`:148-153`) from
 `write_frame` (`crates/relay/src/protocol.rs:198`). Under TLS, rustls flushes the same socket (`Transport::Tls`,
-`client.rs:119`); that rustls 0.23.46 calls it was read in rustls's source by the review of #268, not here
-(`INFERRED`).
+`client.rs:119`): in rustls 0.23.46 (the crate whose sha256 `48e13bd8…` is the one `Cargo.lock` pins),
+`StreamOwned::flush` calls `Stream::flush` (`src/stream.rs:279-281`), which calls `self.sock.flush()` (`:170`).
 
 **Tests.**
 - `a_connection_bounds_each_read_and_write_on_a_connectors_stream` (`:741`) now also requires a
@@ -1714,8 +1714,9 @@ too (`:79`, `:53-55`). The plain path reaches `Socket::flush` through `Transport
 **R-4.** Status unchanged. After `connect`, the request deadline now bounds a flush on any connector's stream
 whose flush honours the write timeout set just before it; it no longer relies on the stream counting from the
 last write's timeout. `TorStream` counts a flush from its last `set_write_timeout`
-(`crates/core-transport/src/connector.rs:127-131`, `:150-154`), which is now the one set just before the flush,
-so its documented behaviour still fits. The unbounded name lookup R-4 lists as remaining is unchanged in
+(`crates/core-transport/src/connector.rs:127-131`, `:150-154`), which would now be the one set just before the
+flush, so its documented behaviour still fits (by reading: `TorStream` is not yet joined to the relay client,
+that is step 4.1; `INFERRED`). The unbounded name lookup R-4 lists as remaining is unchanged in
 `TcpConnector::connect` (`crates/relay/src/client.rs:206-209`).
 
 **Runtime evidence.**
@@ -1728,19 +1729,20 @@ so its documented behaviour still fits. The unbounded name lookup R-4 lists as r
   - a fresh-context agent (`engineering-code-review` and `arcium-security-review`): SHOULD-FIX, both points
     fixed before the merge, no security regression;
   - the Reliability System review: report APPROVE; it could not build in its sandbox and pointed to CI.
-- Not run: anything over Tor or on a phone; a stalled flush under TLS.
+- Not run: anything over Tor or on a phone; a stalled flush through the relay client on either path (the tests
+  check the timeout set before a flush, not that a stalled flush ends).
 
 | ID | Status at `fb34eba` | Evidence (`main` @ `fb34eba`) | Label |
 |----|---------------------|-------------------------------|-------|
-| **R-4** (no time bound on a relay operation or a sync round; FIXED by PR #145, with remainders) | Note only; status unchanged. The request deadline bounds a flush in code, not by the `RelayStream` contract alone (PR #268). The name lookup in `TcpConnector::connect` is still unbounded. | `crates/relay/src/client.rs:86-92`, `:110-114`, `:156-162`, `:206-209`; tests `:741`, `:775` | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (tests over a stand-in stream) |
+| **R-4** (no time bound on a relay operation or a sync round; FIXED by PR #145, with remainders) | Note only; status unchanged. The request deadline bounds a flush in code, not by the `RelayStream` contract alone (PR #268). The name lookup in `TcpConnector::connect` is still unbounded. | `crates/relay/src/client.rs:86-92`, `:110-114`, `:156-162`, `:206-209`; tests `:741`, `:775` | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (the timeout set before each flush, over a stand-in stream; no stalled flush) |
 
 Not rows:
 
 - The 2026-11-24 "Tor connector in core-transport" section (its paragraph "The connector, for R-4") and its R-4
   row describe the relay client's flush contract before #268; each has a dated note pointing here.
-- Doc comments outside `client.rs` that say a timeout is set before every read and write, and do not mention a
-  flush, are incomplete but not false: `crates/mobile-ffi/src/network.rs:407`, `docs/NET-MESSAGING.md:596`,
-  `crates/core-transport/src/connector.rs:3-5`, `:80-82`.
+- Doc comments that bound every read and write and do not mention a flush are incomplete but not false:
+  `crates/relay/src/client.rs:199-200`, `:218-219`, `:243-244`, `:264-265`, `crates/mobile-ffi/src/network.rs:407`,
+  `docs/NET-MESSAGING.md:596`, `crates/core-transport/src/connector.rs:3-5`, `:80-82`.
 
 ---
 

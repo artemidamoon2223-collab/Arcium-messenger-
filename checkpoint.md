@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-25 UTC (after D-133), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
+Updated: 2026-11-25 UTC (after D-134), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
 
 ## How to write to the Owner (D-086)
 End each message with the Owner's next step in plain words and the exact text to type, or say that nothing is needed.
@@ -44,7 +44,7 @@ End each message with the Owner's next step in plain words and the exact text to
 
 ## Open PRs
 - Arcium: none.
-- reliability-system: PR #1, the V1.2-review candidate (branch `candidate/v1.2-review`, draft, head `ddff461`). Final review: APPROVE against the Owner's pass bar (D-133; verdict written by the fallback model claude-opus-4-8 after a cyber-safeguard stop). Next: the Owner's approval (`./rs baseline` in a chat on the candidate branch, then `./rs persist`), then the Owner names PR #1 for merging.
+- reliability-system: PR #1, the V1.2-review candidate (branch `candidate/v1.2-review`, draft, head `ddff461`, final review APPROVE, D-133). The approval chat's pre-check found that `./rs persist` would refuse the platform's `gc.auto=0` key (D-134): no baseline yet. Proposed: one-key fix by a Developer chat, re-review of that diff, then a new approval chat.
 - Scratch branches the Owner can delete (no PR, not for merging): `ccr-ee7f440a-77ozc8-key-fsync-mutations`, `ccr-ee7f440a-77ozc8-tor-size-arti`, `ccr-ee7f440a-77ozc8-tor-size-base`, `ccr-ee7f440a-77ozc8-mutations`.
 
 ## Waiting for the Owner

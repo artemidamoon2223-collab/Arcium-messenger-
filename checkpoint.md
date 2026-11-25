@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-25 UTC (after D-141), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
+Updated: 2026-11-25 UTC (after D-142), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
 
 ## How to write to the Owner (D-086)
 End each message with the Owner's next step in plain words and the exact text to type, or say that nothing is needed.
@@ -44,7 +44,7 @@ End each message with the Owner's next step in plain words and the exact text to
 
 ## Open PRs
 - Arcium: none.
-- reliability-system: PR #1, the V1.2-review candidate (branch `candidate/v1.2-review`, draft, head `327231e`, Reviewer APPROVE). Approval chat #4 `session_013Fd9vzp4D3VzJpgyzhXq7d`: step A done, `approval/v1.2` = `de3db9d` (memory only, D-141). Next: step B (Accept edits, `./rs baseline`, Owner's window), step C, then the Builder fast-forwards the candidate branch.
+- reliability-system: PR #1, the V1.2-review candidate, approved by the Reviewer and by the Owner (`./rs baseline`, D-142); head `d2c77dc` (candidate fast-forwarded to the approval branch). Waiting for the Owner's merge word ("Мерж 1"); no CI in that repository.
 - Scratch branches the Owner can delete (no PR, not for merging): `ccr-ee7f440a-77ozc8-key-fsync-mutations`, `ccr-ee7f440a-77ozc8-tor-size-arti`, `ccr-ee7f440a-77ozc8-tor-size-base`, `ccr-ee7f440a-77ozc8-mutations`.
 
 ## Waiting for the Owner

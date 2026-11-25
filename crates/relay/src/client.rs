@@ -51,8 +51,8 @@ impl From<ProtocolError> for ClientError {
 }
 
 /// Longest time one request may take, from writing it to reading the whole
-/// response. The connection's timeout bounds each read and write; this bounds
-/// their sum, so a relay that trickles bytes cannot hold a request open.
+/// response. The connection's timeout bounds each read, write and flush; this
+/// bounds their sum, so a relay that trickles bytes cannot hold a request open.
 pub const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
 pub struct Connection {
@@ -76,7 +76,7 @@ struct Session {
 /// so a relay that trickles TLS records cannot hold a request open either.
 struct Socket {
     stream: Box<dyn RelayStream>,
-    /// Bound of every single read and write.
+    /// Bound of every single read, write and flush.
     idle: Duration,
     /// End of the current request (or of the V2 handshake).
     deadline: Instant,
@@ -766,5 +766,34 @@ mod tests {
             events[last_write..first_read].iter().any(|(c, _)| *c == "flush"),
             "{events:?}"
         );
+    }
+
+    /// The write timeout set before a flush is what is left of the request
+    /// deadline, not the connection's longer timeout: with a 5 s timeout and
+    /// a 300 ms request deadline, no flush may wait longer than 300 ms.
+    #[test]
+    fn a_flush_waits_at_most_for_what_is_left_of_the_request_deadline() {
+        let events = Events::default();
+        let connector = ScriptedConnector {
+            reply: vec![0, 0, 0, 1, 1],
+            events: std::sync::Arc::clone(&events),
+        };
+        let deadline = Duration::from_millis(300);
+        let mut conn = Connection::connect_with(&connector, "scripted.invalid:1", Duration::from_secs(5)).unwrap();
+        conn.set_request_deadline(deadline);
+        assert_eq!(conn.get_bundle([1; 32]).unwrap(), None);
+        let events = events.lock().unwrap().clone();
+        let mut flushes = 0;
+        for (i, (call, _)) in events.iter().enumerate() {
+            if *call != "flush" {
+                continue;
+            }
+            flushes += 1;
+            let (before, set) = events[..i].last().copied().expect("a timeout first");
+            assert_eq!(before, "set_write_timeout", "{events:?}");
+            let set = set.expect("a bound, not none");
+            assert!(!set.is_zero() && set <= deadline, "{events:?}");
+        }
+        assert!(flushes > 0, "{events:?}");
     }
 }

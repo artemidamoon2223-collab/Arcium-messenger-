@@ -33,6 +33,7 @@ F-17 additionally keeps its own 2026-07-28 closure record, with a re-check note 
 **Process-kill tests noted 2026-11-22 against `main` @ `4ad3337`** (PRs #247–#251; see "Update 2026-11-22: process-kill tests inside a round"): five more places in a network round (six crash points) have a test that kills the process there, with notes on R-14 and R-21, and #247 corrected two doc comments; no status changed and no earlier row was changed beyond a dated note.
 **arti 0.48 in core-transport noted 2026-11-24 against `main` @ `c73bbbe`** (PR #262; see "Update 2026-11-24: arti 0.48 in core-transport"): F-15, D-008, A-3.5, H-9 and the 2026-11-20 "Not a row" paragraph noted (PR #262 removed the RUSTSEC-2025-0009 ignore); no status changed and no earlier row was changed beyond a dated note.
 **F-15(b) recorded as fixed 2026-11-24 against `main` @ `e690168`** (PRs #264, #265; see "Update 2026-11-24: Tor connector in core-transport"): the Tor client uses the directory it is given; D-008 and R-4 noted, with notes on the rows and sections that said F-15(b) still holds; no earlier row was changed beyond a dated note.
+**R-4 noted 2026-11-25 against `main` @ `fb34eba`** (PR #268; see "Update 2026-11-25: flush bounded by the request deadline"): the relay client bounds a flush by the request deadline in code; no status changed and no earlier row was changed beyond a dated note.
 
 ## What this file is — and is not
 
@@ -1646,7 +1647,7 @@ connect that never finishes, not arti's stream:
 `a_flush_fails_when_the_write_timeout_set_last_runs_out` (`:287`), `a_connect_returns_within_its_timeout`
 (`:320`), `a_stream_outlives_its_connector` (`:388`). The unbounded name lookup R-4 lists as remaining is
 unchanged and is now in `TcpConnector::connect` (`crates/relay/src/client.rs:206-209`), which the app still
-uses.
+uses. *(Note 2026-11-25: since PR #268 the relay client also sets the write timeout before every flush, to what is left of the request deadline; see "Update 2026-11-25: flush bounded by the request deadline".)*
 
 **Runtime evidence.** Locally, on `e690168`: `cargo test --workspace --locked` → exit 0; `core-crypto`: `test result: ok. 136 passed; 0 failed`;
 `core-protocol`: `test result: ok. 169 passed; 0 failed`; `core-storage`: `test result: ok. 64 passed; 0 failed; 2 ignored`;
@@ -1664,7 +1665,7 @@ Tor network or on a phone.
 |----|---------------------|-------------------------------|-------|
 | **F-15** (Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir`) | (b) **FIXED** in PR #265 (merge `e690168`): the Tor client keeps its state and cache under the directory it is given. (a) unchanged (**NOT-FIXED (design)**; no code since PR #157) and `NEEDS-HOME` unchanged. The row's status is given per part. The transport still has no caller in the app (step 4.1). | `crates/core-transport/src/lib.rs:54`, `:89-91`; `connector.rs:43-49`; test `lib.rs:227` | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (test, mutation); bootstrap path and Android `NOT_VERIFIED` |
 | **D-008** (lead of 2026-11-06; FIXED by PR #137) | Note only. The bound is unchanged: `BOOTSTRAP_TIMEOUT` = 120 s (`lib.rs:20`); `new` → `new_within` → `create`, which wraps the bootstrap in `bootstrap_within` (`:40-48`, `:54`, `:100`); `TorConnector::bootstrap` uses the same bound. `state_dir` is used now (F-15 above). The ignored test `new_fails_gracefully_without_tor` is at `:243-244` and was not run (`NOT_VERIFIED`). | `crates/core-transport/src/lib.rs:20`, `:40-54`, `:100`, `:243-244`; `connector.rs:43` | `SOURCE_VERIFIED` |
-| **R-4** (no time bound on a relay operation or a sync round; FIXED by PR #145, with remainders) | Note only; status unchanged. The remainder "the DNS lookup in `Connection::connect` … is not bounded" now lies in `TcpConnector::connect`, the relay client's default connector (PR #264). `TorConnector::connect` looks no name up and is bounded by its timeout, but the app does not use it yet. After `connect`, the request deadline (`REQUEST_DEADLINE`, `client.rs:56`) applies to any connector's stream that keeps `RelayStream`'s contract on timeouts and flush (`:154-168`). | `crates/relay/src/client.rs:56`, `:98`, `:106`, `:206-209`; `crates/core-transport/src/connector.rs:61-76`; tests named above | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (tests over stand-in streams; arti's stream not exercised) |
+| **R-4** (no time bound on a relay operation or a sync round; FIXED by PR #145, with remainders) | Note only; status unchanged. The remainder "the DNS lookup in `Connection::connect` … is not bounded" now lies in `TcpConnector::connect`, the relay client's default connector (PR #264). `TorConnector::connect` looks no name up and is bounded by its timeout, but the app does not use it yet. After `connect`, the request deadline (`REQUEST_DEADLINE`, `client.rs:56`) applies to any connector's stream that keeps `RelayStream`'s contract on timeouts and flush (`:154-168`). *(Note 2026-11-25: that contract changed in PR #268, which bounds a flush in code; see "Update 2026-11-25: flush bounded by the request deadline".)* | `crates/relay/src/client.rs:56`, `:98`, `:106`, `:206-209`; `crates/core-transport/src/connector.rs:61-76`; tests named above | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (tests over stand-in streams; arti's stream not exercised) |
 
 Not rows:
 
@@ -1678,6 +1679,68 @@ Not rows:
   nor after a Tor error (the Owner's choice T3 as recorded, В; to be confirmed before 4.1); a connect and I/O timeout suited to Tor is still to be chosen (the
   Android default is 10 s); authenticated and anonymous relay connections would share Tor's default stream
   isolation (PR #265's description).
+
+## Update 2026-11-25: flush bounded by the request deadline (`main` @ `fb34eba`)
+
+**Snapshot:** `main` @ `fb34ebaae0931a9b25b1194b4d1fbb2a9d13b326`, the merge of PR #268 (a normal merge commit,
+parents `4f290cb` and the head `3908696`; the same tree as that head), on the Owner's messages "Мерш." and
+"268.". The point came from the first pilot of the Reliability System's review flow: its finding R267-1 on a
+replay of #264 (PR #267, closed unmerged). This section covers #268 only. Each `path:line` below was re-read at
+`fb34eba`.
+
+**No status change.** A note on R-4.
+
+**What changed.** `Socket::flush` (`crates/relay/src/client.rs:110-114`) now sets the write timeout to what is
+left of the request deadline before it flushes, as `Socket::write` does before every write (`:104-108`).
+`remaining` (`:86-92`) gives the smaller of what is left and the connection's timeout, and `TimedOut` once
+nothing is left. Before #268 the connection set no timeout before a flush, and the bound on a flush rested on
+`RelayStream`'s doc contract: a stream had to finish a flush within the write timeout set last, counted from when
+it was set. The contract now says that before every write and every flush the connection sets the write timeout
+to what is left of the deadline (`:156-162`). The `idle` field and `REQUEST_DEADLINE` docs say a flush is bounded
+too (`:79`, `:53-55`). The plain path reaches `Socket::flush` through `Transport::flush` (`:148-153`) from
+`write_frame` (`crates/relay/src/protocol.rs:198`). Under TLS, rustls flushes the same socket (`Transport::Tls`,
+`client.rs:119`); that rustls 0.23.46 calls it was read in rustls's source by the review of #268, not here
+(`INFERRED`).
+
+**Tests.**
+- `a_connection_bounds_each_read_and_write_on_a_connectors_stream` (`:741`) now also requires a
+  `set_write_timeout` right before every flush.
+- `a_flush_waits_at_most_for_what_is_left_of_the_request_deadline` (`:775`): with a 5 s connection timeout and
+  a 300 ms request deadline, the timeout set before every flush is at most 300 ms.
+- Mutations (PR #268's description): no timeout before a flush fails the first test; bounding the flush by the
+  connection's timeout instead of the remaining deadline fails the second.
+- Both tests run over a stand-in stream on the plain path.
+
+**R-4.** Status unchanged. After `connect`, the request deadline now bounds a flush on any connector's stream
+whose flush honours the write timeout set just before it; it no longer relies on the stream counting from the
+last write's timeout. `TorStream` counts a flush from its last `set_write_timeout`
+(`crates/core-transport/src/connector.rs:127-131`, `:150-154`), which is now the one set just before the flush,
+so its documented behaviour still fits. The unbounded name lookup R-4 lists as remaining is unchanged in
+`TcpConnector::connect` (`crates/relay/src/client.rs:206-209`).
+
+**Runtime evidence.**
+- Locally, on the head `3908696` (the same tree as `fb34eba`): `cargo test --workspace --locked` → exit 0, 14
+  result lines all `ok`, 779 passed, 0 failed; `relay`: `test result: ok. 66 passed; 0 failed; 0 ignored; 0
+  measured; 0 filtered out`; `cargo clippy --workspace --locked -- -D warnings` → exit 0.
+- CI: all 9 check runs success on the head `3908696`. On `main` @ `fb34eba` the push runs of all four workflows
+  (Arcium CI, Android Native Bridge, Android Instrumentation, Android two-device messaging) concluded success.
+- Reviews of #268:
+  - a fresh-context agent (`engineering-code-review` and `arcium-security-review`): SHOULD-FIX, both points
+    fixed before the merge, no security regression;
+  - the Reliability System review: report APPROVE; it could not build in its sandbox and pointed to CI.
+- Not run: anything over Tor or on a phone; a stalled flush under TLS.
+
+| ID | Status at `fb34eba` | Evidence (`main` @ `fb34eba`) | Label |
+|----|---------------------|-------------------------------|-------|
+| **R-4** (no time bound on a relay operation or a sync round; FIXED by PR #145, with remainders) | Note only; status unchanged. The request deadline bounds a flush in code, not by the `RelayStream` contract alone (PR #268). The name lookup in `TcpConnector::connect` is still unbounded. | `crates/relay/src/client.rs:86-92`, `:110-114`, `:156-162`, `:206-209`; tests `:741`, `:775` | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (tests over a stand-in stream) |
+
+Not rows:
+
+- The 2026-11-24 "Tor connector in core-transport" section (its paragraph "The connector, for R-4") and its R-4
+  row describe the relay client's flush contract before #268; each has a dated note pointing here.
+- Doc comments outside `client.rs` that say a timeout is set before every read and write, and do not mention a
+  flush, are incomplete but not false: `crates/mobile-ffi/src/network.rs:407`, `docs/NET-MESSAGING.md:596`,
+  `crates/core-transport/src/connector.rs:3-5`, `:80-82`.
 
 ---
 

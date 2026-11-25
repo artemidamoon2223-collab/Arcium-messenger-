@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-25 UTC (after D-142), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
+Updated: 2026-11-25 UTC (after D-143), by a Claude Code cloud session (013Fd9w25yw1w75yseYxbKXy)
 
 ## How to write to the Owner (D-086)
 End each message with the Owner's next step in plain words and the exact text to type, or say that nothing is needed.
@@ -19,6 +19,7 @@ End each message with the Owner's next step in plain words and the exact text to
 - `main` = `4f290cb18b1dec740bd895234671ddd6a14c22b8` (merge of PR #266, 2026-11-25)
 
 ## Done
+- 25 Nov (D-112 to D-143, outside Arcium): Reliability System V1.2-review built in five rounds by separate Developer chats, reviewed by separate Reviewer chats, approved by the Owner (`./rs baseline`, D-142) and merged into reliability-system main as `70c287e` (D-143).
 - 25 Nov (D-119): tracker #266 (F-15(b) FIXED; D-008, R-4 notes) merged as `4f290cb`.
 - 24 to 25 Nov (D-112 to D-118, outside Arcium): Reliability System V1.1 imported unchanged into private `reliability-system` (`f3dafac`, PENDING_OWNER_APPROVAL); Reviewer chat verified it; V1.2-review adaptation planned and being built by a separate Developer chat; two-chat scheme with Claude Duet as console (D-118).
 - 24 Nov (D-109, D-110): Tor step 3.2, #265 (Tor connector in core-transport; F-15(b) fixed in code) merged as `e690168`.
@@ -44,7 +45,7 @@ End each message with the Owner's next step in plain words and the exact text to
 
 ## Open PRs
 - Arcium: none.
-- reliability-system: PR #1, the V1.2-review candidate, approved by the Reviewer and by the Owner (`./rs baseline`, D-142); head `d2c77dc` (candidate fast-forwarded to the approval branch). Waiting for the Owner's merge word ("Мерж 1"); no CI in that repository.
+- reliability-system: PR #1 merged (D-143) as `70c287e`; main runs V1.2-review with the Owner's baseline (`./rs status` OK). Open: none. Leftover branches `candidate/v1.2-review`, `approval/v1.2` (Owner deletes).
 - Scratch branches the Owner can delete (no PR, not for merging): `ccr-ee7f440a-77ozc8-key-fsync-mutations`, `ccr-ee7f440a-77ozc8-tor-size-arti`, `ccr-ee7f440a-77ozc8-tor-size-base`, `ccr-ee7f440a-77ozc8-mutations`.
 
 ## Waiting for the Owner

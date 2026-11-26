@@ -2,9 +2,10 @@
 //!
 //! The relay client (`relay::client`) is blocking. It runs over a stream on
 //! which it sets a read timeout before every read and a write timeout before
-//! every write (`relay::client::RelayStream`), and it opens that stream with
-//! `relay::client::Connector::connect(addr, timeout)`. [`TorConnector`] and
-//! [`TorStream`] have exactly that shape over arti's async `DataStream`.
+//! every write and every flush (`relay::client::RelayStream`), and it opens
+//! that stream with `relay::client::Connector::connect(addr, timeout)`.
+//! [`TorConnector`] and [`TorStream`] have exactly that shape over arti's
+//! async `DataStream`.
 //!
 //! This crate does not depend on `relay`: the app joins the two with a thin
 //! wrapper. A transport crate should not pull in the relay server and its
@@ -78,8 +79,8 @@ fn open<S>(
 }
 
 /// A stream over Tor with the blocking interface the relay client uses:
-/// [`Read`], [`Write`], and a read and a write timeout it sets before each
-/// read and write.
+/// [`Read`], [`Write`], and a read timeout it sets before each read and a
+/// write timeout it sets before each write and each flush.
 ///
 /// - A read waits at most the read timeout and a write at most the write
 ///   timeout, then fails with `TimedOut`.

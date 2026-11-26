@@ -593,12 +593,12 @@ only the first can be accepted.
 Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 `network::RETRANSMIT_CAP`):
 
-- **One request: 30 s.** Every read and write on the connection waits at most
-  `timeout_ms`, and the request as a whole (writing it, reading the whole
-  answer) at most 30 s; past that it fails as a lost connection. A relay that
-  trickles bytes cannot hold a round open. A page (at most one 1 MiB frame)
-  therefore needs a link of about 35 KiB/s to arrive; on a slower link a
-  full page of large envelopes cannot be read (no adaptive paging).
+- **One request: 30 s.** Every read, write and flush on the connection waits
+  at most `timeout_ms`, and the request as a whole (writing it, reading the
+  whole answer) at most 30 s; past that it fails as a lost connection. A relay
+  that trickles bytes cannot hold a round open. A page (at most one 1 MiB
+  frame) therefore needs a link of about 35 KiB/s to arrive; on a slower link
+  a full page of large envelopes cannot be read (no adaptive paging).
 - **One round: 120 s of relay requests.** The budget is checked before every
   page of a pass after its first, and before every send. When it runs out,
   the pass stops after the page in hand, deletes what it processed, and the

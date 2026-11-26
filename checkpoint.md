@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-26 UTC (after D-177), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
+Updated: 2026-11-26 UTC (after D-178), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
 
 ## Read first
 The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**, with the Owner's order in D-166 and corrections in D-167 and D-168 (the later entry wins). Read all four in full before any work:
@@ -12,13 +12,13 @@ The session hook shows only the first 8,000 bytes of this file and almost nothin
 Keep this file under about 7,000 bytes.
 
 ## How to write to the Owner (D-086)
-Russian, plain words, result first, one step at a time. End each message with the Owner's next step and the exact text to type, or say that nothing is needed.
+Russian, plain words, result first, one step at a time. Since D-178: the Owner's eight answer rules (answer or step first, 2 minutes to read, "Что я опустил:", sparring before final plans); an adapted version is proposed, not yet accepted. End each message with the Owner's next step and the exact text to type, or say that nothing is needed.
 
 ## Resume procedure
 1. Read this file and D-165 to D-168 (command above); older entries of `decisions.md` when a line here cites them.
 2. Re-verify the main SHA and the open PRs on GitHub. On any mismatch, this file is stale.
 3. Act only on the Owner's current instruction. AGENT and PROPOSAL records are not Owner decisions.
-4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-178.
+4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-179.
 5. At the start, `git fetch origin main` and compare `git rev-parse HEAD` with `origin/main`. If they differ, now or later, read CLAUDE.md and the skills from `origin/main`, not from the working tree.
 
 ## Baseline (re-verify)

@@ -4,10 +4,10 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-26 UTC (after D-165), by the Builder chat "Arcium 1" (013Fd9w25yw1w75yseYxbKXy), handing over to a new Builder chat "Arcium 1.1"
+Updated: 2026-11-26 UTC (after D-167), by the Builder chat "Arcium 1" (013Fd9w25yw1w75yseYxbKXy), handing over to a new Builder chat "Arcium 1.1"
 
 ## Read first
-The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**. Read it in full before any work:
+The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**, with the Owner's order in D-166 and corrections in D-167 (D-167 wins). Read all three in full before any work:
 `git fetch origin continuity && git show origin/continuity:decisions.md | sed -n '/^D-165 /,$p'`
 Keep this file under about 7,000 bytes.
 
@@ -15,10 +15,11 @@ Keep this file under about 7,000 bytes.
 Russian, plain words, result first, one step at a time. End each message with the Owner's next step and the exact text to type, or say that nothing is needed.
 
 ## Resume procedure
-1. Read this file and D-165 (command above); older entries of `decisions.md` when a line here cites them.
+1. Read this file and D-165 to D-167 (command above); older entries of `decisions.md` when a line here cites them.
 2. Re-verify the main SHA and the open PRs on GitHub. On any mismatch, this file is stale.
 3. Act only on the Owner's current instruction. AGENT and PROPOSAL records are not Owner decisions.
-4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-166.
+4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-168.
+5. Your checkout is `main` as of the chat's start; once `main` has moved, read CLAUDE.md and the skills from `origin/main`.
 
 ## Baseline (re-verify)
 - `main` = `623cdd995f06e96971ee54ee292fc6c977b3de15` (merge of PR #270, 2026-11-26)
@@ -38,17 +39,19 @@ Russian, plain words, result first, one step at a time. End each message with th
 - 24 Nov (D-104 to D-110, D-119): Tor steps 2.1 (#262), 3.1 (#264), 3.2 (#265) and trackers #263, #266 merged.
 - 22 to 24 Nov (D-082 to D-099): the reliability plan's stages 0, 1, 2, 4, 5 and step 3.1 (#248 to #259).
 
+## Standing rule
+Only the Owner switches to Fable 5.2 (D-034); ask, never pick it. Subagents and created chats inherit the caller's model, so always name a non-Fable one (D-165 §6, D-167).
+
 ## Waiting for the Owner
 - Tor step 4.1 (wiring Tor into the app) needs decisions first: T3 to reconfirm (D-102), arti's exit(1) policy, app size, `rsa` in the app, provider install in the app, never TcpConnector for an onion address, a Tor-suited timeout, stream isolation.
 - Production relay hosting: the Owner is renting a server (D-026); the code is merged (D-035); deploy with `docs/RELAY-DEPLOY.md`.
-- Model choice: only the Owner switches to Fable 5.2 (D-034); ask, never pick it. Subagents and created chats inherit the model, so name a non-Fable one (D-165 §6).
 - Publishing the PSI circuit file before any deploy (R-19, `docs/HOME-DEPLOY.md` Step 1b). Release-signing key.
 - R-18 (b) StrongBox / Keystore flags: needs a phone test.
 - Reliability plan (D-080): only step 3.2 is left (phone power-loss test, needs a physical phone).
 - A choice in #257 to revisit before a release (D-095): a directory that cannot be synced blocks first start.
 - R-9 keep/delete change deferred by the Owner (reconsider with the relay deployment).
 
-## Next work (D-036 order)
+## Next work (from D-036, updated since; not a fresh Owner order, and no order against Tor 4.1 is decided)
 1. Relay on the Owner's server (`docs/RELAY-DEPLOY.md`): needs the server.
 2. Two phones through that relay, incl. background receive: needs phones.
 3. Release build and signing: needs the Owner's decision on the key.

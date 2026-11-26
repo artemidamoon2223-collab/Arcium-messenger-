@@ -4,10 +4,10 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-26 UTC (after D-167), by the Builder chat "Arcium 1" (013Fd9w25yw1w75yseYxbKXy), handing over to a new Builder chat "Arcium 1.1"
+Updated: 2026-11-26 UTC (after D-168), by the Builder chat "Arcium 1" (013Fd9w25yw1w75yseYxbKXy), handing over to a new Builder chat "Arcium 1.1"
 
 ## Read first
-The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**, with the Owner's order in D-166 and corrections in D-167 (D-167 wins). Read all three in full before any work:
+The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**, with the Owner's order in D-166 and corrections in D-167 and D-168 (the later entry wins). Read all four in full before any work:
 `git fetch origin continuity && git show origin/continuity:decisions.md | sed -n '/^D-165 /,$p'`
 Keep this file under about 7,000 bytes.
 
@@ -15,11 +15,11 @@ Keep this file under about 7,000 bytes.
 Russian, plain words, result first, one step at a time. End each message with the Owner's next step and the exact text to type, or say that nothing is needed.
 
 ## Resume procedure
-1. Read this file and D-165 to D-167 (command above); older entries of `decisions.md` when a line here cites them.
+1. Read this file and D-165 to D-168 (command above); older entries of `decisions.md` when a line here cites them.
 2. Re-verify the main SHA and the open PRs on GitHub. On any mismatch, this file is stale.
 3. Act only on the Owner's current instruction. AGENT and PROPOSAL records are not Owner decisions.
-4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-168.
-5. Your checkout is `main` as of the chat's start; once `main` has moved, read CLAUDE.md and the skills from `origin/main`.
+4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-169.
+5. At the start, `git fetch origin main` and compare `git rev-parse HEAD` with `origin/main`. If they differ, now or later, read CLAUDE.md and the skills from `origin/main`, not from the working tree.
 
 ## Baseline (re-verify)
 - `main` = `623cdd995f06e96971ee54ee292fc6c977b3de15` (merge of PR #270, 2026-11-26)

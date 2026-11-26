@@ -882,3 +882,6 @@ D-160 · 2026-11-25 · OWNER · ACTIVE
 - Before the merge (fresh reads): head unchanged; mergeable_state clean; base = main `fb34eba`; PR marked ready; every check run on `f3431dc` success, 6 of 6 (arcium-test, qc-unit, arcium-build, core-rust, action-pins, ts-crypto). #268 had 9; the 3 missing ones are presumably path-filtered for a docs-only change (INFERRED, not checked).
 - After: unsubscribed from #269; the 21:53Z check-in deleted. Branch kept; for the Owner to delete when able: `ccr-ee7f440a-77ozc8-tracker-flush`, `ccr-ee7f440a-77ozc8-pilot-replay-264`, `ccr-ee7f440a-77ozc8-flush-deadline`.
 - Optional follow-ups still open (not started, need the Owner's word): Arcium 2 nits N-1 to N-3 (D-155); the `audit/usage.py` double count (D-151, D-152).
+
+D-161 · 2026-11-26 · OWNER · DONE
+- What: the Owner deleted the leftover Arcium branches `ccr-ee7f440a-77ozc8-pilot-replay-264`, `ccr-ee7f440a-77ozc8-tracker-flush` and `ccr-ee7f440a-77ozc8-flush-deadline` (D-156, D-160). The Builder checked with `git ls-remote`: none of the three exists; `main` = `fa37722`, `continuity` = `6920044` unchanged. The older merged `ccr-ee7f440a-77ozc8-*` branches were never on the deletion list and stay.

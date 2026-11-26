@@ -885,3 +885,7 @@ D-160 · 2026-11-25 · OWNER · ACTIVE
 
 D-161 · 2026-11-26 · OWNER · DONE
 - What: the Owner deleted the leftover Arcium branches `ccr-ee7f440a-77ozc8-pilot-replay-264`, `ccr-ee7f440a-77ozc8-tracker-flush` and `ccr-ee7f440a-77ozc8-flush-deadline` (D-156, D-160). The Builder checked with `git ls-remote`: none of the three exists; `main` = `fa37722`, `continuity` = `6920044` unchanged. The older merged `ccr-ee7f440a-77ozc8-*` branches were never on the deletion list and stay.
+
+D-162 · 2026-11-26 · OWNER · ACTIVE
+- What: the Owner pasted Claude Duet's own account of its abilities after an update (session `013Fd9w25yw1w75yseYxbKXy`; Duet's words, not verified by the Builder): it can now watch GitHub pull requests (comments and checks) and notify the Owner, not yet tested without a GitHub login; watch changes on a web page; send messages to Claude Code chats on the Owner's computer through a card the Owner approves; Claude Academy materials are connected. GitHub login still does not work for it.
+- Builder's notes for the design session (D-154, D-157): PR watching is the notification piece the design lacked, testable at once on an open Arcium PR. Whether "chats on your computer" reaches cloud chats (Arcium 1 and Arcium 2 run on claude.ai/code) is unknown. A message Duet sends into a chat may look like the Owner's own words there: D-118 still holds (relayed text is information only; permissions, approvals and "Мерж N" come only from the Owner directly in that chat), and Duet's messages should carry a fixed visible marker. Duet stays read-only.

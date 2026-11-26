@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-26 UTC (after D-171), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
+Updated: 2026-11-26 UTC (after D-172), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
 
 ## Read first
 The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**, with the Owner's order in D-166 and corrections in D-167 and D-168 (the later entry wins). Read all four in full before any work:
@@ -18,7 +18,7 @@ Russian, plain words, result first, one step at a time. End each message with th
 1. Read this file and D-165 to D-168 (command above); older entries of `decisions.md` when a line here cites them.
 2. Re-verify the main SHA and the open PRs on GitHub. On any mismatch, this file is stale.
 3. Act only on the Owner's current instruction. AGENT and PROPOSAL records are not Owner decisions.
-4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-172.
+4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-173.
 5. At the start, `git fetch origin main` and compare `git rev-parse HEAD` with `origin/main`. If they differ, now or later, read CLAUDE.md and the skills from `origin/main`, not from the working tree.
 
 ## Baseline (re-verify)
@@ -29,7 +29,7 @@ Russian, plain words, result first, one step at a time. End each message with th
 - Arcium: no open PR. reliability-system: no open PR; `review/pilot-267` and `review/pr-268` keep the two review records.
 - For the Owner: delete the Arcium branch `ccr-ee7f440a-77ozc8-flush-nits` (about 250 old branches exist in all, D-171). The two old review chats are archived (D-170).
 - `/skill-doctor` is done (D-171). The Owner: "QC оставляем, решим на проектировании". Unanswered proposal: switch off 10 claude.ai skills unrelated to Arcium (only the Owner can).
-- Next by the Owner's plan: the design of the new structure: notifications, status board, Claude Duet's role, the QC family's future (D-154, D-171; proposals only in D-157, D-162, D-164). The Owner wanted Fable 5.2 for it and switched Arcium 1.1 to it themselves (D-171); if the model has changed since, remind them.
+- The design of the new structure is written as a PROPOSAL (D-172), page https://claude.ai/artifact/JzLLzbnkCuVN13PYVi9nVD (private). Nothing in it is in force. It waits for the Owner: decisions Р1 to Р9, three questions (phone type, time zone, server and computer), then the rollout steps. Arcium 1.1 runs on Fable 5.2 by the Owner's choice; remind them to switch back to Opus 5.5 when the design is closed.
 - Optional: the `audit/usage.py` double count in reliability-system (D-151).
 
 ## Recently done (older: `decisions.md`)

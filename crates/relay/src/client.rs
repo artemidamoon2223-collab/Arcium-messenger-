@@ -197,8 +197,9 @@ pub trait Connector {
 /// Plain TCP, the connector of [`Connection::connect`] and
 /// [`Connection::connect_v2`]: resolves `addr` on this device, connects to
 /// its first address within `timeout`, bounds every read and write by
-/// `timeout`, and turns off Nagle's algorithm. It hands the host name to
-/// this device's resolver, so it is not for an onion address.
+/// `timeout` (a TCP stream's flush returns at once: it holds no bytes back),
+/// and turns off Nagle's algorithm. It hands the host name to this device's
+/// resolver, so it is not for an onion address.
 pub struct TcpConnector;
 
 impl Connector for TcpConnector {
@@ -215,8 +216,8 @@ impl Connector for TcpConnector {
     }
 }
 
-/// The stream `connector` opens to `addr`, with every read and write bounded
-/// by `timeout`, and a first deadline [`REQUEST_DEADLINE`] from now.
+/// The stream `connector` opens to `addr`, with every read, write and flush
+/// bounded by `timeout`, and a first deadline [`REQUEST_DEADLINE`] from now.
 fn open(connector: &dyn Connector, addr: &str, timeout: Duration) -> Result<Socket, ClientError> {
     let stream = connector.connect(addr, timeout)?;
     Ok(Socket {
@@ -240,8 +241,9 @@ fn closed() -> io::Error {
 
 impl Connection {
     /// Connects to `addr` (`host:port`) with `RELAY_PROTOCOL_V1`: plain TCP,
-    /// for development and tests only. Every read and write times out after
-    /// `timeout`, and every request as a whole after [`REQUEST_DEADLINE`].
+    /// for development and tests only. Every read, write and flush times out
+    /// after `timeout`, and every request as a whole after
+    /// [`REQUEST_DEADLINE`].
     pub fn connect(addr: &str, timeout: Duration) -> Result<Self, ClientError> {
         Self::connect_with(&TcpConnector, addr, timeout)
     }
@@ -261,10 +263,10 @@ impl Connection {
 
     /// Connects to the relay of `addr` with `RELAY_PROTOCOL_V2`: a TLS 1.3
     /// handshake that succeeds only if the relay presents the key `addr`
-    /// pins, then the relay's HELLO. Every read and write times out after
-    /// `timeout`; the handshake and HELLO together, and later every request
-    /// as a whole, after [`REQUEST_DEADLINE`]. A handshake failure, a wrong
-    /// key included, is [`ClientError::Tls`].
+    /// pins, then the relay's HELLO. Every read, write and flush times out
+    /// after `timeout`; the handshake and HELLO together, and later every
+    /// request as a whole, after [`REQUEST_DEADLINE`]. A handshake failure, a
+    /// wrong key included, is [`ClientError::Tls`].
     pub fn connect_v2(addr: &RelayAddress, timeout: Duration) -> Result<Self, ClientError> {
         Self::connect_v2_with(&TcpConnector, addr, timeout)
     }
@@ -738,7 +740,7 @@ mod tests {
     /// a time that is not zero and not longer than the connection's timeout.
     /// The request is flushed after its writes and before the answer is read.
     #[test]
-    fn a_connection_bounds_each_read_and_write_on_a_connectors_stream() {
+    fn a_connection_bounds_each_read_write_and_flush_on_a_connectors_stream() {
         let events = Events::default();
         // One frame: length 1, status 1 (NOT_FOUND).
         let connector = ScriptedConnector {
@@ -795,5 +797,25 @@ mod tests {
             assert!(!set.is_zero() && set <= deadline, "{events:?}");
         }
         assert!(flushes > 0, "{events:?}");
+    }
+
+    /// Once the request deadline has passed, a flush fails with `TimedOut`
+    /// before it reaches the stream: no write timeout is set on the stream
+    /// and the stream is not flushed.
+    #[test]
+    fn a_flush_after_the_request_deadline_fails_with_timed_out() {
+        let events = Events::default();
+        let mut socket = Socket {
+            stream: Box::new(Scripted {
+                reply: io::Cursor::new(Vec::new()),
+                events: std::sync::Arc::clone(&events),
+            }),
+            idle: Duration::from_secs(5),
+            deadline: Instant::now(),
+        };
+        let err = socket.flush().expect_err("the deadline has passed");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        let events = events.lock().unwrap().clone();
+        assert!(events.is_empty(), "{events:?}");
     }
 }

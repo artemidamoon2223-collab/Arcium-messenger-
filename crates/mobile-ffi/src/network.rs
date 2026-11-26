@@ -404,9 +404,9 @@ impl NetworkMessenger {
     /// too. A pending message or handshake is sent
     /// again by `sync` once `retransmit_after_ms` has passed without its
     /// receipt, and again after twice as long each time, up to 5 minutes.
-    /// Every single read and write on the relay connection times out after
-    /// `timeout_ms`, every request as a whole after 30 s, and a round stops
-    /// starting requests after 120 s (docs/NET-MESSAGING.md, section 7).
+    /// Every single read, write and flush on the relay connection times out
+    /// after `timeout_ms`, every request as a whole after 30 s, and a round
+    /// stops starting requests after 120 s (docs/NET-MESSAGING.md, section 7).
     #[uniffi::constructor]
     pub fn new(
         core: Arc<ArciumCore>,

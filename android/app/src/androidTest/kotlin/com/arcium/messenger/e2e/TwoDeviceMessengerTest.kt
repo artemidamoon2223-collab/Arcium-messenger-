@@ -533,8 +533,9 @@ class TwoDeviceMessengerTest {
      */
     @Test
     fun bobOpensTheChatOffline() {
-        assertFalse("background receive is still on", ArciumApp.messenger.background.enabled.value)
         openChat()
+        // After openChat: the messenger exists only once start-up is Ready.
+        assertFalse("background receive is still on", ArciumApp.messenger.background.enabled.value)
         assertFalse("the background service runs", notificationShown(CONNECTED_TITLE))
         waitForText("No network", WAIT_MS)
         assertEquals(0, stored(text("while bob restarts"), outgoing = false).size)

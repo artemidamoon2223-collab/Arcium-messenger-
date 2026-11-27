@@ -36,12 +36,9 @@ Russian, plain words, result first, one step at a time. Since D-178: the Owner's
 - 27 Nov (D-185, D-186): #272 (emulator test of background receive, both mutations caught) merged as `cec9242`. D-184: lock test of review chats.
 - 27 Nov (D-182, D-183): #271 (rules of the new scheme: answer header, other-chat rule, review ladder, status board) merged as `d753b71`.
 - 26 Nov (D-172 to D-177): new working scheme designed and accepted; status board and Duet set up.
-- 26 Nov (D-163): #270 (flush named in the timeout docs; test of a flush after the deadline) merged as `623cdd9`.
-- 25 Nov (D-158, D-160): tracker #269 (R-4 note, no status change) merged as `fa37722`.
 - 25 Nov (D-153 to D-156): #268 (flush bounded by the request deadline) merged as `fb34eba`: the first change through the full chain (Builder, fresh agent, Arcium 2, CI, the Owner).
 - 25 Nov (D-112 to D-143): Reliability System V1.2-review built, reviewed, approved by the Owner and merged into reliability-system as `70c287e`.
 - 24 Nov (D-104 to D-110, D-119): Tor steps 2.1 (#262), 3.1 (#264), 3.2 (#265) and trackers #263, #266 merged.
-- 22 to 24 Nov (D-082 to D-099): the reliability plan's stages 0, 1, 2, 4, 5 and step 3.1 (#248 to #259).
 
 ## Standing rule
 Only the Owner switches to Fable 5.2 (D-034); ask, never pick it. Subagents and created chats inherit the caller's model, so always name a non-Fable one (D-165 §6, D-167).

@@ -102,7 +102,7 @@ class BackgroundReceiveService : Service() {
             }
             if (states.first() == BackgroundState.RUN) {
                 val loop = scope.launch {
-                    messenger.syncInBackground { BackgroundReceive.notifyNewMessage(this@BackgroundReceiveService) }
+                    kotlinx.coroutines.awaitCancellation() // MUTATION: the service never syncs
                 }
                 try {
                     states.first { it != BackgroundState.RUN }

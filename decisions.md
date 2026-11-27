@@ -1195,3 +1195,9 @@ D-200 · 2026-11-27 · AGENT · ACTIVE
 - For (4), without rewriting history: new branch `tor/needs-update`, one commit `a1feeef` on `main` `cec9242` (tree = `69af7b7` + the doc comment), PR #274 (draft). #273 closed unmerged, titled "[superseded by #274]"; branch `tor/arti-no-exit` kept. Evidence at `a1feeef`: workspace tests all `0 failed`; core-transport `25 passed; 0 failed`; clippy clean.
 - #273's rerun of `two-devices` (first run failed: Maven Central answered 429 Too Many Requests while Gradle resolved dependencies; not this change) was left to finish.
 - Next: CI on #274, then the Owner's «Мерж 274». Then a tracker note and PR B (step 4.1) on the Owner's word; PR B decides where `state_dir` lives (not in a directory Android clears).
+
+D-201 · 2026-11-27 · OWNER · ACTIVE
+- What: the Owner said "Мерж 274" (session `013Fd9vynW9zatywT2BMTB1h`). The Builder waited until all 9 check runs on head `a1feeef` were success (mergeable clean, `main` still `cec9242`), marked the PR ready and merged it with a merge commit pinned to `a1feeef`. `main` = `ff31f93b4ac44b558d59c002ff6f1daba304aa0d`, parents `cec9242` and `a1feeef`; its tree `e637c8b` equals the PR head's (verified on freshly fetched `main`).
+- `TransportError::NeedsUpdate` is on `main`; arti's one process exit stays (D-199). Step 4.1 (PR B) must place arti's `state_dir` where Android does not clear it, and handle NeedsUpdate.
+- For the Owner: delete the branches `tor/arti-no-exit` (#273, closed) and `tor/needs-update` (#274, merged).
+- Next, each on the Owner's word: a tracker note for `docs/SECURITY-FINDINGS.md` (the exit can recur if the cache is lost); PR B, step 4.1 (rung 4, Arcium 2).

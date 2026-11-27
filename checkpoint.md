@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-27 UTC (after D-200), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
+Updated: 2026-11-27 UTC (after D-201), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
 
 ## Read first
 The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**, with the Owner's order in D-166 and corrections in D-167 and D-168 (the later entry wins). Read all four in full before any work:
@@ -18,28 +18,28 @@ Russian, plain words, result first, one step at a time. Since D-178: the Owner's
 1. Read this file and D-165 to D-168 (command above); older entries of `decisions.md` when a line here cites them.
 2. Re-verify the main SHA and the open PRs on GitHub. On any mismatch, this file is stale.
 3. Act only on the Owner's current instruction. AGENT and PROPOSAL records are not Owner decisions.
-4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-201.
+4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-202.
 5. At the start, `git fetch origin main` and compare `git rev-parse HEAD` with `origin/main`. If they differ, now or later, read CLAUDE.md and the skills from `origin/main`, not from the working tree.
 
 ## Baseline (re-verify)
-- `main` = `cec924216aa101f88b9ee9eff4ce1ad020e20749` (merge of PR #272, 2026-11-27)
+- `main` = `ff31f93b4ac44b558d59c002ff6f1daba304aa0d` (merge of PR #274, 2026-11-27)
 - reliability-system (private) `main` = `70c287e`: Reliability System V1.2-review with the Owner's baseline (D-143).
 
 ## Open now
-- Arcium: #274 open, draft, head `a1feeef` (one commit): `TransportError::NeedsUpdate` for arti's SoftwareDeprecated bootstrap error; no vendored arti-client («Р19 б», D-199, after D-198 corrected D-190); round 3 passed (D-200); CI pending, then «Мерж 274». #273 closed unmerged (superseded). #272 (emulator test of background receive) merged (D-186). #271 (rules of the new scheme) merged (D-183); CLAUDE.md on `main` now holds the answer header, the other-chat rule and the review ladder. reliability-system: no open PR; `review/pilot-267` and `review/pr-268` keep the two review records.
-- For the Owner: delete the Arcium branches `ccr-ee7f440a-77ozc8-flush-nits`, `docs/rules-new-scheme`, `test/bg-receive-e2e`, `test/bg-receive-e2e-mut-loop`, `test/bg-receive-e2e-mut-notify` (about 250 old branches exist in all, D-171). The two old review chats are archived (D-170).
+- Arcium: no open PR. #274 (`TransportError::NeedsUpdate` for arti's SoftwareDeprecated bootstrap error) merged (D-201); no vendored arti-client («Р19 б», D-199, after D-198 corrected D-190); #273 closed unmerged. #272 (emulator test of background receive) merged (D-186). #271 (rules of the new scheme) merged (D-183); CLAUDE.md on `main` now holds the answer header, the other-chat rule and the review ladder. reliability-system: no open PR; `review/pilot-267` and `review/pr-268` keep the two review records.
+- For the Owner: delete the Arcium branches `ccr-ee7f440a-77ozc8-flush-nits`, `docs/rules-new-scheme`, `test/bg-receive-e2e`, `test/bg-receive-e2e-mut-loop`, `test/bg-receive-e2e-mut-notify`, `tor/arti-no-exit`, `tor/needs-update` (about 250 old branches exist in all, D-171). The two old review chats are archived (D-170).
 - `/skill-doctor` is done (D-171). The Owner: "QC оставляем, решим на проектировании". Unanswered proposal: switch off 10 claude.ai skills unrelated to Arcium (only the Owner can).
 - New working scheme (D-172, accepted D-173, page https://claude.ai/artifact/JzLLzbnkCuVN13PYVi9nVD) rolled out through step 8 (D-174 to D-186). Board https://claude.ai/artifact/WRCc8usLjLaR8urG9z8TAV, New York time (D-181): republish whenever this file changes. Duet works on request only, no GitHub (D-176, D-177). Review chats have no add_repo tool (D-184).
-- Tor 4.1: all seven decisions taken (D-189 to D-195). PR A is #274 (D-199, D-200); PR B, step 4.1 (rung 4, Arcium 2), after it on the Owner's word. Stage 2 (app on the phone) when the Owner is home (D-188; APK artifact 15166682041 expires 2026-12-04). One Android phone, no second. Open: push test; server and computer.
+- Tor 4.1: all seven decisions taken (D-189 to D-195). PR A done (#274, D-201). Next on the Owner's word: tracker note; PR B, step 4.1 (rung 4, Arcium 2; `state_dir` not in a cleared dir). Stage 2 (app on the phone) when the Owner is home (D-188; APK artifact 15166682041 expires 2026-12-04). One Android phone, no second. Open: push test; server and computer.
 - Optional: the `audit/usage.py` double count in reliability-system (D-151).
 
 ## Recently done (older: `decisions.md`)
+- 27 Nov (D-196 to D-201): PR A: #274 (NeedsUpdate) merged as `ff31f93`; vendored patch dropped after a corrected premise.
 - 27 Nov (D-185, D-186): #272 (emulator test of background receive, both mutations caught) merged as `cec9242`. D-184: lock test of review chats.
 - 27 Nov (D-182, D-183): #271 (rules of the new scheme: answer header, other-chat rule, review ladder, status board) merged as `d753b71`.
 - 26 Nov (D-172 to D-177): new working scheme designed and accepted; status board and Duet set up.
 - 25 Nov (D-153 to D-156): #268 (flush bounded by the request deadline) merged as `fb34eba`: the first change through the full chain (Builder, fresh agent, Arcium 2, CI, the Owner).
 - 25 Nov (D-112 to D-143): Reliability System V1.2-review built, reviewed, approved by the Owner and merged into reliability-system as `70c287e`.
-- 24 Nov (D-104 to D-110, D-119): Tor steps 2.1 (#262), 3.1 (#264), 3.2 (#265) and trackers #263, #266 merged.
 
 ## Standing rule
 Only the Owner switches to Fable 5.2 (D-034); ask, never pick it. Subagents and created chats inherit the caller's model, so always name a non-Fable one (D-165 §6, D-167).

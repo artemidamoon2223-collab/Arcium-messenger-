@@ -6,6 +6,7 @@ import com.arcium.messenger.BuildConfig
 import com.arcium.messenger.messaging.MessengerService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import uniffi.arcium_core.TorState
 
 data class SettingsState(
@@ -54,9 +55,15 @@ class SettingsViewModel(
         service.changed()
     }
 
-    /** Reads the Tor client's state again; it answers at once (`tor_state()`). */
+    /**
+     * Reads the Tor client's state again; it answers at once (`tor_state()`).
+     * Called off the main thread, so it changes only [SettingsState.tor], in
+     * one atomic update that cannot undo a change made meanwhile on the main
+     * thread (typing in the relay field, for one).
+     */
     fun refreshTor() {
-        _state.value = _state.value.copy(tor = torState())
+        val tor = torState()
+        _state.update { it.copy(tor = tor) }
     }
 
     /**

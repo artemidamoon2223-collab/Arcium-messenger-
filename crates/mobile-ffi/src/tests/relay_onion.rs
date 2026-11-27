@@ -244,6 +244,23 @@ fn the_wait_for_an_onion_connection_does_not_use_up_the_round_budget() {
     relay.stop();
 }
 
+/// A malformed development address is refused before any connection: every
+/// operation fails with the address's error, and neither Tor ([`NoTor`]
+/// panics) nor the direct path is asked (Arcium 2 R275-2).
+#[test]
+fn a_malformed_development_address_is_tried_on_no_path() {
+    for addr in ["x.onion :7700", "x.onion:1:7700", "[x.onion]:7700", "relay:0"] {
+        let mut d = Device::new(addr, 1);
+        let direct = over(&mut d, addr, Arc::new(NoTor));
+        let e = d.net.publish_prekeys().err().unwrap();
+        assert!(e.to_string().contains("invalid relay address"), "{addr}: {e}");
+        let r = d.sync();
+        assert_eq!(r.errors.len(), 1, "{addr}: {:?}", r.errors);
+        assert!(r.errors[0].contains("invalid relay address"), "{addr}: {:?}", r.errors);
+        assert!(direct.lock().unwrap().is_empty(), "{addr}: a direct attempt");
+    }
+}
+
 fn key(d: &Device) -> [u8; 32] {
     d.pk.as_slice().try_into().unwrap()
 }

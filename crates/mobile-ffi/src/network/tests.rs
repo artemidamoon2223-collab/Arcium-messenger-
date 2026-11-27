@@ -138,3 +138,58 @@ fn dropping_follows_the_last_sighting_in_memory() {
     let chains: Vec<u8> = waits.iter().map(|w| w.chain[0]).collect();
     assert_eq!(chains, vec![1, 3, 4, 9]);
 }
+
+/// A development (V1) relay is tried only as a well-formed `host:port`
+/// (`check_v1`): every malformed one is refused before any connection, so its
+/// name reaches neither Tor nor this device's resolver (Arcium 2 R275-2). An
+/// onion name in any case or with final dots stays an onion relay.
+#[test]
+fn a_development_relay_address_is_tried_only_when_well_formed() {
+    let onion = format!("{}.onion", "a".repeat(56));
+    for (addr, is_onion) in [
+        ("127.0.0.1:7700".to_string(), false),
+        ("10.0.2.2:1".to_string(), false),
+        ("localhost:65535".to_string(), false),
+        ("relay.example.com:443".to_string(), false),
+        ("onion.example.com:7700".to_string(), false),
+        ("a-b.c0:9".to_string(), false),
+        ("[::1]:7700".to_string(), false),
+        ("[2001:db8::1]:443".to_string(), false),
+        (format!("{onion}:7700"), true),
+        ("X.ONION:7700".to_string(), true),
+        ("x.onion.:7700".to_string(), true),
+        ("x.onion..:7700".to_string(), true),
+        ("sub.x.onion:7700".to_string(), true),
+    ] {
+        let relay = Relay::parse(addr.clone());
+        assert!(matches!(relay, Relay::V1(_)), "{addr} refused");
+        assert_eq!(relay.is_onion(), is_onion, "{addr}");
+    }
+    for addr in [
+        "x.onion :7700",
+        " x.onion:7700",
+        "x.onion:7700 ",
+        "x.onion\t:7700",
+        "x.onion:1:7700",
+        "[x.onion]:7700",
+        "[::1:7700",
+        "::1:7700",
+        "x.on\u{131}on:7700",
+        "x/onion:7700",
+        "x_onion:7700",
+        "relay.example.com",
+        "relay:",
+        ":7700",
+        ".:7700",
+        "relay:0",
+        "relay:65536",
+        "relay:123456",
+        "relay:+77",
+        "relay:7700\n",
+        "",
+    ] {
+        let relay = Relay::parse(addr.to_string());
+        assert!(matches!(relay, Relay::Invalid(_)), "{addr:?} accepted");
+        assert!(!relay.is_onion(), "{addr:?}");
+    }
+}

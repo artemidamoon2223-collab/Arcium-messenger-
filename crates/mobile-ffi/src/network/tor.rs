@@ -108,18 +108,6 @@ struct Slot<T> {
     failed: Option<(Instant, String)>,
 }
 
-/// Sets the state to `Failed` if a start ends by panicking, so it does not
-/// stay `Starting`.
-struct StartingGuard<'a>(&'a Mutex<TorState>, bool);
-
-impl Drop for StartingGuard<'_> {
-    fn drop(&mut self) {
-        if !self.1 {
-            *lock(self.0) = TorState::Failed;
-        }
-    }
-}
-
 /// The lock's content, also after a panic in another thread that held it.
 fn lock<V>(m: &Mutex<V>) -> MutexGuard<'_, V> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -145,6 +133,9 @@ impl<T> Shared<T> {
     /// come while it starts wait for that start and then get its client or
     /// its error. Within `retry_after` of a failed start, every call fails at
     /// once with that start's error; the first call after that starts again.
+    /// A start that panics is a failed start like any other (Arcium 2
+    /// R275-1): the panic is caught here, so it neither leaves `Starting`
+    /// behind nor skips the pause.
     pub(crate) fn get_or_start(
         &self,
         start: impl FnOnce() -> Result<T, TransportError>,
@@ -159,9 +150,8 @@ impl<T> Shared<T> {
             }
         }
         *lock(&self.state) = TorState::Starting;
-        let mut guard = StartingGuard(&self.state, false);
-        let started = start();
-        guard.1 = true;
+        let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(start))
+            .unwrap_or_else(|_| Err(TransportError::Bootstrap("the start panicked".into())));
         let (state, result) = match started {
             Ok(client) => {
                 let client = Arc::new(client);
@@ -421,15 +411,23 @@ mod tests {
         assert_eq!((starts.load(SeqCst), shared.state()), (1, TorState::Failed));
     }
 
-    /// A start that panics leaves `Failed`, not `Starting`.
+    /// A start that panics is a failed start: its error, `Failed` (not
+    /// `Starting`), and the pause, within which nothing starts (Arcium 2
+    /// R275-1); after the pause, a call starts again.
     #[test]
-    fn a_start_that_panics_leaves_failed() {
-        let shared = Shared::<u32>::new(Duration::ZERO);
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            shared.get_or_start(|| panic!("a start panicked"))
-        }));
-        assert!(r.is_err());
-        assert_eq!(shared.state(), TorState::Failed);
+    fn a_start_that_panics_fails_and_pauses_like_any_failed_start() {
+        let paused = Shared::<u32>::new(Duration::from_secs(3600));
+        let e = paused.get_or_start(|| panic!("a start panicked")).err().unwrap();
+        assert!(matches!(&e, CoreError::Network { msg } if msg == "Tor did not start: bootstrap failed: the start panicked"), "{e}");
+        assert_eq!(paused.state(), TorState::Failed);
+        let again = paused.get_or_start(|| panic!("started within the pause")).err().unwrap();
+        assert_eq!(again.to_string(), e.to_string());
+        assert_eq!(paused.state(), TorState::Failed);
+
+        let unpaused = Shared::<u32>::new(Duration::ZERO);
+        let _ = unpaused.get_or_start(|| panic!("a start panicked"));
+        assert_eq!(*unpaused.get_or_start(|| Ok(5)).unwrap(), 5);
+        assert_eq!(unpaused.state(), TorState::Running);
     }
 
     /// Stands in for a Tor client: records the timeout of each dial, and

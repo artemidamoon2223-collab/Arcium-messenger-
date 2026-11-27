@@ -134,7 +134,12 @@ UNAUTHORIZED (`protocol.rs`, `auth.rs`, `tls.rs`):
   (GET_BUNDLE, no AUTH) and call `sync` once more, so one round can try AUTH
   twice; the app's backoff then applies, as after any `network:` error. A
   string with the V2 prefix that does not parse is never tried as
-  `host:port`.
+  `host:port`. A V1 string is tried only as a well-formed `host:port`: a
+  port from 1 to 65535, and a host of ASCII letters, digits, `-` and `.`
+  (any case, final dots allowed) or an IPv6 address in brackets
+  (`network::check_v1`). Anything else is refused the same way, before any
+  connection, so a malformed name (`x.onion :7700`, `x.onion:1:7700`)
+  reaches neither Tor nor this device's resolver.
 - Only the app's Kotlin side refuses V1 in release builds
   (`messaging/RelayRules.kt`, applied when a relay is set and again to the
   saved value at start). The Rust core accepts both versions in every build:
@@ -332,8 +337,8 @@ unchanged: TLS 1.3 to the pinned key, HELLO, AUTH (section 3).
 - **One Tor client per process**, started by the first connection to an onion
   relay, which waits for it (`core_transport::BOOTSTRAP_TIMEOUT`, 120 s); a
   connection that comes meanwhile waits for that start. The client then stays
-  for the life of the process. A start that fails (no network, a timeout)
-  fails that connection; for the next 60 s (`network::tor::RETRY_AFTER`)
+  for the life of the process. A start that fails (no network, a timeout, a
+  panic inside it) fails that connection; for the next 60 s (`network::tor::RETRY_AFTER`)
   every connection to the onion relay fails at once with the same error, and
   the first one after that starts Tor again. Nothing is tried directly
   meanwhile.
@@ -1315,6 +1320,7 @@ entry per logical message, never written by the ratchet.
 | the V2 relay stores a SEND only from a connection authenticated as the envelope's sender: none without AUTH, none naming another key or too short to name one, none after a wrong AUTH, and a refused SEND is answered UNAUTHORIZED, not FULL (tracker R-9) | `relay` `v2_tests::a_send_is_stored_only_for_an_envelope_naming_the_authenticated_owner`, `v2_tests::without_auth_only_get_bundle_is_answered` | runtime, local V2 relay over TLS |
 | the app over a V2 relay: first contact, texts both ways, receipts; neither a connection without AUTH nor a third device (as itself, or claiming the owner's key) can read, delete or publish another device's mailbox or bundle (the reading half of R-9; how full a mailbox is stays visible); a forged message or handshake naming a pinned contact is refused by the relay, with or without the forger's own AUTH, and only the forger's own envelope is stored (R-9); a wrong TLS pin, a refused AUTH, a low-order auth key and a malformed connection string end the round with a network error and change nothing on the relay; a malformed V2 string is never tried as V1 | `tests::relay_v2` | runtime, local V2 relay over TLS |
 | which relay a build accepts: V2 strings everywhere, `host:port` in debug builds only | `RelayRulesTest` (Android JVM unit test) | unit |
+| which development (V1) address the core tries: well-formed `host:port` only (any case, final dots, bracketed IPv6); a malformed one (whitespace, a second `:`, brackets around a name, non-ASCII, a bad port) refused before any connection, Tor and the direct path never asked | `network::tests::a_development_relay_address_is_tried_only_when_well_formed`, `tests::relay_onion::a_malformed_development_address_is_tried_on_no_path` | unit; runtime with Tor and TCP stand-ins |
 | a handshake alone is not a session; its first message creates it; a recorded handshake does not block simultaneous initiation | `tests::responder` | runtime, local relay over TCP |
 | both directions, restarts, consistent histories | `both_directions_and_both_histories_survive_restarts` | runtime |
 | offline recipient | `messages_to_an_offline_recipient_wait_on_the_relay` | runtime |

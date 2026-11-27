@@ -1,5 +1,7 @@
 package com.arcium.messenger.e2e
 
+import android.app.Notification
+import android.app.NotificationManager
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import androidx.compose.ui.semantics.SemanticsActions
@@ -9,6 +11,7 @@ import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isRoot
+import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -31,6 +34,7 @@ import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -81,11 +85,16 @@ class TwoDeviceMessengerTest {
         const val UI_MS = 20_000L
         const val DATA_CODE = 42
 
+        /** Titles of the background service's notifications (`BackgroundReceive`). */
+        const val CONNECTED_TITLE = "Connected in the background"
+        const val NEW_MESSAGE_TITLE = "New message"
+
         /** Every text of the Alice–Bob conversation, and whether Alice wrote it. */
         val CONVERSATION = listOf(
             "hello bob" to true, "hi alice" to false, "queued 1" to true, "queued 2" to true,
             "queued 3" to true, "after restart" to false, "welcome back" to true, "before the kill" to true,
-            "during the outage" to true, "before publishing" to true, "while bob restarts" to true,
+            "during the outage" to true, "before publishing" to true, "while bob is in the background" to true,
+            "while bob restarts" to true,
         )
 
         /** A sync round that sent, fetched and changed nothing. */
@@ -440,6 +449,74 @@ class TwoDeviceMessengerTest {
         assertEquals(1, stored(text("before publishing"), outgoing = false).size)
     }
 
+    /**
+     * Background receive, which is off by default: Bob turns it on in
+     * Settings and leaves the app with the Home key. With the app off the
+     * screen only the background service's loop syncs (the screen's loop
+     * runs while the app is visible), so Alice's text arriving while
+     * [MessengerService.visible] is false was received by the service; and
+     * the "New message" notification is shown, with neither the text nor the
+     * contact's name in any of the app's notifications. Then the test turns
+     * the setting off directly ([BackgroundSettings.set], not the switch) and
+     * waits for the service to stop; Bob's next step checks it stays off.
+     *
+     * Emulator only: no Doze, no vendor battery limits, no real network;
+     * the process is not ended while it waits.
+     */
+    @Test
+    fun bobReceivesInTheBackground() {
+        waitFor("openAddContact", WAIT_MS)
+        assertFalse("background receive is on before Bob turns it on", ArciumApp.messenger.background.enabled.value)
+        assertFalse("the service's notice is already shown", notificationShown(CONNECTED_TITLE))
+        assertFalse("a \"New message\" notification is already shown", notificationShown(NEW_MESSAGE_TITLE))
+        tap("openSettings")
+        waitFor("relayInput")
+        // The switch is the only toggleable node on the Settings screen.
+        try {
+            rule.onNode(isToggleable()).performScrollTo()
+        } catch (e: AssertionError) {
+            // Not in a scrollable container: already where it is shown.
+        }
+        rule.onNode(isToggleable()).performClick()
+        waitForText("On: the app stays connected to the relay while it is closed.", UI_MS)
+        tap("settingsBack")
+        waitFor("openAddContact")
+        poll("the background service's notice", UI_MS) { notificationShown(CONNECTED_TITLE) }
+
+        shell("input keyevent KEYCODE_HOME")
+        poll("the app to leave the screen", UI_MS) { !ArciumApp.messenger.visible.value }
+        report("ready" to "background")
+
+        poll("Alice's text, received while the app is not on screen", WAIT_MS) {
+            assertFalse("the app came back on screen", ArciumApp.messenger.visible.value)
+            stored(text("while bob is in the background"), outgoing = false).isNotEmpty()
+        }
+        assertFalse("the app came back on screen", ArciumApp.messenger.visible.value)
+        assertTrue("the background service stopped while Bob was away", notificationShown(CONNECTED_TITLE))
+        poll("the \"New message\" notification", UI_MS) { notificationShown(NEW_MESSAGE_TITLE) }
+        // The texts are not printed: each carries the canary.
+        assertTrue(
+            "a notification shows a text or the contact's name",
+            notificationTexts().none { it.contains(CANARY) || it.contains(peerName) },
+        )
+        assertEquals(1, stored(text("while bob is in the background"), outgoing = false).size)
+
+        ArciumApp.messenger.background.set(false)
+        poll("the background service to stop", UI_MS) { !notificationShown(CONNECTED_TITLE) }
+    }
+
+    /**
+     * While Bob's app is off the screen with background receive on: his
+     * service takes the text and sends the receipt that marks it delivered.
+     */
+    @Test
+    fun aliceWritesWhileBobIsInTheBackground() {
+        openChat()
+        send(text("while bob is in the background"))
+        waitForStatus(text("while bob is in the background"), "Delivered")
+        assertEquals(1, stored(text("while bob is in the background"), outgoing = true).size)
+    }
+
     /** Bob is offline again (the driver switched his network off): Alice's text waits on the relay. */
     @Test
     fun aliceWritesWhileBobRestartsOffline() {
@@ -449,10 +526,17 @@ class TwoDeviceMessengerTest {
         assertEquals(1, stored(text("while bob restarts"), outgoing = true).size)
     }
 
-    /** Bob's app opens with no network and has not got the text; then this process ends. */
+    /**
+     * Bob's app opens with no network and has not got the text; then this
+     * process ends. Background receive, turned off at the end of
+     * [bobReceivesInTheBackground], is still off and its service not running.
+     */
     @Test
     fun bobOpensTheChatOffline() {
         openChat()
+        // After openChat: the messenger exists only once start-up is Ready.
+        assertFalse("background receive is still on", ArciumApp.messenger.background.enabled.value)
+        assertFalse("the background service runs", notificationShown(CONNECTED_TITLE))
         waitForText("No network", WAIT_MS)
         assertEquals(0, stored(text("while bob restarts"), outgoing = false).size)
     }
@@ -668,6 +752,34 @@ class TwoDeviceMessengerTest {
         pairs.forEach { (k, v) -> data.putString(k, v) }
         data.putString("pid", android.os.Process.myPid().toString())
         InstrumentationRegistry.getInstrumentation().sendStatus(DATA_CODE, data)
+    }
+
+    /** The notifications this app shows now. */
+    private fun notifications() = InstrumentationRegistry.getInstrumentation().targetContext
+        .getSystemService(NotificationManager::class.java).activeNotifications.map { it.notification }
+
+    /** Whether this app shows a notification titled [title] now. */
+    private fun notificationShown(title: String): Boolean =
+        notifications().any { it.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() == title }
+
+    /** Every title and text of this app's notifications now. */
+    private fun notificationTexts(): List<String> = notifications().flatMap { n ->
+        listOf(Notification.EXTRA_TITLE, Notification.EXTRA_TEXT, Notification.EXTRA_BIG_TEXT)
+            .mapNotNull { n.extras.getCharSequence(it)?.toString() }
+    }
+
+    /**
+     * Polls [condition] every 500 ms until it holds, failing after [timeoutMs].
+     * Unlike [waitUntil] it needs no screen: it is for while the app is not on it.
+     */
+    private fun poll(what: String, timeoutMs: Long, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!condition()) {
+            if (System.currentTimeMillis() > deadline) {
+                throw AssertionError("timed out after $timeoutMs ms waiting for $what")
+            }
+            Thread.sleep(500)
+        }
     }
 
     private fun shell(command: String) {

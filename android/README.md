@@ -139,6 +139,15 @@ server of its own: the service runs the app's sync loop
   the bundle and scans the mailbox: a slower pace also means the device shows
   itself to the relay and the network less often.
 
+Tested on an API 30 emulator only: in the two-device CI job, Bob turns it on
+in Settings and leaves the app with the Home key; Alice's text then reaches
+his store while the app is off the screen, his service sends the receipt,
+and the "New message" notification is shown, without the text or the
+contact's name (`bobReceivesInTheBackground` in `TwoDeviceMessengerTest`).
+Not exercised there: the Android 13 notification prompt, turning it off with
+the switch (the test turns the setting off directly), the lock screen, and a
+phone's sleep modes, vendor battery limits or real networks.
+
 What it does not do:
 
 - Start after a reboot (there is no `BOOT_COMPLETED` receiver), or start

@@ -455,8 +455,10 @@ class TwoDeviceMessengerTest {
      * screen only the background service's loop syncs (the screen's loop
      * runs while the app is visible), so Alice's text arriving while
      * [MessengerService.visible] is false was received by the service; and
-     * the "New message" notification is shown. Then Bob turns it off again,
-     * so the later steps run as before, and the service stops.
+     * the "New message" notification is shown, with neither the text nor the
+     * contact's name in any of the app's notifications. Then the test turns
+     * the setting off directly ([BackgroundSettings.set], not the switch) and
+     * waits for the service to stop; Bob's next step checks it stays off.
      *
      * Emulator only: no Doze, no vendor battery limits, no real network;
      * the process is not ended while it waits.
@@ -492,6 +494,11 @@ class TwoDeviceMessengerTest {
         assertFalse("the app came back on screen", ArciumApp.messenger.visible.value)
         assertTrue("the background service stopped while Bob was away", notificationShown(CONNECTED_TITLE))
         poll("the \"New message\" notification", UI_MS) { notificationShown(NEW_MESSAGE_TITLE) }
+        // The texts are not printed: each carries the canary.
+        assertTrue(
+            "a notification shows a text or the contact's name",
+            notificationTexts().none { it.contains(CANARY) || it.contains(peerName) },
+        )
         assertEquals(1, stored(text("while bob is in the background"), outgoing = false).size)
 
         ArciumApp.messenger.background.set(false)
@@ -519,10 +526,16 @@ class TwoDeviceMessengerTest {
         assertEquals(1, stored(text("while bob restarts"), outgoing = true).size)
     }
 
-    /** Bob's app opens with no network and has not got the text; then this process ends. */
+    /**
+     * Bob's app opens with no network and has not got the text; then this
+     * process ends. Background receive, turned off at the end of
+     * [bobReceivesInTheBackground], is still off and its service not running.
+     */
     @Test
     fun bobOpensTheChatOffline() {
+        assertFalse("background receive is still on", ArciumApp.messenger.background.enabled.value)
         openChat()
+        assertFalse("the background service runs", notificationShown(CONNECTED_TITLE))
         waitForText("No network", WAIT_MS)
         assertEquals(0, stored(text("while bob restarts"), outgoing = false).size)
     }
@@ -740,13 +753,18 @@ class TwoDeviceMessengerTest {
         InstrumentationRegistry.getInstrumentation().sendStatus(DATA_CODE, data)
     }
 
+    /** The notifications this app shows now. */
+    private fun notifications() = InstrumentationRegistry.getInstrumentation().targetContext
+        .getSystemService(NotificationManager::class.java).activeNotifications.map { it.notification }
+
     /** Whether this app shows a notification titled [title] now. */
-    private fun notificationShown(title: String): Boolean {
-        val manager = InstrumentationRegistry.getInstrumentation().targetContext
-            .getSystemService(NotificationManager::class.java)
-        return manager.activeNotifications.any {
-            it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() == title
-        }
+    private fun notificationShown(title: String): Boolean =
+        notifications().any { it.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() == title }
+
+    /** Every title and text of this app's notifications now. */
+    private fun notificationTexts(): List<String> = notifications().flatMap { n ->
+        listOf(Notification.EXTRA_TITLE, Notification.EXTRA_TEXT, Notification.EXTRA_BIG_TEXT)
+            .mapNotNull { n.extras.getCharSequence(it)?.toString() }
     }
 
     /**

@@ -1,4 +1,6 @@
 /target/
+# Built when a vendored crate's own tests are run there (vendor/README.md).
+/vendor/*/target/
 # The root workspace's Cargo.lock is tracked: it is the dependency graph every
 # build and CI job uses (H-10). Other lockfiles (arcium-psi, scratch helpers) stay
 # untracked.

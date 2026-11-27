@@ -331,19 +331,34 @@ mod tests {
         assert_eq!((starts.load(SeqCst), shared.state()), (1, TorState::Running));
     }
 
-    /// `NeedsUpdate` is its own state and its own error text; a call after
-    /// the pause tries again.
+    /// `NeedsUpdate` is its own state and its own error text; within the
+    /// pause every call fails at once with that text and starts nothing; a
+    /// call after the pause tries again.
     #[test]
     fn a_start_that_needs_an_update_says_so() {
-        let shared = Shared::<u32>::new(Duration::ZERO);
-        let e = shared.get_or_start(|| Err(TransportError::NeedsUpdate)).err().unwrap();
-        assert_eq!(shared.state(), TorState::NeedsUpdate);
+        let paused = Shared::<u32>::new(Duration::from_secs(3600));
+        let e = paused.get_or_start(|| Err(TransportError::NeedsUpdate)).err().unwrap();
+        assert_eq!(paused.state(), TorState::NeedsUpdate);
         assert!(
             matches!(&e, CoreError::Network { msg } if msg.starts_with("Tor needs an app update")),
             "{e}"
         );
-        assert_eq!(*shared.get_or_start(|| Ok(3)).unwrap(), 3);
-        assert_eq!(shared.state(), TorState::Running);
+        let again = paused.get_or_start(|| panic!("started within the pause")).err().unwrap();
+        assert_eq!(again.to_string(), e.to_string());
+        assert_eq!(paused.state(), TorState::NeedsUpdate);
+
+        let unpaused = Shared::<u32>::new(Duration::ZERO);
+        let _ = unpaused.get_or_start(|| Err(TransportError::NeedsUpdate));
+        assert_eq!(*unpaused.get_or_start(|| Ok(3)).unwrap(), 3);
+        assert_eq!(unpaused.state(), TorState::Running);
+    }
+
+    /// The process's client waits 60 s after a failed start before it tries
+    /// again (the tests above use their own pauses).
+    #[test]
+    fn the_process_client_pauses_60_s_after_a_failed_start() {
+        assert_eq!(RETRY_AFTER, Duration::from_secs(60));
+        assert_eq!(PROCESS_TOR.retry_after, RETRY_AFTER);
     }
 
     /// A failed start is `Failed`; within the pause every call fails at once
@@ -417,37 +432,48 @@ mod tests {
         assert_eq!(shared.state(), TorState::Failed);
     }
 
-    /// Stands in for a Tor client: records the timeout of each dial and the
-    /// timeouts its stream is given.
+    /// Stands in for a Tor client: records the timeout of each dial, and
+    /// what is done to its stream: the timeouts it is given (`r`, `w`), each
+    /// flush (`f`) and the bytes written to it. Each stream reads `pong`.
     struct StandIn {
         dials: Mutex<Vec<(String, Duration)>>,
-        timeouts: Arc<Mutex<Vec<(char, Option<Duration>)>>>,
+        calls: Arc<Mutex<Vec<(char, Option<Duration>)>>>,
+        written: Arc<Mutex<Vec<u8>>>,
     }
 
-    struct StandInStream(Arc<Mutex<Vec<(char, Option<Duration>)>>>);
+    struct StandInStream {
+        calls: Arc<Mutex<Vec<(char, Option<Duration>)>>>,
+        written: Arc<Mutex<Vec<u8>>>,
+        unread: &'static [u8],
+    }
 
     impl Read for StandInStream {
-        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-            Ok(0)
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = buf.len().min(self.unread.len());
+            buf[..n].copy_from_slice(&self.unread[..n]);
+            self.unread = &self.unread[n..];
+            Ok(n)
         }
     }
 
     impl Write for StandInStream {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.written.lock().unwrap().extend_from_slice(buf);
             Ok(buf.len())
         }
         fn flush(&mut self) -> io::Result<()> {
+            self.calls.lock().unwrap().push(('f', None));
             Ok(())
         }
     }
 
     impl TimedStream for StandInStream {
         fn set_read_timeout(&mut self, t: Option<Duration>) -> io::Result<()> {
-            self.0.lock().unwrap().push(('r', t));
+            self.calls.lock().unwrap().push(('r', t));
             Ok(())
         }
         fn set_write_timeout(&mut self, t: Option<Duration>) -> io::Result<()> {
-            self.0.lock().unwrap().push(('w', t));
+            self.calls.lock().unwrap().push(('w', t));
             Ok(())
         }
     }
@@ -456,18 +482,24 @@ mod tests {
         type Stream = StandInStream;
         fn dial(&self, addr: &str, timeout: Duration) -> io::Result<StandInStream> {
             self.dials.lock().unwrap().push((addr.to_string(), timeout));
-            Ok(StandInStream(Arc::clone(&self.timeouts)))
+            Ok(StandInStream {
+                calls: Arc::clone(&self.calls),
+                written: Arc::clone(&self.written),
+                unread: b"pong",
+            })
         }
     }
 
     /// The connector waits up to 60 s for a stream (longer only if the
     /// connection's own timeout is longer), asks for the address as given,
-    /// and passes every read and write timeout on to the Tor stream.
+    /// and passes every call on to the Tor stream: reads, writes, flushes,
+    /// and every read and write timeout.
     #[test]
-    fn over_tor_waits_60_s_for_a_stream_and_passes_timeouts_on() {
+    fn over_tor_waits_60_s_for_a_stream_and_passes_every_call_on() {
         let tor = Arc::new(StandIn {
             dials: Mutex::new(Vec::new()),
-            timeouts: Arc::new(Mutex::new(Vec::new())),
+            calls: Arc::new(Mutex::new(Vec::new())),
+            written: Arc::new(Mutex::new(Vec::new())),
         });
         let connector = OverTor(Arc::clone(&tor));
         let mut stream = connector.connect("x.onion:443", Duration::from_secs(10)).unwrap();
@@ -482,12 +514,19 @@ mod tests {
         assert_eq!(ONION_CONNECT_TIMEOUT, Duration::from_secs(60));
         stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         stream.set_write_timeout(Some(Duration::from_secs(4))).unwrap();
+        stream.write_all(b"ping").unwrap();
+        stream.flush().unwrap();
         stream.set_read_timeout(None).unwrap();
+        let mut read = Vec::new();
+        stream.read_to_end(&mut read).unwrap();
+        assert_eq!(read, b"pong");
+        assert_eq!(*tor.written.lock().unwrap(), b"ping");
         assert_eq!(
-            *tor.timeouts.lock().unwrap(),
+            *tor.calls.lock().unwrap(),
             vec![
                 ('r', Some(Duration::from_secs(3))),
                 ('w', Some(Duration::from_secs(4))),
+                ('f', None),
                 ('r', None),
             ]
         );

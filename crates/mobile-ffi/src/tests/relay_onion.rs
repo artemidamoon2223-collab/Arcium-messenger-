@@ -131,24 +131,34 @@ fn a_v2_relay_at_an_onion_address_is_reached_only_through_the_onion_path() {
     relay.stop();
 }
 
-/// A development (V1) relay at an onion address goes through the onion path
-/// too: an onion name never reaches this device's resolver.
+/// A development (V1) relay at an onion address, in any case and with final
+/// dots, goes through the onion path too, to the address as given, with the
+/// 60 s request deadline: an onion name never reaches this device's
+/// resolver.
 #[test]
 fn a_v1_relay_at_an_onion_address_is_reached_only_through_the_onion_path() {
     let relay = start_relay();
     let port = relay.addr().port();
-    let onion = format!("{}:{port}", onion_host());
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    let tor = Arc::new(StandInTor {
-        target: Some(format!("127.0.0.1:{port}")),
-        asked: Arc::clone(&asked),
-        delay: Duration::ZERO,
-    });
-    let mut d = Device::new(&onion, 1);
-    let direct = over(&mut d, &onion, tor);
-    d.net.publish_prekeys().unwrap();
-    assert_eq!(*asked.lock().unwrap(), vec![onion]);
-    assert!(direct.lock().unwrap().is_empty(), "a direct attempt");
+    let host = onion_host();
+    for onion in [
+        format!("{host}:{port}"),
+        format!("{}:{port}", host.to_uppercase()),
+        format!("{host}.:{port}"),
+        format!("{host}..:{port}"),
+    ] {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let tor = Arc::new(StandInTor {
+            target: Some(format!("127.0.0.1:{port}")),
+            asked: Arc::clone(&asked),
+            delay: Duration::ZERO,
+        });
+        let mut d = Device::new(&onion, 1);
+        let direct = over(&mut d, &onion, tor);
+        d.net.publish_prekeys().unwrap();
+        assert_eq!(*asked.lock().unwrap(), vec![onion.clone()]);
+        assert!(direct.lock().unwrap().is_empty(), "{onion}: a direct attempt");
+        assert_eq!(*d.net.last_deadline.lock().unwrap(), Some(ONION_REQUEST_DEADLINE), "{onion}");
+    }
     relay.stop();
 }
 

@@ -233,15 +233,18 @@ Where: `crates/mobile-ffi/src/network.rs` and, beside it in `network/`,
   not depend on its honesty.
 - **Metadata exposure.** What new metadata does the change show the relay or
   the network: sizes, timing, recipient keys, the sender field? The relay path
-  provides no anonymity towards the relay and no metadata protection
-  (`NET-MESSAGING.md` §8), so nothing may claim them for it. Tor is used only
-  for a relay at an onion address (§3a): that relay does not learn this
-  device's IP address, and if Tor cannot be had nothing is tried directly;
-  the relay still sees identity keys, timing, sizes and which mailbox a
-  connection uses. Nothing may claim more for Tor than that, nor Tor for a
-  relay at an ordinary address; and a change must not reach an onion relay
-  any other way (no direct connection, no fallback after a Tor error, no name
-  lookup on this device).
+  provides no anonymity (none towards the relay, even over Tor) and no
+  metadata protection beyond what Tor hides for a relay at an onion address
+  (`NET-MESSAGING.md` §8, §3a), so nothing may claim more for it. Tor is used
+  only for a relay at an onion address: by design (not yet run on a real Tor
+  network or a phone, §3a) that relay does not learn this device's IP
+  address, an observer of this device's network does not learn which relay
+  it talks to, and if Tor cannot be had nothing is tried directly. The relay
+  still sees everything §3 lists, among them identity keys, timing, sizes and
+  which mailbox a connection uses. Nothing may claim more for Tor than that,
+  nor Tor for a relay at an ordinary address; and a change must not reach an
+  onion relay any other way (no direct connection, no fallback after a Tor
+  error, no name lookup on this device).
 - **Retransmission identity.** A retransmission carries identical bytes and so
   the same message id.
 - **Time bounds.** One relay request is bounded as a whole by

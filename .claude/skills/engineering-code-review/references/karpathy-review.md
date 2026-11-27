@@ -97,7 +97,9 @@ summary: <one or two sentences: the overall verdict and its main reason>
 KARPATHY_REVIEW_END
 ```
 
-Give it to the owner in the session report. Post it on a PR only when asked.
+Give it to the owner in the session report, in full or as a link to the PR
+body that holds it in full (`CLAUDE.md`, «Отчёт»). Post it as a PR comment
+only when asked.
 
 ## Rules Learned Over Time
 

@@ -161,7 +161,8 @@ ARCIUM_SECURITY_REVIEW_END
 ```
 
 `complete: yes` requires every changed path read in full. Give the block to the
-owner in the session report. Post it on a PR only when asked.
+owner in the session report, in full or as a link to the PR body that holds it
+in full (`CLAUDE.md`, «Отчёт»). Post it as a PR comment only when asked.
 
 ## References
 

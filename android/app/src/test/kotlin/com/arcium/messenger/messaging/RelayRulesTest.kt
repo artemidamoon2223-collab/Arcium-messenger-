@@ -134,12 +134,14 @@ class RelayRulesTest {
             v2("$onion:443"),
             v2("x.onion:7700"),
             v2("onion:1"),
+            v2("sub.x.onion:443"),
             "$onion:7700",
             "x.onion:7700",
             "X.ONION:7700",
             "x.Onion.:7700",
             "x.onion..:7700",
             "onion:7700",
+            "sub.x.onion:7700",
             "[x.onion]:7700",
         )) {
             assertTrue(address, relayGoesThroughTor(address))
@@ -156,6 +158,8 @@ class RelayRulesTest {
             "xonion:7700",
             "x.onions:7700",
             "x.onio:7700",
+            // The core takes all before the last ':' as the host: "x.onion:1".
+            "x.onion:1:7700",
             // Not ASCII: Rust compares ASCII letters only, so neither does this.
             "x.on\u0131on:7700",
             "x.ONİON:7700",

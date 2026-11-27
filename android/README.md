@@ -24,7 +24,7 @@ android/
 │       ├── onboarding/       Generate identity keys
 │       ├── contacts/         Contact list; add a contact by pasting their card
 │       ├── chat/             Encrypted message thread
-│       └── settings/         Relay connection string; what is not provided
+│       └── settings/         Relay connection string, route (Tor or not); what is not provided
 └── e2e/                      Host scripts that drive the emulator end-to-end tests
 ```
 

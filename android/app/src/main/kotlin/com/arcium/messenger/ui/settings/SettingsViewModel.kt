@@ -17,8 +17,8 @@ data class SettingsState(
     val error: String? = null,
     /** The user turned background receive on. */
     val background: Boolean = false,
-    /** The process's Tor client, as last read ([SettingsViewModel.refreshTor]). */
-    val tor: TorState = TorState.NOT_STARTED,
+    /** The process's Tor client, as last read ([SettingsViewModel.refreshTor]); null before the first read. */
+    val tor: TorState? = null,
 )
 
 class SettingsViewModel(
@@ -36,30 +36,31 @@ class SettingsViewModel(
     val state: StateFlow<SettingsState> = _state
 
     fun onRelayInput(value: String) {
-        _state.value = _state.value.copy(relayInput = value, error = null)
+        _state.update { it.copy(relayInput = value, error = null) }
     }
 
     fun saveRelay() {
         try {
             service.relay.set(_state.value.relayInput)
-            _state.value = _state.value.copy(savedRelay = service.relay.address.value, error = null)
+            _state.update { it.copy(savedRelay = service.relay.address.value, error = null) }
             service.changed()
         } catch (e: IllegalArgumentException) {
-            _state.value = _state.value.copy(error = e.message)
+            _state.update { it.copy(error = e.message) }
         }
     }
 
     fun clearRelay() {
         service.relay.clear()
-        _state.value = _state.value.copy(relayInput = "", savedRelay = null, error = null)
+        _state.update { it.copy(relayInput = "", savedRelay = null, error = null) }
         service.changed()
     }
 
     /**
      * Reads the Tor client's state again; it answers at once (`tor_state()`).
-     * Called off the main thread, so it changes only [SettingsState.tor], in
-     * one atomic update that cannot undo a change made meanwhile on the main
-     * thread (typing in the relay field, for one).
+     * Called off the main thread. Every change of the state in this class is
+     * one atomic [update] of the fields it changes, so this one and those
+     * made on the main thread (typing in the relay field, for one) never
+     * undo each other.
      */
     fun refreshTor() {
         val tor = torState()
@@ -73,6 +74,6 @@ class SettingsViewModel(
      */
     fun setBackground(on: Boolean) {
         service.background.set(on)
-        _state.value = _state.value.copy(background = on)
+        _state.update { it.copy(background = on) }
     }
 }

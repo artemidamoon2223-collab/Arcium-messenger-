@@ -16,9 +16,11 @@ class RouteTextTest {
         }
     }
 
-    /** A relay reached through Tor says so, and then what Tor is doing. */
+    /** A relay reached through Tor says so, and then what Tor is doing once that has been read. */
     @Test
     fun aRelayThroughTorSaysSoAndNamesTorsState() {
+        assertEquals("Through Tor: the relay does not see your IP address.", routeStatus(true, null))
+        assertEquals("Without Tor: the relay sees your IP address.", routeStatus(false, null))
         for (state in TorState.values()) {
             val text = routeStatus(true, state)
             assertTrue(text, text.startsWith("Through Tor: the relay does not see your IP address. "))
@@ -26,12 +28,22 @@ class RouteTextTest {
         }
     }
 
-    /** Each state has its own text; the one that needs an update asks for it. */
+    /** Each state has its own text, and it is this one. */
     @Test
     fun everyTorStateHasItsOwnText() {
         val texts = TorState.values().map(::torStatus)
         assertEquals(texts.toString(), texts.size, texts.toSet().size)
-        assertTrue(torStatus(TorState.NEEDS_UPDATE).startsWith("Tor needs an app update"))
+        assertEquals("Tor starts with the first connection to the relay.", torStatus(TorState.NOT_STARTED))
+        assertEquals("Tor is starting; a start can take up to two minutes.", torStatus(TorState.STARTING))
         assertEquals("Tor is running.", torStatus(TorState.RUNNING))
+        assertEquals(
+            "Tor needs an app update: the Tor network requires a newer version of this app. " +
+                "Until it is updated, nothing reaches this relay.",
+            torStatus(TorState.NEEDS_UPDATE),
+        )
+        assertEquals(
+            "Tor did not start. The app tries again at its next sync, at least a minute later.",
+            torStatus(TorState.FAILED),
+        )
     }
 }

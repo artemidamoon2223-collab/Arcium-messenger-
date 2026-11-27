@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.arcium.messenger.messaging.BackgroundReceive
 import com.arcium.messenger.messaging.BackgroundState
@@ -81,13 +82,18 @@ fun SettingsScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    // While the screen shows a relay reached through Tor, read Tor's state
-    // every second, so "starting" turns into "running" (or a problem) here.
+    // While this screen is visible and shows a relay reached through Tor,
+    // read Tor's state every second, so "starting" turns into "running" (or
+    // a problem) here. Nothing is read while the app is in the background.
     val throughTor = state.savedRelay?.let(::relayGoesThroughTor) == true
-    LaunchedEffect(throughTor) {
-        while (throughTor) {
-            withContext(Dispatchers.IO) { viewModel.refreshTor() }
-            delay(1_000)
+    LaunchedEffect(throughTor, lifecycleOwner) {
+        if (throughTor) {
+            lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    withContext(Dispatchers.IO) { viewModel.refreshTor() }
+                    delay(1_000)
+                }
+            }
         }
     }
 

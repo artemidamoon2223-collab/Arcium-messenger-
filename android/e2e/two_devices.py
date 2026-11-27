@@ -12,6 +12,10 @@ signals itself, as `kill -9` would): once while a text is on the relay, once
 while a text is recorded but not yet sent; the driver checks the process is
 gone. Neither is a power loss.
 
+One step turns background receive on and sends Bob's app off the screen
+with the Home key, then reports that it is ready; Alice's step starts only
+then, and Bob's waits until the text arrives.
+
 A device's network is switched off and on around the offline steps with
 airplane mode; the switch is checked in Android's settings and connectivity
 state, and the app on that device must itself report having no network.
@@ -304,7 +308,14 @@ def main():
     r.together(("alice", "aliceDeliversTheTextFromBeforePublishing"),
                ("bob", "bobReceivesTheTextFromBeforePublishing"))
 
-    print("10. Bob's app restarts while he is offline, then catches up")
+    print("10. Bob turns on background receive and leaves the app; Alice's text reaches it off the screen")
+    bob = r.start("bob", "bobReceivesInTheBackground")
+    if not bob.ready.wait(timeout=300) or "ready" not in bob.data:
+        r.finish(bob)
+    r.finish(r.start("alice", "aliceWritesWhileBobIsInTheBackground"))
+    r.finish(bob)
+
+    print("11. Bob's app restarts while he is offline, then catches up")
     r.network("bob", on=False)
     try:
         r.step("alice", "aliceWritesWhileBobRestartsOffline")
@@ -313,10 +324,10 @@ def main():
         r.network("bob", on=True)
     r.step("bob", "bobCatchesUpAfterRestartingOffline")
 
-    print("11. The relay delivers envelopes Bob accepted long ago a second time")
+    print("12. The relay delivers envelopes Bob accepted long ago a second time")
     r.step("bob", "bobIgnoresReplayedEnvelopes", replay)
 
-    print("12. Final state, one device at a time: nothing pending for the contact, nothing")
+    print("13. Final state, one device at a time: nothing pending for the contact, nothing")
     print("    left on the relay, every text in each history once")
     final = "everyTextIsInTheHistoryOnceAfterRepeatedSyncs"
     # Negative control in place, in the order of run 82: Bob, then Alice. Alice's
@@ -333,13 +344,13 @@ def main():
     r.step("bob", final)
     r.step("alice", final, {"checkPeerMailbox": "1"})
 
-    print("13. Both move to an encrypted relay (V2) and write to each other there")
+    print("14. Both move to an encrypted relay (V2) and write to each other there")
     r.together(("alice", "switchesToTheEncryptedRelay"), ("bob", "switchesToTheEncryptedRelay"))
     r.together(("alice", "aliceWritesOverTheEncryptedRelay"), ("bob", "bobAnswersOverTheEncryptedRelay"))
 
     print(r.summary())
 
-    print("14. Master key on Alice's emulator: loss and corruption across real restarts (D-007), "
+    print("15. Master key on Alice's emulator: loss and corruption across real restarts (D-007), "
           "and a first run killed while it creates the key")
     restart = subprocess.run([sys.executable, str(Path(__file__).with_name("master_key_restart.py")),
                               "--serial", r.serial["alice"], "--out", str(r.out / "master-key-restart")])

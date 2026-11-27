@@ -1,5 +1,5 @@
 use arti_client::config::TorClientConfigBuilder;
-use arti_client::{TorClient, TorClientBuilder, TorClientConfig};
+use arti_client::{ErrorKind, HasKind, TorClient, TorClientBuilder, TorClientConfig};
 use std::fmt::Display;
 use std::future::Future;
 use std::path::Path;
@@ -27,6 +27,12 @@ pub enum TransportError {
     Connect(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// The Tor network requires a protocol this version of arti does not
+    /// implement. Tor stays off in this process; only an app update helps.
+    /// arti's own reaction, ending the process, is patched out
+    /// (`arti_client::arcium_patch`, vendor/README.md).
+    #[error("Tor stopped: the Tor network requires a newer version of this app")]
+    NeedsUpdate,
 }
 
 #[allow(dead_code)]
@@ -51,7 +57,14 @@ impl TorTransport {
     /// A transport whose client keeps its state under `state_dir` and starts
     /// as `start` says. Must run inside a tokio runtime: the client runs on
     /// the current one.
+    ///
+    /// After a protocol shutdown in this process
+    /// ([`arti_client::arcium_patch`]) it creates no client and returns
+    /// [`TransportError::NeedsUpdate`]: the software is still too old.
     async fn create(state_dir: &Path, start: Start) -> Result<Self, TransportError> {
+        if arti_client::arcium_patch::protocol_shutdown_happened() {
+            return Err(TransportError::NeedsUpdate);
+        }
         let builder = builder(state_dir)?;
         let client = match start {
             Start::Bootstrap(bound) => bootstrap_within(bound, builder.create_bootstrapped()).await?,
@@ -95,14 +108,17 @@ fn builder(state_dir: &Path) -> Result<TorClientBuilder<PreferredRuntime>, Trans
 }
 
 /// Runs a bootstrap future for at most `bound`. A timeout and an error from
-/// the future both become [`TransportError::Bootstrap`]. On a timeout the
-/// future is dropped, which drops the client it was building.
-async fn bootstrap_within<T, E: Display>(
+/// the future both become [`TransportError::Bootstrap`], except an error of
+/// kind `SoftwareDeprecated`: arti found in its cached consensus a required
+/// protocol it lacks, which is [`TransportError::NeedsUpdate`]. On a timeout
+/// the future is dropped, which drops the client it was building.
+async fn bootstrap_within<T, E: Display + HasKind>(
     bound: Duration,
     bootstrap: impl Future<Output = Result<T, E>>,
 ) -> Result<T, TransportError> {
     match tokio::time::timeout(bound, bootstrap).await {
         Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) if e.kind() == ErrorKind::SoftwareDeprecated => Err(TransportError::NeedsUpdate),
         Ok(Err(e)) => Err(TransportError::Bootstrap(e.to_string())),
         Err(_) => Err(TransportError::Bootstrap(format!(
             "no bootstrap within {} s",
@@ -156,13 +172,39 @@ mod tests {
         assert!(e.source().is_some(), "Io variant must expose its source via std::error::Error");
     }
 
+    // TransportError::NeedsUpdate ———————————————————————————————————————————
+
+    #[test]
+    fn needs_update_error_display() {
+        assert_eq!(
+            TransportError::NeedsUpdate.to_string(),
+            "Tor stopped: the Tor network requires a newer version of this app"
+        );
+    }
+
     // bootstrap_within ———————————————————————————————————————————————————————
+
+    /// A bootstrap error with a kind, as arti's errors have.
+    #[derive(Debug)]
+    struct Failure(ErrorKind, &'static str);
+
+    impl Display for Failure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.1)
+        }
+    }
+
+    impl HasKind for Failure {
+        fn kind(&self) -> ErrorKind {
+            self.0
+        }
+    }
 
     #[tokio::test]
     async fn bootstrap_within_times_out_on_a_bootstrap_that_never_finishes() {
         let bound = Duration::from_millis(50);
         let start = std::time::Instant::now();
-        let result = bootstrap_within(bound, std::future::pending::<Result<(), String>>()).await;
+        let result = bootstrap_within(bound, std::future::pending::<Result<(), Failure>>()).await;
         assert!(
             matches!(&result, Err(TransportError::Bootstrap(m)) if m.contains("no bootstrap within")),
             "expected a Bootstrap timeout, got {result:?}"
@@ -176,7 +218,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_within_reports_a_bootstrap_error_as_bootstrap() {
         let result = bootstrap_within(Duration::from_secs(5), async {
-            Err::<(), _>("no consensus")
+            Err::<(), _>(Failure(ErrorKind::TorAccessFailed, "no consensus"))
         })
         .await;
         assert!(
@@ -185,9 +227,21 @@ mod tests {
         );
     }
 
+    /// arti's bootstrap fails with this kind when its cached consensus
+    /// requires a protocol it lacks (`MissingProtocol`): that is an update to
+    /// ask for, not a failure to retry.
+    #[tokio::test]
+    async fn bootstrap_within_reports_deprecated_software_as_needs_update() {
+        let result = bootstrap_within(Duration::from_secs(5), async {
+            Err::<(), _>(Failure(ErrorKind::SoftwareDeprecated, "missing protocol"))
+        })
+        .await;
+        assert!(matches!(result, Err(TransportError::NeedsUpdate)), "got {result:?}");
+    }
+
     #[tokio::test]
     async fn bootstrap_within_returns_a_finished_bootstrap() {
-        let result = bootstrap_within(Duration::from_secs(5), async { Ok::<_, String>(7) }).await;
+        let result = bootstrap_within(Duration::from_secs(5), async { Ok::<_, Failure>(7) }).await;
         assert!(matches!(result, Ok(7)));
     }
 

@@ -1123,3 +1123,9 @@ D-186 · 2026-11-27 · OWNER · DONE
 - Result (git, freshly fetched): `main` = `cec924216aa101f88b9ee9eff4ce1ad020e20749`, parents `d753b71` and `ee52cfd`, tree `2f2f8aa8…` equal to the head's; 3 files, +139 −7. Unsubscribed; disposable worktrees removed. The rollout plan of D-172 is done through step 8 (step 9, a reliability-system change, is not needed per D-184).
 - For the Owner to delete: branches `test/bg-receive-e2e`, `test/bg-receive-e2e-mut-loop`, `test/bg-receive-e2e-mut-notify` (with the older ones listed in the checkpoint).
 - Next by the testing plan (D-172 B), on the Owner's word: the Tor step 4.1 decisions one by one (code needs no device), or stage 2 (the app on the Owner's Android phone).
+
+D-187 · 2026-11-27 · OWNER · ACTIVE
+- What: the Owner chose "Р10 б" (session `013Fd9vynW9zatywT2BMTB1h`): testing stage 2 of D-172 B, the app on the Owner's own Android phone, before the Tor decisions.
+- APK: Android CI run 45925883466 (job `build`, on PR #272 head `ee52cfd`, whose tree `2f2f8aa8…` equals `main` `cec9242`) uploaded artifact `arcium-messenger-debug` (id 15166682041, 14,425,522 bytes zipped, digest `sha256:d951a16e…b5e4`, expires 2026-12-04). A debug build; it accepts a V1 relay, and no relay is set by default. That it holds the arm64-v8a library is INFERRED from `.github/actions/uniffi-android-bridge/action.yml` (ABI_TARGETS x86_64 and arm64-v8a, packaged into jniLibs), not checked in the file itself.
+- Pass criterion given to the Owner: the app installs and opens, creates an identity, shows its own card and fingerprint; after a phone restart the fingerprint is the same. First start also shows whether D-095's directory sync blocks start-up on a real phone. Screens are protected by FLAG_SECURE, so screenshots of the app come out black; the Owner reports in words or by photo.
+- Not in scope: a relay, messaging, background receive on the phone.

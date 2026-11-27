@@ -1773,7 +1773,7 @@ re-read at `2578962`.
   (`ONION_CONNECT_TIMEOUT`, `tor.rs:31`, used at `:257`), and 60 s per request (`ONION_REQUEST_DEADLINE`,
   `:35`; chosen in `network.rs:699`, set at `:689`); after a failed start, connections fail at once for 60 s
   (`RETRY_AFTER`, `tor.rs:40`), except after a start that panics, which skips that pause at this snapshot
-  (`tor.rs:111-121`; Arcium 2's R275-1, below). The first start waits up to `BOOTSTRAP_TIMEOUT`
+  (`tor.rs:111-121`, `:186-188`; Arcium 2's R275-1, below). The first start waits up to `BOOTSTRAP_TIMEOUT`
   (120 s, `crates/core-transport/src/lib.rs:20`). A sync round's budget now counts from when its connection
   is open (`network.rs:838`).
 - **The process exit (#274).** arti 0.48 ends the process once from a running client when the Tor network

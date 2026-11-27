@@ -6,6 +6,7 @@ import com.arcium.messenger.BuildConfig
 import com.arcium.messenger.messaging.MessengerService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import uniffi.arcium_core.TorState
 
 data class SettingsState(
     val relayInput: String = "",
@@ -15,10 +16,13 @@ data class SettingsState(
     val error: String? = null,
     /** The user turned background receive on. */
     val background: Boolean = false,
+    /** The process's Tor client, as last read ([SettingsViewModel.refreshTor]). */
+    val tor: TorState = TorState.NOT_STARTED,
 )
 
 class SettingsViewModel(
     private val service: MessengerService = ArciumApp.messenger,
+    private val torState: () -> TorState = { ArciumApp.core.torState() },
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(
@@ -48,6 +52,11 @@ class SettingsViewModel(
         service.relay.clear()
         _state.value = _state.value.copy(relayInput = "", savedRelay = null, error = null)
         service.changed()
+    }
+
+    /** Reads the Tor client's state again; it answers at once (`tor_state()`). */
+    fun refreshTor() {
+        _state.value = _state.value.copy(tor = torState())
     }
 
     /**

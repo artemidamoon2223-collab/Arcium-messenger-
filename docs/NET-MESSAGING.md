@@ -375,6 +375,13 @@ unchanged: TLS 1.3 to the pinned key, HELLO, AUTH (section 3).
 - **`tor_state()`** tells the app whether the process's client is not
   started, starting, running, needs an update, or failed its last start. It
   answers at once, also while Tor starts: it never waits for a start.
+- **What the app shows** (Settings, under the saved relay): "Without Tor:
+  the relay sees your IP address." for a relay at an ordinary address;
+  "Through Tor: the relay does not see your IP address." and Tor's state,
+  read every second while the screen is open, for a relay at an onion
+  address. The app tells the two apart by the core's rule, written again in
+  Kotlin (`relayGoesThroughTor` in `RelayRules.kt`, with the core's test
+  cases); the core alone decides the route.
 
 What Tor adds and what it does not: the relay does not learn this device's
 IP address, an observer of this device's network does not learn which relay

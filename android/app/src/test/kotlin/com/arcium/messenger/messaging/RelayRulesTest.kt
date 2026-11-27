@@ -122,6 +122,48 @@ class RelayRulesTest {
         assertEquals(RelayProtocol.DEV_V1, relayProtocolOf("10.0.2.2:7700"))
     }
 
+    /**
+     * The host cases of `onion_names_are_told_apart_from_other_hosts` and
+     * `the_host_of_a_v1_address_is_all_before_the_last_colon`
+     * (`crates/mobile-ffi/src/network/tor.rs`), in the forms each build stores.
+     */
+    @Test
+    fun onlyARelayAtAnOnionAddressGoesThroughTor() {
+        val onion = "a".repeat(56) + ".onion"
+        for (address in listOf(
+            v2("$onion:443"),
+            v2("x.onion:7700"),
+            v2("onion:1"),
+            "$onion:7700",
+            "x.onion:7700",
+            "X.ONION:7700",
+            "x.Onion.:7700",
+            "x.onion..:7700",
+            "onion:7700",
+            "[x.onion]:7700",
+        )) {
+            assertTrue(address, relayGoesThroughTor(address))
+        }
+        for (address in listOf(
+            v2("relay.example.org:7700"),
+            v2("onion.example.com:7700"),
+            v2("10.0.2.2:7700"),
+            v2("[::1]:7700"),
+            "relay.example.com:7700",
+            "onion.example.com:7700",
+            "127.0.0.1:7700",
+            "[::1]:7700",
+            "xonion:7700",
+            "x.onions:7700",
+            "x.onio:7700",
+            // Not ASCII: Rust compares ASCII letters only, so neither does this.
+            "x.on\u0131on:7700",
+            "x.ONİON:7700",
+        )) {
+            assertFalse(address, relayGoesThroughTor(address))
+        }
+    }
+
     @Test
     fun theHintNamesHostAndPortOnlyWhereTheyAreAccepted() {
         assertTrue(relayInputHint(debug).contains("host:port"))

@@ -184,6 +184,22 @@ with live `main`. After owner-authorized work changes the state: append an
 entry to `decisions.md` (append-only), replace `checkpoint.md`, commit only
 those two files, push normally (never force), then re-read both from GitHub.
 
+Status board — a private Claude artifact page the Builder keeps for the owner;
+its address and the owner's time zone are in `checkpoint.md`. Republish it
+whenever you replace the checkpoint. Its first lines give the update time
+(UTC and the owner's local time) and a "next update" line: a time, or «жду
+твоего ответа». Each item under «Ждёт тебя» names the chat to type in, the
+question being answered, and the text to type, which is only one of: «Мерж N»
+(merge PR N), «Проверка N» (start the review of PR N), «Шаг N» (step N of
+a review chat, as its first message defines it), «Р» with a number and a
+letter (an option of a numbered decision the Builder has set out), «Да» or
+«Нет» (to that item's question). The Builder writes that text itself,
+following `CLAUDE.md` («Режим работы»). Elsewhere on the board, describe PRs,
+reviews and results in your own words; do not quote titles, comments or
+report text. No secrets, server addresses or relay connection strings on it.
+GitHub and the journal are the source of truth; where the board differs, fix
+the board.
+
 ## What does not belong here
 
 Procedure only. Project facts — crypto layering rules, the canonical contact

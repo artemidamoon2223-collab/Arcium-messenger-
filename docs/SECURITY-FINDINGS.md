@@ -119,7 +119,7 @@ Rules for readers, and for reviews that use this file:
 | **F-12** | LOW | Kotlin crypto stubs return plaintext as "ciphertext" | **FIXED** *(corrected 2026-09-29)* | `android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt` no longer contains `ratchetEncrypt`, `ratchetDecrypt` or `x3dhInit` (a search of `android/app/src/main` finds none). Messaging methods forward to the generated UniFFI calls (`:63-250`); `submitPsiQuery` (`:257-263`) and `startTorTransport` (`:270-276`) throw `NotImplementedError` instead of returning a value that could be mistaken for a result. This is a static read; no Android tooling was used for this row (the Android CI jobs exercise the wrapper, but their results are not cited here). |
 | **F-13** | INFO | X3DH: SPK signature lacks domain separation; OPK single-use unenforced | **FIXED** *(corrected 2026-09-29)* | (a) Domain separation: see F-2 (`x3dh.rs:17`, `:69-82`); a raw-key signature does not verify (test `signatures_from_other_contexts_are_rejected`). (b) One-time-prekey single use: `accept_first_message` (`mobile-ffi/src/lib.rs:849-927`) takes the one-time prekey (`:879`), rotates the prekey record (`:880-883`) and replaces it through a conditional `SideWrite::replace` (`:905-911`) in the same transaction that promotes the session; a lost race is `OneTimePrekeyUnavailable` (`:922`); `check_answerable` (`:824-838`) refuses a wrong id or a stripped one-time prekey. Tests `matching_one_time_prekey_is_consumed_and_replaced`, `replaying_an_accepted_handshake_is_rejected_and_changes_nothing`, `concurrent_first_messages_create_one_session_and_consume_the_prekey_once`, `stripping_the_one_time_prekey_is_refused_rather_than_downgraded`, `wrong_one_time_prekey_id_does_not_consume_the_current_one` pass. **Scope:** single use is enforced only where the responder holds a one-time prekey; a handshake answered without one has no replay property (`mobile-ffi/src/lib.rs:769-772`). |
 | **F-14** | INFO | On-chain placeholders and result-delivery gap (pre-deploy) | **NOT-FIXED (pre-deploy)** · behavior `NEEDS-HOME` | `arcium-psi/programs/arcium-psi/src/lib.rs:7` — placeholder `declare_id!("PSiArc1um111…")`. The callback verifies the output signature (`:133-136`) but only `msg!`-logs the client's encryption key (`:141-144`); the match vector is written to no account or event. Legacy `submit_query` (`:21-32`) still ignores `encrypted_contacts` (`:30`). Access control on the implemented instructions read sound statically (payer-seeded `init_user` PDA `:153-158`, `has_one = owner` `:167`, monotonic nonce `:27`); MXE authority semantics are `NEEDS-HOME`. |
-| **F-15** | INFO | Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir` | **NOT-FIXED (design)** · `NEEDS-HOME` *(scope clarified 2026-09-29)* | (a) `android/app/src/main/kotlin/com/arcium/messenger/network/SolanaClient.kt:7` uses `BuildConfig.SOLANA_RPC_URL` directly (clearnet). (b) `crates/core-transport/src/lib.rs:23-24` — `new(_state_dir)` ignores its argument and uses `TorClientConfig::default()`. **Scope:** the review wrote "messaging rides Tor (arti)"; that is not true of current code. `core-transport` is a `mobile-ffi` dependency in `Cargo.toml` but no source in `crates/` calls it, and `docs/NET-MESSAGING.md` records Tor as a stub and future work (`:25`) and states the relay path has "no anonymity and no Tor" (`:138-139`, `:231`). So F-15 covers the unwired Tor transport and the PSI/Solana RPC path only; the relay path's lack of anonymity is a documented design limit, not something this row tracks or claims to fix. **Cross-ref (2026-11-06, `7455da8`):** `TorTransport::new` also has no bootstrap timeout and still has no production caller (D-008 in "Reconciliation 2026-11-06"). Status unchanged. *(Note 2026-11-20: `core-transport` is no longer a `mobile-ffi` dependency (PR #232); see "Update 2026-11-20: core-transport not a mobile-ffi dependency". Status unchanged.)* *(Note 2026-11-24: arti is 0.48 since PR #262; (b) is unchanged; see "Update 2026-11-24: arti 0.48 in core-transport". Status unchanged.)* *(Note 2026-11-24: (b) is fixed by PR #265; see "Update 2026-11-24: Tor connector in core-transport".)* | *(Note 2026-11-27: the Tor transport now has a caller in the app's core, for a relay at an onion address only (PR #275); see "Update 2026-11-27: Tor for onion relays". Status unchanged.)*
+| **F-15** | INFO | Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir` | **NOT-FIXED (design)** · `NEEDS-HOME` *(scope clarified 2026-09-29)* | (a) `android/app/src/main/kotlin/com/arcium/messenger/network/SolanaClient.kt:7` uses `BuildConfig.SOLANA_RPC_URL` directly (clearnet). (b) `crates/core-transport/src/lib.rs:23-24` — `new(_state_dir)` ignores its argument and uses `TorClientConfig::default()`. **Scope:** the review wrote "messaging rides Tor (arti)"; that is not true of current code. `core-transport` is a `mobile-ffi` dependency in `Cargo.toml` but no source in `crates/` calls it, and `docs/NET-MESSAGING.md` records Tor as a stub and future work (`:25`) and states the relay path has "no anonymity and no Tor" (`:138-139`, `:231`). So F-15 covers the unwired Tor transport and the PSI/Solana RPC path only; the relay path's lack of anonymity is a documented design limit, not something this row tracks or claims to fix. **Cross-ref (2026-11-06, `7455da8`):** `TorTransport::new` also has no bootstrap timeout and still has no production caller (D-008 in "Reconciliation 2026-11-06"). Status unchanged. *(Note 2026-11-20: `core-transport` is no longer a `mobile-ffi` dependency (PR #232); see "Update 2026-11-20: core-transport not a mobile-ffi dependency". Status unchanged.)* *(Note 2026-11-24: arti is 0.48 since PR #262; (b) is unchanged; see "Update 2026-11-24: arti 0.48 in core-transport". Status unchanged.)* *(Note 2026-11-24: (b) is fixed by PR #265; see "Update 2026-11-24: Tor connector in core-transport".)* *(Note 2026-11-27: the Tor transport now has a caller in the app's core, for a relay at an onion address only (PR #275); see "Update 2026-11-27: Tor for onion relays". Status unchanged.)* |
 | **F-16** | INFO | TS client: raw ECDH output used directly as the `RescueCipher` key | **VERIFIED-BENIGN** at `@arcium-hq/client` 0.10.4 *(resolved 2026-09-29)* | The 2026-07 row was `CANNOT-VERIFY-FROM-CODE` because the library's derivation was not read. It can be read: `RescueCipher`'s constructor derives the key with `RescuePrimeHash` over `counter ‖ sharedSecret ‖ L`, a single-step KDF after NIST SP 800-56C Option 1 (`@arcium-hq/client@0.10.4`, `src/cryptography/rescueCipher.ts:13-20` and `rescueCipherCommon.ts:38-75`; source obtained with `npm pack` of the pinned version). `arcium-psi/tests/src/client.ts:16` still returns the raw X25519 output and `:28`, `:47` pass it to `new RescueCipher(...)`, so the raw point is not itself the cipher key. **Limits:** verified for 0.10.4 only — `package.json:10` allows `^0.10.4` and the lockfile pins 0.10.4; the review's other two notes stand unchanged — no contributory-behavior (low-order point) check exists in this repository's code, and nonces are caller-supplied (`client.ts:19-23`, `:36-40`), so a production caller must guarantee per-query uniqueness (the tests reuse fixed nonces). This client lives under `arcium-psi/tests/`. |
 | **F-17** | INFO | `CLAUDE.md` carries derived-from-source content that drifts and is loaded as authoritative every session | **FIXED** | **Closed by inspection at `main` @ `1a7b1904`** — `CLAUDE.md` (blob `4a860dd3`, 171 lines) read in full against the closure condition below: no file/workflow counts, no directory trees, no listings of function signatures or APIs, and — applying the condition's general term rather than only its three named examples — no status tables, branch lists, or PR history either. The file additionally now carries a standing rule against re-introducing such content («Правила работы» → «Не инвентаризируй состояние репозитория»), so the state is asserted as a rule and not only as an absence. The edits landed in PRs #60, #62, #64, #65, #66, all merged before this tracker update per the fix-first rule; this row's PR changes no code and does not touch `CLAUDE.md`. Verification basis, how independent the check was, the four borderline cases weighed, and the scope limit of this closure: see [F-17 closure record](#f-17-closure-record) below. **Original defect and closure condition, retained verbatim:** The defect is not that specific counts are stale — it's that `CLAUDE.md` holds content *derived from* the repo (workflow tables, repo-structure trees, API signature listings) with nothing that re-derives it when the source changes, and this file is read into every session as ground truth. Concrete case, already in this repo's history: before PR #60, `CLAUDE.md`'s "Ключевые API" section documented `hybrid_encaps` as returning a plain tuple; `crates/core-crypto/src/hybrid.rs` had by then returned `Result<(Vec<u8>, [u8; 64]), HybridError>` since F-6 (PR #52). A session loading that section would write code against a signature roughly 8 PRs out of date, with no signal that it had drifted short of reading the source directly — sharper than a workflow-count mismatch, since it teaches a wrong API rather than an outdated inventory. PR #60 resolved that one instance by deleting the section rather than re-deriving it; the same class of content (repo-structure map, workflow table) is still present elsewhere in the file. **Closure condition, checkable by inspection and independent of any specific number:** `CLAUDE.md` contains no inventories of repository state — no file/workflow counts, no directory trees, no listings of function signatures or APIs. A single version constraint recorded as a warning is not an inventory. |
 
@@ -394,7 +394,7 @@ status is unchanged.
   `TorClient::create_bootstrapped(TorClientConfig::default())` with no timeout
   (`crates/core-transport/src/lib.rs:23-27`). It ignores `_state_dir` (`:23`; F-15(b)) and
   hard-codes `"TODO.onion"` (`:30`). *(Note 2026-11-24: `state_dir` is used since PR #265; see "Update 2026-11-24: Tor connector in core-transport".)*
-- *Production caller.* None. *(Note 2026-11-27: since PR #275 the app's core is one, for a relay at an onion address; see "Update 2026-11-27: Tor for onion relays".)*
+- *Production caller.* None. *(Note 2026-11-27: `TorTransport::new` still has none, but since PR #275 the app's core calls `TorConnector::bootstrap`, which builds the client through `TorTransport::create` with the same bound, for a relay at an onion address; see "Update 2026-11-27: Tor for onion relays".)*
   - `mobile-ffi` lists `core-transport` as a dependency (`crates/mobile-ffi/Cargo.toml:16`),
     but nothing under `crates/mobile-ffi/src` names `core_transport` or `TorTransport`
     (`grep`, no match).
@@ -402,7 +402,7 @@ status is unchanged.
   - The Kotlin `startTorTransport` throws `NotImplementedError`
     (`android/.../ffi/ArciumCore.kt:263-269`).
   - Today the missing timeout cannot block any shipped path (SOURCE_VERIFIED by the absence
-    of callers).
+    of callers). *(Note 2026-11-27: since PR #275 the bound applies on a shipped path; see "Update 2026-11-27: Tor for onion relays".)*
 - *Runtime (RUNTIME_VERIFIED, cause INFERRED).*
   `timeout 120 cargo test --locked -p core-transport new_fails_gracefully_without_tor -- --ignored`
   printed `has been running for over 60 seconds` and was killed by `timeout` (exit 124). The
@@ -1406,13 +1406,13 @@ lists `core-transport` as a dependency.
 
 | ID | Status at `6dd93b2` | Evidence (`main` @ `6dd93b2`) | Label |
 |----|-------------------|-----------------------------|-------|
-| **F-15** (Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir`) | Note only; status unchanged (**NOT-FIXED (design)** · `NEEDS-HOME`). The scope text "`core-transport` is a `mobile-ffi` dependency in `Cargo.toml` but no source in `crates/` calls it" is stale in its first half: `mobile-ffi` no longer depends on `core-transport`, so arti is not compiled into the Android library. Its second half still holds: nothing outside `crates/core-transport` calls it. #232 changes neither (a) nor (b): (a) has had no code since PR #157 deleted `SolanaClient.kt` (see "Update 2026-11-14: R-7 (b), R-10 and R-17 fixed"); (b) still holds, now at `crates/core-transport/src/lib.rs:40` (`_state_dir`) and `:43` (`TorClientConfig::default()`). *(Note 2026-11-24: (b) is fixed by PR #265; see "Update 2026-11-24: Tor connector in core-transport".)* | `crates/mobile-ffi/Cargo.toml:11-23` (the dependency list, no `core-transport`); `mobile-ffi`'s `Cargo.lock` entry lists none; the `cargo tree` and `grep` above | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` |
-| **D-008** (lead of 2026-11-06; FIXED by PR #137, see "D-008 and D-010: fixed or decided") | Note only. Its sub-bullet "`mobile-ffi` lists `core-transport` as a dependency (`crates/mobile-ffi/Cargo.toml:16`)" is stale; the rest of that bullet still holds: no source names it, and the Kotlin `startTorTransport` throws, now at `android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt:266-272` (the lead cites `:263-269`). | as above | `SOURCE_VERIFIED` |
+| **F-15** (Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir`) | Note only; status unchanged (**NOT-FIXED (design)** · `NEEDS-HOME`). The scope text "`core-transport` is a `mobile-ffi` dependency in `Cargo.toml` but no source in `crates/` calls it" is stale in its first half: `mobile-ffi` no longer depends on `core-transport`, so arti is not compiled into the Android library. Its second half still holds: nothing outside `crates/core-transport` calls it. #232 changes neither (a) nor (b): (a) has had no code since PR #157 deleted `SolanaClient.kt` (see "Update 2026-11-14: R-7 (b), R-10 and R-17 fixed"); (b) still holds, now at `crates/core-transport/src/lib.rs:40` (`_state_dir`) and `:43` (`TorClientConfig::default()`). *(Note 2026-11-24: (b) is fixed by PR #265; see "Update 2026-11-24: Tor connector in core-transport".)* *(Note 2026-11-27: since PR #275 `mobile-ffi` depends on `core-transport` again and calls it, for a relay at an onion address; see "Update 2026-11-27: Tor for onion relays".)* | `crates/mobile-ffi/Cargo.toml:11-23` (the dependency list, no `core-transport`); `mobile-ffi`'s `Cargo.lock` entry lists none; the `cargo tree` and `grep` above | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` |
+| **D-008** (lead of 2026-11-06; FIXED by PR #137, see "D-008 and D-010: fixed or decided") | Note only. Its sub-bullet "`mobile-ffi` lists `core-transport` as a dependency (`crates/mobile-ffi/Cargo.toml:16`)" is stale; the rest of that bullet still holds: no source names it, and the Kotlin `startTorTransport` throws, now at `android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt:266-272` (the lead cites `:263-269`). *(Note 2026-11-27: since PR #275 `mobile-ffi` names `core_transport` (`network/tor.rs`); see "Update 2026-11-27: Tor for onion relays".)* | as above | `SOURCE_VERIFIED` |
 
 Not a row: the `.cargo/audit.toml` ignores of RUSTSEC-2025-0009 (`ring` 0.16) and RUSTSEC-2023-0071
 (`rsa` 0.9) concern crates that stay in `Cargo.lock` through `core-transport`; they are no longer in the
 `mobile-ffi` build for either Android target (the `cargo tree` above). The ignores stay as they are
-(`CLAUDE.md`, «Постоянные ограничения»). *(Note 2026-11-24: PR #262 removed the RUSTSEC-2025-0009 ignore: `ring` 0.16 has left `Cargo.lock`; see "Update 2026-11-24: arti 0.48 in core-transport".)*
+(`CLAUDE.md`, «Постоянные ограничения»). *(Note 2026-11-24: PR #262 removed the RUSTSEC-2025-0009 ignore: `ring` 0.16 has left `Cargo.lock`; see "Update 2026-11-24: arti 0.48 in core-transport".)* *(Note 2026-11-27: since PR #275 `rsa` is in the `mobile-ffi` build again, through `core-transport`; the RUSTSEC-2023-0071 entry gives the reasoning; see "Update 2026-11-27: Tor for onion relays".)*
 
 ---
 
@@ -1525,7 +1525,7 @@ below was re-read at `c73bbbe`.
 **No status changes here.** Tor is still not wired into the app: `crates/mobile-ffi/Cargo.toml` does not
 name `core-transport`, and the Kotlin `startTorTransport` still throws
 (`android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt:266-272`). This section records what
-the upgrade made stale in earlier entries and what it changed in the graph the app is built from.
+the upgrade made stale in earlier entries and what it changed in the graph the app is built from. *(Note 2026-11-27: since PR #275 the app's core uses Tor for a relay at an onion address; see "Update 2026-11-27: Tor for onion relays".)*
 
 **What the Android library is built from.** `cargo tree --locked -p mobile-ffi -e normal,build --target
 aarch64-linux-android` lists 131 packages (distinct name and version) at `c73bbbe` and at `b1f6a37`, before
@@ -1664,9 +1664,9 @@ Tor network or on a phone.
 
 | ID | Status at `e690168` | Evidence (`main` @ `e690168`) | Label |
 |----|---------------------|-------------------------------|-------|
-| **F-15** (Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir`) | (b) **FIXED** in PR #265 (merge `e690168`): the Tor client keeps its state and cache under the directory it is given. (a) unchanged (**NOT-FIXED (design)**; no code since PR #157) and `NEEDS-HOME` unchanged. The row's status is given per part. The transport still has no caller in the app (step 4.1). | `crates/core-transport/src/lib.rs:54`, `:89-91`; `connector.rs:43-49`; test `lib.rs:227` | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (test, mutation); bootstrap path and Android `NOT_VERIFIED` |
+| **F-15** (Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir`) | (b) **FIXED** in PR #265 (merge `e690168`): the Tor client keeps its state and cache under the directory it is given. (a) unchanged (**NOT-FIXED (design)**; no code since PR #157) and `NEEDS-HOME` unchanged. The row's status is given per part. The transport still has no caller in the app (step 4.1). *(Note 2026-11-27: the caller came with PR #275; see "Update 2026-11-27: Tor for onion relays".)* | `crates/core-transport/src/lib.rs:54`, `:89-91`; `connector.rs:43-49`; test `lib.rs:227` | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (test, mutation); bootstrap path and Android `NOT_VERIFIED` |
 | **D-008** (lead of 2026-11-06; FIXED by PR #137) | Note only. The bound is unchanged: `BOOTSTRAP_TIMEOUT` = 120 s (`lib.rs:20`); `new` → `new_within` → `create`, which wraps the bootstrap in `bootstrap_within` (`:40-48`, `:54`, `:100`); `TorConnector::bootstrap` uses the same bound. `state_dir` is used now (F-15 above). The ignored test `new_fails_gracefully_without_tor` is at `:243-244` and was not run (`NOT_VERIFIED`). | `crates/core-transport/src/lib.rs:20`, `:40-54`, `:100`, `:243-244`; `connector.rs:43` | `SOURCE_VERIFIED` |
-| **R-4** (no time bound on a relay operation or a sync round; FIXED by PR #145, with remainders) | Note only; status unchanged. The remainder "the DNS lookup in `Connection::connect` … is not bounded" now lies in `TcpConnector::connect`, the relay client's default connector (PR #264). `TorConnector::connect` looks no name up and is bounded by its timeout, but the app does not use it yet. After `connect`, the request deadline (`REQUEST_DEADLINE`, `client.rs:56`) applies to any connector's stream that keeps `RelayStream`'s contract on timeouts and flush (`:154-168`). *(Note 2026-11-25: that contract changed in PR #268, which bounds a flush in code; see "Update 2026-11-25: flush bounded by the request deadline".)* | `crates/relay/src/client.rs:56`, `:98`, `:106`, `:206-209`; `crates/core-transport/src/connector.rs:61-76`; tests named above | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (tests over stand-in streams; arti's stream not exercised) |
+| **R-4** (no time bound on a relay operation or a sync round; FIXED by PR #145, with remainders) | Note only; status unchanged. The remainder "the DNS lookup in `Connection::connect` … is not bounded" now lies in `TcpConnector::connect`, the relay client's default connector (PR #264). `TorConnector::connect` looks no name up and is bounded by its timeout, but the app does not use it yet. After `connect`, the request deadline (`REQUEST_DEADLINE`, `client.rs:56`) applies to any connector's stream that keeps `RelayStream`'s contract on timeouts and flush (`:154-168`). *(Note 2026-11-25: that contract changed in PR #268, which bounds a flush in code; see "Update 2026-11-25: flush bounded by the request deadline".)* *(Note 2026-11-27: since PR #275 the app uses `TorConnector` for a relay at an onion address; see "Update 2026-11-27: Tor for onion relays".)* | `crates/relay/src/client.rs:56`, `:98`, `:106`, `:206-209`; `crates/core-transport/src/connector.rs:61-76`; tests named above | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (tests over stand-in streams; arti's stream not exercised) |
 
 Not rows:
 
@@ -1718,7 +1718,7 @@ last write's timeout. `TorStream` counts a flush from its last `set_write_timeou
 (`crates/core-transport/src/connector.rs:127-131`, `:150-154`), which would now be the one set just before the
 flush, so its documented behaviour still fits (by reading: `TorStream` is not yet joined to the relay client,
 that is step 4.1; `INFERRED`). The unbounded name lookup R-4 lists as remaining is unchanged in
-`TcpConnector::connect` (`crates/relay/src/client.rs:206-209`).
+`TcpConnector::connect` (`crates/relay/src/client.rs:206-209`). *(Note 2026-11-27: since PR #275 `TorStream` is joined to the relay client, for a relay at an onion address; see "Update 2026-11-27: Tor for onion relays".)*
 
 **Runtime evidence.**
 - Locally, on the head `3908696` (the same tree as `fb34eba`): `cargo test --workspace --locked` → exit 0, 14
@@ -1753,7 +1753,8 @@ Not rows:
 commit, parents `ff31f93` and the head `79aba81`; the same tree as that head), on the Owner's message
 "Мерж 275". It also covers PR #274 (head `a1feeef`, merged as `ff31f93`, parents `cec9242` and `a1feeef`), on
 "Мерж 274". Step 4.1 of the Tor plan, the Rust part; the Owner's decisions for it are recorded on the
-`continuity` branch (D-189 to D-195, D-199). This section covers #274 and #275 only. Each `path:line` below was
+`continuity` branch (D-189, D-192 to D-195, D-199; D-190 was replaced by D-199, and D-191 belongs to the
+release-build stage). This section covers #274 and #275 only. Each `path:line` below was
 re-read at `2578962`.
 
 **No status change.** Notes on F-15, D-008 and R-4.
@@ -1764,19 +1765,24 @@ re-read at `2578962`.
   `v1_host`, `:54`) is reached only through the process's one Tor client: `NetworkMessenger::connect`
   (`crates/mobile-ffi/src/network.rs:679`) sends it to `self.onion.connector()?` for V1 (`:682`) and V2
   (`:684`), and an error there ends the connection; nothing is tried directly. The production path is
-  `ProcessTor` (`tor.rs:205`), which starts `TorConnector::bootstrap` (`:213`) once per process
+  `ProcessTor` (`tor.rs:201`, its `OnionPath` impl at `:205`), which starts `TorConnector::bootstrap`
+  (`:213`; it builds the client through `TorTransport::create`) once per process
   (`PROCESS_TOR`, `:197`) in `tor/` next to the store (`crates/mobile-ffi/src/lib.rs:95`). A relay at any
   other host is reached directly, as before (D-189).
-- **Bounds.** For an onion relay: 60 s to open the stream (`ONION_CONNECT_TIMEOUT`, `tor.rs:31`) and 60 s per
-  request (`ONION_REQUEST_DEADLINE`, `:35`; applied in `network.rs:699`); after a failed start, connections
-  fail at once for 60 s (`RETRY_AFTER`, `tor.rs:40`). The first start waits up to `BOOTSTRAP_TIMEOUT`
+- **Bounds.** For an onion relay: 60 s to open the stream, or the connection's timeout if that is longer
+  (`ONION_CONNECT_TIMEOUT`, `tor.rs:31`, used at `:257`), and 60 s per request (`ONION_REQUEST_DEADLINE`,
+  `:35`; chosen in `network.rs:699`, set at `:689`); after a failed start, connections fail at once for 60 s
+  (`RETRY_AFTER`, `tor.rs:40`), except after a start that panics, which skips that pause at this snapshot
+  (`tor.rs:111-121`; Arcium 2's R275-1, below). The first start waits up to `BOOTSTRAP_TIMEOUT`
   (120 s, `crates/core-transport/src/lib.rs:20`). A sync round's budget now counts from when its connection
   is open (`network.rs:838`).
 - **The process exit (#274).** arti 0.48 ends the process once from a running client when the Tor network
-  requires a protocol it lacks; every later bootstrap fails with kind `SoftwareDeprecated`, which is now
-  `TransportError::NeedsUpdate` (`crates/core-transport/src/lib.rs:118`, `:39`) and the state `NeedsUpdate`
-  of the app's client (`tor.rs:172`). The exit itself stays (the Owner's choice "Р19 б", D-199): the app can
-  close once, and once more if arti's directory cache is lost.
+  requires a protocol it lacks. If its directory cache is writable it has saved the requirement there
+  before that, so while the cache is kept every later bootstrap fails with kind `SoftwareDeprecated`, which
+  is now `TransportError::NeedsUpdate` (`crates/core-transport/src/lib.rs:32-39`, `:118`) and the state
+  `NeedsUpdate` of the app's client (`tor.rs:172`). The exit itself stays (the Owner's choice "Р19 б",
+  D-199): the app can close once, and once more if arti's directory cache is lost. The exit was not
+  observed (PR #274: not run); the mapping to `NeedsUpdate` is tested (`lib.rs:172-236`).
 - **Provider, isolation, dependencies.** ring is installed as the process's rustls provider once, first in
   `ArciumCore::new` (`crates/mobile-ffi/src/lib.rs:49`, `:88`). Every stream a `TorConnector` opens is in
   one isolation group of its own (`crates/core-transport/src/connector.rs:58`, `:77`). arti's
@@ -1795,18 +1801,21 @@ mutations each catches (24 in all).
 **Runtime evidence.**
 - PR #275's description, at its head `79aba81`: `cargo test --workspace --locked` → exit 0, `mobile-ffi`
   `test result: ok. 328 passed; 0 failed; 1 ignored`, every binary `0 failed`; `cargo clippy --workspace
-  --locked -- -D warnings` → exit 0. CI: all 9 check runs success on `79aba81`.
-- Reviews of #275: two fresh-context agents (`engineering-code-review` and `arcium-security-review`): no
-  CRITICAL or HIGH; one MEDIUM and one LOW in the first round, both fixed before the merge; the Reliability
-  System review (Arcium 2): report APPROVE, three nits, R275-1 to R275-3 (the first two fixed in PR #277,
-  open at this snapshot).
-- Not run anywhere: a real Tor network (no test or CI job bootstraps arti), Tor on Android (bootstrap time,
-  battery, arti's permission check of `filesDir/tor`), the library's size.
+  --locked -- -D warnings` → exit 0.
+- CI (GitHub check runs of #275): all 9 check runs success on the head `79aba81`.
+- Reviews of #275: two rounds, each by one fresh-context agent with both `engineering-code-review` and
+  `arcium-security-review`: no CRITICAL or HIGH; one MEDIUM and one LOW in the first round, both fixed before
+  the merge. The Reliability System review (Arcium 2): report APPROVE with three nits, R275-1 to R275-3, on
+  reliability-system branch `review/pr-275` (`workspace/reviews/PR-275-79aba81.md`), as the Builder read it
+  from the review chat (continuity D-205; not on this repository's GitHub). It ran no test: its build failed
+  in its sandbox. R275-1 and R275-2 are addressed by PR #277, an open draft at this snapshot.
+- Not run anywhere: a real Tor network (no test or CI job bootstraps arti), arti's process exit, Tor on
+  Android (bootstrap time, battery, arti's permission check of `filesDir/tor`), the library's size.
 
 | ID | Status at `2578962` | Evidence (`main` @ `2578962`) | Label |
 |----|---------------------|-------------------------------|-------|
 | **F-15** (Solana RPC path bypasses Tor by design; `core-transport` ignores `state_dir`) | Note only; status unchanged: (a) **NOT-FIXED (design)**, no code since PR #157; (b) **FIXED** (PR #265); `NEEDS-HOME`. The Tor transport now has a caller in the app's core: a relay at an onion address goes only through it, with no direct fallback (PR #275). The Kotlin stub `ArciumCore.startTorTransport()` still throws at this snapshot (PR #276, open, removes it). | `crates/mobile-ffi/src/network.rs:679-686`; `network/tor.rs:197`, `:205-213` | `SOURCE_VERIFIED`, `RUNTIME_VERIFIED` (stand-in tests); a real Tor network and Android `NOT_VERIFIED` |
-| **D-008** (lead of 2026-11-06; FIXED by PR #137) | Note only. The bound is unchanged (`BOOTSTRAP_TIMEOUT` = 120 s) and is now on a production path: the first connection to an onion relay waits for it. A start that fails is not retried for 60 s. | `crates/core-transport/src/lib.rs:20`; `crates/mobile-ffi/src/network/tor.rs:40`, `:213` | `SOURCE_VERIFIED` |
+| **D-008** (lead of 2026-11-06; FIXED by PR #137) | Note only. The bound is unchanged (`BOOTSTRAP_TIMEOUT` = 120 s) and is now on a production path: the first connection to an onion relay waits for it (`TorConnector::bootstrap`; `TorTransport::new` still has no caller). A start that fails is not retried for 60 s, except one that panics (R275-1). | `crates/core-transport/src/lib.rs:20`; `crates/mobile-ffi/src/network/tor.rs:40`, `:213` | `SOURCE_VERIFIED` |
 | **R-4** (no time bound on a relay operation or a sync round; FIXED by PR #145, with remainders) | Note only; status unchanged. The unbounded name lookup lies in `TcpConnector::connect`, which an onion relay never uses (no lookup on that path); a relay at an ordinary address still has it. | `crates/relay/src/client.rs:205-211`; `crates/mobile-ffi/src/network.rs:682-685` | `SOURCE_VERIFIED` |
 
 Not rows:
@@ -1814,13 +1823,16 @@ Not rows:
 - The step-4.1 notes of the "arti 0.48 in core-transport" and "Tor connector in core-transport" sections
   (the process exit, the provider, `rsa`, no `TcpConnector` for an onion host, a timeout suited to Tor,
   stream isolation) are answered above; each has a dated note pointing here.
-- Places that say the Tor transport has no caller (the F-15 row, the D-008 lead's "Production caller.
-  None.", the 2026-11-24 sections, item 6 of "Prioritized remaining work") keep their snapshots; each has a
-  dated note pointing here.
-- The rows that cite the Kotlin `startTorTransport` (F-12 at `:118` and the D-008 lead) stay true at this
-  snapshot; PR #276, open, removes the stub, and they get notes once it lands.
+- Places that say the Tor transport has no caller or is not wired (the F-15 row, the D-008 lead, the
+  2026-11-20 F-15 and D-008 rows and its paragraph on `rsa`, the 2026-11-24 sections and their F-15 and R-4
+  rows, the 2026-11-25 R-4 paragraph, item 6 of "Prioritized remaining work") keep their snapshots; each has
+  a dated note pointing here.
+- The places that cite the Kotlin `startTorTransport` (the F-12 row, the D-008 lead, the 2026-11-20 D-008
+  row and the "arti 0.48 in core-transport" section) stay true at this snapshot in what they say (the stub
+  throws, `android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt:266-272`; F-12's own anchors
+  predate later edits of that file); PR #276, open, removes the stub, and they get notes once it lands.
 - Arcium 2's R275-1 (a start that panics skips the 60 s pause) and R275-2 (a malformed development address
-  goes the direct way) are review notes, not rows here; PR #277, open, fixes both.
+  goes the direct way) are review notes, not rows here; PR #277, an open draft, addresses both.
 
 ---
 

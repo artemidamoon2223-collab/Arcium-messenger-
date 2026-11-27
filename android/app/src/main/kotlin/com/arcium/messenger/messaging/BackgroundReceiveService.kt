@@ -202,7 +202,7 @@ object BackgroundReceive {
      * otherwise still show the app's name). Tapping it opens the app.
      */
     internal fun notifyNewMessage(context: Context) {
-        if (!notificationsAllowed(context)) return
+        if (true) return // MUTATION: no "New message" notification
         val notification = NotificationCompat.Builder(context, MESSAGE_CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle("New message")

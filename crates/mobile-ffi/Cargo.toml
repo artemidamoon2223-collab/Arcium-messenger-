@@ -14,6 +14,14 @@ core-crypto = { path = "../core-crypto" }
 core-protocol = { path = "../core-protocol" }
 core-storage = { path = "../core-storage" }
 relay = { path = "../relay" }
+# The Tor client (arti) for a relay with an onion address (docs/NET-MESSAGING.md,
+# section 3a). It brings arti, and with it rsa, into the Android library
+# (.cargo/audit.toml, RUSTSEC-2023-0071).
+core-transport = { path = "../core-transport" }
+# To install ring as the process's rustls provider before any Tor client
+# exists (ArciumCore::new, decision D-193): the version and features relay
+# already uses, so no new crate.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 sha2.workspace = true
 ed25519-dalek.workspace = true
 x25519-dalek.workspace = true

@@ -309,6 +309,11 @@ impl Connection {
         self.request_deadline = deadline;
     }
 
+    /// The bound of every later request as a whole.
+    pub fn request_deadline(&self) -> Duration {
+        self.request_deadline
+    }
+
     fn call(&mut self, req: &Request) -> Result<Response, ClientError> {
         self.transport.socket().deadline = Instant::now() + self.request_deadline;
         write_frame(&mut self.transport, &req.encode())?;

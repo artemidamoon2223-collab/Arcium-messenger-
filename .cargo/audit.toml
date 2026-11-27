@@ -2,23 +2,41 @@
 #
 # Advisories below are in transitive dependencies we do not control (arti/Tor stack).
 # Each entry carries its own Added date; provenance was re-checked against arti 0.48
-# on 2026-11-24. REVISIT AT NEXT SECURITY AUDIT.
+# on 2026-11-24, and the rsa entry again on 2026-11-27 when Tor entered the app.
+# REVISIT AT NEXT SECURITY AUDIT.
 #
 # RUSTSEC-2025-0009 (ring 0.16) was ignored here until 2026-11-24: with arti 0.48,
 # ring 0.16 (via x509-signature) left Cargo.lock; only ring 0.17.14 remains.
 
 [advisories]
 ignore = [
-    # RUSTSEC-2023-0071 — rsa 0.9.x, Marvin timing side-channel attack.
+    # RUSTSEC-2023-0071 — rsa 0.9.x, Marvin timing side-channel attack: an attacker who
+    #   can time many decryptions or signatures with an RSA *private* key may recover it.
     # Provenance: rsa 0.9.10, a direct dependency of three arti 0.48 crates (Tor stack
     #   only): tor-llcrypto, tor-key-forge, and ssh-key-fork-arti (its "rsa" feature,
     #   turned on by tor-key-forge).
-    # Impact: none on the message path — our message crypto uses XChaCha20-Poly1305 +
-    #   X25519; rsa is never called there. core-transport is not a mobile-ffi dependency,
-    #   so the app does not contain rsa today; wiring Tor into the app (mobile-ffi
-    #   depending on core-transport) puts it in the Android library, and this entry must
-    #   be reviewed again then.
-    # Fix: no patched version available upstream as of 2026-11-24. REVISIT AT SECURITY AUDIT.
+    # In the app since Tor step 4.1: mobile-ffi depends on core-transport, so rsa is in
+    #   the Android library. Accepted by the Owner (decision D-192, «Р14 а»), on this
+    #   reasoning, reviewed 2026-11-27:
+    #   - Message crypto never uses RSA (XChaCha20-Poly1305 + X25519); rsa is not called
+    #     on the message path.
+    #   - A Tor client uses RSA to verify signatures with public keys (relay identities,
+    #     directory documents: tor-llcrypto pk/rsa.rs `PublicKey::verify`). Marvin needs
+    #     operations with a private key; a public-key verify has none to leak.
+    #   - Where arti 0.48 makes or uses an RSA private key, as built for the app
+    #     (arti-client features tokio, rustls, compression, onion-service-client):
+    #     tor-proto's relay channel code (feature "relay", off: not compiled);
+    #     tor-netdoc's encode_sign of router descriptors and authority certificates and
+    #     tor-cert's crosscert encoding (what relays and directory authorities sign, not
+    #     clients); tor-key-forge / tor-keymgr / ssh-key-fork-arti, generic key-store
+    #     support that makes or loads an RSA key only when a key of that type is asked
+    #     for, which no client or onion-service-client code in the graph does (its keys
+    #     are Ed25519 and X25519); and tests. So the app makes, loads and uses no RSA
+    #     private key: SOURCE_VERIFIED by a grep of those crates for RSA private-key
+    #     types and generation, INFERRED for the call paths (not traced end to end, not
+    #     observed at runtime).
+    # Fix: no patched version available upstream as of 2026-11-27. REVISIT AT SECURITY AUDIT,
+    #   and on every arti upgrade (the reasoning above holds for arti 0.48 only).
     # Tracked: https://rustsec.org/advisories/RUSTSEC-2023-0071
     # Added: 2026-06-07
     "RUSTSEC-2023-0071",

@@ -1511,6 +1511,7 @@ mod restart;
 mod prekey_record;
 mod spk_rotation;
 mod relay_v2;
+mod relay_onion;
 mod beyond_recall;
 mod far_skip;
 mod rollback;

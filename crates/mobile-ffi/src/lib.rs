@@ -56,6 +56,11 @@ pub(crate) use responder::*;
 pub struct ArciumCore {
     store: Mutex<EncryptedStore>,
     messenger: Mutex<Messenger>,
+    /// Where the process's Tor client keeps its state, if this core is the
+    /// first to start it: `tor/` next to the store file, so in the same
+    /// directory, which the app keeps (never a cache Android may clear:
+    /// arti's record that the network requires an update lives there).
+    tor_dir: std::path::PathBuf,
 }
 
 #[uniffi::export]
@@ -66,15 +71,23 @@ impl ArciumCore {
         // every exit path (F-8) — the Kotlin side already zeros its own copy
         // (PR #48's MasterKeyProvider), this covers what the Rust side holds.
         let master_key = Zeroizing::new(master_key);
+        // ring as the process's rustls provider, before any Tor client
+        // exists (decision D-193); once per process.
+        core_transport::install_crypto_provider();
         // Borrowed, not copied: the store makes the one copy it keeps, in its
         // own wiping owner, so no plain 32-byte array of the key exists here.
         let key: &[u8; 32] = master_key.as_slice().try_into().map_err(|_| CoreError::InvalidKey {
             msg: "expected exactly 32 bytes".into(),
         })?;
         let store = EncryptedStore::open_with_key(&storage_path, key)?;
+        let tor_dir = std::path::Path::new(&storage_path)
+            .parent()
+            .unwrap_or(std::path::Path::new(""))
+            .join("tor");
         Ok(Arc::new(Self {
             store: Mutex::new(store),
             messenger: Mutex::new(Messenger::with_confirm_hook(Box::new(replace_prekey_on_confirm))),
+            tor_dir,
         }))
     }
 

@@ -22,7 +22,7 @@ Alternatives considered:
 | option | why not (now) |
 |---|---|
 | direct peer-to-peer | phones behind NAT cannot accept connections; an offline peer receives nothing |
-| Tor onion services (`core-transport`, arti) | the crate is a stub (`TODO.onion`), arti is not bootstrapped anywhere, and it cannot be exercised in CI without the Tor network; kept as future work |
+| Tor onion services instead of a relay | phones cannot host a reachable service reliably, and an offline peer still receives nothing; Tor is used on top of the relay instead: a relay at an onion address is reached through arti embedded in the app (section 3a) |
 | a third-party push or messaging service | an external account and service, which needs the owner's approval |
 | **untrusted store-and-forward relay** | chosen: works with offline peers, runs locally and in CI, needs nothing external, and nothing about it is trusted |
 
@@ -308,10 +308,69 @@ recipient, so whoever reads the mailbox learns that the sender has the
 recipient as a contact; but the refusal is no proof of it to anyone else (see
 section 6). They do
 not see plaintext, identity
-or prekey secrets, ratchet state or checkpoints. There is no anonymity and no
-Tor: with V2 a network observer sees only connections, their sizes and
-timing (with V1, in development, it sees the same as the relay), and the
-relay can link sender, recipient and time of every message.
+or prekey secrets, ratchet state or checkpoints. There is no anonymity
+towards the relay: it can link sender, recipient and time of every message.
+With a relay at an ordinary address, a network observer sees only
+connections, their sizes and timing (with V1, in development, it sees the
+same as the relay), and the relay sees this device's IP address. With a relay
+at an onion address (section 3a), the relay does not learn this device's
+address, and an observer of this device's network sees connections to Tor,
+not to the relay.
+
+## 3a. A relay at an onion address (Tor)
+
+A relay whose host is an onion name (`*.onion`, in a V2 connection string or,
+in development, a V1 `host:port`) is reached only through the Tor client
+embedded in the app (arti 0.48, `core-transport`; `mobile-ffi`
+`network::tor`), never directly: the name is never handed to this device's
+resolver, and no TCP connection is made to it. A relay at any other host is
+reached directly, as before. Nothing switches between the two: the address
+the user entered decides (decision D-189). Over the Tor stream the protocol is
+unchanged: TLS 1.3 to the pinned key, HELLO, AUTH (section 3).
+
+- **One Tor client per process**, started by the first connection to an onion
+  relay, which waits for it (`core_transport::BOOTSTRAP_TIMEOUT`, 120 s). It
+  then stays for the life of the process. A start that fails (no network, a
+  timeout) fails that connection, and the next connection tries again; nothing
+  is tried directly meanwhile.
+- **Its state** (arti's state and directory cache) lives in `tor/` next to the
+  store file: on Android in the app's own files directory, which Android does
+  not clear as it may a cache, and which the app excludes from backup and
+  device transfer (`data_extraction_rules.xml`).
+- **ring** is the process's rustls provider, installed once when an
+  `ArciumCore` opens, before any Tor client exists (decision D-193); the relay
+  client passes ring to its own TLS configuration in any case.
+- **Bounds** (decision D-194, starting values, to be tuned with a real Tor
+  network): the stream may take 60 s to open (a rendezvous circuit is built
+  first); each request as a whole 60 s instead of 30 s; every read and write
+  keeps `timeout_ms`; the TLS handshake and HELLO keep their 30 s; a round
+  keeps its 120 s budget.
+- **Isolation** (decision D-195): every stream to the relay is in one Tor
+  isolation group of its own. Traffic that must not be linked to the
+  device's mailbox would need another group.
+- **An update the Tor network requires.** When the Tor network lists as
+  required a protocol this version of arti lacks, arti 0.48 ends the whole
+  process once (`std::process::exit(1)`), from a running client; it has saved
+  the requirement in its directory cache before that. Every later start then
+  fails at once (`core_transport::TransportError::NeedsUpdate`): connections
+  to the onion relay fail with "Tor needs an app update", and
+  `tor_state()` is `NeedsUpdate`, until an app update brings an arti that
+  implements the protocol. If the cache is lost, the next start can end the
+  process once more (decision D-199).
+- **`tor_state()`** tells the app whether the process's client is not
+  started, starting, running, needs an update, or failed its last start.
+
+What Tor adds and what it does not: the relay does not learn this device's
+IP address, an observer of this device's network does not learn which relay
+it talks to, and the relay, an onion service, does not show devices where it
+runs (running it as one: plan step 4.2, the relay's side). The relay still
+sees all it sees in section 3: identity keys, timing, sizes, and which
+mailbox a connection reads and sends from.
+
+Not verified here: a real Tor network (no CI job reaches one; the tests use a
+stand-in for Tor, `mobile-ffi` `tests::relay_onion`), and Tor on Android
+(bootstrap time, data and battery use, arti's check of the permissions of the
+app's directory).
 
 ## 4. Messages inside the ratchet
 
@@ -593,6 +652,9 @@ only the first can be accepted.
 Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 `network::RETRANSMIT_CAP`):
 
+For a relay at an onion address, the request bound is 60 s and opening a
+connection may take 60 s, plus up to 120 s for Tor's first start (section 3a).
+
 - **One request: 30 s.** Every read, write and flush on the connection waits
   at most `timeout_ms`, and the request as a whole (writing it, reading the
   whole answer) at most 30 s; past that it fails as a lost connection. A relay
@@ -645,7 +707,9 @@ Time bounds (`relay::client::REQUEST_DEADLINE`, `network::ROUND_BUDGET`,
 
 ## 8. Not provided
 
-- Anonymity, metadata protection, Tor.
+- Anonymity towards the relay, and metadata protection beyond what Tor hides
+  for a relay at an onion address (section 3a). Tor for a relay at an
+  ordinary address.
 - Authentication of relay clients on V1 (development only): anyone reaching
   such a relay can read (only ciphertext) or delete a mailbox, or replace a
   bundle (refused by the initiator's identity check). On V2 only the owner

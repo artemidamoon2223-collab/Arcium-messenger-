@@ -11,6 +11,20 @@ use tor_rtcompat::PreferredRuntime;
 mod connector;
 pub use connector::{TorConnector, TorStream};
 
+/// Installs ring as this process's default rustls crypto provider, once
+/// (decision D-193). arti's rustls runtime uses the process default and
+/// installs none itself; the app calls this when its core starts, before any
+/// Tor client exists. The relay client does not depend on it: it builds its
+/// TLS configuration with ring explicitly (`relay::tls`). A provider already
+/// installed stays: no other crate in the app installs one.
+pub fn install_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Err only when a provider is already installed; it stays.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Longest time [`TorTransport::new`] waits for Tor to bootstrap before it
 /// returns [`TransportError::Bootstrap`].
 ///

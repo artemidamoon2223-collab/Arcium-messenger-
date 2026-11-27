@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use arti_client::DataStream;
+use arti_client::{DataStream, StreamPrefs};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::runtime::Runtime;
 
@@ -33,9 +33,15 @@ use crate::{Start, TorTransport, TransportError, BOOTSTRAP_TIMEOUT};
 /// method blocks the calling thread, and none may be called from inside an
 /// async context (tokio panics there); the last owner of the runtime must
 /// not drop it there either.
+///
+/// Every stream one connector opens is in one isolation group of its own
+/// (decision D-195): its streams may share circuits with each other, never
+/// with a stream of another group. The app's relay traffic is one group;
+/// traffic that must not be linked to it needs another connector.
 pub struct TorConnector {
     transport: TorTransport,
     runtime: Arc<Runtime>,
+    prefs: StreamPrefs,
 }
 
 impl TorConnector {
@@ -48,7 +54,13 @@ impl TorConnector {
     fn start(state_dir: &Path, start: Start) -> Result<Self, TransportError> {
         let runtime = Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().build()?);
         let transport = runtime.block_on(TorTransport::create(state_dir, start))?;
-        Ok(Self { transport, runtime })
+        let mut prefs = StreamPrefs::new();
+        prefs.new_isolation_group();
+        Ok(Self {
+            transport,
+            runtime,
+            prefs,
+        })
     }
 
     /// Opens a stream to `addr`, `host:port` as written: a DNS name, a public
@@ -62,7 +74,7 @@ impl TorConnector {
     pub fn connect(&self, addr: &str, timeout: Duration) -> io::Result<TorStream> {
         let client = &self.transport.client;
         open(&self.runtime, timeout, async {
-            client.connect(addr).await.map_err(io::Error::other)
+            client.connect_with_prefs(addr, &self.prefs).await.map_err(io::Error::other)
         })
     }
 }
@@ -334,6 +346,18 @@ mod tests {
     /// bootstraps: offline, no network is touched.
     fn unbootstrapped(state_dir: &Path) -> TorConnector {
         TorConnector::start(state_dir, Start::Unbootstrapped).unwrap()
+    }
+
+    /// A connector's streams are in an isolation group of their own, not
+    /// arti's default group, and each connector has its own. arti's
+    /// `StreamPrefs` shows the group only through `Debug`.
+    #[test]
+    fn each_connector_has_an_isolation_group_of_its_own() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (a, b) = (unbootstrapped(a.path()), unbootstrapped(b.path()));
+        let (a, b) = (format!("{:?}", a.prefs), format!("{:?}", b.prefs));
+        assert!(a.contains("Explicit"), "{a}");
+        assert_ne!(a, b, "two connectors share a group");
     }
 
     /// arti's error comes back as an `io::Error` at once. Here: a client that

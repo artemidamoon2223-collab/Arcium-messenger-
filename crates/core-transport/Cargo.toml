@@ -10,12 +10,14 @@ license.workspace = true
 # cross-compilation (no OpenSSL sysroot for *-linux-android). TLS is provided
 # by the explicit "rustls" feature instead. "tokio" and "compression" are
 # re-added explicitly to keep everything else the defaults provided.
+# "onion-service-client" lets the app reach a relay at an onion address. The
+# app hosts no onion service, so "onion-service-service" (tor-hsservice) is
+# off: a relay that is one runs its own Tor (plan step 4.2).
 arti-client = { version = "0.48", default-features = false, features = [
     "tokio",
     "rustls",
     "compression",
     "onion-service-client",
-    "onion-service-service",
 ] }
 tor-rtcompat = { version = "0.48", features = ["tokio", "rustls"] }
 # The TLS crypto provider arti's rustls runtime needs: ring, with the same

@@ -9,8 +9,8 @@ members = [
     "crates/relay",
 ]
 # A path dependency inside the workspace directory would otherwise become a
-# member; the vendored crates are patched in below, not developed here.
-exclude = ["vendor/arti-client", "vendor/tor-dirmgr"]
+# member; the vendored crate is patched in below, not developed here.
+exclude = ["vendor/tor-dirmgr"]
 
 [workspace.package]
 edition = "2021"
@@ -100,12 +100,5 @@ serde_json = { opt-level = 3 }
 # is the published 0.48.0 crate with only its rusqlite requirement raised to
 # 0.41. Remove this patch and vendor/tor-dirmgr once an arti release accepts
 # rusqlite >= 0.41. See vendor/README.md.
-#
-# arti-client 0.48 ends the whole process (std::process::exit(1)) when the Tor
-# network requires a protocol it lacks; an app must not close for that.
-# vendor/arti-client is the published 0.48.0 crate with that exit replaced by a
-# record its owner reads (arti_client::arcium_patch). Remove it once an arti
-# release has no such exit (upstream TODO #1932). See vendor/README.md.
 [patch.crates-io]
-arti-client = { path = "vendor/arti-client" }
 tor-dirmgr = { path = "vendor/tor-dirmgr" }

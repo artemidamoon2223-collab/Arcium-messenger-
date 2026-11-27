@@ -28,9 +28,11 @@ pub enum TransportError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     /// The Tor network requires a protocol this version of arti does not
-    /// implement. Tor stays off in this process; only an app update helps.
-    /// arti's own reaction, ending the process, is patched out
-    /// (`arti_client::arcium_patch`, vendor/README.md).
+    /// implement: only an app update helps. arti 0.48 ends the whole process
+    /// (`std::process::exit(1)`) once, when a running client gets such a
+    /// consensus; unless its directory cache is read-only, it has saved the
+    /// requirement there by then, so every later bootstrap fails with an
+    /// error of kind `SoftwareDeprecated`, which is this.
     #[error("Tor stopped: the Tor network requires a newer version of this app")]
     NeedsUpdate,
 }
@@ -43,10 +45,6 @@ pub struct TorTransport {
 
 impl TorTransport {
     /// Bootstraps a Tor client, giving up after [`BOOTSTRAP_TIMEOUT`].
-    ///
-    /// Nothing here stops this client on a protocol shutdown: only
-    /// [`TorConnector`] does. Whoever holds a `TorTransport` must drop it once
-    /// `arti_client::arcium_patch::protocol_shutdown()` finishes.
     pub async fn new(state_dir: &std::path::Path) -> Result<Self, TransportError> {
         Self::new_within(state_dir, BOOTSTRAP_TIMEOUT).await
     }
@@ -61,14 +59,7 @@ impl TorTransport {
     /// A transport whose client keeps its state under `state_dir` and starts
     /// as `start` says. Must run inside a tokio runtime: the client runs on
     /// the current one.
-    ///
-    /// After a protocol shutdown in this process
-    /// ([`arti_client::arcium_patch`]) it creates no client and returns
-    /// [`TransportError::NeedsUpdate`]: the software is still too old.
     async fn create(state_dir: &Path, start: Start) -> Result<Self, TransportError> {
-        if arti_client::arcium_patch::protocol_shutdown_happened() {
-            return Err(TransportError::NeedsUpdate);
-        }
         let builder = builder(state_dir)?;
         let client = match start {
             Start::Bootstrap(bound) => bootstrap_within(bound, builder.create_bootstrapped()).await?,
@@ -113,9 +104,9 @@ fn builder(state_dir: &Path) -> Result<TorClientBuilder<PreferredRuntime>, Trans
 
 /// Runs a bootstrap future for at most `bound`. A timeout and an error from
 /// the future both become [`TransportError::Bootstrap`], except an error of
-/// kind `SoftwareDeprecated`: arti found in its cached consensus a required
-/// protocol it lacks, which is [`TransportError::NeedsUpdate`]. On a timeout
-/// the future is dropped, which drops the client it was building.
+/// kind `SoftwareDeprecated` (arti's cached consensus requires a protocol it
+/// lacks), which becomes [`TransportError::NeedsUpdate`]. On a timeout the
+/// future is dropped, which drops the client it was building.
 async fn bootstrap_within<T, E: Display + HasKind>(
     bound: Duration,
     bootstrap: impl Future<Output = Result<T, E>>,
@@ -232,8 +223,8 @@ mod tests {
     }
 
     /// arti's bootstrap fails with this kind when its cached consensus
-    /// requires a protocol it lacks (`MissingProtocol`): that is an update to
-    /// ask for, not a failure to retry.
+    /// requires a protocol it lacks (`MissingProtocol`): an update to ask
+    /// for, not a failure to retry.
     #[tokio::test]
     async fn bootstrap_within_reports_deprecated_software_as_needs_update() {
         let result = bootstrap_within(Duration::from_secs(5), async {

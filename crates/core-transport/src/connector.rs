@@ -16,18 +16,14 @@
 use std::future::Future;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use arti_client::{DataStream, TorClient};
+use arti_client::DataStream;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::runtime::Runtime;
-use tor_rtcompat::PreferredRuntime;
 
 use crate::{Start, TorTransport, TransportError, BOOTSTRAP_TIMEOUT};
-
-/// Where a connector keeps its Tor client: `None` once Tor is stopped.
-type Slot<C> = Arc<Mutex<Option<C>>>;
 
 /// Opens streams over Tor, on a multi-thread tokio runtime its Tor client
 /// runs on. Every stream it opens shares that runtime, so after the
@@ -37,62 +33,22 @@ type Slot<C> = Arc<Mutex<Option<C>>>;
 /// method blocks the calling thread, and none may be called from inside an
 /// async context (tokio panics there); the last owner of the runtime must
 /// not drop it there either.
-///
-/// When the Tor network requires a protocol this arti lacks (a protocol
-/// shutdown, `arti_client::arcium_patch`), a task on the runtime drops the
-/// connector's client, and with it (inferred from arti's source, not tested)
-/// the client's own tasks: Tor stops, and the process goes on. From then on
-/// [`TorConnector::needs_update`] is true and [`TorConnector::connect`]
-/// refuses at once. A connect already under way finishes with the client it
-/// holds, which is dropped after it; a stream opened before is not closed and
-/// may still carry data over its circuit. Dropping the connector drops its
-/// client at once, as before the shutdown task existed: the task holds the
-/// client only weakly.
 pub struct TorConnector {
-    client: Slot<Arc<TorClient<PreferredRuntime>>>,
+    transport: TorTransport,
     runtime: Arc<Runtime>,
 }
 
 impl TorConnector {
     /// Bootstraps a Tor client that keeps its state under `state_dir`,
-    /// giving up after [`BOOTSTRAP_TIMEOUT`]. After a protocol shutdown in
-    /// this process it returns [`TransportError::NeedsUpdate`].
+    /// giving up after [`BOOTSTRAP_TIMEOUT`].
     pub fn bootstrap(state_dir: &Path) -> Result<Self, TransportError> {
-        Self::start(
-            state_dir,
-            Start::Bootstrap(BOOTSTRAP_TIMEOUT),
-            arti_client::arcium_patch::protocol_shutdown(),
-        )
+        Self::start(state_dir, Start::Bootstrap(BOOTSTRAP_TIMEOUT))
     }
 
-    /// A connector whose client starts as `start` says and is dropped once
-    /// `shutdown` finishes. If `shutdown` finishes first, before or while the
-    /// client is created, the client being created is dropped and this
-    /// returns [`TransportError::NeedsUpdate`].
-    fn start(
-        state_dir: &Path,
-        start: Start,
-        shutdown: impl Future<Output = ()> + Send + 'static,
-    ) -> Result<Self, TransportError> {
+    fn start(state_dir: &Path, start: Start) -> Result<Self, TransportError> {
         let runtime = Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().build()?);
-        let mut shutdown = Box::pin(shutdown);
-        let transport = runtime.block_on(async {
-            tokio::select! {
-                // A shutdown that has already come wins over a finished create.
-                biased;
-                () = &mut shutdown => Err(TransportError::NeedsUpdate),
-                created = TorTransport::create(state_dir, start) => created,
-            }
-        })?;
-        let client = Arc::new(Mutex::new(Some(transport.client)));
-        runtime.spawn(empty_on(shutdown, Arc::downgrade(&client)));
-        Ok(Self { client, runtime })
-    }
-
-    /// Whether Tor is stopped for good in this process: the Tor network
-    /// requires a protocol this version lacks, and only an app update helps.
-    pub fn needs_update(&self) -> bool {
-        arti_client::arcium_patch::protocol_shutdown_happened() || lock(&self.client).is_none()
+        let transport = runtime.block_on(TorTransport::create(state_dir, start))?;
+        Ok(Self { transport, runtime })
     }
 
     /// Opens a stream to `addr`, `host:port` as written: a DNS name, a public
@@ -102,36 +58,12 @@ impl TorConnector {
     /// `10.0.2.2`, `[::1]`, ...) is refused by arti at once, before anything
     /// is sent: Tor exits refuse those. Returns, with a stream or an error,
     /// within `timeout`; a timeout is `TimedOut`, a zero `timeout` is refused
-    /// with `InvalidInput`, and arti's errors are `Other`. Once
-    /// [`TorConnector::needs_update`] is true, it fails at once with
-    /// `Unsupported`, the inner error being [`TransportError::NeedsUpdate`].
+    /// with `InvalidInput`, and arti's errors are `Other`.
     pub fn connect(&self, addr: &str, timeout: Duration) -> io::Result<TorStream> {
-        // The lock is released at the end of this statement, before
-        // `needs_update` takes it again.
-        let client = lock(&self.client).clone();
-        let client = match client {
-            Some(client) if !self.needs_update() => client,
-            _ => return Err(io::Error::new(io::ErrorKind::Unsupported, TransportError::NeedsUpdate)),
-        };
-        open(&self.runtime, timeout, async move {
+        let client = &self.transport.client;
+        open(&self.runtime, timeout, async {
             client.connect(addr).await.map_err(io::Error::other)
         })
-    }
-}
-
-/// The slot's content, also after a panic in another thread that held it.
-fn lock<C>(slot: &Slot<C>) -> std::sync::MutexGuard<'_, Option<C>> {
-    slot.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Waits for `shutdown`, then takes the slot's content out and drops it. It
-/// holds the slot weakly, so it never keeps the content alive: a slot whose
-/// owner is gone is already dropped.
-async fn empty_on<C>(shutdown: impl Future<Output = ()>, slot: Weak<Mutex<Option<C>>>) {
-    shutdown.await;
-    if let Some(slot) = slot.upgrade() {
-        let content = lock(&slot).take();
-        drop(content);
     }
 }
 
@@ -399,89 +331,9 @@ mod tests {
     }
 
     /// A connector made as `bootstrap` makes one, over a client that never
-    /// bootstraps: offline, no network is touched. No protocol shutdown
-    /// comes.
+    /// bootstraps: offline, no network is touched.
     fn unbootstrapped(state_dir: &Path) -> TorConnector {
-        TorConnector::start(state_dir, Start::Unbootstrapped, std::future::pending()).unwrap()
-    }
-
-    /// The content of a slot is dropped once the shutdown comes, not before.
-    #[test]
-    fn a_shutdown_drops_the_slot_content() {
-        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
-        struct Flagged(Arc<AtomicBool>);
-        impl Drop for Flagged {
-            fn drop(&mut self) {
-                self.0.store(true, SeqCst);
-            }
-        }
-        let rt = runtime();
-        let dropped = Arc::new(AtomicBool::new(false));
-        let slot = Arc::new(Mutex::new(Some(Flagged(Arc::clone(&dropped)))));
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        rt.spawn(empty_on(async { rx.await.unwrap() }, Arc::downgrade(&slot)));
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(!dropped.load(SeqCst), "dropped before the shutdown");
-        tx.send(()).unwrap();
-        let started = Instant::now();
-        while !dropped.load(SeqCst) && started.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(dropped.load(SeqCst), "not dropped after the shutdown");
-        assert!(lock(&slot).is_none());
-    }
-
-    /// Dropping the connector drops its Tor client at once, also while
-    /// something else (a stream it opened) keeps its runtime and so the
-    /// shutdown task alive.
-    #[test]
-    fn dropping_the_connector_drops_its_client_while_its_runtime_lives() {
-        let dir = tempfile::tempdir().unwrap();
-        let connector = unbootstrapped(dir.path());
-        let client = Arc::downgrade(lock(&connector.client).as_ref().unwrap());
-        let stream_share = Arc::clone(&connector.runtime);
-        drop(connector);
-        let alive = client.upgrade().is_some();
-        drop(stream_share);
-        assert!(!alive, "the Tor client outlived its connector");
-    }
-
-    /// A shutdown that comes before or while the client is created gives
-    /// `NeedsUpdate` and no connector.
-    #[test]
-    fn a_shutdown_before_start_gives_needs_update() {
-        let dir = tempfile::tempdir().unwrap();
-        let started = TorConnector::start(dir.path(), Start::Unbootstrapped, std::future::ready(()));
-        assert!(matches!(started, Err(TransportError::NeedsUpdate)), "{:?}", started.err());
-    }
-
-    /// After a protocol shutdown the connector drops its Tor client and
-    /// refuses every connect at once with `Unsupported`, carrying
-    /// `NeedsUpdate`; before it, it does neither.
-    #[test]
-    fn a_protocol_shutdown_stops_the_connector() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        let connector =
-            TorConnector::start(dir.path(), Start::Unbootstrapped, async { rx.await.unwrap() }).unwrap();
-        assert!(!connector.needs_update());
-        let client = Arc::downgrade(lock(&connector.client).as_ref().unwrap());
-        let before = connector.connect("relay.example.com:443", Duration::from_secs(5)).err().unwrap();
-        assert_eq!(before.kind(), io::ErrorKind::Other, "{before}");
-
-        tx.send(()).unwrap();
-        let started = Instant::now();
-        while !connector.needs_update() && started.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(connector.needs_update(), "the connector did not stop");
-        assert!(client.upgrade().is_none(), "the Tor client is still alive");
-        let started = Instant::now();
-        let err = connector.connect("relay.example.com:443", Duration::from_secs(5)).err().unwrap();
-        assert_eq!(err.kind(), io::ErrorKind::Unsupported, "{err}");
-        let inner = err.get_ref().and_then(|e| e.downcast_ref::<TransportError>());
-        assert!(matches!(inner, Some(TransportError::NeedsUpdate)), "{err}");
-        assert!(started.elapsed() < Duration::from_secs(2));
+        TorConnector::start(state_dir, Start::Unbootstrapped).unwrap()
     }
 
     /// arti's error comes back as an `io::Error` at once. Here: a client that

@@ -276,11 +276,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("arcium.db");
         let core = crate::ArciumCore::new(store.to_str().unwrap().to_string(), vec![7u8; 32]).unwrap();
-        let installed = rustls::crypto::CryptoProvider::get_default().expect("no provider installed");
+        let installed = rustls::crypto::CryptoProvider::get_default().expect("no provider installed").clone();
         let ring = rustls::crypto::ring::default_provider();
         let suites = |p: &rustls::crypto::CryptoProvider| p.cipher_suites.iter().map(|s| s.suite()).collect::<Vec<_>>();
-        assert_eq!(suites(installed), suites(&ring));
+        assert_eq!(suites(&installed), suites(&ring));
         assert_eq!(core.tor_dir, dir.path().join("tor"));
+        // A second core installs nothing new: the provider stays the same one.
+        let other = tempfile::tempdir().unwrap();
+        crate::ArciumCore::new(other.path().join("db").to_str().unwrap().to_string(), vec![8u8; 32]).unwrap();
+        let after = rustls::crypto::CryptoProvider::get_default().expect("no provider");
+        assert!(Arc::ptr_eq(&installed, after), "a second core replaced the provider");
     }
 
     #[test]

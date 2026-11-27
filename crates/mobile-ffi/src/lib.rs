@@ -40,6 +40,20 @@ pub(crate) use identity::*;
 pub(crate) use prekeys::*;
 pub(crate) use responder::*;
 
+/// Installs ring as this process's default rustls crypto provider, once
+/// (decision D-193). arti's rustls runtime uses the process default and
+/// installs none itself; `ArciumCore::new` calls this first, so it runs
+/// before any Tor client exists. The relay client does not depend on it: it
+/// builds each TLS configuration with ring itself (`relay::tls`). A provider
+/// already installed stays: nothing else in the app installs one.
+fn install_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Err only when a provider is already installed; it stays.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 // ── ArciumCore ────────────────────────────────────────────────────────────────
 /// The encrypted store and the durable messaging state machine over it.
 ///
@@ -71,9 +85,7 @@ impl ArciumCore {
         // every exit path (F-8) — the Kotlin side already zeros its own copy
         // (PR #48's MasterKeyProvider), this covers what the Rust side holds.
         let master_key = Zeroizing::new(master_key);
-        // ring as the process's rustls provider, before any Tor client
-        // exists (decision D-193); once per process.
-        core_transport::install_crypto_provider();
+        install_crypto_provider();
         // Borrowed, not copied: the store makes the one copy it keeps, in its
         // own wiping owner, so no plain 32-byte array of the key exists here.
         let key: &[u8; 32] = master_key.as_slice().try_into().map_err(|_| CoreError::InvalidKey {

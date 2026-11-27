@@ -329,10 +329,13 @@ the user entered decides (decision D-189). Over the Tor stream the protocol is
 unchanged: TLS 1.3 to the pinned key, HELLO, AUTH (section 3).
 
 - **One Tor client per process**, started by the first connection to an onion
-  relay, which waits for it (`core_transport::BOOTSTRAP_TIMEOUT`, 120 s). It
-  then stays for the life of the process. A start that fails (no network, a
-  timeout) fails that connection, and the next connection tries again; nothing
-  is tried directly meanwhile.
+  relay, which waits for it (`core_transport::BOOTSTRAP_TIMEOUT`, 120 s); a
+  connection that comes meanwhile waits for that start. The client then stays
+  for the life of the process. A start that fails (no network, a timeout)
+  fails that connection; for the next 60 s (`network::tor::RETRY_AFTER`)
+  every connection to the onion relay fails at once with the same error, and
+  the first one after that starts Tor again. Nothing is tried directly
+  meanwhile.
 - **Its state** (arti's state and directory cache) lives in `tor/` next to the
   store file: on Android in the app's own files directory, which Android does
   not clear as it may a cache, and which the app excludes from backup and
@@ -344,7 +347,15 @@ unchanged: TLS 1.3 to the pinned key, HELLO, AUTH (section 3).
   network): the stream may take 60 s to open (a rendezvous circuit is built
   first); each request as a whole 60 s instead of 30 s; every read and write
   keeps `timeout_ms`; the TLS handshake and HELLO keep their 30 s; a round
-  keeps its 120 s budget.
+  keeps its 120 s budget, counted from when its connection is open (section
+  7), so neither Tor's start nor the wait for the stream uses it up. The
+  relay closes a V2 connection whose TLS handshake takes more than 10 s
+  (section 3); over a rendezvous circuit that limit is tighter than the
+  client's, and may need raising on a relay that serves over Tor (plan step
+  4.2). Before a round's first budget check, its connection can take up to
+  Tor's start (120 s), the stream (60 s), TLS and HELLO (30 s), AUTH and the
+  bundle's PUT (60 s each): about 330 s at worst, against about 70 s for a
+  relay at an ordinary address.
 - **Isolation** (decision D-195): every stream to the relay is in one Tor
   isolation group of its own. Traffic that must not be linked to the
   device's mailbox would need another group.
@@ -358,7 +369,8 @@ unchanged: TLS 1.3 to the pinned key, HELLO, AUTH (section 3).
   implements the protocol. If the cache is lost, the next start can end the
   process once more (decision D-199).
 - **`tor_state()`** tells the app whether the process's client is not
-  started, starting, running, needs an update, or failed its last start.
+  started, starting, running, needs an update, or failed its last start. It
+  answers at once, also while Tor starts: it never waits for a start.
 
 What Tor adds and what it does not: the relay does not learn this device's
 IP address, an observer of this device's network does not learn which relay
@@ -661,7 +673,8 @@ connection may take 60 s, plus up to 120 s for Tor's first start (section 3a).
   that trickles bytes cannot hold a round open. A page (at most one 1 MiB
   frame) therefore needs a link of about 35 KiB/s to arrive; on a slower link
   a full page of large envelopes cannot be read (no adaptive paging).
-- **One round: 120 s of relay requests.** The budget is checked before every
+- **One round: 120 s of relay requests**, counted from when the round's
+  connection is open (and authenticated, on V2). The budget is checked before every
   page of a pass after its first, and before every send. When it runs out,
   the pass stops after the page in hand, deletes what it processed, and the
   round's report carries the line `round budget exhausted: the rest follows
@@ -1313,6 +1326,8 @@ entry per logical message, never written by the ratchet.
 | a gap of more than `MAX_SKIP` in one chain (texts given up after they were encrypted, or lost on the relay) is crossed with a far skip and both directions go on; a far skip only after the wait without accepting a message and not in a pass that accepted one; a rotated mailbox and a lost start sent again later deliver every text; one far try per session per round, a far message without a try deleted and read when sent again, nothing kept on the relay; at most four tries per round over six sessions; the wait kept per chain (a forged key starts no genuine wait), counted from the chain's first arrival, the chain seen least recently dropped first, a session judged once per pass also when the round is full, and the waits forgotten when the contact is deleted; the wait kept in the store across a restart, deleted once a message is accepted, with the contact and on a reset; the record's layout and strict parsing, a record that does not parse read as none and replaced, a clock set back before a chain's first sighting starting its wait again, the last sighting stored at most once a minute (counted) while dropping follows the exact one, a write that failed asked for again (unit, sightings only); a far try that fails other than by not decrypting, and a message read with one that fails to settle, each reported with the pass going on; a lost text from before the kept keys of the current chain named back in a GONE message; in the ratchet, the gap in the current chain, in the chain being left and in both at once, the last `MAX_SKIP` keys kept, `MAX_FAR_SKIP` and no further, a forged far message changing nothing, no key left behind, no far skip past `MAX_RESUMABLE_NR` | `tests::far_skip`; `network::tests` (the far-wait record and sightings); `core_crypto::ratchet` (`a_far_skip_*`, `a_forged_far_message_changes_nothing`, `a_stored_key_needs_no_far_skip`, `no_temporary_key_outlives_a_far_skip`), `ratchet::checkpoint` (`a_far_skip_never_moves_nr_past_the_resumable_limit`) | runtime, local relay over TCP; unit |
 | a message whose key was evicted is named back in a GONE message and the text is abandoned (`NotDelivered` in the history), also when it arrives after the ratchet turned, on a chain the recipient left (the last 32 are remembered, from `RATCHET_STATE_V2`) or no longer knows (33 turns later, on its second arrival; not before the session received from the contact, not a far message in its wait; at most 256 first arrivals noted per session, the oldest pushed out); a GONE lost on the relay is sent again when the text is repeated, not again within the minute, and once more a minute later (the minute set by a test aid); ids the sender has not pending as a text (unknown, delivered, not a text) change nothing; altered copies that only look late draw one GONE per round; a failed round keeps nothing to name | `tests::beyond_recall`, `tests::far_skip::a_far_message_in_its_wait_draws_no_gone`; `core_crypto::ratchet` (`a_position_whose_key_is_gone_is_beyond_recall`, `a_late_message_of_an_earlier_chain_whose_key_is_gone_is_beyond_recall`, `a_header_of_a_forgotten_chain_is_named`, `a_checkpoint_written_by_the_previous_implementation_round_trips_byte_for_byte`), `ratchet::checkpoint` (`earlier_chains_round_trip_and_their_rules_are_enforced`) | runtime, local relay over TCP; unit |
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
+| a relay at an onion address, V2 and V1, any case and final dots: every connection goes only through the onion path, to exactly `<onion>:<port>`, and gets the 60 s request deadline; without Tor every operation fails with Tor's error and the direct path is never asked; a relay at an ordinary address goes only the direct way with 30 s, and never asks for Tor | `tests::relay_onion` | runtime, local V2 and V1 relays; Tor and TCP stand-ins that record each address |
+| the process's Tor client: started once and shared; a failed start `Failed`, and within 60 s every call fails at once with its error, starting nothing; a caller that waits on a failing start does not start another; `tor_state()` answers `Starting` at once during a start; a start that panics leaves `Failed`; `NeedsUpdate` its own state and text; the Tor connector waits 60 s for a stream (longer if the connection's timeout is) and passes every read and write timeout on; opening a core installs ring and names `tor/` next to the store; onion names told apart; the isolation group of each connector | `network::tor::tests`, `core-transport` `connector::tests::each_connector_has_an_isolation_group_of_its_own` | unit, stand-ins for the Tor client and its stream; no real Tor |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |
 | conversation history, states, repeats, replays, forged bundle, conflict | `tests::chat` | runtime |

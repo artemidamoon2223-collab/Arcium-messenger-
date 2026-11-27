@@ -38,7 +38,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use core_crypto::spk_id::spk_id;
 use core_storage::StorageError;
 use relay::address::{AddressError, RelayAddress, ADDRESS_PREFIX};
-use relay::client::{ClientError, Connection};
+use relay::client::{ClientError, Connection, Connector, TcpConnector};
 use relay::protocol::{ErrorCode, DEFAULT_MAX_MAILBOX, MAX_FETCH, MIN_PAGE};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -163,6 +163,10 @@ pub struct NetworkMessenger {
     /// How an onion relay is reached: the process's Tor client, or in tests
     /// a stand-in. Unused for any other relay.
     onion: Arc<dyn tor::OnionPath>,
+    /// How any other relay is reached: TCP (`TcpConnector`), or in tests a
+    /// stand-in that records every address it is asked for. Never for an
+    /// onion relay.
+    direct: Arc<dyn Connector + Send + Sync>,
     timeout: Duration,
     retransmit_after: Duration,
     /// When each message or handshake was last accepted by the relay, and
@@ -228,6 +232,10 @@ pub struct NetworkMessenger {
     /// Test aid: how many times this instance stored a far-skip wait.
     #[cfg(test)]
     far_writes: std::sync::atomic::AtomicU32,
+    /// Test aid: the request deadline of the last connection `connect` made,
+    /// as the connection holds it.
+    #[cfg(test)]
+    pub(crate) last_deadline: Mutex<Option<Duration>>,
 }
 
 /// Time bounds of the network layer (docs/NET-MESSAGING.md, section 7).
@@ -439,7 +447,7 @@ impl NetworkMessenger {
         let onion = Arc::new(tor::ProcessTor {
             dir: core.tor_dir.clone(),
         });
-        Self::with_onion_path(core, relay_address, retransmit_after_ms, timeout_ms, onion)
+        Self::with_paths(core, relay_address, retransmit_after_ms, timeout_ms, onion, Arc::new(TcpConnector))
     }
 
     /// Publishes this device's prekey bundle, creating prekeys first if none
@@ -588,18 +596,21 @@ impl NetworkMessenger {
 
 impl NetworkMessenger {
     /// [`Self::new`], with onion relays reached through `onion` instead of
-    /// the process's Tor client: tests pass a stand-in.
-    pub(crate) fn with_onion_path(
+    /// the process's Tor client and other relays through `direct` instead of
+    /// TCP: tests pass stand-ins.
+    pub(crate) fn with_paths(
         core: Arc<ArciumCore>,
         relay_address: String,
         retransmit_after_ms: u64,
         timeout_ms: u64,
         onion: Arc<dyn tor::OnionPath>,
+        direct: Arc<dyn Connector + Send + Sync>,
     ) -> Arc<Self> {
         Arc::new(Self {
             core,
             relay: Relay::parse(relay_address),
             onion,
+            direct,
             timeout: Duration::from_millis(timeout_ms),
             retransmit_after: Duration::from_millis(retransmit_after_ms),
             last_sent: Mutex::new(HashMap::new()),
@@ -617,6 +628,8 @@ impl NetworkMessenger {
             far_tries: std::sync::atomic::AtomicU32::new(0),
             #[cfg(test)]
             far_writes: std::sync::atomic::AtomicU32::new(0),
+            #[cfg(test)]
+            last_deadline: Mutex::new(None),
             limits: Mutex::new(Limits::default()),
             resume: Mutex::new(Resume::default()),
         })
@@ -667,13 +680,17 @@ impl NetworkMessenger {
         let onion = self.relay.is_onion();
         let mut conn = match &self.relay {
             Relay::V1(addr) if onion => Connection::connect_with(&*self.onion.connector()?, addr, self.timeout),
-            Relay::V1(addr) => Connection::connect(addr, self.timeout),
+            Relay::V1(addr) => Connection::connect_with(&*self.direct, addr, self.timeout),
             Relay::V2(addr) if onion => Connection::connect_v2_with(&*self.onion.connector()?, addr, self.timeout),
-            Relay::V2(addr) => Connection::connect_v2(addr, self.timeout),
+            Relay::V2(addr) => Connection::connect_v2_with(&*self.direct, addr, self.timeout),
             Relay::Invalid(e) => return Err(CoreError::Network { msg: e.to_string() }),
         }
         .map_err(network)?;
         conn.set_request_deadline(self.request_deadline());
+        #[cfg(test)]
+        {
+            *self.last_deadline.lock().expect("last_deadline") = Some(conn.request_deadline());
+        }
         Ok(conn)
     }
 
@@ -796,7 +813,6 @@ impl NetworkMessenger {
     }
 
     fn sync_round(&self, report: &mut SyncReport, relay_refusals: &mut RelayRefusals) -> Result<(), CoreError> {
-        let budget = Budget::new(self.limits().round_budget);
         // Taken, so that a round that fails anywhere starts the next one
         // from the beginning; set again below only by a round cut short.
         let from = std::mem::take(&mut *self.resume.lock().expect("resume"));
@@ -816,6 +832,10 @@ impl NetworkMessenger {
         // One connection for the whole round, authenticated on V2: the round
         // publishes the bundle and reads and deletes from the mailbox.
         let mut conn = self.connect_owner()?;
+        // The round's budget counts its requests, from when its connection is
+        // open: not the wait for it, which for an onion relay can include
+        // Tor's first start (up to 120 s, section 3a).
+        let budget = Budget::new(self.limits().round_budget);
         // Before anything is read from the mailbox, and fatal: no handshake
         // or message is processed in a round whose bundle publication and
         // its record did not both succeed. A handshake is answered only

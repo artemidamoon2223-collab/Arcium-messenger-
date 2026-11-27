@@ -35,8 +35,10 @@ Private contact discovery is a separate component: private set intersection
   There is no push; after a reboot nothing arrives until the app is opened.
 - Contacts are added by exchanging contact cards out of band and comparing
   their fingerprints.
-- Tor is not wired: `crates/core-transport` exists, but nothing calls it
-  (finding F-15).
+- Tor is used only for a relay at an onion address: the app's core then
+  reaches it through arti, embedded, never directly
+  (`docs/NET-MESSAGING.md`, section 3a). It has not been run against the real
+  Tor network or on a phone yet (finding F-15).
 - The PSI program is not deployed (its program ID is a placeholder, F-14),
   has open findings (F-4), and the app does not call it.
 - There is no release signing.

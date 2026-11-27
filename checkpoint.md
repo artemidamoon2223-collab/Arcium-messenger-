@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-27 UTC (after D-182), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
+Updated: 2026-11-27 UTC (after D-183), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
 
 ## Read first
 The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**, with the Owner's order in D-166 and corrections in D-167 and D-168 (the later entry wins). Read all four in full before any work:
@@ -18,21 +18,23 @@ Russian, plain words, result first, one step at a time. Since D-178: the Owner's
 1. Read this file and D-165 to D-168 (command above); older entries of `decisions.md` when a line here cites them.
 2. Re-verify the main SHA and the open PRs on GitHub. On any mismatch, this file is stale.
 3. Act only on the Owner's current instruction. AGENT and PROPOSAL records are not Owner decisions.
-4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-183.
+4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-184.
 5. At the start, `git fetch origin main` and compare `git rev-parse HEAD` with `origin/main`. If they differ, now or later, read CLAUDE.md and the skills from `origin/main`, not from the working tree.
 
 ## Baseline (re-verify)
-- `main` = `623cdd995f06e96971ee54ee292fc6c977b3de15` (merge of PR #270, 2026-11-26)
+- `main` = `d753b718722e49b849461b91c1baf07f474a044c` (merge of PR #271, 2026-11-27)
 - reliability-system (private) `main` = `70c287e`: Reliability System V1.2-review with the Owner's baseline (D-143).
 
 ## Open now
-- Arcium: draft PR #271 (rules of the new scheme, rung 3, head `54d9a52`, CI 6/6 success, fresh review done) waits for the Owner's "Мерж 271" (D-182). reliability-system: no open PR; `review/pilot-267` and `review/pr-268` keep the two review records.
-- For the Owner: delete the Arcium branch `ccr-ee7f440a-77ozc8-flush-nits` (about 250 old branches exist in all, D-171). The two old review chats are archived (D-170).
+- Arcium: no open PR. #271 (rules of the new scheme) merged (D-183); CLAUDE.md on `main` now holds the answer header, the other-chat rule and the review ladder. reliability-system: no open PR; `review/pilot-267` and `review/pr-268` keep the two review records.
+- For the Owner: delete the Arcium branches `ccr-ee7f440a-77ozc8-flush-nits` and `docs/rules-new-scheme` (about 250 old branches exist in all, D-171). The two old review chats are archived (D-170).
 - `/skill-doctor` is done (D-171). The Owner: "QC оставляем, решим на проектировании". Unanswered proposal: switch off 10 claude.ai skills unrelated to Arcium (only the Owner can).
-- The design of the new structure (D-172, page https://claude.ai/artifact/JzLLzbnkCuVN13PYVi9nVD) is accepted: Р1 to Р9 (D-173). Status board published (D-174): https://claude.ai/artifact/WRCc8usLjLaR8urG9z8TAV; republish it whenever this file changes. Duet connected (D-175) and, by the Owner's change (D-176), works on request only: no schedule, no messages of its own; schedules switched off in Duet; no GitHub access, and a public page is not readable from Duet without a connection (D-177; the Builder advises against connecting it for now; question open). Step 5 dropped. On the board, waiting: "Мерж 271". Each step on the Owner's word. The board shows New York time (D-181). Open: the push test (repeat); server and computer availability. The Owner has one Android phone, no second one.
+- The design of the new structure (D-172, page https://claude.ai/artifact/JzLLzbnkCuVN13PYVi9nVD) is accepted: Р1 to Р9 (D-173). Status board published (D-174): https://claude.ai/artifact/WRCc8usLjLaR8urG9z8TAV; republish it whenever this file changes. Duet connected (D-175) and, by the Owner's change (D-176), works on request only: no schedule, no messages of its own; schedules switched off in Duet; no GitHub access, and a public page is not readable from Duet without a connection (D-177; the Builder advises against connecting it for now; question open). Step 5 dropped. On the board, waiting: step 7, the lock test (the Owner's "Да"); then step 8, an emulator test of background receive. Each step on the Owner's word. The board shows New York time (D-181). Open: the push test (repeat); server and computer availability. The Owner has one Android phone, no second one.
 - Optional: the `audit/usage.py` double count in reliability-system (D-151).
 
 ## Recently done (older: `decisions.md`)
+- 27 Nov (D-182, D-183): #271 (rules of the new scheme: answer header, other-chat rule, review ladder, status board) merged as `d753b71`.
+- 26 Nov (D-172 to D-177): new working scheme designed and accepted; status board and Duet set up.
 - 26 Nov (D-163): #270 (flush named in the timeout docs; test of a flush after the deadline) merged as `623cdd9`.
 - 25 Nov (D-158, D-160): tracker #269 (R-4 note, no status change) merged as `fa37722`.
 - 25 Nov (D-153 to D-156): #268 (flush bounded by the request deadline) merged as `fb34eba`: the first change through the full chain (Builder, fresh agent, Arcium 2, CI, the Owner).

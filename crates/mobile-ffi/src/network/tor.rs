@@ -420,9 +420,18 @@ mod tests {
         let e = paused.get_or_start(|| panic!("a start panicked")).err().unwrap();
         assert!(matches!(&e, CoreError::Network { msg } if msg == "Tor did not start: bootstrap failed: the start panicked"), "{e}");
         assert_eq!(paused.state(), TorState::Failed);
-        let again = paused.get_or_start(|| panic!("started within the pause")).err().unwrap();
+        // Within the pause nothing starts: a start that would succeed is not
+        // run, and the call fails at once with the panicking start's error.
+        let starts = AtomicU32::new(0);
+        let again = paused
+            .get_or_start(|| {
+                starts.fetch_add(1, SeqCst);
+                Ok(9)
+            })
+            .err()
+            .unwrap();
         assert_eq!(again.to_string(), e.to_string());
-        assert_eq!(paused.state(), TorState::Failed);
+        assert_eq!((starts.load(SeqCst), paused.state()), (0, TorState::Failed));
 
         let unpaused = Shared::<u32>::new(Duration::ZERO);
         let _ = unpaused.get_or_start(|| panic!("a start panicked"));

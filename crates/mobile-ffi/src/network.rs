@@ -136,8 +136,8 @@ enum Relay {
 
 impl Relay {
     /// Whether the relay's host is an onion name: reached only through Tor
-    /// ([`tor`]). A string with the V2 prefix that does not parse reaches
-    /// nothing.
+    /// ([`tor`]). An address that does not parse ([`Relay::Invalid`])
+    /// reaches nothing.
     fn is_onion(&self) -> bool {
         match self {
             Relay::V1(addr) => tor::is_onion(tor::v1_host(addr)),
@@ -161,12 +161,14 @@ impl Relay {
 }
 
 /// Whether `addr` is a development (V1) relay's `host:port` the core may try:
-/// a decimal port from 1 to 65535, and a host of ASCII letters, digits, `-`
-/// and `.` (any case, final dots allowed) or an IPv6 address in brackets.
-/// Anything else is refused rather than tried: a malformed name such as
-/// `"x.onion :7700"` or `"x.onion:1:7700"` is not an onion name to
-/// [`tor::is_onion`], so it would otherwise go the direct way and reach this
-/// device's resolver (Arcium 2 review of #275, R275-2).
+/// a decimal port from 1 to 65535, and a host that is an IPv6 address in
+/// brackets or a DNS name: labels of 1 to 63 ASCII letters, digits and `-`,
+/// none starting or ending with `-`, in any case, final dots allowed (an
+/// IPv4 address is such a name). Anything else is refused rather than tried:
+/// a malformed name such as `"x.onion :7700"`, `"x.onion:1:7700"` or
+/// `"x.onion-:7700"` is not an onion name to [`tor::is_onion`], so it would
+/// otherwise go the direct way and reach this device's resolver (Arcium 2
+/// review of #275, R275-2).
 fn check_v1(addr: &str) -> Result<(), AddressError> {
     let (host, port) = addr
         .rsplit_once(':')
@@ -182,13 +184,19 @@ fn check_v1(addr: &str) -> Result<(), AddressError> {
             .strip_suffix(']')
             .is_some_and(|ip| ip.parse::<std::net::Ipv6Addr>().is_ok()),
         None => {
-            !host.trim_end_matches('.').is_empty()
-                && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+            let name = host.trim_end_matches('.');
+            !name.is_empty()
+                && name.split('.').all(|label| {
+                    (1..=63).contains(&label.len())
+                        && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                        && !label.starts_with('-')
+                        && !label.ends_with('-')
+                })
         }
     };
     if !host_ok {
         return Err(AddressError(
-            "a development relay's host is a name of ASCII letters, digits, '-' and '.', an IPv4 address or an IPv6 address in brackets",
+            "a development relay's host is a DNS name (labels of ASCII letters, digits and '-'), an IPv4 address or an IPv6 address in brackets",
         ));
     }
     Ok(())
@@ -459,8 +467,10 @@ impl NetworkMessenger {
     /// key; this device authenticates for its own mailbox and bundle), or,
     /// for development and tests only, `host:port` of a V1 relay (no TLS, no
     /// authentication). A string with the V2 prefix that does not parse is
-    /// never tried as V1: every network call then fails with `Network`, as it
-    /// does for an address that cannot be reached. A failed TLS handshake (a
+    /// never tried as V1, and a V1 string is tried only as a well-formed
+    /// `host:port` (`check_v1`): for any other string every network call
+    /// fails with `Network`, as it does for an address that cannot be
+    /// reached. A failed TLS handshake (a
     /// key other than the pinned one) and a refused AUTH are `Network` errors
     /// too. A pending message or handshake is sent
     /// again by `sync` once `retransmit_after_ms` has passed without its

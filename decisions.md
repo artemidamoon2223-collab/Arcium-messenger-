@@ -1090,3 +1090,6 @@ D-180 · 2026-11-27 · FINDING · ACTIVE
 - Open question for the Owner: time zone. They answered "New York" (D-174), but their phone screenshots show a clock 7 hours behind UTC (16:48 when the board was stamped 23:45 UTC) and two older, disabled schedules of theirs say "America/Denver". The board prints New York time next to UTC; to be confirmed.
 - Cost note: the session reads $32.47 so far (`get_session`), context 367k of 1M tokens; the chat is on Fable 5.2 by the Owner's choice, effort "high".
 - The Owner asked whether Duet may teach them English (flash cards of irregular verbs). The Builder's answer: no effect on the project (Duet has no repository and no approvals); advice: a separate chat in Duet, so the Arcium chat stays short.
+
+D-181 · 2026-11-27 · OWNER · DONE
+- What: the time-zone question of D-180 is closed. The Owner: "живу по нью-йоркскому времени … сейчас в дороге, и потому … телефон показывает другое время" (session `013Fd9vynW9zatywT2BMTB1h`). The board keeps New York time next to UTC.

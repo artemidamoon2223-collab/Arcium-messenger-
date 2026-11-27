@@ -354,8 +354,9 @@ unchanged: TLS 1.3 to the pinned key, HELLO, AUTH (section 3).
   client's, and may need raising on a relay that serves over Tor (plan step
   4.2). Before a round's first budget check, its connection can take up to
   Tor's start (120 s), the stream (60 s), TLS and HELLO (30 s), AUTH and the
-  bundle's PUT (60 s each): about 330 s at worst, against about 70 s for a
-  relay at an ordinary address.
+  bundle's PUT (60 s each): about 330 s at worst, against about 100 s for a
+  relay at an ordinary address (connect 10 s, TLS and HELLO 30 s, AUTH and
+  PUT 30 s each; its name lookup has no bound, tracker R-4).
 - **Isolation** (decision D-195): every stream to the relay is in one Tor
   isolation group of its own. Traffic that must not be linked to the
   device's mailbox would need another group.

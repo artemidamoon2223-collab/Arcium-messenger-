@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-27 UTC (after D-201), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
+Updated: 2026-11-27 UTC (after D-202), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
 
 ## Read first
 The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**, with the Owner's order in D-166 and corrections in D-167 and D-168 (the later entry wins). Read all four in full before any work:
@@ -18,7 +18,7 @@ Russian, plain words, result first, one step at a time. Since D-178: the Owner's
 1. Read this file and D-165 to D-168 (command above); older entries of `decisions.md` when a line here cites them.
 2. Re-verify the main SHA and the open PRs on GitHub. On any mismatch, this file is stale.
 3. Act only on the Owner's current instruction. AGENT and PROPOSAL records are not Owner decisions.
-4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-202.
+4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-203.
 5. At the start, `git fetch origin main` and compare `git rev-parse HEAD` with `origin/main`. If they differ, now or later, read CLAUDE.md and the skills from `origin/main`, not from the working tree.
 
 ## Baseline (re-verify)
@@ -26,11 +26,11 @@ Russian, plain words, result first, one step at a time. Since D-178: the Owner's
 - reliability-system (private) `main` = `70c287e`: Reliability System V1.2-review with the Owner's baseline (D-143).
 
 ## Open now
-- Arcium: no open PR. #274 (`TransportError::NeedsUpdate` for arti's SoftwareDeprecated bootstrap error) merged (D-201); no vendored arti-client («Р19 б», D-199, after D-198 corrected D-190); #273 closed unmerged. #272 (emulator test of background receive) merged (D-186). #271 (rules of the new scheme) merged (D-183); CLAUDE.md on `main` now holds the answer header, the other-chat rule and the review ladder. reliability-system: no open PR; `review/pilot-267` and `review/pr-268` keep the two review records.
+- Arcium: #275 open, draft: PR B1, Tor 4.1 core (D-202), head `a6ec510`; review, CI, then «Проверка 275» (Arcium 2). B2 (Android screen) after it. #274 (`TransportError::NeedsUpdate` for arti's SoftwareDeprecated bootstrap error) merged (D-201); no vendored arti-client («Р19 б», D-199, after D-198 corrected D-190); #273 closed unmerged. #272 (emulator test of background receive) merged (D-186). #271 (rules of the new scheme) merged (D-183); CLAUDE.md on `main` now holds the answer header, the other-chat rule and the review ladder. reliability-system: no open PR; `review/pilot-267` and `review/pr-268` keep the two review records.
 - For the Owner: delete the Arcium branches `ccr-ee7f440a-77ozc8-flush-nits`, `docs/rules-new-scheme`, `test/bg-receive-e2e`, `test/bg-receive-e2e-mut-loop`, `test/bg-receive-e2e-mut-notify`, `tor/arti-no-exit`, `tor/needs-update` (about 250 old branches exist in all, D-171). The two old review chats are archived (D-170).
 - `/skill-doctor` is done (D-171). The Owner: "QC оставляем, решим на проектировании". Unanswered proposal: switch off 10 claude.ai skills unrelated to Arcium (only the Owner can).
 - New working scheme (D-172, accepted D-173, page https://claude.ai/artifact/JzLLzbnkCuVN13PYVi9nVD) rolled out through step 8 (D-174 to D-186). Board https://claude.ai/artifact/WRCc8usLjLaR8urG9z8TAV, New York time (D-181): republish whenever this file changes. Duet works on request only, no GitHub (D-176, D-177). Review chats have no add_repo tool (D-184).
-- Tor 4.1: all seven decisions taken (D-189 to D-195). PR A done (#274, D-201). Next on the Owner's word: tracker note; PR B, step 4.1 (rung 4, Arcium 2; `state_dir` not in a cleared dir). Stage 2 (app on the phone) when the Owner is home (D-188; APK artifact 15166682041 expires 2026-12-04). One Android phone, no second. Open: push test; server and computer.
+- Tor 4.1: all seven decisions taken (D-189 to D-195). PR A done (#274, D-201). PR B split: B1 #275 (rung 4), B2 the Android screen (D-202); then the tracker note. Stage 2 (app on the phone) when the Owner is home (D-188; APK artifact 15166682041 expires 2026-12-04). One Android phone, no second. Open: push test; server and computer.
 - Optional: the `audit/usage.py` double count in reliability-system (D-151).
 
 ## Recently done (older: `decisions.md`)

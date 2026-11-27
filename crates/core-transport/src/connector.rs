@@ -16,7 +16,7 @@
 use std::future::Future;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use arti_client::{DataStream, TorClient};
@@ -44,7 +44,10 @@ type Slot<C> = Arc<Mutex<Option<C>>>;
 /// the client's own tasks: Tor stops, and the process goes on. From then on
 /// [`TorConnector::needs_update`] is true and [`TorConnector::connect`]
 /// refuses at once. A connect already under way finishes with the client it
-/// holds, which is dropped after it; a stream opened before is not closed.
+/// holds, which is dropped after it; a stream opened before is not closed and
+/// may still carry data over its circuit. Dropping the connector drops its
+/// client at once, as before the shutdown task existed: the task holds the
+/// client only weakly.
 pub struct TorConnector {
     client: Slot<Arc<TorClient<PreferredRuntime>>>,
     runtime: Arc<Runtime>,
@@ -63,16 +66,26 @@ impl TorConnector {
     }
 
     /// A connector whose client starts as `start` says and is dropped once
-    /// `shutdown` finishes.
+    /// `shutdown` finishes. If `shutdown` finishes first, before or while the
+    /// client is created, the client being created is dropped and this
+    /// returns [`TransportError::NeedsUpdate`].
     fn start(
         state_dir: &Path,
         start: Start,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> Result<Self, TransportError> {
         let runtime = Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().build()?);
-        let transport = runtime.block_on(TorTransport::create(state_dir, start))?;
+        let mut shutdown = Box::pin(shutdown);
+        let transport = runtime.block_on(async {
+            tokio::select! {
+                // A shutdown that has already come wins over a finished create.
+                biased;
+                () = &mut shutdown => Err(TransportError::NeedsUpdate),
+                created = TorTransport::create(state_dir, start) => created,
+            }
+        })?;
         let client = Arc::new(Mutex::new(Some(transport.client)));
-        runtime.spawn(empty_on(shutdown, Arc::clone(&client)));
+        runtime.spawn(empty_on(shutdown, Arc::downgrade(&client)));
         Ok(Self { client, runtime })
     }
 
@@ -111,11 +124,15 @@ fn lock<C>(slot: &Slot<C>) -> std::sync::MutexGuard<'_, Option<C>> {
     slot.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Waits for `shutdown`, then takes the slot's content out and drops it.
-async fn empty_on<C>(shutdown: impl Future<Output = ()>, slot: Slot<C>) {
+/// Waits for `shutdown`, then takes the slot's content out and drops it. It
+/// holds the slot weakly, so it never keeps the content alive: a slot whose
+/// owner is gone is already dropped.
+async fn empty_on<C>(shutdown: impl Future<Output = ()>, slot: Weak<Mutex<Option<C>>>) {
     shutdown.await;
-    let content = lock(&slot).take();
-    drop(content);
+    if let Some(slot) = slot.upgrade() {
+        let content = lock(&slot).take();
+        drop(content);
+    }
 }
 
 /// Runs `connecting` for at most `timeout` and wraps the stream it opens.
@@ -402,7 +419,7 @@ mod tests {
         let dropped = Arc::new(AtomicBool::new(false));
         let slot = Arc::new(Mutex::new(Some(Flagged(Arc::clone(&dropped)))));
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        rt.spawn(empty_on(async { rx.await.unwrap() }, Arc::clone(&slot)));
+        rt.spawn(empty_on(async { rx.await.unwrap() }, Arc::downgrade(&slot)));
         std::thread::sleep(Duration::from_millis(100));
         assert!(!dropped.load(SeqCst), "dropped before the shutdown");
         tx.send(()).unwrap();
@@ -412,6 +429,30 @@ mod tests {
         }
         assert!(dropped.load(SeqCst), "not dropped after the shutdown");
         assert!(lock(&slot).is_none());
+    }
+
+    /// Dropping the connector drops its Tor client at once, also while
+    /// something else (a stream it opened) keeps its runtime and so the
+    /// shutdown task alive.
+    #[test]
+    fn dropping_the_connector_drops_its_client_while_its_runtime_lives() {
+        let dir = tempfile::tempdir().unwrap();
+        let connector = unbootstrapped(dir.path());
+        let client = Arc::downgrade(lock(&connector.client).as_ref().unwrap());
+        let stream_share = Arc::clone(&connector.runtime);
+        drop(connector);
+        let alive = client.upgrade().is_some();
+        drop(stream_share);
+        assert!(!alive, "the Tor client outlived its connector");
+    }
+
+    /// A shutdown that comes before or while the client is created gives
+    /// `NeedsUpdate` and no connector.
+    #[test]
+    fn a_shutdown_before_start_gives_needs_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = TorConnector::start(dir.path(), Start::Unbootstrapped, std::future::ready(()));
+        assert!(matches!(started, Err(TransportError::NeedsUpdate)), "{:?}", started.err());
     }
 
     /// After a protocol shutdown the connector drops its Tor client and

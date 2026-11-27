@@ -33,32 +33,29 @@ callback: it fails the bootstrap with an error of kind `SoftwareDeprecated`,
 as upstream. Stopping Tor is the client's owner's part: `core-transport`'s
 `TorConnector` waits for `protocol_shutdown()`, then drops its `TorClient`
 (`crates/core-transport/src/connector.rs`); `TransportError::NeedsUpdate` is
-the state the app can show. That dropping the client also ends arti's
-background tasks is inferred from arti's source, not tested: the background
-tasks of `tor-circmgr`, `tor-dirmgr`, `tor-chanmgr` and the onion-service
-circuit pool hold weak references to their managers, and the task that holds
-strong ones ends when the client's dormant-mode sender is dropped
-(`src/client.rs`, field `dormant`). The `core-transport` test checks only
-that its own reference to the client is the last one.
+the state the app can show. A stream opened before the shutdown is not
+closed: it keeps its circuit and may still carry data until it is dropped.
 
-Its own test, `arcium_patch::test::a_protocol_shutdown_is_recorded_and_wakes_its_waiters`,
-runs the shutdown from the same check a running client uses and needs
-the process to survive it. CI does not run this crate's tests (it is not a
-workspace member); run them in this directory, with the crate's own
-`Cargo.lock` (not committed) and the features `core-transport` uses:
+That dropping the client also ends arti's background tasks is inferred from
+arti's source, not tested:
+- the periodic tasks of `tor-circmgr`, `tor-dirmgr`, `tor-chanmgr` and the
+  onion-service circuit pool hold weak references to their managers;
+- the dormant-mode monitor holds strong ones and ends when the client's
+  dormant-mode sender is dropped (`src/client.rs`, field `dormant`);
+- the `tor-hsclient` housekeeping task holds a strong reference to the onion
+  service connector, and through it to the circuit pool and the circuit
+  manager (`tor-hsclient` `src/lib.rs`, `tor-circmgr` `src/hspool.rs`); it
+  ends when the directory manager's event stream ends, which is when the
+  directory manager is dropped (`vendor/tor-dirmgr/src/event.rs`).
+The `core-transport` tests check only that the connector's own reference to
+the client is the last one.
 
-```bash
-cargo test --locked --lib --no-default-features \
-  --features tokio,rustls,compression,onion-service-client,onion-service-service
-```
-
-Result on 2026-11-27: `test result: ok. 48 passed; 0 failed` (upstream's
-47 and this one). With `std::process::exit(1)` put back into
-`on_protocol_shutdown`, the run fails ("test exited abnormally").
-
-Consequences: as for `tor-dirmgr` below (no checksum in `Cargo.lock`,
-`cargo audit` does not see this crate, warnings do not fail `-D warnings`).
-An arti upgrade means applying the same patch to the new release, or
+Consequences: as for `tor-dirmgr` below (no checksum in `Cargo.lock`, and
+`cargo audit` does not see this crate, so an advisory against arti-client
+0.48 would not fail CI). In addition, `src/arcium_patch.rs` is code written
+for Arcium that the workspace's `clippy -D warnings` and CI tests do not
+cover (the crate is not a workspace member); its test is run by hand, as
+below. An arti upgrade means applying the same patch to the new release, or
 dropping it if that release no longer exits.
 
 To verify the copy:
@@ -72,6 +69,23 @@ cd - && diff -ru /tmp/ac/arti-client-0.48.0 vendor/arti-client
 # prints the src/client.rs and src/lib.rs hunks, "Only in ...: arcium_patch.rs",
 # and "Only in ...: Cargo.lock" (not committed)
 ```
+
+To run its tests, with the crate's own `Cargo.lock` from the `.crate` (the
+root `.gitignore` keeps it out of git) and the features `core-transport`
+uses:
+
+```bash
+cp /tmp/ac/arti-client-0.48.0/Cargo.lock vendor/arti-client/
+cd vendor/arti-client && cargo test --locked --lib --no-default-features \
+  --features tokio,rustls,compression,onion-service-client,onion-service-service
+```
+
+Its own test, `arcium_patch::test::a_protocol_shutdown_is_recorded_and_wakes_its_waiters`,
+runs the shutdown from the same check a running client uses, and needs the
+process to survive it. Result on 2026-11-27: `test result: ok. 48 passed; 0 failed` (upstream's 47
+and this one). It fails with `std::process::exit(1)` put back into
+`on_protocol_shutdown` ("test exited abnormally"), and without the line that
+removes dropped waiters ("a dropped waiter was kept").
 
 To remove: when an arti release no longer exits on a protocol shutdown
 (TODO #1932), upgrade `arti-client` in `crates/core-transport`, replace the

@@ -43,6 +43,10 @@ pub struct TorTransport {
 
 impl TorTransport {
     /// Bootstraps a Tor client, giving up after [`BOOTSTRAP_TIMEOUT`].
+    ///
+    /// Nothing here stops this client on a protocol shutdown: only
+    /// [`TorConnector`] does. Whoever holds a `TorTransport` must drop it once
+    /// `arti_client::arcium_patch::protocol_shutdown()` finishes.
     pub async fn new(state_dir: &std::path::Path) -> Result<Self, TransportError> {
         Self::new_within(state_dir, BOOTSTRAP_TIMEOUT).await
     }

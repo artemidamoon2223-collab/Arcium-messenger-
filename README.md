@@ -50,7 +50,8 @@ Private contact discovery is a separate component: private set intersection
 - `arcium-psi/` — the PSI Anchor program, Arcis circuit and TypeScript tests.
 - `docs/` — specifications, the findings tracker, reviews, the deploy
   checklist.
-- `vendor/` — a patched third-party crate; see `vendor/README.md`.
+- `vendor/` — patched third-party crates (`arti-client`, `tor-dirmgr`); see
+  `vendor/README.md`.
 - `.github/` — CI workflows and the action that builds the Android native
   bridge.
 

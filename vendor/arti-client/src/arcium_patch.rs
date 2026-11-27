@@ -30,7 +30,8 @@ use crate::err::ErrorDetail;
 struct Record {
     /// Set once, never cleared.
     happened: bool,
-    /// Woken, and emptied, when `happened` is set.
+    /// Woken, and emptied, when `happened` is set. A waiter whose future was
+    /// dropped is removed when the next one comes.
     waiters: Vec<oneshot::Sender<()>>,
 }
 
@@ -61,6 +62,7 @@ pub fn protocol_shutdown() -> impl Future<Output = ()> + Send + 'static {
         if record.happened {
             None
         } else {
+            record.waiters.retain(|waiter| !waiter.is_canceled());
             let (tx, rx) = oneshot::channel();
             record.waiters.push(tx);
             Some(rx)
@@ -126,8 +128,10 @@ mod test {
         .unwrap_err();
 
         assert!(!protocol_shutdown_happened());
+        drop(protocol_shutdown());
         let mut early = Box::pin(protocol_shutdown());
         assert!(early.as_mut().now_or_never().is_none(), "finished before any shutdown");
+        assert_eq!(record().waiters.len(), 1, "a dropped waiter was kept");
 
         on_protocol_shutdown(fatal).now_or_never().unwrap();
 

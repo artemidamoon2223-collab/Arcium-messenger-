@@ -105,7 +105,7 @@ pub(super) fn waiting(relay: &relay::server::RelayHandle, to: &Device) -> (usize
 
 /// Alice and Bob, contacts of each other, with an established session that
 /// Alice started, and one text delivered each way.
-fn talking(addr: &str) -> (Device, Device) {
+pub(super) fn talking(addr: &str) -> (Device, Device) {
     let (alice, bob) = (Device::new(addr, 1), Device::new(addr, 2));
     meet(&alice, &bob);
     round(&[&alice, &bob]); // Both bundles on the relay.

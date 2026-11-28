@@ -254,11 +254,11 @@ Specification: `docs/NET-MESSAGING.md`.
   `ROUND_BUDGET`, counted from when its connection is open (and, on V2,
   authenticated), before every page of a pass after its first and before
   every send; once it has passed, each pass still reads its first page and
-  deletes what it processed, so a round cut by it ends within the budget plus
-  a few request deadlines. Retransmission backs off
-  by doubling up to `RETRANSMIT_CAP` (`network.rs`, `network/outbox.rs`;
-  `NET-MESSAGING.md` §7, R-4 and R-5 in the tracker). For a relay at an
-  onion address (`network/tor.rs`; `NET-MESSAGING.md` §3a) a request gets
+  deletes what it processed, so a round cut by it ends within the budget
+  plus a few request deadlines. Retransmission backs off by doubling up to
+  `RETRANSMIT_CAP` (`network.rs`, `network/outbox.rs`; `NET-MESSAGING.md`
+  §7, R-4 and R-5 in the tracker). For a relay at an onion address
+  (`network/tor.rs`; `NET-MESSAGING.md` §3a) a request gets
   `ONION_REQUEST_DEADLINE` instead, while the TLS handshake and HELLO (V2)
   keep `REQUEST_DEADLINE`, set by `open` when the stream opens; opening the
   stream is bounded by `ONION_CONNECT_TIMEOUT` (or the connection's timeout
@@ -274,10 +274,10 @@ Specification: `docs/NET-MESSAGING.md`.
   included, connections fail at once until `RETRY_AFTER` has passed; a
   change must keep that pause (no new start within it, and nothing tried
   directly meanwhile). A round cut by the budget must lose and repeat
-  nothing, and the budget line must not read as a network error. The
-  tracker records what stays unbounded (the DNS lookup in
-  `TcpConnector::connect`, `crates/relay/src/client.rs`, which a relay at an
-  onion address never uses).
+  nothing, and the budget line must not read as a network error. The tracker
+  records what stays unbounded (the DNS lookup in `TcpConnector::connect`,
+  `crates/relay/src/client.rs`, which a relay at an onion address never
+  uses).
 - **What a mailbox reader learns.** Whoever can read a mailbox on the relay
   learns whom its owner has pinned: a message from a pinned sender without a
   session is kept (`NoSession` → `Fate::Keep`), one from a stranger is

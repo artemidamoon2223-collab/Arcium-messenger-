@@ -1311,3 +1311,8 @@ D-217 (2026-11-28, Builder "Arcium 1.1", AGENT record): the Owner wrote «Мер
 - Board version 48.
 - Open, unanswered by the Owner: guard.py prompt in mode `auto` (D-215); branch deletion (now also `test/r14-reset-and-kill`); archiving the #275 review chat.
 - Next: CI on #284, then the Owner's «Мерж 284».
+
+D-218 (2026-11-28, Builder "Arcium 1.1", AGENT record): the Owner wrote «284.»; asked (AskUserQuestion) whether to merge, the Owner chose «Мерж 284» (session `013Fd9vynW9zatywT2BMTB1h`). PR #284 (tracker note: R-14 tests and the Owner's D-213 decisions) marked ready and merged with a merge commit pinned to head `1bb46c2`, all 6 check runs success: `main` = `7b45cdac73c32257b87a33e4d11b6caf8af8f216` (parents `d6b93cf`, `1bb46c2`; tree equals the head's). «Р23 а» is complete.
+- Board version 51.
+- Open, unanswered by the Owner: guard.py prompt in mode `auto` (D-215); branch deletion (now also `docs/tracker-r14-r9-decisions`); archiving the #275 review chat.
+- Next: nothing ordered; the Owner's next word.

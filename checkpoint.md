@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-28 UTC (after D-217), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
+Updated: 2026-11-28 UTC (after D-218), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
 
 ## Read first
 The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**, with the Owner's order in D-166 and corrections in D-167 and D-168 (the later entry wins). Read all four in full before any work:
@@ -18,25 +18,25 @@ Russian, plain words, result first, one step at a time. Since D-178: the Owner's
 1. Read this file and D-165 to D-168 (command above); older entries of `decisions.md` when a line here cites them.
 2. Re-verify the main SHA and the open PRs on GitHub. On any mismatch, this file is stale.
 3. Act only on the Owner's current instruction. AGENT and PROPOSAL records are not Owner decisions.
-4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-218.
+4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-219.
 5. At the start, `git fetch origin main` and compare `git rev-parse HEAD` with `origin/main`. If they differ, now or later, read CLAUDE.md and the skills from `origin/main`, not from the working tree.
 
 ## Baseline (re-verify)
-- `main` = `d6b93cff914e33ff7463f4a89c530be3c6a0a584` (merge of PR #283, 2026-11-28, D-217)
+- `main` = `7b45cdac73c32257b87a33e4d11b6caf8af8f216` (merge of PR #284, 2026-11-28, D-218)
 - reliability-system (private) `main` = `70c287e`: Reliability System V1.2-review with the Owner's baseline (D-143).
 
 ## Open now
 - Arcium: merged on the Owner's words, without Arcium 2: #280 (tracker note for #276, #277) `dd6c17a`, #281 (security-review skill: Tor paths and time bounds) `1f67f7f`, #282 (two skill references: Tor is used for an onion relay) `b786133` (D-210, D-211). Earlier (D-209): #276 (Settings route label and Tor state) `df33691`, #277 (core fixes R275-1, R275-2, relay race) `a7166fe`, #278 (tracker: Tor for onion relays at `2578962`) `705057a`, #279 (security checklist, AGENT_CONTROL) `cdbf9d3`. Earlier: #275 (Tor 4.1 core) `2578962` with Arcium 2 APPROVE (D-202 to D-205); #274 (NeedsUpdate) `ff31f93` (D-201). reliability-system: no open PR.
 - Claude Code Projects: not now («Р24 а», D-216); Arcium 2 stays out (D-214). Revisit with a computer, when cloud threads run hooks, or with parallel work (D-215).
-- #284 (draft, `docs/tracker-r14-r9-decisions`, head `1bb46c2`, rung 1 DOCS): tracker note for #283 and the Owner's D-213 decisions; fact-checked, 6 points fixed (D-217). Waiting for CI, then «Мерж 284». #283 merged as `d6b93cf` (D-217).
-- For the Owner: delete the Arcium branches `ccr-ee7f440a-77ozc8-flush-nits`, `docs/rules-new-scheme`, `test/bg-receive-e2e`, `test/bg-receive-e2e-mut-loop`, `test/bg-receive-e2e-mut-notify`, `tor/arti-no-exit`, `tor/needs-update`, `tor/step-4-1-core`, `tor/step-4-1-app`, `fix/tor-core-nits`, `docs/tracker-tor-onion`, `agent/checklist-tor`, `docs/tracker-276-277`, `agent/skill-tor-bounds`, `agent/skill-refs-tor`, `test/r14-reset-and-kill` (about 250 old branches in all, D-171). Say whether the review chat of #275 may be archived.
+- No open Arcium PR. #284 (tracker note for #283 and D-213) merged as `7b45cdac` (D-218); #283 (R-14 tests) as `d6b93cf` (D-217). «Р23 а» complete.
+- For the Owner: delete the Arcium branches `ccr-ee7f440a-77ozc8-flush-nits`, `docs/rules-new-scheme`, `test/bg-receive-e2e`, `test/bg-receive-e2e-mut-loop`, `test/bg-receive-e2e-mut-notify`, `tor/arti-no-exit`, `tor/needs-update`, `tor/step-4-1-core`, `tor/step-4-1-app`, `fix/tor-core-nits`, `docs/tracker-tor-onion`, `agent/checklist-tor`, `docs/tracker-276-277`, `agent/skill-tor-bounds`, `agent/skill-refs-tor`, `test/r14-reset-and-kill`, `docs/tracker-r14-r9-decisions` (about 250 old branches in all, D-171). Say whether the review chat of #275 may be archived.
 - `/skill-doctor` is done (D-171). The Owner: "QC оставляем, решим на проектировании". Unanswered proposal: switch off 10 claude.ai skills unrelated to Arcium (only the Owner can).
 - Working scheme (D-172, accepted D-173, page https://claude.ai/artifact/JzLLzbnkCuVN13PYVi9nVD). Board https://claude.ai/artifact/WRCc8usLjLaR8urG9z8TAV, New York time (D-181): republish whenever this file changes. Duet on request only, no GitHub (D-176, D-177). Review chats have no add_repo tool (D-184).
 - Tor 4.1 done in code (decisions D-189 to D-195; #274 to #279). Stage 2 (app on the phone) when the Owner is home (D-188; APK artifact 15166682041, from `main` `cec9242`, before Tor, expires 2026-12-04; stage 2 has no relay, D-187). One Android phone. Open: push test; server and computer.
 - Optional: the `audit/usage.py` double count in reliability-system (D-151).
 
 ## Recently done (older: `decisions.md`)
-- 28 Nov (D-217): #283 (R-14 tests) merged; tracker PR #284 opened.
+- 28 Nov (D-217, D-218): #283 (R-14 tests) and #284 (its tracker note) merged.
 - 28 Nov (D-210, D-211): #280, #281, #282 merged (tracker note; skill gaps; skill references).
 - 28 Nov (D-208, D-209): #276 to #279 merged: Tor route on the Settings screen, three core fixes, tracker update, checklist item.
 - 27 Nov (D-202 to D-205): PR B1: #275 (onion relay only through embedded Tor) merged as `2578962`.

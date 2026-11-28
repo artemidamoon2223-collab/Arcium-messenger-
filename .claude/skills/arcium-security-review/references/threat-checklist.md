@@ -250,22 +250,32 @@ Specification: `docs/NET-MESSAGING.md`.
 - **Retransmission identity.** A retransmission carries identical bytes and so
   the same message id.
 - **Time bounds.** One relay request is bounded as a whole by
-  `REQUEST_DEADLINE` (`crates/relay/src/client.rs`), one sync round by
-  `ROUND_BUDGET`, counted from when its connection is open, and
-  retransmission backs off by doubling up to `RETRANSMIT_CAP` (`network.rs`;
-  `NET-MESSAGING.md` §7, R-4 and R-5 in the tracker). For a relay at an onion
-  address (`network/tor.rs`; `NET-MESSAGING.md` §3a) a request gets
-  `ONION_REQUEST_DEADLINE` instead, opening the stream is bounded by
-  `ONION_CONNECT_TIMEOUT` (or the connection's timeout if that is longer),
-  a Tor start by `BOOTSTRAP_TIMEOUT` (`crates/core-transport/src/lib.rs`),
-  and after a failed start, one that panics included, connections fail at
-  once until `RETRY_AFTER` has passed. A new relay call or loop must stay
-  under them: a per-syscall socket timeout does not bound a relay that
-  trickles bytes. A round cut by the budget must lose and repeat nothing,
-  and the budget line must not read as a network error. The tracker records
-  what stays unbounded (the DNS lookup in `TcpConnector::connect`,
-  `crates/relay/src/client.rs`, which a relay at an onion address never
-  uses).
+  `REQUEST_DEADLINE` (`crates/relay/src/client.rs`). One sync round stops
+  starting relay requests once `ROUND_BUDGET` has passed, counted from when
+  its connection is open (and, on V2, authenticated); a round cut by it ends
+  within the budget plus a few request deadlines. Retransmission backs off
+  by doubling up to `RETRANSMIT_CAP` (`network.rs`, `network/outbox.rs`;
+  `NET-MESSAGING.md` §7, R-4 and R-5 in the tracker). For a relay at an
+  onion address (`network/tor.rs`; `NET-MESSAGING.md` §3a) a request gets
+  `ONION_REQUEST_DEADLINE` instead, while the TLS handshake and HELLO keep
+  `REQUEST_DEADLINE`, set by `open` when the stream opens; opening the
+  stream is bounded by `ONION_CONNECT_TIMEOUT` (or the connection's timeout
+  if that is longer), and a Tor start by `BOOTSTRAP_TIMEOUT`
+  (`crates/core-transport/src/lib.rs`). These onion bounds are starting
+  values, tested with stand-ins for Tor only, not yet on a real Tor network
+  (§3a). What comes before the budget starts (the connection: for an onion
+  relay Tor's start and the stream; TLS and HELLO; AUTH on V2) is limited
+  only by those steps' own bounds, so a change must not add a relay call,
+  wait or retry there, nor start the budget later. A new relay call or loop
+  must stay under these bounds: a per-syscall socket timeout does not bound
+  a relay that trickles bytes. After a failed Tor start, one that panics
+  included, connections fail at once until `RETRY_AFTER` has passed; a
+  change must keep that pause (no new start within it, and nothing tried
+  directly meanwhile). A round cut by the budget must lose and repeat
+  nothing, and the budget line must not read as a network error. The
+  tracker records what stays unbounded (the DNS lookup in
+  `TcpConnector::connect`, `crates/relay/src/client.rs`, which a relay at an
+  onion address never uses).
 - **What a mailbox reader learns.** Whoever can read a mailbox on the relay
   learns whom its owner has pinned: a message from a pinned sender without a
   session is kept (`NoSession` → `Fate::Keep`), one from a stranger is

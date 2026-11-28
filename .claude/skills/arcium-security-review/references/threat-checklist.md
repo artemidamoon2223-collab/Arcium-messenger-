@@ -216,7 +216,9 @@ Android contact-card and add-contact code. Specification:
 
 Where: `crates/mobile-ffi/src/network.rs` and, beside it in `network/`,
 `mailbox.rs`, `outbox.rs`, `inbox.rs`, `far_skip.rs`, `refusals.rs`,
-`wire.rs` and `chat.rs`; `crates/relay/`. Specification: `docs/NET-MESSAGING.md`.
+`wire.rs`, `chat.rs` and `tor.rs` (the route to a relay at an onion
+address); `crates/relay/`; `crates/core-transport/` (the Tor client).
+Specification: `docs/NET-MESSAGING.md`.
 
 - **Receipts.** A text is delivered only when an authenticated receipt inside
   the ratchet names its exact message id. A forged or replayed receipt, one
@@ -249,13 +251,21 @@ Where: `crates/mobile-ffi/src/network.rs` and, beside it in `network/`,
   the same message id.
 - **Time bounds.** One relay request is bounded as a whole by
   `REQUEST_DEADLINE` (`crates/relay/src/client.rs`), one sync round by
-  `ROUND_BUDGET`, and retransmission backs off by doubling up to
-  `RETRANSMIT_CAP` (`network.rs`; `NET-MESSAGING.md` §7, R-4 and R-5 in the
-  tracker). A new relay call or loop must stay under them: a per-syscall
-  socket timeout does not bound a relay that trickles bytes. A round cut by
-  the budget must lose and repeat nothing, and the budget line must not read
-  as a network error. The tracker records what stays unbounded (the DNS
-  lookup in `Connection::connect`).
+  `ROUND_BUDGET`, counted from when its connection is open, and
+  retransmission backs off by doubling up to `RETRANSMIT_CAP` (`network.rs`;
+  `NET-MESSAGING.md` §7, R-4 and R-5 in the tracker). For a relay at an onion
+  address (`network/tor.rs`; `NET-MESSAGING.md` §3a) a request gets
+  `ONION_REQUEST_DEADLINE` instead, opening the stream is bounded by
+  `ONION_CONNECT_TIMEOUT` (or the connection's timeout if that is longer),
+  a Tor start by `BOOTSTRAP_TIMEOUT` (`crates/core-transport/src/lib.rs`),
+  and after a failed start, one that panics included, connections fail at
+  once until `RETRY_AFTER` has passed. A new relay call or loop must stay
+  under them: a per-syscall socket timeout does not bound a relay that
+  trickles bytes. A round cut by the budget must lose and repeat nothing,
+  and the budget line must not read as a network error. The tracker records
+  what stays unbounded (the DNS lookup in `TcpConnector::connect`,
+  `crates/relay/src/client.rs`, which a relay at an onion address never
+  uses).
 - **What a mailbox reader learns.** Whoever can read a mailbox on the relay
   learns whom its owner has pinned: a message from a pinned sender without a
   session is kept (`NoSession` → `Fate::Keep`), one from a stranger is

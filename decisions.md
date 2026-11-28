@@ -1305,3 +1305,9 @@ D-216 · 2026-11-28 · OWNER · ACTIVE
 - Done: the scheme page https://claude.ai/artifact/JzLLzbnkCuVN13PYVi9nVD version 10 (card Р24 marked "выбрано 28.11", section D says the Builder stays too); the board.
 - Open: the Owner has not answered whether `guard.py`'s prompt appears in permission mode `auto` (D-215); the resume of this session after the model switch showed the SessionStart continuity hook running (RUNTIME_VERIFIED: its output reached this session).
 - Next: «Мерж 283» (CI 9 of 9 green on `3b5ec78`, mergeable `clean`); then the tracker note of D-213.
+
+D-217 (2026-11-28, Builder "Arcium 1.1", AGENT record): the Owner wrote «Мерж 283» (session `013Fd9vynW9zatywT2BMTB1h`); PR #283 (R-14 tests) merged with a merge commit pinned to head `3b5ec78`: `main` = `d6b93cff914e33ff7463f4a89c530be3c6a0a584` (parents `b786133`, `3b5ec78`; tree equals the head's).
+- Then the second half of «Р23 а» (D-213): tracker note PR #284 (draft, branch `docs/tracker-r14-r9-decisions`, head `1bb46c2`, rung 1 DOCS). A fresh Opus fact check of `c4b6cd4` found 6 points (analysis mixed into the Owner's decisions; review count; mutation scope; "ratchet level" wording; dropped untested items; no note on the 2026-11-18 row); all fixed in `1bb46c2`, which no fresh agent re-read.
+- Board version 48.
+- Open, unanswered by the Owner: guard.py prompt in mode `auto` (D-215); branch deletion (now also `test/r14-reset-and-kill`); archiving the #275 review chat.
+- Next: CI on #284, then the Owner's «Мерж 284».

@@ -1841,51 +1841,51 @@ Not rows:
 
 ## Update 2026-11-28: Tor route in Settings and core fixes (`main` @ `cdbf9d3`)
 
-**Snapshot:** `main` @ `cdbf9d3e08d5233b71eec8ad4bbd24407b3f45ed`. The code is in the merges of PR #276
-(head `cdad62d`, merged as `df33691`, parents `2578962` and `cdad62d`) and PR #277 (head `14a1cef`, merged
-as `a7166fe`, parents `df33691` and `14a1cef`), on the Owner's choice "Мерж 276", "Мерж 277" (continuity
-D-209). `df33691` has the tree of #276's head; `a7166fe` has the tree of #277's head plus #276's files, so
-#277's own evidence below was taken on `2578962`, without #276. The merges after them, PR #278 (the 2026-11-27 section of this file) and PR #279 (the security-review
-checklist under `.claude/`), change no code. This section covers #276 and #277 only. Each `path:line` below
-was re-read at `cdbf9d3`.
+**Snapshot:** `main` @ `cdbf9d3e08d5233b71eec8ad4bbd24407b3f45ed`. The code is in the merges of PR #276 (head
+`cdad62d`, merged as `df33691`, parents `2578962` and `cdad62d`) and PR #277 (head `14a1cef`, merged as
+`a7166fe`, parents `df33691` and `14a1cef`), on the Owner's choice "Мерж 276", "Мерж 277" (continuity D-209).
+`df33691` has the tree of #276's head; `a7166fe` has the tree of #277's head plus #276's files, so #277's own
+evidence below was taken on `2578962`, without #276. The merges after them, PR #278 (the 2026-11-27 section
+of this file) and PR #279 (the security-review checklist under `.claude/`), change no code. This section
+covers #276 and #277 only. Each `path:line` below was re-read at `cdbf9d3`.
 
 **No status change.** Notes on F-12, F-15 and D-008.
 
 **What changed.**
 - **What Settings says (#276).** Under the saved relay, Settings says "Without Tor: the relay sees your IP
-  address." or "Through Tor: the relay does not see your IP address.", the latter followed by the state of
-  the process's Tor client once it has been read (`routeStatus` and `torStatus`,
+  address." or "Through Tor: the relay does not see your IP address.", the latter followed by the state of the
+  process's Tor client once it has been read (`routeStatus` and `torStatus`,
   `android/app/src/main/kotlin/com/arcium/messenger/ui/settings/RouteText.kt:13-31`, the state at `:15-16`;
   the line at `ui/settings/SettingsScreen.kt:165-169`). Which one is chosen by `relayGoesThroughTor`
   (`android/app/src/main/kotlin/com/arcium/messenger/messaging/RelayRules.kt:54-74`): the core's onion rule
   (`is_onion`, `v1_host`, `crates/mobile-ffi/src/network/tor.rs:45`, `:54`; for V2 the host of
   `RelayAddress::parse`, `crates/relay/src/address.rs:66-70`) written again in Kotlin, for the label only; it
-  does not repeat `check_v1` (below). The core alone decides the route, as at `2578962`. While the saved relay goes through Tor, the
-  screen reads `tor_state()` every second on `Dispatchers.IO` inside `repeatOnLifecycle(STARTED)`
-  (`SettingsScreen.kt:88-98`), so not while the app is in the background.
-- **The Kotlin Tor stub is gone (#276).** `ArciumCore.startTorTransport()`, which threw
-  `NotImplementedError` and had no caller, is removed. `torState()`
-  (`android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt:269`) passes the core's state
-  through; `submitPsiQuery` (`:255-261`) still throws.
-- **A start that panics pauses too (#277; Arcium 2's R275-1).** `Shared::get_or_start` catches a panic in
-  the start as `TransportError::Bootstrap("the start panicked")` (`crates/mobile-ffi/src/network/tor.rs:153-154`):
+  does not repeat `check_v1` (below). The core alone decides the route, as at `2578962`. While the saved relay
+  goes through Tor, the screen reads `tor_state()` every second on `Dispatchers.IO` inside
+  `repeatOnLifecycle(STARTED)` (`SettingsScreen.kt:88-98`), so not while the app is in the background.
+- **The Kotlin Tor stub is gone (#276).** `ArciumCore.startTorTransport()`, which threw `NotImplementedError`
+  and had no caller, is removed. `torState()`
+  (`android/app/src/main/kotlin/com/arcium/messenger/ffi/ArciumCore.kt:269`) passes the core's state through;
+  `submitPsiQuery` (`:255-261`) still throws.
+- **A start that panics pauses too (#277; Arcium 2's R275-1).** `Shared::get_or_start` catches a panic in the
+  start as `TransportError::Bootstrap("the start panicked")` (`crates/mobile-ffi/src/network/tor.rs:153-154`):
   the state is `Failed`, and connections fail at once for `RETRY_AFTER` (60 s, `:40`), as after any failed
   start (`:147-151`, `:176-178`).
 - **A malformed development address is tried nowhere (#277; R275-2).** A V1 string is a relay only when
-  `check_v1` accepts it (`crates/mobile-ffi/src/network.rs:172-203`, applied in `Relay::parse`,
-  `:150-155`): a decimal port from 1 to 65535, and a host that is an IPv6 address in brackets or a DNS name
-  of ASCII labels. Anything else is `Relay::Invalid` (`:134`): every connection fails with "invalid relay
-  address: …" (`:734`) and nothing is tried, neither Tor nor the direct path. So a name such as
-  `x.onion:1:7700` or `x.onion-:7700`, which a debug build saves, no longer reaches this device's resolver
-  (`x.onion :7700` the app already refused, `RelayRules.kt:148`). The app accepts a V1 string in a debug
-  build only (`RelayRules.kt:35`; `BuildConfig.DEV_RELAY_ALLOWED`, true only in `debug`,
+  `check_v1` accepts it (`crates/mobile-ffi/src/network.rs:172-203`, applied in `Relay::parse`, `:150-155`): a
+  decimal port from 1 to 65535, and a host that is an IPv6 address in brackets or a DNS name of ASCII labels.
+  Anything else is `Relay::Invalid` (`:134`): every connection fails with "invalid relay address: …" (`:734`)
+  and nothing is tried, neither Tor nor the direct path. So a name such as `x.onion:1:7700` or
+  `x.onion-:7700`, which a debug build saves, no longer reaches this device's resolver (`x.onion :7700` the
+  app already refused, `RelayRules.kt:148`). The app accepts a V1 string in a debug build only
+  (`RelayRules.kt:35`; `BuildConfig.DEV_RELAY_ALLOWED`, true only in `debug`,
   `android/app/build.gradle.kts:28-33`, read at `messaging/RelaySettings.kt:26`, `:37`).
 - **The relay's start (#277).** `restrict` (`crates/relay/src/disk.rs:71-91`) sets owner-only permissions on
   the database's `-wal` and `-shm` files and treats one that is already gone as nothing to do (`:85-86`).
-  Before, it checked that each existed and then set its permissions, and a file removed in between by
-  another connection's close failed the relay's start: the cause of a rare failure of
-  `a_relay_with_a_database_keeps_mailboxes_and_bundles_across_restarts`, shown in PR #277 by widening that
-  gap with a sleep.
+  Before, it checked that each existed and then set its permissions, and a file removed in between by another
+  connection's close failed the relay's start: the cause of a rare failure of
+  `a_relay_with_a_database_keeps_mailboxes_and_bundles_across_restarts`, shown in PR #277 by widening that gap
+  with a sleep.
 
 **Tests.**
 - #276: `RelayRulesTest.onlyARelayAtAnOnionAddressGoesThroughTor` and `RouteTextTest` (3) on the JVM;
@@ -1896,16 +1896,16 @@ was re-read at `cdbf9d3`.
   (`crates/mobile-ffi/src/network/tests.rs:147`),
   `tests::relay_onion::a_malformed_development_address_is_tried_on_no_path`
   (`crates/mobile-ffi/src/tests/relay_onion.rs:251`), and in the relay
-  `disk::tests::a_side_file_left_open_is_restricted_and_a_missing_one_is_no_error` (`crates/relay/src/disk.rs:366`),
-  which checks the permissions and a missing file and passes on the old code too: no test holds the race fix
-  (PR #277's mutation D3).
-  Each PR's description lists the mutations its tests catch.
+  `disk::tests::a_side_file_left_open_is_restricted_and_a_missing_one_is_no_error`
+  (`crates/relay/src/disk.rs:366`), which checks the permissions and a missing file and passes on the old code
+  too: no test holds the race fix (PR #277's mutation D3). Each PR's description lists the mutations its tests
+  catch.
 
 **Runtime evidence.**
-- PR #276's description, at its head `cdad62d`: the two JVM test classes, run outside the app's Gradle
-  build with Kotlin bindings generated from the head's library (no Android SDK in the Builder's sandbox):
-  `RelayRulesTest` `tests="9" skipped="0" failures="0" errors="0"`, `RouteTextTest` `tests="3" skipped="0"
-  failures="0" errors="0"`.
+- PR #276's description, at its head `cdad62d`: the two JVM test classes, run outside the app's Gradle build
+  with Kotlin bindings generated from the head's library (no Android SDK in the Builder's sandbox):
+  `RelayRulesTest` `tests="9" skipped="0" failures="0" errors="0"`, `RouteTextTest`
+  `tests="3" skipped="0" failures="0" errors="0"`.
 - PR #277's description, at its head `14a1cef`: `cargo test --workspace --locked` → exit 0, `mobile-ffi`
   `test result: ok. 330 passed; 0 failed; 1 ignored`, `relay` `68 passed; 0 failed`, every binary `0 failed`;
   `cargo clippy --workspace --locked -- -D warnings` → exit 0.
@@ -1915,15 +1915,16 @@ was re-read at `cdbf9d3`.
   `a7166fe` are the first CI of #276 and #277 together.
 - Reviews. #276: one fresh-context agent with `engineering-code-review`, `arcium-security-review` and
   `android-uniffi-bridge`, at `c563453`: the security review found nothing above INFO; the engineering review
-  graded one item a warning (Tor's state was read while the app was in the background) and named test gaps
-  (three mutations survived). Its items were fixed in `cdad62d`, except the security checklist's "no Tor"
-  line, which needed the Owner's word and was changed by PR #279; no fresh agent read `cdad62d` again
-  (continuity D-207). #277: one fresh-context agent with both review skills, at `fcc274e`: no security
-  defect; one warning (the pause was not pinned) and INFO items. In `14a1cef` the pause test was pinned,
-  `check_v1`'s host rule was narrowed to DNS labels and comments were fixed; no fresh agent read `14a1cef`
-  again (PR #277's description; continuity D-208). Two items stay in PR #277's Limits: strings the core
-  refuses but the app saves (below), and that `restrict` ignores only `NotFound`, which no test pins. Neither had a Reliability System
-  (Arcium 2) review: the Owner chose to merge without one (continuity D-209).
+  graded one item a warning: test gaps (three mutations survived) and polling tied to the composition rather
+  than to the app being visible, so Tor's state would be read in the background (INFERRED by the reviewer).
+  Its items were fixed in `cdad62d`, except the security checklist's "no Tor" line, which needed the Owner's
+  word and was changed by PR #279; no fresh agent read `cdad62d` again (continuity D-207). #277: one
+  fresh-context agent with both review skills, at `fcc274e`: no security defect; one warning (the pause was
+  not pinned) and INFO items. In `14a1cef` the pause test was pinned, `check_v1`'s host rule was narrowed to
+  DNS labels and comments were fixed; neither PR #277's description nor continuity D-208 records a fresh
+  review of `14a1cef`. Two items stay in PR #277's Limits: strings the core refuses but the app saves (below),
+  and that `restrict` ignores only `NotFound`, which no test pins. Neither had a Reliability System (Arcium 2)
+  review: the Owner chose to merge without one (continuity D-209).
 - Not run anywhere: a real Tor network, Tor on a phone, the Settings screen with a relay at an onion address
   (no test drives it), and that the polling stops in the background.
 
@@ -1936,16 +1937,16 @@ was re-read at `cdbf9d3`.
 Not rows:
 
 - The places that cite the Kotlin `startTorTransport` (the F-12 row, the D-008 lead, the D-008 row of "D-008
-  and D-010: fixed or decided", the 2026-11-20 D-008 row, the opening paragraph and the F-15 row of "arti 0.48
-  in core-transport", the 2026-11-27 F-15 row and its paragraph on these places)
-  keep their snapshots; each has a dated note pointing here.
-- The places in the 2026-11-27 section that say a start that panics skips the pause, that a relay at any
-  host other than an onion name is reached directly, or that #277 is open (its "Bounds" item, its routing
-  sentence, its review item, its D-008 row and its paragraph on R275-1 and R275-2), keep their snapshot; each has a dated note pointing here. Arcium 2's R275-3 (the isolation test reads arti's `Debug`
-  text) is left as it is.
-- One rule in two places: `relayGoesThroughTor` repeats the core's onion rule for the label. A later change
-  to one must be made in both; `RelayRulesTest.onlyARelayAtAnOnionAddressGoesThroughTor` holds the Kotlin
-  copy to the core's host cases, not to the core itself.
+  and D-010: fixed or decided", the 2026-11-20 D-008 row, the "No status changes here" paragraph and the F-15
+  row of "arti 0.48 in core-transport", the 2026-11-27 F-15 row and its paragraph on these places) keep their
+  snapshots; each has a dated note pointing here.
+- The places in the 2026-11-27 section that say a start that panics skips the pause, that a relay at any host
+  other than an onion name is reached directly, or that #277 is open (its "Bounds" item, its routing sentence,
+  its review item, its D-008 row and its paragraph on R275-1 and R275-2), keep their snapshot; each has a
+  dated note pointing here. Arcium 2's R275-3 (the isolation test reads arti's `Debug` text) is left as it is.
+- One rule in two places: `relayGoesThroughTor` repeats the core's onion rule for the label. A later change to
+  one must be made in both; `RelayRulesTest.onlyARelayAtAnOnionAddressGoesThroughTor` holds the Kotlin copy to
+  the core's host cases, not to the core itself.
 - `check_v1` refuses some development strings that the app's own check (`devHostPort`,
   `RelayRules.kt:143-150`) saves, such as `x.onion:1:7700`, a host with `_` or a scoped IPv6 address: such a
   relay is saved, and Settings labels it by the Kotlin rule, which knows nothing of `check_v1`, either way:

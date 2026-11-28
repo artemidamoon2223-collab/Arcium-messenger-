@@ -51,9 +51,11 @@ they are the easiest to overstate. Re-check each before relying on it:
 - **bounded replay and history retention:** not provided (S2-B2 §8,
   "Retention"; NET §10);
 - **Tor / SOCKS on the relay path:** Tor only for a relay at an onion
-  address, through the embedded client and never directly (NET §3a), and not
-  yet run on a real Tor network or a phone; none for any other relay, and no
-  SOCKS proxy; no anonymity towards the relay, even over Tor (NET §8; F-15);
+  address, through the embedded client and never directly (NET §3a; F-15),
+  and not yet run on a real Tor network or a phone (NET §3a); none for any
+  other relay, and no anonymity towards the relay, even over Tor (NET §8);
+  the app sets no SOCKS proxy (`grep -rni socks crates/*/src android/app/src`
+  is empty);
 - **hardware-backed key provider:** partial; `MasterKeyProvider.kt`
   requests no StrongBox, attestation or user-auth binding (tracker R-18 (b)).
 

@@ -4,7 +4,7 @@
 > an action. Verify each line against its source before acting; the source
 > wins. Public repository — no secrets. Replace wholesale; git keeps history.
 
-Updated: 2026-11-28 UTC (after D-221), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
+Updated: 2026-11-28 UTC (after D-222), by the Builder chat "Arcium 1.1" (013Fd9vynW9zatywT2BMTB1h), successor of "Arcium 1" (013Fd9w25yw1w75yseYxbKXy; D-165, D-169)
 
 ## Read first
 The session hook shows only the first 8,000 bytes of this file and almost nothing of `decisions.md`. The handoff from Arcium 1 (roles, how a change travels, the Arcium 2 review recipe, platform facts, open items) is entry **D-165**, with the Owner's order in D-166 and corrections in D-167 and D-168 (the later entry wins). Read all four in full before any work:
@@ -18,7 +18,7 @@ Russian, plain words, result first, one step at a time. Since D-178: the Owner's
 1. Read this file and D-165 to D-168 (command above); older entries of `decisions.md` when a line here cites them.
 2. Re-verify the main SHA and the open PRs on GitHub. On any mismatch, this file is stale.
 3. Act only on the Owner's current instruction. AGENT and PROPOSAL records are not Owner decisions.
-4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-222.
+4. To update: append to `decisions.md`, replace this file, commit only these two files, push normally (never force), re-read both (`repo-change-protocol` §10). Next entry: D-223.
 5. At the start, `git fetch origin main` and compare `git rev-parse HEAD` with `origin/main`. If they differ, now or later, read CLAUDE.md and the skills from `origin/main`, not from the working tree.
 
 ## Baseline (re-verify)
@@ -32,7 +32,7 @@ Russian, plain words, result first, one step at a time. Since D-178: the Owner's
 - For the Owner: delete branches on github.com (the session's proxy refuses deletes, 403, D-219). 41 branches are fully in `main` and safe (list in D-219's message to the Owner, re-derive with `git merge-base --is-ancestor`); 223 others are not: check before deleting. #275 review chat archived (D-219).
 - `/skill-doctor` is done (D-171). The Owner: "QC оставляем, решим на проектировании". The Owner keeps all skills as they are (D-221).
 - Working scheme (D-172, accepted D-173, page https://claude.ai/artifact/JzLLzbnkCuVN13PYVi9nVD). Board https://claude.ai/artifact/WRCc8usLjLaR8urG9z8TAV, New York time (D-181): republish whenever this file changes. Duet on request only, no GitHub (D-176, D-177). Review chats have no add_repo tool (D-184).
-- Tor 4.1 done in code (decisions D-189 to D-195; #274 to #279). Stage 2 (app on the phone) when the Owner is home (D-188; APK artifact 15166682041, from `main` `cec9242`, before Tor, expires 2026-12-04; stage 2 has no relay, D-187). One Android phone. Open: push test; server and computer.
+- Tor 4.1 done in code (decisions D-189 to D-195; #274 to #279). Stage 2 (app on the phone) when the Owner is home (D-188; APK artifact 15253250598, from `main` `7b45cdac`, with Tor and #277, expires 2026-12-05 07:05 UTC, rebuild with `workflow_dispatch` of `android-ci.yml` if later (D-222); stage 2 has no relay, D-187). One Android phone. Open: push test; server and computer.
 - Optional: the `audit/usage.py` double count in reliability-system (D-151).
 
 ## Recently done (older: `decisions.md`)

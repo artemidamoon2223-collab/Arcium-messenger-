@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,13 +41,18 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.arcium.messenger.messaging.BackgroundReceive
 import com.arcium.messenger.messaging.BackgroundState
 import com.arcium.messenger.messaging.RelayProtocol
 import com.arcium.messenger.messaging.backgroundState
+import com.arcium.messenger.messaging.relayGoesThroughTor
 import com.arcium.messenger.messaging.relayProtocolOf
 import com.arcium.messenger.startup.StartupState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,6 +82,20 @@ fun SettingsScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+    // While this screen is visible and shows a relay reached through Tor,
+    // read Tor's state every second, so "starting" turns into "running" (or
+    // a problem) here. Nothing is read while the app is in the background.
+    val throughTor = state.savedRelay?.let(::relayGoesThroughTor) == true
+    LaunchedEffect(throughTor, lifecycleOwner) {
+        if (throughTor) {
+            lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    withContext(Dispatchers.IO) { viewModel.refreshTor() }
+                    delay(1_000)
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -103,7 +123,9 @@ fun SettingsScreen(
                     "gives you (arcium-relay-v2:…). The app then reaches the relay over TLS, " +
                     "checks that it is that relay, and only this device can read or delete its " +
                     "mailbox. The relay cannot read messages, but it sees who talks to whom, " +
-                    "when and how much. There is no Tor and no anonymity.",
+                    "when and how much. A relay at an onion address (a host ending in .onion) " +
+                    "is reached only through Tor, built into the app, and then does not see " +
+                    "your IP address; any other relay sees it.",
                 style = MaterialTheme.typography.bodySmall,
             )
             if (state.devRelayAllowed) {
@@ -139,6 +161,11 @@ fun SettingsScreen(
                     protocolStatus(relayProtocolOf(saved)),
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.testTag("relayProtocol"),
+                )
+                Text(
+                    routeStatus(relayGoesThroughTor(saved), state.tor),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("relayRoute"),
                 )
             }
             HorizontalDivider()
@@ -183,7 +210,8 @@ fun SettingsScreen(
             Text(
                 "Unless background receive is on, messages are synced only while the app is " +
                     "open. No push notifications: nothing wakes the app when a message reaches " +
-                    "the relay. No Tor routing, no Bluetooth mesh, no key backup.",
+                    "the relay. No Tor for a relay at an ordinary address, no Bluetooth mesh, " +
+                    "no key backup.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }

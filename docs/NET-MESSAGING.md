@@ -375,6 +375,13 @@ unchanged: TLS 1.3 to the pinned key, HELLO, AUTH (section 3).
 - **`tor_state()`** tells the app whether the process's client is not
   started, starting, running, needs an update, or failed its last start. It
   answers at once, also while Tor starts: it never waits for a start.
+- **What the app shows** (Settings, under the saved relay): "Without Tor:
+  the relay sees your IP address." for a relay at an ordinary address;
+  "Through Tor: the relay does not see your IP address." and Tor's state,
+  read every second while Settings is on screen and the app is visible, for
+  a relay at an onion address. The app tells the two apart by the core's rule, written again in
+  Kotlin (`relayGoesThroughTor` in `RelayRules.kt`, with the core's test
+  cases); the core alone decides the route.
 
 What Tor adds and what it does not: the relay does not learn this device's
 IP address, an observer of this device's network does not learn which relay
@@ -1332,6 +1339,7 @@ entry per logical message, never written by the ratchet.
 | two OS processes | `a_peer_in_another_process_answers_over_the_relay` | runtime |
 | a relay at an onion address (V2; V1 also in upper case and with one or two final dots): every connection goes only through the onion path, to exactly the address as given, and gets the 60 s request deadline; without Tor every operation fails with Tor's error and the direct path is never asked; a relay at an ordinary address goes only the direct way with 30 s, and never asks for Tor | `tests::relay_onion` | runtime, local V2 and V1 relays; Tor and TCP stand-ins that record each address |
 | the process's Tor client: started once and shared; a failed start `Failed`, and within 60 s every call fails at once with its error, starting nothing; a caller that waits on a failing start does not start another; `tor_state()` answers `Starting` at once during a start; a start that panics leaves `Failed`; `NeedsUpdate` its own state and text, and within the pause every call fails at once with it; the process's client pauses 60 s; the Tor connector waits 60 s for a stream (longer if the connection's timeout is) and passes every call on to the stream (reads, writes, flushes, every read and write timeout); opening a core installs ring and names `tor/` next to the store; onion names told apart; the isolation group of each connector | `network::tor::tests`, `core-transport` `connector::tests::each_connector_has_an_isolation_group_of_its_own` | unit, stand-ins for the Tor client and its stream; no real Tor |
+| what Settings says about the route: the core's onion rule written again in Kotlin, on the core's host cases and more (V2; V1 in any case, with final dots, brackets, more labels, a second ':'; non-ASCII look-alikes not onion); the direct label for an ordinary relay whatever Tor's state; through Tor with each state's own text, and alone before the first read | `RelayRulesTest.onlyARelayAtAnOnionAddressGoesThroughTor`, `RouteTextTest`; `TwoDeviceMessengerTest.switchesToTheEncryptedRelay` (the direct label on the screen) | JVM unit; emulator for the direct label only; no screen test with an onion relay |
 | Android app ↔ host peer through a relay | `NetworkMessagingInstrumentationTest` on the emulator | Android runtime (emulator + host) |
 | plaintext never reaches the relay | relay canary in every test | runtime |
 | conversation history, states, repeats, replays, forged bundle, conflict | `tests::chat` | runtime |

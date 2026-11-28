@@ -198,6 +198,8 @@ class TwoDeviceMessengerTest {
         tap("saveRelay")
         assertEquals("Using ${arg("relayV2")}", textOf("savedRelay"))
         assertTrue(textOf("relayProtocol"), textOf("relayProtocol").startsWith("Encrypted relay (V2)"))
+        // A relay at an ordinary address is reached directly, and the screen says what that means.
+        assertEquals("Without Tor: the relay sees your IP address.", textOf("relayRoute"))
         tap("settingsBack")
         waitUntil("a clean round on the encrypted relay", WAIT_MS) {
             rule.onAllNodesWithTag("link").fetchSemanticsNodes().isNotEmpty() &&

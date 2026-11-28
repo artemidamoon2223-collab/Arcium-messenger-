@@ -40,6 +40,39 @@ internal fun relayChoice(value: String, devRelayAllowed: Boolean): RelayChoice? 
 internal fun relayProtocolOf(address: String): RelayProtocol =
     if (address.startsWith(V2_PREFIX)) RelayProtocol.V2 else RelayProtocol.DEV_V1
 
+/**
+ * Whether the Rust core reaches the relay at [address] (as [relayChoice]
+ * returned it) only through the Tor client built into the app, never
+ * directly: its host is an onion name. The core decides by this rule
+ * (`is_onion` and `v1_host` in `crates/mobile-ffi/src/network/tor.rs`,
+ * decision D-189): the host of a V2 connection string, or all of a
+ * development relay's `host:port` before the last `:` without IPv6
+ * brackets; an onion name when its last label is `onion`, in ASCII letters
+ * of any case, after any final dots are dropped. This function only says
+ * what the core does; it changes nothing about the route.
+ */
+internal fun relayGoesThroughTor(address: String): Boolean = isOnionHost(relayHost(address))
+
+/** The host of [address], by the rules [relayGoesThroughTor] names. */
+private fun relayHost(address: String): String {
+    if (address.startsWith(V2_PREFIX)) {
+        val rest = address.substring(V2_PREFIX.length)
+        // The last three fields (port, pin, key) never contain ':'.
+        var end = rest.length
+        repeat(3) { end = rest.lastIndexOf(':', end - 1).coerceAtLeast(0) }
+        return rest.substring(0, end)
+    }
+    val colon = address.lastIndexOf(':')
+    val host = if (colon < 0) address else address.substring(0, colon)
+    return if (host.startsWith("[") && host.endsWith("]")) host.substring(1, host.length - 1) else host
+}
+
+/** Whether [host]'s last label, after final dots are dropped, is `onion` in ASCII of any case. */
+private fun isOnionHost(host: String): Boolean {
+    val last = host.trimEnd('.').substringAfterLast('.')
+    return last.length == 5 && last.all { it in 'a'..'z' || it in 'A'..'Z' } && last.lowercase() == "onion"
+}
+
 /** What to enter, for the error shown when [relayChoice] refuses the input. */
 internal fun relayInputHint(devRelayAllowed: Boolean): String =
     if (devRelayAllowed) {

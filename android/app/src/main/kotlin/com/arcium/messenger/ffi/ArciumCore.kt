@@ -5,9 +5,11 @@ package com.arcium.messenger.ffi
  * generated at build time from `mobile-ffi`).
  *
  * Identity persistence and the messaging surface (X3DH handshake + Double
- * Ratchet) are real FFI calls. PSI and Tor have no UniFFI export yet and
- * throw NotImplementedError; none of them returns a value that could be
- * mistaken for a real result.
+ * Ratchet) are real FFI calls. PSI has no UniFFI export yet and throws
+ * NotImplementedError rather than return a value that could be mistaken for
+ * a real result. Tor is not started from here: the Rust core starts it at
+ * its first connection to a relay at an onion address, and [torState] only
+ * reads its state.
  *
  * This class is a pass-through and nothing more: it holds the open store
  * handle, checks it, and forwards. It derives no identifiers, catches no
@@ -259,17 +261,12 @@ class ArciumCoreWrapper {
     }
 
     /**
-     * Not connected yet, and no UniFFI export exists for it: transport stays
-     * arti in Rust. Throws rather than returning silently, which would read as
-     * "Tor is up".
+     * The state of this process's Tor client (`tor_state()` in
+     * `crates/mobile-ffi/src/network/tor.rs`). It answers at once, also while
+     * Tor starts. Only a relay at an onion address uses Tor, and the core
+     * starts it at the first connection to one; nothing here starts it.
      */
-    fun startTorTransport() {
-        throw NotImplementedError(
-            "startTorTransport is not wired to Rust: the Tor onion transport is arti in " +
-                "core-transport, and mobile-ffi exports no transport surface yet. Returning " +
-                "quietly would imply Tor was running.",
-        )
-    }
+    fun torState(): uniffi.arcium_core.TorState = uniffi.arcium_core.torState()
 
     /**
      * Opens (creating if absent) the encrypted store at [storagePath] with the

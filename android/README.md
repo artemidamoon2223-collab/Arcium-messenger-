@@ -24,7 +24,7 @@ android/
 │       ├── onboarding/       Generate identity keys
 │       ├── contacts/         Contact list; add a contact by pasting their card
 │       ├── chat/             Encrypted message thread
-│       └── settings/         Relay connection string; what is not provided
+│       └── settings/         Relay connection string, route (Tor or not); what is not provided
 └── e2e/                      Host scripts that drive the emulator end-to-end tests
 ```
 
@@ -172,8 +172,10 @@ What it does not do:
 
 ## Not implemented yet
 
-- Tor routing: `crates/core-transport` (arti) has no caller, and
-  `ArciumCore.startTorTransport` throws (F-15).
+- Tor for a relay at an ordinary address: only a relay at an onion address
+  is reached through Tor (arti, built into the Rust core; Settings shows the
+  route and Tor's state, `docs/NET-MESSAGING.md` section 3a). Tor has not
+  yet run on a real Tor network or on a phone (F-15).
 - PSI contact discovery: `mobile-ffi` exports no PSI surface, and
   `ArciumCore.submitPsiQuery` throws. The PSI program is not deployed; the
   `lutOffset = new BN(0)` placeholder in `arcium-psi/tests/src/program.ts` must

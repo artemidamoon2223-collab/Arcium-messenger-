@@ -63,7 +63,10 @@ fn key_of(bytes: Vec<u8>) -> io::Result<Key> {
 /// Makes `path` readable and writable by its owner only, creating it empty
 /// if missing, before SQLite opens it (SQLite gives `-wal` and `-shm` the
 /// database file's permissions); existing `-wal` and `-shm` files are
-/// restricted too.
+/// restricted too. One that is gone by the time it is restricted needs
+/// nothing: another connection to the same file removed it as it closed
+/// (the last connection of a relay that is stopping, while the next one
+/// starts).
 #[cfg(unix)]
 fn restrict(path: &Path) -> io::Result<()> {
     use std::fs::{OpenOptions, Permissions};
@@ -79,8 +82,9 @@ fn restrict(path: &Path) -> io::Result<()> {
         let mut side = path.as_os_str().to_owned();
         side.push(suffix);
         let side = PathBuf::from(side);
-        if side.exists() {
-            std::fs::set_permissions(&side, Permissions::from_mode(0o600))?;
+        match std::fs::set_permissions(&side, Permissions::from_mode(0o600)) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            other => other?,
         }
     }
     Ok(())
@@ -352,6 +356,26 @@ mod tests {
             let mode = std::fs::metadata(dir.path().join(name)).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "{name}: {mode:o}");
         }
+    }
+
+    /// A `-wal` or `-shm` file left with wider permissions is restricted
+    /// before SQLite opens the store; one that is not there is no error (it
+    /// may have been removed meanwhile by a closing connection).
+    #[cfg(unix)]
+    #[test]
+    fn a_side_file_left_open_is_restricted_and_a_missing_one_is_no_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.db");
+        let wal = dir.path().join("relay.db-wal");
+        std::fs::write(&wal, b"").unwrap();
+        std::fs::set_permissions(&wal, std::fs::Permissions::from_mode(0o644)).unwrap();
+        restrict(&path).unwrap();
+        for file in [&path, &wal] {
+            let mode = std::fs::metadata(file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "{}: {mode:o}", file.display());
+        }
+        assert!(!dir.path().join("relay.db-shm").exists());
     }
 
     /// Deleting numbers that are not stored, or another recipient's, changes

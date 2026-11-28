@@ -12,7 +12,7 @@ use super::net_harness::*;
 use crate::network::far_hook::{self, Stage};
 use crate::network::wire::{client_id, Envelope};
 use crate::{ArciumCore, SendResult};
-use core_crypto::ratchet::{Header, HEADER_SIZE, MAX_SKIP};
+use core_crypto::ratchet::{Header, HEADER_SIZE, MAX_FAR_SKIP, MAX_SKIP};
 
 const GAP: usize = MAX_SKIP as usize + 500;
 
@@ -61,6 +61,34 @@ fn retire(d: &ArciumCore, handle: u64) {
         d.abandon_outgoing(handle, m.message_id).unwrap();
     }
     assert!(d.retire_session(handle, &[]).unwrap());
+}
+
+/// Moves `from`'s sending chain to `to` on by `n` positions, as if `n` texts
+/// had been encrypted and given up, without their outbox or history records.
+/// That many commits to the device's file would take minutes, so its session
+/// record is advanced in an in-memory store and written back, as the rollback
+/// tests write records back (`tests/rollback.rs`). No other record holds the
+/// ratchet's position.
+fn advance_sending_chain(from: &Device, to: &Device, n: u32) {
+    use core_protocol::checkpoint::SessionBinding;
+    use core_protocol::durable::{DurableSession, S1CheckpointStore};
+    let hex: String = to.pk.iter().map(|b| format!("{b:02x}")).collect();
+    let key = format!("session:v1/{hex}");
+    let binding = SessionBinding {
+        our_identity_pk: from.core.our_identity_pk().unwrap(),
+        peer_identity_pk: to.pk.as_slice().try_into().unwrap(),
+    };
+    let store = from.core.store.lock().unwrap();
+    let mut memory = core_storage::EncryptedStore::open_in_memory([7; 32]).unwrap();
+    memory.put(&key, &store.get(&key).expect("a session record")).unwrap();
+    let mut session = DurableSession::load(&mut S1CheckpointStore::new(&mut memory), &binding)
+        .unwrap()
+        .expect("the session");
+    for _ in 0..n {
+        let staged = session.stage_encrypt(b"never sent").unwrap();
+        session.commit(&mut S1CheckpointStore::new(&mut memory), staged).unwrap();
+    }
+    store.put(&key, &memory.get(&key).unwrap()).unwrap();
 }
 
 fn message_from(bob: &Device, wire: Vec<u8>) -> Vec<u8> {
@@ -161,6 +189,109 @@ fn a_recipient_killed_in_the_far_pass_keeps_the_message_and_confirms_it() {
         assert!(alice.core.pending_outgoing(to_bob).unwrap().is_empty(), "{point}");
         relay.stop();
     }
+}
+
+/// R-14 (and R-20, at the ratchet's level: no text is cancelled here): a gap
+/// of more than `MAX_FAR_SKIP` positions in one chain is beyond the far skip
+/// too. Each arrival of the text after it is tried with a far skip and
+/// refused, so that direction is stopped. The way out is a reset of the
+/// session (`reset_session`, option B) on either device: the text beyond the
+/// gap is given up with the old session, the other device is told, and new
+/// texts go both ways. Each of the two tests below moves a chain on by
+/// `MAX_FAR_SKIP + 1` positions, which takes most of their time.
+fn a_reset_ends_a_direction_stopped_beyond_max_far_skip(resetter: &str) {
+    use super::restart::{chat, peer_reset, rounds, say, session, talking};
+    use crate::network::chat::{ChatEntryState as S, ChatSessionState};
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = talking(&addr);
+    far_at_once(&alice);
+    advance_sending_chain(&bob, &alice, MAX_FAR_SKIP + 1);
+    say(&bob, &alice, "far", "beyond the far skip");
+    let far = |d: &Device, with: &Device| chat(d, with).into_iter().find(|e| e.2 == "beyond the far skip");
+    for round in 1..=3 {
+        let tries = alice.net.far_tries();
+        rounds(&[&bob, &alice], 1);
+        assert!(alice.net.far_tries() > tries, "round {round}: a far skip was tried");
+        assert_eq!(far(&alice, &bob), None, "round {round}: and could not reach the text");
+    }
+    assert_eq!(far(&bob, &alice).map(|e| e.1), Some(S::Transmitted), "on the relay, never delivered");
+
+    match resetter {
+        "recipient" => alice.net.reset_session(bob.pk.clone()).unwrap(),
+        "sender" => bob.net.reset_session(alice.pk.clone()).unwrap(),
+        other => panic!("{other}"),
+    }
+    rounds(&[&alice, &bob, &alice, &bob], 3);
+    assert_eq!(session(&alice, &bob), ChatSessionState::Established);
+    assert_eq!(session(&bob, &alice), ChatSessionState::Established);
+    assert_eq!(far(&alice, &bob), None, "never read");
+    assert_eq!(far(&bob, &alice).map(|e| e.1), Some(S::NotDelivered), "given up with the old session");
+    match resetter {
+        "recipient" => assert!(peer_reset(&bob, &alice) && !peer_reset(&alice, &bob), "Bob is told"),
+        _ => assert!(peer_reset(&alice, &bob) && !peer_reset(&bob, &alice), "Alice is told"),
+    }
+
+    say(&alice, &bob, "a9", "after the reset");
+    say(&bob, &alice, "b9", "after the reset too");
+    rounds(&[&alice, &bob, &alice, &bob], 2);
+    assert!(chat(&alice, &bob).contains(&(true, S::Delivered, "after the reset".into())));
+    assert!(chat(&alice, &bob).contains(&(false, S::Received, "after the reset too".into())));
+    assert!(chat(&bob, &alice).contains(&(true, S::Delivered, "after the reset too".into())));
+    assert!(chat(&bob, &alice).contains(&(false, S::Received, "after the reset".into())));
+    assert_eq!(relay.canary_hits(), 0);
+    relay.stop();
+}
+
+#[test]
+fn a_reset_by_the_recipient_ends_a_direction_stopped_beyond_max_far_skip() {
+    a_reset_ends_a_direction_stopped_beyond_max_far_skip("recipient");
+}
+
+#[test]
+fn a_reset_by_the_sender_ends_a_direction_stopped_beyond_max_far_skip() {
+    a_reset_ends_a_direction_stopped_beyond_max_far_skip("sender");
+}
+
+/// The recipient dies in the message pass, after the relay deleted a far
+/// message and before the far pass read it (`after_delete`): only that
+/// process held it, so the restarted device has not shown it, and neither it
+/// nor the relay holds it. The sender still has it pending; when it comes
+/// again the far skip reads it, once, and the sender ends with it delivered.
+#[cfg(unix)]
+#[test]
+fn a_recipient_killed_before_the_far_pass_reads_the_message_when_it_comes_again() {
+    let relay = start_relay();
+    let addr = relay.addr().to_string();
+    let (alice, bob) = connected(&addr);
+    settle(&[&alice, &bob]);
+    let to_alice = crate::local_session_handle(alice.pk.clone()).unwrap();
+    let (ids, wires) = texts_in_one_chain(&alice, &bob);
+    for id in &ids[..GAP] {
+        bob.core.abandon_outgoing(to_alice, id.clone()).unwrap();
+    }
+    let text = format!("t{GAP}");
+    inject(&addr, &alice, message_from(&bob, wires[GAP].clone()));
+
+    super::network_crash::run_child(&alice, &addr, "far_sync", Some("after_delete"), &bob.pk);
+
+    let alice = alice.restart(&addr);
+    far_at_once(&alice);
+    let to_bob = crate::local_session_handle(bob.pk.clone()).unwrap();
+    assert!(far_record(&alice, to_bob).is_some(), "the child took it for a far message");
+    assert!(alice.texts(&bob).is_empty(), "the far pass never ran");
+    assert!(stored_messages(&relay, &alice).is_empty(), "the relay deleted it");
+    let r = alice.sync();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.accepted, alice.net.far_tries()), (0, 0), "nothing to read until it comes again: {r:?}");
+    assert_eq!(bob.undelivered(&alice), 1, "the sender still has it pending");
+
+    settle(&[&bob, &alice]);
+    assert_eq!(alice.texts(&bob), vec![text], "read once, with a far skip");
+    assert_eq!(alice.net.far_tries(), 1);
+    assert_eq!(bob.undelivered(&alice), 0, "delivered");
+    assert_eq!(relay.canary_hits(), 0);
+    relay.stop();
 }
 
 /// A far skip may derive up to `MAX_FAR_SKIP` keys per chain before the
